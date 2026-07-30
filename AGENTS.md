@@ -557,6 +557,21 @@ be.
   input, with the breakdown in `gen_ai.usage.cache_read.input_tokens` and
   `gen_ai.usage.cache_creation.input_tokens`
 
+**One prefix for everything LaunchDarkly owns: `launchdarkly.`** Anything that is
+not an OTel semantic convention goes under it — `launchdarkly.config.key`,
+`launchdarkly.variation.key`, `launchdarkly.run.id`, `launchdarkly.graph.key`,
+`launchdarkly.graph.path`, `launchdarkly.operation.type`,
+`launchdarkly.stream.abandoned` — and so do span names this SDK invents, such as
+`launchdarkly.graph`.
+
+`ld.ai.` is a different namespace with a different job: LaunchDarkly **metric and
+event** keys live there (`$ld:ai:tool_call`, `$ld.ai.judge.*`,
+`ld.ai.provider.error`). Reusing it for a span attribute is how the graph span
+ended up with `ld.ai.graph.key` while the root carried `launchdarkly.graph.key` —
+two names for one concept. Don't reintroduce it: a reader filtering on
+`launchdarkly.` should see everything this SDK owns and nothing should hide
+elsewhere.
+
 **Content attributes** — only when the caller passes `captureContent: true`.
 Conversation content is PII, so it is off by default and every write goes
 through `client/src/content.ts`, which takes the flag as an argument:

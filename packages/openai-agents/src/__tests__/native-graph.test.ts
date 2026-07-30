@@ -250,9 +250,9 @@ describe('toOpenAIAgents', () => {
 
   // ── OTel span lifecycle ───────────────────────────────────────────────────
 
-  it('sets ld.ai.graph.key span attribute on success', async () => {
+  it('sets launchdarkly.graph.key span attribute on success', async () => {
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
-    expect(mockSpan.setAttribute).toHaveBeenCalledWith('ld.ai.graph.key', 'test-graph');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.key', 'test-graph');
     expect(mockSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.OK });
     expect(mockSpan.end).toHaveBeenCalled();
   });
@@ -354,12 +354,12 @@ describe('toOpenAIAgents', () => {
 
   // ── OTel span usage attributes ────────────────────────────────────────────
 
-  it('sets gen_ai.usage.* and ld.ai.graph.path span attributes on success', async () => {
+  it('sets gen_ai.usage.* and launchdarkly.graph.path span attributes on success', async () => {
     mockRunnerRun.mockResolvedValue(makeRunResult('output', 7, 3));
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 7);
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.output_tokens', 3);
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.total_tokens', 10);
-    expect(mockSpan.setAttribute).toHaveBeenCalledWith('ld.ai.graph.path', expect.any(String));
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.path', expect.any(String));
   });
 });
