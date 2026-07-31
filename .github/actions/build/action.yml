@@ -1,0 +1,32 @@
+name: Build
+description: Build and pack a workspace package for publishing
+
+inputs:
+  workspace_path:
+    description: 'Path to the workspace package'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Enable Corepack
+      shell: bash
+      run: corepack enable
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24
+        cache: yarn
+
+    - name: Install dependencies
+      shell: bash
+      run: yarn install --frozen-lockfile
+
+    - name: Build all packages
+      shell: bash
+      run: yarn build
+
+    - name: Pack for publishing
+      shell: bash
+      run: cd ${{ inputs.workspace_path }} && npm pack

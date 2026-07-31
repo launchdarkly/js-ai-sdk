@@ -1,0 +1,340 @@
+# This workflow handles both automated and manual package publishing:
+#
+# AUTOMATED PUBLISHING (on push to main):
+#   - Triggered automatically when changes are pushed to the main branch
+#   - Uses release-please to create releases based on conventional commits
+#   - Publishes packages to npm automatically when release PRs are merged
+#
+# MANUAL PUBLISHING (via workflow_dispatch):
+#   - Can be triggered manually from the Actions tab
+#   - Allows publishing a specific package to npm
+#   - Supports dry-run mode
+#
+name: release-please
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      workspace_path:
+        description: 'The workspace to publish'
+        required: true
+        default: 'packages/client'
+        type: choice
+        options:
+          - packages/client
+          - packages/ai-node
+          - packages/ai-otel
+          - packages/claude-agents
+          - packages/claude-messages
+          - packages/openai-agents
+          - packages/openai-messages
+          - packages/langchain-agents
+          - packages/langchain-messages
+      dry_run:
+        description: 'Is this a dry run. If so no package will be published.'
+        type: boolean
+        required: true
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    if: github.event_name == 'push'
+    outputs:
+      package-client-released: ${{ steps.release.outputs['packages/client--release_created'] }}
+      package-client-tag-name: ${{ steps.release.outputs['packages/client--tag_name'] }}
+      package-ai-node-released: ${{ steps.release.outputs['packages/ai-node--release_created'] }}
+      package-ai-node-tag-name: ${{ steps.release.outputs['packages/ai-node--tag_name'] }}
+      package-ai-otel-released: ${{ steps.release.outputs['packages/ai-otel--release_created'] }}
+      package-ai-otel-tag-name: ${{ steps.release.outputs['packages/ai-otel--tag_name'] }}
+      package-claude-agents-released: ${{ steps.release.outputs['packages/claude-agents--release_created'] }}
+      package-claude-agents-tag-name: ${{ steps.release.outputs['packages/claude-agents--tag_name'] }}
+      package-claude-messages-released: ${{ steps.release.outputs['packages/claude-messages--release_created'] }}
+      package-claude-messages-tag-name: ${{ steps.release.outputs['packages/claude-messages--tag_name'] }}
+      package-openai-agents-released: ${{ steps.release.outputs['packages/openai-agents--release_created'] }}
+      package-openai-agents-tag-name: ${{ steps.release.outputs['packages/openai-agents--tag_name'] }}
+      package-openai-messages-released: ${{ steps.release.outputs['packages/openai-messages--release_created'] }}
+      package-openai-messages-tag-name: ${{ steps.release.outputs['packages/openai-messages--tag_name'] }}
+      package-langchain-agents-released: ${{ steps.release.outputs['packages/langchain-agents--release_created'] }}
+      package-langchain-agents-tag-name: ${{ steps.release.outputs['packages/langchain-agents--tag_name'] }}
+      package-langchain-messages-released: ${{ steps.release.outputs['packages/langchain-messages--release_created'] }}
+      package-langchain-messages-tag-name: ${{ steps.release.outputs['packages/langchain-messages--tag_name'] }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+
+  # --- Per-package publish jobs ---
+
+  release-client:
+    runs-on: ubuntu-latest
+    needs: ['release-please']
+    permissions:
+      id-token: write
+      attestations: write
+    if: ${{ needs.release-please.outputs.package-client-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: packages/client
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: 'packages/client/*.tgz'
+      - uses: launchdarkly/gh-actions/actions/release-secrets@release-secrets-v1.2.0
+        name: 'Get npm token'
+        with:
+          aws_assume_role: ${{ vars.AWS_ROLE_ARN }}
+          ssm_parameter_pairs: '/production/common/releasing/npm/token = NPM_AUTH_TOKEN'
+      - name: Publish to npm
+        run: npm publish packages/client/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_AUTH_TOKEN }}
+
+  release-ai-node:
+    runs-on: ubuntu-latest
+    needs: ['release-please']
+    permissions:
+      id-token: write
+      attestations: write
+    if: ${{ needs.release-please.outputs.package-ai-node-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: packages/ai-node
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: 'packages/ai-node/*.tgz'
+      - uses: launchdarkly/gh-actions/actions/release-secrets@release-secrets-v1.2.0
+        name: 'Get npm token'
+        with:
+          aws_assume_role: ${{ vars.AWS_ROLE_ARN }}
+          ssm_parameter_pairs: '/production/common/releasing/npm/token = NPM_AUTH_TOKEN'
+      - name: Publish to npm
+        run: npm publish packages/ai-node/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_AUTH_TOKEN }}
+
+  release-ai-otel:
+    runs-on: ubuntu-latest
+    needs: ['release-please']
+    permissions:
+      id-token: write
+      attestations: write
+    if: ${{ needs.release-please.outputs.package-ai-otel-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: packages/ai-otel
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: 'packages/ai-otel/*.tgz'
+      - uses: launchdarkly/gh-actions/actions/release-secrets@release-secrets-v1.2.0
+        name: 'Get npm token'
+        with:
+          aws_assume_role: ${{ vars.AWS_ROLE_ARN }}
+          ssm_parameter_pairs: '/production/common/releasing/npm/token = NPM_AUTH_TOKEN'
+      - name: Publish to npm
+        run: npm publish packages/ai-otel/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_AUTH_TOKEN }}
+
+  release-claude-agents:
+    runs-on: ubuntu-latest
+    needs: ['release-please']
+    permissions:
+      id-token: write
+      attestations: write
+    if: ${{ needs.release-please.outputs.package-claude-agents-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: packages/claude-agents
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: 'packages/claude-agents/*.tgz'
+      - uses: launchdarkly/gh-actions/actions/release-secrets@release-secrets-v1.2.0
+        name: 'Get npm token'
+        with:
+          aws_assume_role: ${{ vars.AWS_ROLE_ARN }}
+          ssm_parameter_pairs: '/production/common/releasing/npm/token = NPM_AUTH_TOKEN'
+      - name: Publish to npm
+        run: npm publish packages/claude-agents/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_AUTH_TOKEN }}
+
+  release-claude-messages:
+    runs-on: ubuntu-latest
+    needs: ['release-please']
+    permissions:
+      id-token: write
+      attestations: write
+    if: ${{ needs.release-please.outputs.package-claude-messages-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: packages/claude-messages
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: 'packages/claude-messages/*.tgz'
+      - uses: launchdarkly/gh-actions/actions/release-secrets@release-secrets-v1.2.0
+        name: 'Get npm token'
+        with:
+          aws_assume_role: ${{ vars.AWS_ROLE_ARN }}
+          ssm_parameter_pairs: '/production/common/releasing/npm/token = NPM_AUTH_TOKEN'
+      - name: Publish to npm
+        run: npm publish packages/claude-messages/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_AUTH_TOKEN }}
+
+  release-openai-agents:
+    runs-on: ubuntu-latest
+    needs: ['release-please']
+    permissions:
+      id-token: write
+      attestations: write
+    if: ${{ needs.release-please.outputs.package-openai-agents-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: packages/openai-agents
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: 'packages/openai-agents/*.tgz'
+      - uses: launchdarkly/gh-actions/actions/release-secrets@release-secrets-v1.2.0
+        name: 'Get npm token'
+        with:
+          aws_assume_role: ${{ vars.AWS_ROLE_ARN }}
+          ssm_parameter_pairs: '/production/common/releasing/npm/token = NPM_AUTH_TOKEN'
+      - name: Publish to npm
+        run: npm publish packages/openai-agents/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_AUTH_TOKEN }}
+
+  release-openai-messages:
+    runs-on: ubuntu-latest
+    needs: ['release-please']
+    permissions:
+      id-token: write
+      attestations: write
+    if: ${{ needs.release-please.outputs.package-openai-messages-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: packages/openai-messages
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: 'packages/openai-messages/*.tgz'
+      - uses: launchdarkly/gh-actions/actions/release-secrets@release-secrets-v1.2.0
+        name: 'Get npm token'
+        with:
+          aws_assume_role: ${{ vars.AWS_ROLE_ARN }}
+          ssm_parameter_pairs: '/production/common/releasing/npm/token = NPM_AUTH_TOKEN'
+      - name: Publish to npm
+        run: npm publish packages/openai-messages/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_AUTH_TOKEN }}
+
+  release-langchain-agents:
+    runs-on: ubuntu-latest
+    needs: ['release-please']
+    permissions:
+      id-token: write
+      attestations: write
+    if: ${{ needs.release-please.outputs.package-langchain-agents-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: packages/langchain-agents
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: 'packages/langchain-agents/*.tgz'
+      - uses: launchdarkly/gh-actions/actions/release-secrets@release-secrets-v1.2.0
+        name: 'Get npm token'
+        with:
+          aws_assume_role: ${{ vars.AWS_ROLE_ARN }}
+          ssm_parameter_pairs: '/production/common/releasing/npm/token = NPM_AUTH_TOKEN'
+      - name: Publish to npm
+        run: npm publish packages/langchain-agents/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_AUTH_TOKEN }}
+
+  release-langchain-messages:
+    runs-on: ubuntu-latest
+    needs: ['release-please']
+    permissions:
+      id-token: write
+      attestations: write
+    if: ${{ needs.release-please.outputs.package-langchain-messages-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: packages/langchain-messages
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: 'packages/langchain-messages/*.tgz'
+      - uses: launchdarkly/gh-actions/actions/release-secrets@release-secrets-v1.2.0
+        name: 'Get npm token'
+        with:
+          aws_assume_role: ${{ vars.AWS_ROLE_ARN }}
+          ssm_parameter_pairs: '/production/common/releasing/npm/token = NPM_AUTH_TOKEN'
+      - name: Publish to npm
+        run: npm publish packages/langchain-messages/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_AUTH_TOKEN }}
+
+  # --- Manual publish ---
+
+  manual-publish:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: ${{ inputs.workspace_path }}
+      - uses: launchdarkly/gh-actions/actions/release-secrets@release-secrets-v1.2.0
+        if: ${{ format('{0}', inputs.dry_run) != 'true' }}
+        name: 'Get npm token'
+        with:
+          aws_assume_role: ${{ vars.AWS_ROLE_ARN }}
+          ssm_parameter_pairs: '/production/common/releasing/npm/token = NPM_AUTH_TOKEN'
+      - name: Publish to npm
+        if: ${{ format('{0}', inputs.dry_run) != 'true' }}
+        run: npm publish ${{ inputs.workspace_path }}/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_AUTH_TOKEN }}

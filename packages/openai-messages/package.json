@@ -1,0 +1,56 @@
+{
+  "name": "@launchdarkly/ai-openai-messages",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "author": "LaunchDarkly <team@launchdarkly.com>",
+  "description": "OpenAI Responses API provider for @launchdarkly/ai-server",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/launchdarkly/js-ai-sdk.git",
+    "directory": "packages/openai-messages"
+  },
+  "homepage": "https://github.com/launchdarkly/js-ai-sdk",
+  "bugs": {
+    "url": "https://github.com/launchdarkly/js-ai-sdk/issues"
+  },
+  "keywords": [
+    "launchdarkly",
+    "ai",
+    "openai"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prepare": "tsc",
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@launchdarkly/ai-server": "*",
+    "@opentelemetry/api": "^1.9.1",
+    "openai": "^6.42.0"
+  },
+  "devDependencies": {
+    "@opentelemetry/context-async-hooks": "^2.8.0",
+    "@opentelemetry/sdk-trace-base": "^2.8.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "latest"
+  }
+}

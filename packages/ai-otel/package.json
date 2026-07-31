@@ -1,0 +1,59 @@
+{
+  "name": "@launchdarkly/ai-otel",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "author": "LaunchDarkly <team@launchdarkly.com>",
+  "description": "OpenTelemetry dependency bundle for @launchdarkly/ai-server — install alongside @launchdarkly/ai-node or @launchdarkly/ai-server to enable automatic trace export",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/launchdarkly/js-ai-sdk.git",
+    "directory": "packages/ai-otel"
+  },
+  "homepage": "https://github.com/launchdarkly/js-ai-sdk",
+  "bugs": {
+    "url": "https://github.com/launchdarkly/js-ai-sdk/issues"
+  },
+  "keywords": [
+    "launchdarkly",
+    "ai",
+    "opentelemetry",
+    "tracing"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prepare": "tsc",
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opentelemetry/context-async-hooks": "^2.8.0",
+    "@opentelemetry/core": "^2.8.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.219.0",
+    "@opentelemetry/otlp-exporter-base": "^0.219.0",
+    "@opentelemetry/resources": "^2.8.0",
+    "@opentelemetry/sdk-trace-base": "^2.8.0",
+    "@opentelemetry/sdk-trace-node": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "latest"
+  }
+}
