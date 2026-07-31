@@ -1,0 +1,7 @@
+pre-commit:
+  jobs:
+    - name: lint
+      run: make lint
+
+    - name: code-check
+      run: make code-check

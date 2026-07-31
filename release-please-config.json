@@ -1,0 +1,78 @@
+{
+  "include-component-in-tag": true,
+  "bootstrap-sha": "REPLACE_WITH_FIRST_COMMIT_SHA_AFTER_MIGRATION",
+  "packages": {
+    "packages/client": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "include-v-in-tag": false,
+      "component": "@launchdarkly/ai-server"
+    },
+    "packages/ai-node": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "include-v-in-tag": false,
+      "component": "@launchdarkly/ai-node"
+    },
+    "packages/ai-otel": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "include-v-in-tag": false,
+      "component": "@launchdarkly/ai-otel"
+    },
+    "packages/claude-agents": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "include-v-in-tag": false,
+      "component": "@launchdarkly/ai-claude-agents"
+    },
+    "packages/claude-messages": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "include-v-in-tag": false,
+      "component": "@launchdarkly/ai-claude-messages"
+    },
+    "packages/openai-agents": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "include-v-in-tag": false,
+      "component": "@launchdarkly/ai-openai-agents"
+    },
+    "packages/openai-messages": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "include-v-in-tag": false,
+      "component": "@launchdarkly/ai-openai-messages"
+    },
+    "packages/langchain-agents": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "include-v-in-tag": false,
+      "component": "@launchdarkly/ai-langchain-agents"
+    },
+    "packages/langchain-messages": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "include-v-in-tag": false,
+      "component": "@launchdarkly/ai-langchain-messages"
+    }
+  }
+}

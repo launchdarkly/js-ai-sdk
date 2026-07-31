@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/client" },
+    { "path": "packages/ai-node" },
+    { "path": "packages/ai-otel" },
+    { "path": "packages/claude-agents" },
+    { "path": "packages/claude-messages" },
+    { "path": "packages/openai-agents" },
+    { "path": "packages/openai-messages" },
+    { "path": "packages/langchain-messages" },
+    { "path": "packages/langchain-agents" }
+  ]
+}

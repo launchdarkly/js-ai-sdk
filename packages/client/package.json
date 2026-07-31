@@ -1,0 +1,99 @@
+{
+  "name": "@launchdarkly/ai-server",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "author": "LaunchDarkly <team@launchdarkly.com>",
+  "description": "LaunchDarkly AI client core",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/launchdarkly/js-ai-sdk.git",
+    "directory": "packages/client"
+  },
+  "homepage": "https://github.com/launchdarkly/js-ai-sdk",
+  "bugs": {
+    "url": "https://github.com/launchdarkly/js-ai-sdk/issues"
+  },
+  "keywords": [
+    "launchdarkly",
+    "ai",
+    "feature-flags",
+    "sdk",
+    "opentelemetry"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prepare": "tsc",
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "dotenv": "^16.5.0"
+  },
+  "peerDependencies": {
+    "@launchdarkly/node-server-sdk": "^9.7.3",
+    "@opentelemetry/context-async-hooks": "^2.8.0",
+    "@opentelemetry/core": "^2.8.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.219.0",
+    "@opentelemetry/otlp-exporter-base": "^0.219.0",
+    "@opentelemetry/resources": "^2.8.0",
+    "@opentelemetry/sdk-trace-base": "^2.8.0",
+    "@opentelemetry/sdk-trace-node": "^2.8.0"
+  },
+  "peerDependenciesMeta": {
+    "@launchdarkly/node-server-sdk": {
+      "optional": true
+    },
+    "@opentelemetry/context-async-hooks": {
+      "optional": true
+    },
+    "@opentelemetry/core": {
+      "optional": true
+    },
+    "@opentelemetry/exporter-trace-otlp-http": {
+      "optional": true
+    },
+    "@opentelemetry/otlp-exporter-base": {
+      "optional": true
+    },
+    "@opentelemetry/resources": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-trace-base": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-trace-node": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@launchdarkly/node-server-sdk": "^9.7.3",
+    "@opentelemetry/context-async-hooks": "^2.8.0",
+    "@opentelemetry/core": "^2.8.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.219.0",
+    "@opentelemetry/otlp-exporter-base": "^0.219.0",
+    "@opentelemetry/resources": "^2.8.0",
+    "@opentelemetry/sdk-trace-base": "^2.8.0",
+    "@opentelemetry/sdk-trace-node": "^2.8.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "latest"
+  }
+}

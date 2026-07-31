@@ -1,0 +1,50 @@
+{
+  "name": "@launchdarkly/ai-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "yarn@1.22.22",
+  "agents": "./AGENTS.md",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "start": "tsx main.ts",
+    "build": "tsc --build",
+    "clean": "tsc --build --clean",
+    "test": "yarn workspaces run test",
+    "typecheck": "yarn workspaces run typecheck",
+    "format": "biome format --write .",
+    "format:check": "biome format --check .",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "code:check": "biome check .",
+    "code:fix": "biome check --write .",
+    "lint:pkg": "sherif",
+    "lint:pkg:fix": "sherif -f",
+    "size": "sh -c 'cd packages/$0 && npm pack --dry-run 2>&1 | grep \"npm notice package size\"'",
+    "size:install": "sh -c 'PKG=$0; DIR=tmp/size-$PKG; rm -rf $DIR && mkdir -p $DIR && npm pack ./packages/$PKG --pack-destination $DIR -q && cd $DIR && npm init -y -q > /dev/null && npm install *.tgz --omit=dev -q && echo \"\" && echo \"Install size for $PKG:\" && du -sh node_modules && echo \"\" && echo \"Dep breakdown:\" && du -sh node_modules/* | sort -rh; cd - > /dev/null && rm -rf $DIR'",
+    "size:install:otel": "sh -c 'PKG=$0; DIR=tmp/size-$PKG-otel; OTEL=\"@opentelemetry/sdk-trace-node@^2.8.0 @opentelemetry/sdk-trace-base@^2.8.0 @opentelemetry/exporter-trace-otlp-http@^0.219.0 @opentelemetry/otlp-exporter-base@^0.219.0 @opentelemetry/resources@^2.8.0 @opentelemetry/context-async-hooks@^2.8.0 @opentelemetry/core@^2.8.0\"; rm -rf $DIR && mkdir -p $DIR && npm pack ./packages/$PKG --pack-destination $DIR -q && cd $DIR && npm init -y -q > /dev/null && npm install *.tgz $OTEL --omit=dev -q && echo \"\" && echo \"Install size for $PKG (with OTel):\" && du -sh node_modules && echo \"\" && echo \"Dep breakdown:\" && du -sh node_modules/* | sort -rh; cd - > /dev/null && rm -rf $DIR'",
+    "prepare": "lefthook install"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.2",
+    "@launchdarkly/ai-claude-agents": "*",
+    "@launchdarkly/ai-claude-messages": "*",
+    "@launchdarkly/ai-langchain-agents": "*",
+    "@launchdarkly/ai-langchain-messages": "*",
+    "@launchdarkly/ai-node": "*",
+    "@launchdarkly/ai-openai-agents": "*",
+    "@launchdarkly/ai-openai-messages": "*",
+    "@launchdarkly/ai-otel": "*",
+    "@launchdarkly/ai-server": "*",
+    "@launchdarkly/node-server-sdk": "^9.7.3",
+    "@types/node": "^22.0.0",
+    "dotenv": "^16.5.0",
+    "lefthook": "2.1.9",
+    "sherif": "1.11.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "vitest": "latest"
+  }
+}
