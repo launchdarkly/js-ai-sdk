@@ -1,6 +1,6 @@
 {
   "include-component-in-tag": true,
-  "bootstrap-sha": "REPLACE_WITH_FIRST_COMMIT_SHA_AFTER_MIGRATION",
+  "bootstrap-sha": "947f5bb0c79d64f7e36985e4501bfdcee25c0a48",
   "packages": {
     "packages/client": {
       "release-type": "node",
