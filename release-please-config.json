@@ -1,6 +1,6 @@
 {
   "include-component-in-tag": true,
-  "bootstrap-sha": "947f5bb0c79d64f7e36985e4501bfdcee25c0a48",
+  "bootstrap-sha": "ca500f05e888975132ad4e373f946a4d0fb86d20",
   "packages": {
     "packages/client": {
       "release-type": "node",
