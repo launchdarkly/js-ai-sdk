@@ -1,6 +1,6 @@
 {
   "name": "@launchdarkly/ai-node",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "license": "Apache-2.0",
   "author": "LaunchDarkly <team@launchdarkly.com>",
   "description": "Node.js convenience wrapper for @launchdarkly/ai-server — bundles @launchdarkly/node-server-sdk so no peer dependency setup is required",
