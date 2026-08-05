@@ -6,7 +6,7 @@
       "release-type": "node",
       "versioning": "default",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "component": "@launchdarkly/ai-server"
     },
@@ -14,7 +14,7 @@
       "release-type": "node",
       "versioning": "default",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "component": "@launchdarkly/ai-node"
     },
@@ -22,7 +22,7 @@
       "release-type": "node",
       "versioning": "default",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "component": "@launchdarkly/ai-otel"
     },
@@ -30,7 +30,7 @@
       "release-type": "node",
       "versioning": "default",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "component": "@launchdarkly/ai-claude-agents"
     },
@@ -38,7 +38,7 @@
       "release-type": "node",
       "versioning": "default",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "component": "@launchdarkly/ai-claude-messages"
     },
@@ -46,7 +46,7 @@
       "release-type": "node",
       "versioning": "default",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "component": "@launchdarkly/ai-openai-agents"
     },
@@ -54,7 +54,7 @@
       "release-type": "node",
       "versioning": "default",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "component": "@launchdarkly/ai-openai-messages"
     },
@@ -62,7 +62,7 @@
       "release-type": "node",
       "versioning": "default",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "component": "@launchdarkly/ai-langchain-agents"
     },
@@ -70,7 +70,7 @@
       "release-type": "node",
       "versioning": "default",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "component": "@launchdarkly/ai-langchain-messages"
     }
