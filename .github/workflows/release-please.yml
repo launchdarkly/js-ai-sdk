@@ -78,6 +78,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: ['release-please']
     permissions:
+      contents: read
       id-token: write
       attestations: write
     if: ${{ needs.release-please.outputs.package-client-released == 'true' }}
@@ -94,7 +95,6 @@ jobs:
       - uses: ./.github/actions/setup-release-node
       - uses: ./.github/actions/publish
         with:
-          workspace_name: '@launchdarkly/ai-server'
           workspace_path: packages/client
           prerelease: 'false'
           dry_run: 'false'
@@ -103,6 +103,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: ['release-please']
     permissions:
+      contents: read
       id-token: write
       attestations: write
     if: ${{ needs.release-please.outputs.package-ai-node-released == 'true' }}
@@ -119,7 +120,6 @@ jobs:
       - uses: ./.github/actions/setup-release-node
       - uses: ./.github/actions/publish
         with:
-          workspace_name: '@launchdarkly/ai-node'
           workspace_path: packages/ai-node
           prerelease: 'false'
           dry_run: 'false'
@@ -128,6 +128,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: ['release-please']
     permissions:
+      contents: read
       id-token: write
       attestations: write
     if: ${{ needs.release-please.outputs.package-ai-otel-released == 'true' }}
@@ -144,7 +145,6 @@ jobs:
       - uses: ./.github/actions/setup-release-node
       - uses: ./.github/actions/publish
         with:
-          workspace_name: '@launchdarkly/ai-otel'
           workspace_path: packages/ai-otel
           prerelease: 'false'
           dry_run: 'false'
@@ -153,6 +153,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: ['release-please']
     permissions:
+      contents: read
       id-token: write
       attestations: write
     if: ${{ needs.release-please.outputs.package-claude-agents-released == 'true' }}
@@ -169,7 +170,6 @@ jobs:
       - uses: ./.github/actions/setup-release-node
       - uses: ./.github/actions/publish
         with:
-          workspace_name: '@launchdarkly/ai-claude-agents'
           workspace_path: packages/claude-agents
           prerelease: 'false'
           dry_run: 'false'
@@ -178,6 +178,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: ['release-please']
     permissions:
+      contents: read
       id-token: write
       attestations: write
     if: ${{ needs.release-please.outputs.package-claude-messages-released == 'true' }}
@@ -194,7 +195,6 @@ jobs:
       - uses: ./.github/actions/setup-release-node
       - uses: ./.github/actions/publish
         with:
-          workspace_name: '@launchdarkly/ai-claude-messages'
           workspace_path: packages/claude-messages
           prerelease: 'false'
           dry_run: 'false'
@@ -203,6 +203,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: ['release-please']
     permissions:
+      contents: read
       id-token: write
       attestations: write
     if: ${{ needs.release-please.outputs.package-openai-agents-released == 'true' }}
@@ -219,7 +220,6 @@ jobs:
       - uses: ./.github/actions/setup-release-node
       - uses: ./.github/actions/publish
         with:
-          workspace_name: '@launchdarkly/ai-openai-agents'
           workspace_path: packages/openai-agents
           prerelease: 'false'
           dry_run: 'false'
@@ -228,6 +228,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: ['release-please']
     permissions:
+      contents: read
       id-token: write
       attestations: write
     if: ${{ needs.release-please.outputs.package-openai-messages-released == 'true' }}
@@ -244,7 +245,6 @@ jobs:
       - uses: ./.github/actions/setup-release-node
       - uses: ./.github/actions/publish
         with:
-          workspace_name: '@launchdarkly/ai-openai-messages'
           workspace_path: packages/openai-messages
           prerelease: 'false'
           dry_run: 'false'
@@ -253,6 +253,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: ['release-please']
     permissions:
+      contents: read
       id-token: write
       attestations: write
     if: ${{ needs.release-please.outputs.package-langchain-agents-released == 'true' }}
@@ -269,7 +270,6 @@ jobs:
       - uses: ./.github/actions/setup-release-node
       - uses: ./.github/actions/publish
         with:
-          workspace_name: '@launchdarkly/ai-langchain-agents'
           workspace_path: packages/langchain-agents
           prerelease: 'false'
           dry_run: 'false'
@@ -278,6 +278,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: ['release-please']
     permissions:
+      contents: read
       id-token: write
       attestations: write
     if: ${{ needs.release-please.outputs.package-langchain-messages-released == 'true' }}
@@ -294,7 +295,6 @@ jobs:
       - uses: ./.github/actions/setup-release-node
       - uses: ./.github/actions/publish
         with:
-          workspace_name: '@launchdarkly/ai-langchain-messages'
           workspace_path: packages/langchain-messages
           prerelease: 'false'
           dry_run: 'false'
@@ -314,13 +314,8 @@ jobs:
         with:
           workspace_path: ${{ inputs.workspace_path }}
       - uses: ./.github/actions/setup-release-node
-      - name: Set workspace name
-        id: pkg
-        shell: bash
-        run: echo "name=$(node -p "require('./${{ inputs.workspace_path }}/package.json').name")" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/publish
         with:
-          workspace_name: ${{ steps.pkg.outputs.name }}
           workspace_path: ${{ inputs.workspace_path }}
           prerelease: ${{ inputs.prerelease }}
           dry_run: ${{ inputs.dry_run }}

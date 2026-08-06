@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-yarn workspace $WORKSPACE pack
+set -e
+
+TGZ=$(ls "./$WORKSPACE_PATH"/*.tgz 2>/dev/null | head -1)
+if [ -z "$TGZ" ]; then
+  echo "No .tgz found in ./$WORKSPACE_PATH — did the build step run?" >&2
+  exit 1
+fi
+
 if $LD_RELEASE_IS_DRYRUN ; then
-  echo "Doing a dry run of publishing."
+  echo "Dry run — would publish: $TGZ"
 else
   if $LD_RELEASE_IS_PRERELEASE ; then
-    echo "Publishing with prerelease tag."
-    npm publish --tag prerelease --provenance --access public "./$WORKSPACE_PATH/package.tgz" || { echo "npm publish failed" >&2; exit 1; }
+    echo "Publishing with prerelease tag: $TGZ"
+    npm publish --tag prerelease --provenance --access public "$TGZ" || { echo "npm publish failed" >&2; exit 1; }
   else
-    npm publish --provenance --access public "./$WORKSPACE_PATH/package.tgz" || { echo "npm publish failed" >&2; exit 1; }
+    echo "Publishing: $TGZ"
+    npm publish --provenance --access public "$TGZ" || { echo "npm publish failed" >&2; exit 1; }
   fi
 fi
