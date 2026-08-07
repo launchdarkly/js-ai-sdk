@@ -1,3 +1,6 @@
+/**
+ * LaunchDarkly AI SDK core client for TypeScript.
+ */
 export type { AiConfigRep } from './client.js';
 export { config } from './client.js';
 export type { ContentCaptureOptions, SpanMessage, SpanMessagePart, ToolDefinitionInput } from './content.js';
