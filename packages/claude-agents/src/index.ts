@@ -1,3 +1,6 @@
+/**
+ * LaunchDarkly AI SDK integration for Claude agents.
+ */
 export {
   ClaudeBash,
   ClaudeEdit,
