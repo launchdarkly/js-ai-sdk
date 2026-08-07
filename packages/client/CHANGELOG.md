@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.1.0...@launchdarkly/ai-server-0.1.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* add module docstring to client package ([4f1afb7](https://github.com/launchdarkly/js-ai-sdk/commit/4f1afb7d481f59904b5d60f67169c7c2af75d6a1))
+* add module docstring to client package ([#12](https://github.com/launchdarkly/js-ai-sdk/issues/12)) ([1a361a9](https://github.com/launchdarkly/js-ai-sdk/commit/1a361a9e385091c89968521ad9d5185fd0b1ae58))
+
 ## [0.1.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.0.1...@launchdarkly/ai-server-0.1.0) (2026-08-05)
 
 
