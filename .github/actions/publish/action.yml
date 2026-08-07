@@ -1,0 +1,23 @@
+name: Publish to NPM
+description: Publish a pre-packed .tgz from the workspace via OIDC trusted publishing.
+inputs:
+  workspace_path:
+    description: 'Path to the workspace containing the .tgz to publish'
+    required: true
+  prerelease:
+    description: 'Is this a prerelease. If so, then the latest tag will not be updated in npm.'
+    required: true
+  dry_run:
+    description: 'Is this a dry run. If so no package will be published.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Publish
+      shell: bash
+      run: ./scripts/publish.sh
+      env:
+        WORKSPACE_PATH: ${{ inputs.workspace_path }}
+        LD_RELEASE_IS_PRERELEASE: ${{ inputs.prerelease }}
+        LD_RELEASE_IS_DRYRUN: ${{ inputs.dry_run }}
