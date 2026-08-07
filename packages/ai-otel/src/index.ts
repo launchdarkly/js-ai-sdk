@@ -1,4 +1,6 @@
 /**
+ * LaunchDarkly AI SDK OpenTelemetry integration.
+ *
  * @launchdarkly/ai-otel
  *
  * OpenTelemetry dependency bundle for @launchdarkly/ai-server.

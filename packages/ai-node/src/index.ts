@@ -1,4 +1,6 @@
 /**
+ * LaunchDarkly AI SDK for Node.js.
+ *
  * @launchdarkly/ai-node
  *
  * Node.js convenience wrapper for @launchdarkly/ai-server.
