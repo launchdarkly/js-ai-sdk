@@ -1,6 +1,6 @@
 {
   "name": "@launchdarkly/ai-otel",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "Apache-2.0",
   "author": "LaunchDarkly <team@launchdarkly.com>",
   "description": "OpenTelemetry dependency bundle for @launchdarkly/ai-server — install alongside @launchdarkly/ai-node or @launchdarkly/ai-server to enable automatic trace export",

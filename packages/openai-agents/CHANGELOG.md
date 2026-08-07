@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-openai-agents-0.1.0...@launchdarkly/ai-openai-agents-0.1.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* add module docstrings to all packages ([b913a06](https://github.com/launchdarkly/js-ai-sdk/commit/b913a06101a4bbd857a59babab852ca6944d3dca))
+* add module docstrings to all packages ([#14](https://github.com/launchdarkly/js-ai-sdk/issues/14)) ([56fec00](https://github.com/launchdarkly/js-ai-sdk/commit/56fec00c42c6f1586cec6a9683f038e52eade2a2))
+
 ## [0.1.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-openai-agents-0.0.1...@launchdarkly/ai-openai-agents-0.1.0) (2026-08-05)
 
 
