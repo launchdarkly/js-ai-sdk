@@ -548,15 +548,25 @@ function buildAgentAndPrompt(
   return { agent, prompt, instructions };
 }
 
-/** The user-visible text of a prompt for span content, whether string or items. */
-function promptText(prompt: string | OpenAIInputItem[]): string {
-  if (typeof prompt === 'string') return prompt;
-  const lastUser = [...prompt].reverse().find((item) => item.role === 'user');
-  if (!lastUser) return '';
-  return lastUser.content
-    .filter((part): part is { type: 'input_text'; text: string } => part.type === 'input_text')
-    .map((part) => part.text)
-    .join('');
+/**
+ * Span messages reflecting exactly what `Runner.run` receives.
+ *
+ * A plain-string prompt is one user turn. A structured item list (history
+ * present) is recorded turn-for-turn so captured `gen_ai.input.messages` include
+ * the full composed history, not just the final user turn; images are noted as a
+ * compact `[image]` placeholder rather than inlining a large data URL.
+ */
+function promptToSpanMessages(prompt: string | OpenAIInputItem[]): SpanMessage[] {
+  if (typeof prompt === 'string') {
+    return [{ role: 'user', parts: [{ type: 'text', content: prompt }] }];
+  }
+  return prompt.map((item) => ({
+    role: item.role,
+    parts: item.content.map(
+      (part): SpanMessagePart =>
+        part.type === 'input_image' ? { type: 'text', content: '[image]' } : { type: 'text', content: part.text },
+    ),
+  }));
 }
 
 export function createOpenAIAgentHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
@@ -588,7 +598,7 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
         );
         setInputContentAttributes(span, captureContent, {
           systemInstructions: instructions,
-          messages: [{ role: 'user', parts: [{ type: 'text', content: promptText(prompt) }] }],
+          messages: promptToSpanMessages(prompt),
         });
 
         const toolTelemetry = attachToolSpanHooks(agent, parentContext, captureContent);
@@ -655,7 +665,7 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
       );
       setInputContentAttributes(span, captureContent, {
         systemInstructions: instructions,
-        messages: [{ role: 'user', parts: [{ type: 'text', content: promptText(prompt) }] }],
+        messages: promptToSpanMessages(prompt),
       });
 
       const toolTelemetry = attachToolSpanHooks(agent, parentContext, captureContent);

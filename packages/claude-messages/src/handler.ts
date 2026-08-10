@@ -254,6 +254,33 @@ const toAnthropicContent = (content: MessageContent): MessageParam['content'] =>
   });
 };
 
+/** Normalizes Anthropic message content to a block list for merging. */
+const toBlockList = (content: MessageParam['content']): Anthropic.ContentBlockParam[] => {
+  if (typeof content !== 'string') return content;
+  return content ? [{ type: 'text', text: content }] : [];
+};
+
+/**
+ * Merges consecutive same-role turns into a single multi-block message.
+ *
+ * Anthropic's Messages API requires strictly alternating user/assistant roles.
+ * Composed history can place an image-only user turn immediately before the
+ * appended `userInput` question, which would otherwise send two consecutive user
+ * turns and be rejected. Merging keeps both as one user message.
+ */
+const mergeAdjacentSameRole = (messages: MessageParam[]): MessageParam[] => {
+  const merged: MessageParam[] = [];
+  for (const message of messages) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.role === message.role) {
+      prev.content = [...toBlockList(prev.content), ...toBlockList(message.content)];
+    } else {
+      merged.push({ role: message.role, content: message.content });
+    }
+  }
+  return merged;
+};
+
 const buildMessages = (
   config: AiConfigRep,
   userInput: string,
@@ -283,7 +310,9 @@ const buildMessages = (
 
   if (history && history.length > 0) {
     const turns = composeHistory({ history, userInput, configMessages });
-    messages.push(...turns.map((turn) => ({ role: turn.role, content: toAnthropicContent(turn.content) })));
+    messages.push(
+      ...mergeAdjacentSameRole(turns.map((turn) => ({ role: turn.role, content: toAnthropicContent(turn.content) }))),
+    );
   } else {
     messages.push(...configMessages);
     const lastMsg = messages[messages.length - 1];

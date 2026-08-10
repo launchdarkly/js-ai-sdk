@@ -826,6 +826,40 @@ export const buildQueryPrompt = (
   return toStreamedPrompt(turns);
 };
 
+/** Canonical content → span parts; images are noted rather than inlined. */
+function turnToSpanParts(content: MessageContent): SpanMessagePart[] {
+  if (typeof content === 'string') return content ? [{ type: 'text', content }] : [];
+  return content.map(
+    (block): SpanMessagePart =>
+      block.type === 'text' ? { type: 'text', content: block.text } : { type: 'text', content: '[image]' },
+  );
+}
+
+/**
+ * Span messages reflecting what `query()` actually receives. With history the
+ * composed turns ([config messages] → [history] → [userInput?]) are recorded
+ * turn-for-turn — images noted as `[image]` rather than inlining a data URL — so
+ * captured input matches the multimodal request. Without history the single
+ * flattened prompt string is one user turn, exactly as before.
+ */
+function buildOpeningMessages(
+  config: AiConfigRep,
+  userInput: string,
+  variables: Record<string, unknown>,
+  history: Message[] | undefined,
+  fallbackPrompt: string,
+): SpanMessage[] {
+  if (!history || history.length === 0) {
+    return [{ role: 'user', parts: [{ type: 'text', content: fallbackPrompt }] }];
+  }
+  const turns = composeHistory({
+    history,
+    userInput,
+    configMessages: config.instructions ? [] : configConversationTurns(config, variables),
+  });
+  return turns.map((turn) => ({ role: turn.role, parts: turnToSpanParts(turn.content) }));
+}
+
 function buildQueryOptions(
   config: AiConfigRep,
   prompt: string | AsyncIterable<SDKUserMessage>,
@@ -882,13 +916,12 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
         // (multimodal-native) rather than a flattened string; `systemPrompt` is unchanged. Without
         // history the plain-string path is byte-for-byte what it always was.
         const queryPrompt = buildQueryPrompt(config, userInput, variables, history, prompt);
-        // One user message, not one per configured role: the no-history `query()` takes a single
-        // prompt string, so `buildPrompt` really does flatten a configured history into one turn
-        // before the model sees it. Reporting the roles separately here would describe a request
-        // that was never sent.
+        // Reflect what `query()` actually receives: the no-history path is a single flattened
+        // prompt string (one user turn), while the history path streams the composed turns, so
+        // record those turn-for-turn rather than describing a request that was never sent.
         const opening = {
           systemInstructions: systemPrompt,
-          messages: [{ role: 'user', parts: [{ type: 'text' as const, content: prompt }] }],
+          messages: buildOpeningMessages(config, userInput, variables, history, prompt),
         };
         // Hoisted above the `try` because the catalog needs its alias map to name a native tool the
         // way the model saw it. Pure bookkeeping over two objects already in hand — nothing here can
