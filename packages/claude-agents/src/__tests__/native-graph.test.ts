@@ -221,6 +221,34 @@ describe('toClaudeAgents', () => {
     expect(result.response).toBe('root answer');
   });
 
+  it('forwards history to the root query prompt as native Anthropic image blocks', async () => {
+    const def = makeGraphDef();
+    const history = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+        ],
+      },
+    ];
+    await toClaudeAgents(Promise.resolve(def)).invoke('describe', {}, history);
+    const { prompt } = mockQuery.mock.calls[0][0];
+    expect(typeof prompt === 'string').toBe(false);
+    const chunks: unknown[] = [];
+    for await (const chunk of prompt as AsyncIterable<unknown>) {
+      chunks.push(chunk);
+    }
+    const serialized = JSON.stringify(chunks);
+    expect(serialized).toContain('"type":"image"');
+    expect(serialized).toContain('abc123');
+  });
+
+  it('runs the root with a plain string prompt when history is omitted', async () => {
+    const def = makeGraphDef();
+    await toClaudeAgents(Promise.resolve(def)).invoke('hello');
+    expect(mockQuery.mock.calls[0][0].prompt).toBe('hello');
+  });
+
   it('emits tool-call tracking when PreToolUse invokes a NativeTool stub', async () => {
     const def = makeGraphDef();
     const webSearch = new NativeTool(Symbol('ws'), 'WebSearch');

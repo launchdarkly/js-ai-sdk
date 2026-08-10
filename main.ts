@@ -4,6 +4,7 @@ import * as agent from './examples/agent';
 import * as claudeAgents from './examples/claude-agents';
 import * as claudeMessages from './examples/claude-messages';
 import * as graph from './examples/graph';
+import * as graphHistory from './examples/graph-history';
 import * as history from './examples/history';
 import * as judge from './examples/judge';
 import * as langchain from './examples/langchain';
@@ -21,6 +22,7 @@ type Example =
   | 'claude-agents'
   | 'claude-messages'
   | 'graph'
+  | 'graph-history'
   | 'history'
   | 'judge'
   | 'langchain'
@@ -38,6 +40,7 @@ const EXAMPLES: Record<Example, { run: (key: string, userInput: string) => Promi
   'claude-agents': claudeAgents,
   'claude-messages': claudeMessages,
   graph: graph,
+  'graph-history': graphHistory,
   history: history,
   judge: judge,
   langchain: langchain,

@@ -2,12 +2,16 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   type AiConfigRep,
   addCachedTokensToInput,
+  type ConfigTurn,
   type ContentCaptureOptions,
+  composeHistory,
   config,
   createHandler,
   endSpanOnce,
+  isContentBlocks,
   type LDContext,
   type Message,
+  type MessageContent,
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
@@ -223,6 +227,33 @@ const buildTools = (
 
 type MessageParam = Anthropic.MessageParam;
 
+/**
+ * Maps LaunchDarkly-canonical message content to Anthropic's native block shape.
+ *
+ * Anthropic accepts image URLs directly, but inline images retain separate
+ * `media_type` and `data` fields rather than being converted to data URLs.
+ */
+const toAnthropicContent = (content: MessageContent): MessageParam['content'] => {
+  if (!isContentBlocks(content)) return content;
+
+  return content.map((block): Anthropic.ContentBlockParam => {
+    if (block.type === 'text') {
+      return { type: 'text', text: block.text };
+    }
+    if (block.source.type === 'url') {
+      return { type: 'image', source: { type: 'url', url: block.source.url } };
+    }
+    return {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: block.source.media_type as Anthropic.Base64ImageSource['media_type'],
+        data: block.source.data,
+      },
+    };
+  });
+};
+
 const buildMessages = (
   config: AiConfigRep,
   userInput: string,
@@ -232,6 +263,7 @@ const buildMessages = (
 ): { messages: MessageParam[]; system?: string } => {
   let system: string | undefined;
   const messages: MessageParam[] = [];
+  const configMessages: ConfigTurn[] = [];
 
   if (config.messages && config.messages.length > 0) {
     const systemMessages = config.messages.filter((m) => m.role === 'system');
@@ -243,24 +275,21 @@ const buildMessages = (
 
     for (const msg of conversationMessages) {
       const role = msg.role as 'user' | 'assistant';
-      messages.push({ role, content: parseTemplate(msg.content, variables) });
+      configMessages.push({ role, content: parseTemplate(msg.content, variables) });
     }
   } else if (config.instructions) {
     system = parseTemplate(config.instructions, variables);
   }
 
-  if (history) {
-    for (const msg of history) {
-      const role = msg.role as 'user' | 'assistant';
-      if (role === 'user' || role === 'assistant') {
-        messages.push({ role, content: msg.content });
-      }
+  if (history && history.length > 0) {
+    const turns = composeHistory({ history, userInput, configMessages });
+    messages.push(...turns.map((turn) => ({ role: turn.role, content: toAnthropicContent(turn.content) })));
+  } else {
+    messages.push(...configMessages);
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg?.role !== 'user') {
+      messages.push({ role: 'user', content: userInput });
     }
-  }
-
-  const lastMsg = messages[messages.length - 1];
-  if (lastMsg?.role !== 'user') {
-    messages.push({ role: 'user', content: userInput });
   }
 
   if (includeOutputFormat && config.outputFormat) {

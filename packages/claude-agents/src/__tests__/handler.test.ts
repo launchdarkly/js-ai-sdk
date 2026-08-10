@@ -546,45 +546,79 @@ describe('createClaudeAgentsHandler', () => {
     expect(mockSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
   });
 
-  // ── History ──────────────────────────────────────────────────────────────────
+  // ── History (§1.11 — structured query prompt, not system-prompt text) ────────
 
   const sampleHistory = [
     { role: 'user' as const, content: 'What is feature flagging?' },
     { role: 'assistant' as const, content: 'Feature flagging is a technique...' },
   ];
 
-  it('history is appended to system prompt (via buildPrompt)', () => {
+  const imageHistory = [
+    {
+      role: 'user' as const,
+      content: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+      ],
+    },
+  ];
+
+  it('history is not stuffed into systemPrompt via buildPrompt', () => {
     const { systemPrompt } = buildPrompt(baseConfig as any, 'q', {}, sampleHistory);
     expect(systemPrompt).toContain('You are helpful.');
-    expect(systemPrompt).toContain('Conversation History:');
+    expect(systemPrompt).not.toContain('Conversation History:');
   });
 
-  it('history format is correct', () => {
-    const { systemPrompt } = buildPrompt(baseConfig as any, 'q', {}, sampleHistory);
-    expect(systemPrompt).toContain('user: What is feature flagging?');
-    expect(systemPrompt).toContain('assistant: Feature flagging is a technique...');
-  });
-
-  it('empty history is treated like no history', () => {
+  it('empty history is treated like no history in buildPrompt', () => {
     const { systemPrompt } = buildPrompt(baseConfig as any, 'q', {}, []);
     expect(systemPrompt).not.toContain('Conversation History:');
     expect(systemPrompt).toBe('You are helpful.');
   });
 
-  it('history without prior system prompt', () => {
-    const config = { model: { name: 'claude-opus-4-5' }, provider: { name: 'Anthropic' } };
-    const { systemPrompt } = buildPrompt(config as any, 'q', {}, sampleHistory);
-    expect(systemPrompt).toContain('Conversation History:');
-    expect(systemPrompt).toContain('user: What is feature flagging?');
-    expect(systemPrompt).toContain('assistant: Feature flagging is a technique...');
+  it('history uses async iterable prompt and keeps instructions as systemPrompt', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await createClaudeAgentsHandler()(baseConfig as any, 'follow up', {}, {}, sampleHistory);
+    const { prompt, options } = mockQuery.mock.calls[0][0];
+    expect(options.systemPrompt).toContain('You are helpful.');
+    expect(options.systemPrompt).not.toContain('Conversation History:');
+    expect(
+      typeof prompt === 'string' ? false : prompt != null && typeof prompt[Symbol.asyncIterator] === 'function',
+    ).toBe(true);
   });
 
-  it('history is passed through to query when calling the handler', async () => {
+  it('multimodal image history maps to Anthropic image content blocks on query prompt', async () => {
     mockQuery.mockImplementation(makeResultMessage());
-    await createClaudeAgentsHandler()(baseConfig as any, 'q', {}, {}, sampleHistory);
-    const { options } = mockQuery.mock.calls[0][0];
-    expect(options.systemPrompt).toContain('Conversation History:');
-    expect(options.systemPrompt).toContain('user: What is feature flagging?');
+    await createClaudeAgentsHandler()(baseConfig as any, 'describe', {}, {}, imageHistory);
+    const { prompt, options } = mockQuery.mock.calls[0][0];
+    expect(options.systemPrompt).not.toContain('Conversation History:');
+    expect(typeof prompt === 'string').toBe(false);
+    const chunks: unknown[] = [];
+    for await (const chunk of prompt as AsyncIterable<unknown>) {
+      chunks.push(chunk);
+    }
+    const serialized = JSON.stringify(chunks);
+    expect(serialized).toContain('"type":"image"');
+    expect(serialized).toContain('abc123');
+  });
+
+  it('empty userInput with history ending in user does not append empty turn', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const fullTurn = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'xyz' } },
+          { type: 'text' as const, text: 'Analyze this diagram' },
+        ],
+      },
+    ];
+    await createClaudeAgentsHandler()(baseConfig as any, '', {}, {}, fullTurn);
+    const { prompt } = mockQuery.mock.calls[0][0];
+    const chunks: Array<{ message?: { role?: string; content?: unknown } }> = [];
+    for await (const chunk of prompt as AsyncIterable<(typeof chunks)[number]>) {
+      chunks.push(chunk);
+    }
+    const userTurns = chunks.filter((c) => c.message?.role === 'user' || (c as { type?: string }).type === 'user');
+    expect(userTurns.length).toBe(1);
   });
 });
 

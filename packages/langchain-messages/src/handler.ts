@@ -2,16 +2,21 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { AIMessage, type BaseMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import {
   type AiConfigRep,
+  type CanonicalTurn,
   type ContentCaptureOptions,
+  composeHistory,
   config,
   createHandler,
   createRunUsage,
   endSpanOnce,
+  imageBlockToUrl,
+  isContentBlocks,
   type LDContext,
   langChainFinishReasons,
   langChainSpanMessages,
   langChainSpanUsage,
   type Message,
+  type MessageContent,
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
@@ -194,6 +199,7 @@ const buildMessages = (
   history?: Message[],
 ): BaseMessage[] => {
   const messages: BaseMessage[] = [];
+  const configMessages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
   if (config.messages && config.messages.length > 0) {
     const systemMessages = config.messages.filter((m) => m.role === 'system');
@@ -205,26 +211,40 @@ const buildMessages = (
 
     for (const msg of conversationMessages) {
       const content = parseTemplate(msg.content, variables);
-      if (msg.role === 'user') {
-        messages.push(new HumanMessage(content));
-      } else if (msg.role === 'assistant') {
-        messages.push(new AIMessage(content));
-      }
+      if (msg.role === 'user' || msg.role === 'assistant') configMessages.push({ role: msg.role, content });
     }
   } else if (config.instructions) {
     messages.push(new SystemMessage(parseTemplate(config.instructions, variables)));
   }
 
-  if (history) {
-    for (const msg of history) {
-      if (msg.role === 'user') {
-        messages.push(new HumanMessage(msg.content));
-      } else if (msg.role === 'assistant') {
-        messages.push(new AIMessage(msg.content));
-      }
+  const toLangChainContent = (content: MessageContent) => {
+    if (!isContentBlocks(content)) return content;
+    return content.map((block) =>
+      block.type === 'text'
+        ? { type: 'text' as const, text: block.text }
+        : { type: 'image_url' as const, image_url: { url: imageBlockToUrl(block) } },
+    );
+  };
+
+  const appendTurn = (turn: CanonicalTurn) => {
+    const content = toLangChainContent(turn.content);
+    if (turn.role === 'user') {
+      messages.push(new HumanMessage({ content }));
+    } else {
+      messages.push(new AIMessage({ content }));
     }
+  };
+
+  if (history && history.length > 0) {
+    for (const turn of composeHistory({ history, userInput, configMessages })) appendTurn(turn);
+    return messages;
   }
 
+  for (const turn of configMessages) appendTurn(turn);
+
+  // Preserve the package's existing no-history behavior. In particular, an empty
+  // input still creates a HumanMessage when the config has no conversation turn,
+  // while an empty history array remains identical to omitting history.
   const lastNonSystem = [...messages].reverse().find((m) => m._getType() !== 'system');
   if (lastNonSystem?._getType() !== 'human') {
     messages.push(new HumanMessage(userInput));

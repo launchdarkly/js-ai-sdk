@@ -1,13 +1,18 @@
-import { createSdkMcpServer, type HookInput, query, tool } from '@anthropic-ai/claude-agent-sdk';
+import { createSdkMcpServer, type HookInput, query, type SDKUserMessage, tool } from '@anthropic-ai/claude-agent-sdk';
 import {
   type AiConfigRep,
   addCachedTokensToInput,
+  type CanonicalTurn,
+  type ConfigTurn,
   type ContentCaptureOptions,
+  composeHistory,
   config,
+  contentToText,
   createHandler,
   endSpanOnce,
   type LDContext,
   type Message,
+  type MessageContent,
   NATIVE_TOOL_KEY,
   type NativeTool,
   type ProviderHandler,
@@ -722,15 +727,21 @@ export const partitionTools = (
   };
 };
 
-function formatHistory(history: Message[]): string {
-  return history.map((m) => `${m.role}: ${m.content}`).join('\n');
-}
-
+/**
+ * Builds the system prompt and the string prompt for the no-history path.
+ *
+ * `config.instructions` (or the `system`-role config messages) become the
+ * system prompt only — runtime `history` is NEVER flattened into it. The `_history`
+ * parameter is accepted for call-site symmetry but deliberately unused: when history
+ * is present the caller takes the structured async-iterable prompt path via
+ * {@link buildQueryPrompt} instead, and empty history stays byte-for-byte identical
+ * to passing none.
+ */
 export const buildPrompt = (
   config: AiConfigRep,
   userInput: string,
   variables: Record<string, unknown>,
-  history?: Message[],
+  _history?: Message[],
 ): { prompt: string; systemPrompt?: string } => {
   let systemPrompt: string | undefined;
   let prompt: string = userInput;
@@ -748,17 +759,76 @@ export const buildPrompt = (
     prompt = conversationHistory ? `${conversationHistory}\n\n${userInput}` : userInput;
   }
 
-  if (history && history.length > 0) {
-    const historyBlock = `Conversation History:\n\n${formatHistory(history)}`;
-    systemPrompt = systemPrompt ? `${systemPrompt}\n\n${historyBlock}` : historyBlock;
-  }
-
   return { prompt, systemPrompt };
+};
+
+/**
+ * One content block in Anthropic's native shape: a text block, or an image block
+ * whose `source` is either an inline base64 payload or a URL. LaunchDarkly's
+ * canonical image block already carries exactly this `source`, so it maps across
+ * unchanged (unlike OpenAI/LangChain, which flatten to a single `image_url`).
+ */
+type AnthropicImageSource = { type: 'base64'; media_type: string; data: string } | { type: 'url'; url: string };
+type AnthropicContentBlock = { type: 'text'; text: string } | { type: 'image'; source: AnthropicImageSource };
+
+/** Maps one canonical user turn's content into Anthropic message content. */
+function toAnthropicUserContent(content: MessageContent): string | AnthropicContentBlock[] {
+  if (typeof content === 'string') return content;
+  return content.map((block) =>
+    block.type === 'text'
+      ? { type: 'text' as const, text: block.text }
+      : { type: 'image' as const, source: block.source },
+  );
+}
+
+/**
+ * Streams the composed conversation turns as the async-iterable `prompt` that
+ * `query()` accepts in streaming-input mode. User turns carry Anthropic content
+ * blocks so images survive; assistant turns are flattened to text.
+ */
+async function* toStreamedPrompt(turns: CanonicalTurn[]): AsyncGenerator<SDKUserMessage> {
+  for (const turn of turns) {
+    const content = turn.role === 'assistant' ? contentToText(turn.content) : toAnthropicUserContent(turn.content);
+    // `type: 'user'` is the only SDKUserMessage literal; `message.role` still
+    // distinguishes an assistant turn. The block union is widened via cast because
+    // our `media_type` is a plain string rather than Anthropic's media-type enum.
+    yield { type: 'user', message: { role: turn.role, content }, parent_tool_use_id: null } as SDKUserMessage;
+  }
+}
+
+/** Non-system config conversation messages, template-applied, in canonical form. */
+function configConversationTurns(config: AiConfigRep, variables: Record<string, unknown>): ConfigTurn[] {
+  return (config.messages ?? [])
+    .filter((m) => m.role !== 'system')
+    .map((m) => ({ role: m.role as 'user' | 'assistant', content: parseTemplate(m.content, variables) }));
+}
+
+/**
+ * The prompt `query()` receives. Empty/missing `history` takes the plain-string
+ * path (`fallbackPrompt`) unchanged; otherwise the composed turns
+ * ([config messages] → [history] → [userInput?]) are streamed as an async
+ * iterable so multimodal history reaches the model natively rather than as text
+ * on the system prompt.
+ */
+export const buildQueryPrompt = (
+  config: AiConfigRep,
+  userInput: string,
+  variables: Record<string, unknown>,
+  history: Message[] | undefined,
+  fallbackPrompt: string,
+): string | AsyncIterable<SDKUserMessage> => {
+  if (!history || history.length === 0) return fallbackPrompt;
+  const turns = composeHistory({
+    history,
+    userInput,
+    configMessages: config.instructions ? [] : configConversationTurns(config, variables),
+  });
+  return toStreamedPrompt(turns);
 };
 
 function buildQueryOptions(
   config: AiConfigRep,
-  prompt: string,
+  prompt: string | AsyncIterable<SDKUserMessage>,
   systemPrompt: string | undefined,
   nativeToolNames: string[],
   mcpAllowedTools: string[],
@@ -802,14 +872,20 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
         // TracerProvider without one would otherwise get a flat trace.
         const parentContext = trace.setSpan(context.active(), span);
 
-        let { prompt, systemPrompt } = buildPrompt(config, userInput, variables, history);
+        const { prompt, systemPrompt: basePrompt } = buildPrompt(config, userInput, variables, history);
+        let systemPrompt = basePrompt;
         if (config.outputFormat) {
           const schemaInstruction = `Respond with valid JSON matching this schema:\n${JSON.stringify(config.outputFormat)}`;
           systemPrompt = systemPrompt ? `${systemPrompt}\n\n${schemaInstruction}` : schemaInstruction;
         }
-        // One user message, not one per configured role: `query()` takes a single prompt string, so
-        // `buildPrompt` really does flatten a configured history into one turn before the model sees
-        // it. Reporting the roles separately here would describe a request that was never sent.
+        // With runtime history, `query()` receives an async-iterable prompt of the composed turns
+        // (multimodal-native) rather than a flattened string; `systemPrompt` is unchanged. Without
+        // history the plain-string path is byte-for-byte what it always was.
+        const queryPrompt = buildQueryPrompt(config, userInput, variables, history, prompt);
+        // One user message, not one per configured role: the no-history `query()` takes a single
+        // prompt string, so `buildPrompt` really does flatten a configured history into one turn
+        // before the model sees it. Reporting the roles separately here would describe a request
+        // that was never sent.
         const opening = {
           systemInstructions: systemPrompt,
           messages: [{ role: 'user', parts: [{ type: 'text' as const, content: prompt }] }],
@@ -844,7 +920,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
           for await (const message of query(
             buildQueryOptions(
               config,
-              prompt,
+              queryPrompt,
               systemPrompt,
               nativeToolNames,
               mcpAllowedTools,
@@ -931,6 +1007,9 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
       const endedSpans = new Set<Span>();
 
       const { prompt, systemPrompt } = buildPrompt(config, userInput, variables, history);
+      // With runtime history, the streamed `query()` prompt is the composed turns (multimodal-native)
+      // rather than the flattened string; without history it stays the plain-string path.
+      const queryPrompt = buildQueryPrompt(config, userInput, variables, history, prompt);
       // One user message — see the blocking path for why the configured roles are not split out.
       const opening = {
         systemInstructions: systemPrompt,
@@ -964,7 +1043,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
         for await (const message of query(
           buildQueryOptions(
             config,
-            prompt,
+            queryPrompt,
             systemPrompt,
             nativeToolNames,
             mcpAllowedTools,

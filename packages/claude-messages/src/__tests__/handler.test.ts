@@ -1056,6 +1056,26 @@ describe('createClaudeMessagesHandler', () => {
     expect(allContent).toContain('Hi there');
   });
 
+  it('multimodal image history content blocks are preserved on the wire', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const handler = createClaudeMessagesHandler();
+    const imageHistory = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+          { type: 'text' as const, text: 'What is in this image?' },
+        ],
+      },
+    ];
+    await handler(baseConfig as any, '', {}, {}, imageHistory);
+    const call = mockMessagesCreate.mock.calls[0][0];
+    const serialized = JSON.stringify(call.messages);
+    expect(serialized).toContain('"type":"image"');
+    expect(serialized).toContain('abc123');
+    expect(call.messages.filter((m: { role: string }) => m.role === 'user')).toHaveLength(1);
+  });
+
   // ── §1.9 streaming ignores outputFormat ─────────────────────────────────────
 
   it('streaming handler does not inject outputFormat schema into system prompt', async () => {

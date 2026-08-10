@@ -1,8 +1,13 @@
 import type { LDContext } from '@launchdarkly/ai-server';
 import {
+  composeHistory,
+  contentToText,
   type GraphDefinition,
   type GraphNode,
   getClient,
+  imageBlockToUrl,
+  type Message,
+  type MessageContent,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
@@ -51,6 +56,31 @@ const buildNodeTools = (node: GraphNode, toolHandlers: Record<string, ToolHandle
   );
 };
 
+// The Agents SDK names the image source `image` (URL / data URL), unlike the raw
+// Responses API's `image_url`; using `image_url` here makes the SDK drop it.
+// Assistant turns need an `output_text` part array, not a bare string.
+type OpenAIUserContentPart = { type: 'input_text'; text: string } | { type: 'input_image'; image: string };
+type OpenAIInputItem =
+  | { role: 'user'; content: OpenAIUserContentPart[] }
+  | { role: 'assistant'; content: Array<{ type: 'output_text'; text: string }> };
+
+/** Maps composed history + userInput into the Agents-SDK input item list. */
+const toRunnerInput = (history: Message[], userInput: string): OpenAIInputItem[] =>
+  composeHistory({ history, userInput }).map((turn) =>
+    turn.role === 'assistant'
+      ? { role: 'assistant', content: [{ type: 'output_text', text: contentToText(turn.content) }] }
+      : { role: 'user', content: toUserContentParts(turn.content) },
+  );
+
+const toUserContentParts = (content: MessageContent): OpenAIUserContentPart[] => {
+  if (typeof content === 'string') return [{ type: 'input_text', text: content }];
+  return content.map((block) =>
+    block.type === 'text'
+      ? { type: 'input_text' as const, text: block.text }
+      : { type: 'input_image' as const, image: imageBlockToUrl(block) },
+  );
+};
+
 const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: string): TrackData => ({
   runId,
   configKey: node.key,
@@ -85,8 +115,14 @@ export const toOpenAIAgents = (
     /** LaunchDarkly context used for tracking events. Required for LD telemetry. */
     context?: LDContext;
   },
-): { invoke: (input?: string, variables?: Record<string, unknown>) => Promise<ProviderGraphResponse> } => {
-  const invoke = async (input = '', variables: Record<string, unknown> = {}): Promise<ProviderGraphResponse> => {
+): {
+  invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
+} => {
+  const invoke = async (
+    input = '',
+    variables: Record<string, unknown> = {},
+    history?: Message[],
+  ): Promise<ProviderGraphResponse> => {
     const def = await defPromise;
     if (!def.enabled) {
       throw new Error(`Agent graph "${def.key}" is disabled`);
@@ -183,10 +219,16 @@ export const toOpenAIAgents = (
         }
       });
 
+      // History is a root-only concern: it seeds the entry agent's input via the
+      // framework-native item list. Downstream agents are reached through
+      // handoffs and receive their context from the Runner, not from `history`.
+      const rootInput = history && history.length > 0 ? toRunnerInput(history, input) : input;
+
       // biome-ignore lint/suspicious/noImplicitAnyLet: assigned immediately in try; catch always re-throws
       let result;
       try {
-        result = await runner.run(rootAgent, input);
+        // biome-ignore lint/suspicious/noExplicitAny: Runner.run accepts string | AgentInputItem[]; our item shape is structurally compatible
+        result = await runner.run(rootAgent, rootInput as any);
         span.setStatus({ code: SpanStatusCode.OK });
       } catch (err) {
         span.recordException(err instanceof Error ? err : new Error(String(err)));
