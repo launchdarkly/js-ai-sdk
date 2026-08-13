@@ -3,6 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import type { ToolDefinitionInput } from '../content.js';
 import {
   langChainFinishReasons,
+  langChainSpanMessages,
   setInputContentAttributes,
   setOutputContentAttributes,
   setToolCallContentAttributes,
@@ -335,5 +336,35 @@ describe('toSemconvFinishReason', () => {
     expect(toSemconvFinishReason(undefined)).toBeUndefined();
     expect(toSemconvFinishReason(null)).toBeUndefined();
     expect(toSemconvFinishReason('')).toBeUndefined();
+  });
+});
+
+describe('langChainSpanMessages content', () => {
+  const humanWith = (content: unknown) => ({ _getType: () => 'human', content });
+
+  it('keeps a bare string that a list holds alongside typed blocks', () => {
+    // LangChain types content as `string | Array<string | MessageContentComplex>`, so a bare string
+    // in the list is what the library documents. Keeping only `type: 'text'` blocks dropped it, and
+    // the span then showed less of the conversation than the model was given.
+    const { messages } = langChainSpanMessages([humanWith(['a bare string', { type: 'text', text: 'a typed block' }])]);
+
+    expect(messages).toEqual([{ role: 'user', parts: [{ type: 'text', content: 'a bare stringa typed block' }] }]);
+  });
+
+  it('still ignores a block that is not text', () => {
+    const { messages } = langChainSpanMessages([
+      humanWith([
+        { type: 'image_url', image_url: 'https://example.test/x.png' },
+        { type: 'text', text: 'caption' },
+      ]),
+    ]);
+
+    expect(messages).toEqual([{ role: 'user', parts: [{ type: 'text', content: 'caption' }] }]);
+  });
+
+  it('still reads a plain string content unchanged', () => {
+    const { messages } = langChainSpanMessages([humanWith('just a string')]);
+
+    expect(messages).toEqual([{ role: 'user', parts: [{ type: 'text', content: 'just a string' }] }]);
   });
 });

@@ -296,13 +296,24 @@ export function langChainSpanMessages(messages: ReadonlyArray<unknown>): {
   return { systemInstructions: system.length > 0 ? system.join('\n') : undefined, messages: converted };
 }
 
-/** LangChain message content is a string or a list of typed blocks. */
+/**
+ * LangChain message content is a string, or a list holding typed blocks and bare strings.
+ *
+ * `MessageContent` is `string | Array<string | MessageContentComplex>`, so a bare string in the list
+ * is what the library documents, not a malformed input. Keeping only the blocks whose `type` is
+ * `text` dropped those strings, and the span then showed less of the conversation than the model was
+ * given.
+ */
 function langChainContentText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
-  return (content as Array<Record<string, unknown>>)
-    .filter((block) => block.type === 'text')
-    .map((block) => String(block.text ?? ''))
+  return (content as unknown[])
+    .map((block) => {
+      if (typeof block === 'string') return block;
+      const typed = block as Record<string, unknown> | null;
+      return typed?.type === 'text' ? String(typed.text ?? '') : '';
+    })
+    .filter((text) => text.length > 0)
     .join('');
 }
 
