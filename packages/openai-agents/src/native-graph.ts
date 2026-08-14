@@ -98,8 +98,8 @@ export const toOpenAIAgents = (
     const toolHandlers = opts?.toolHandlers ?? {};
     const ldContext = opts?.context;
 
-    return trace.getTracer('@launchdarkly/ai-openai-agents').startActiveSpan('ld.ai.graph', async (span) => {
-      span.setAttribute('ld.ai.graph.key', def.key);
+    return trace.getTracer('@launchdarkly/ai-openai-agents').startActiveSpan('launchdarkly.graph', async (span) => {
+      span.setAttribute('launchdarkly.graph.key', def.key);
       const startTime = Date.now();
       const runId = crypto.randomUUID();
 
@@ -208,7 +208,7 @@ export const toOpenAIAgents = (
       const totalUsage = { input: inputTokens, output: outputTokens, total: totalTokens };
       const duration = Date.now() - startTime;
 
-      span.setAttribute('ld.ai.graph.path', path.join('->'));
+      span.setAttribute('launchdarkly.graph.path', path.join('->'));
       span.setAttribute('gen_ai.usage.input_tokens', inputTokens);
       span.setAttribute('gen_ai.usage.output_tokens', outputTokens);
       span.setAttribute('gen_ai.usage.total_tokens', totalTokens);
