@@ -268,4 +268,75 @@ describe('runJudges', () => {
     // toolHandlers must NOT be forwarded to the judge — judges are evaluators only.
     expect(callArgs.toolHandlers).toBeUndefined();
   });
+
+  // ─── A judge's own config failing must not fail the run ────────────────────
+  //
+  // By the time judges run, the provider call is finished and billed. A judge
+  // whose AI Config cannot be resolved — most often because it was toggled off
+  // in LaunchDarkly — must be skipped, not allowed to discard that response.
+
+  it('skips a judge whose AI Config is disabled instead of throwing', async () => {
+    mockExtractVariation.mockRejectedValue(new Error('Variation judge-flag is not enabled'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const config = {
+      model: { name: 'gpt-4o' },
+      provider: { name: 'OpenAI' },
+      instructions: 'Be helpful.',
+      judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
+    };
+
+    const results = await runJudges({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    expect(results).toEqual({});
+    expect(mockExecuteAndTrack).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith("Judge 'judge-flag' skipped:", 'Variation judge-flag is not enabled');
+
+    consoleError.mockRestore();
+  });
+
+  it('still runs the judges it can resolve when another one is disabled', async () => {
+    mockExtractVariation.mockImplementation((key: string) => {
+      if (key === 'disabled-judge') {
+        return Promise.reject(new Error('Variation disabled-judge is not enabled'));
+      }
+      return Promise.resolve({ config: mockJudgeConfig, meta: mockJudgeMeta });
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const config = {
+      model: { name: 'gpt-4o' },
+      provider: { name: 'OpenAI' },
+      instructions: 'Be helpful.',
+      judgeConfiguration: {
+        judges: [
+          { key: 'disabled-judge', samplingRate: 1 },
+          { key: 'working-judge', samplingRate: 1 },
+        ],
+      },
+    };
+
+    const results = await runJudges({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    // The disabled judge is absent; the healthy one still produced a score.
+    expect(Object.keys(results)).toEqual(['working-judge']);
+    expect(results['working-judge']?.score).toBe(0.9);
+    expect(mockExecuteAndTrack).toHaveBeenCalledTimes(1);
+
+    consoleError.mockRestore();
+  });
 });
