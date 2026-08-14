@@ -166,6 +166,27 @@ function buildInputMessages(
 }
 
 /**
+ * The object a Responses tool call denotes, given the JSON string the API sends.
+ *
+ * `function_call.arguments` arrives as an opaque JSON string, while every other handler puts a
+ * parsed object on a `tool_call` part. Passing the string through left the content carriers encoding
+ * it a second time, so a reader saw `"arguments": "{\\"q\\":1}"` where an Anthropic span said
+ * `"arguments": {"q": 1}`. The same run also parses these arguments to call the tool, so the object
+ * is the shape the provider means.
+ *
+ * A string that is not JSON is returned unchanged rather than dropped: a truncated stream is worth
+ * reporting verbatim, and reporting nothing would lose what the model asked for.
+ */
+function toolArguments(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * Splits the Responses input list into system instructions and conversation turns.
  *
  * The system message is lifted out so it lands on `gen_ai.system_instructions` rather than being
@@ -205,7 +226,7 @@ function splitInputMessages(items: ReadonlyArray<unknown>): {
             type: 'tool_call',
             id: typeof raw.call_id === 'string' ? raw.call_id : undefined,
             name: String(raw.name ?? ''),
-            arguments: raw.arguments,
+            arguments: toolArguments(raw.arguments),
           },
         ],
       });
@@ -228,7 +249,7 @@ function outputItemParts(item: Record<string, unknown>): SpanMessagePart[] {
         type: 'tool_call',
         id: typeof item.call_id === 'string' ? item.call_id : undefined,
         name: String(item.name ?? ''),
-        arguments: item.arguments,
+        arguments: toolArguments(item.arguments),
       },
     ];
   }
@@ -383,7 +404,7 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
             const toolOutputs = await Promise.all(
               toolCalls.map(async (tc) => {
                 const toolSpan = startToolSpan(tc.name, tc.call_id, parentContext);
-                setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.arguments });
+                setToolCallContentAttributes(toolSpan, captureContent, { arguments: toolArguments(tc.arguments) });
                 try {
                   const args = JSON.parse(tc.arguments) as Record<string, unknown>;
                   const handler = toolHandlers[tc.name];
@@ -527,7 +548,7 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
           currentInput = await Promise.all(
             toolCalls.map(async (tc: OpenAI.Responses.ResponseFunctionToolCall) => {
               const toolSpan = startToolSpan(tc.name, tc.call_id, parentContext);
-              setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.arguments });
+              setToolCallContentAttributes(toolSpan, captureContent, { arguments: toolArguments(tc.arguments) });
               try {
                 const args = JSON.parse(tc.arguments) as Record<string, unknown>;
                 const handler = toolHandlers[tc.name];

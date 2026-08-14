@@ -134,6 +134,49 @@ describe('openai-messages span tree against a real tracer', () => {
     expect(traceIds.size).toBe(1);
   });
 
+  it('reports tool arguments as the object they denote, not the JSON string the API sends', async () => {
+    // The Responses API sends `function_call.arguments` as an opaque JSON string, while every other
+    // handler puts a parsed object on a `tool_call` part. Passing the string through left the content
+    // carriers encoding it a second time, so this span described the same call differently from an
+    // Anthropic one. The handler already parses this string to call the tool; only the span disagreed.
+    mockResponsesCreate.mockResolvedValueOnce(toolCallResponse()).mockResolvedValueOnce(finalResponse('Final'));
+
+    await createOpenAIHandler({ captureContent: true })(toolConfig as never, 'q', {
+      myTool: vi.fn().mockReturnValue('r'),
+    });
+
+    const chat = named('chat ').find((c) => String(c.attributes['gen_ai.output.messages'] ?? '').includes('myTool'));
+    expect(JSON.parse(String(chat?.attributes['gen_ai.output.messages']))).toEqual([
+      {
+        role: 'assistant',
+        finish_reason: 'tool_calls',
+        parts: [{ type: 'tool_call', id: 'call_1', name: 'myTool', arguments: { q: 'test' } }],
+      },
+    ]);
+    expect(String(chat?.attributes['gen_ai.completion.0.content'])).toBe(
+      JSON.stringify({ name: 'myTool', arguments: { q: 'test' } }),
+    );
+  });
+
+  it('keeps malformed tool arguments verbatim on the span the failing call opened', async () => {
+    // The handler rejects on a malformed argument string, because it cannot call the tool without it.
+    // The span must still show what arrived: dropping it would hide what the model asked for.
+    mockResponsesCreate.mockResolvedValueOnce({
+      id: 'resp_tool',
+      model: 'gpt-4o',
+      output: [{ type: 'function_call', name: 'myTool', call_id: 'call_1', arguments: '{"q":' }],
+      output_text: '',
+      usage: { input_tokens: 5, output_tokens: 2 },
+    });
+
+    await expect(
+      createOpenAIHandler({ captureContent: true })(toolConfig as never, 'q', { myTool: vi.fn() }),
+    ).rejects.toThrow();
+
+    const [tool] = named('execute_tool ');
+    expect(tool.attributes['gen_ai.tool.call.arguments']).toBe('{"q":');
+  });
+
   it('nests the chat span under the root in the streaming path', async () => {
     mockResponsesStream.mockReturnValue(
       makeStreamMock([{ type: 'response.output_text.delta', delta: 'Hi' }], finalResponse('Hi')),
