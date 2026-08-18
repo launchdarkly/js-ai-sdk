@@ -1,3 +1,4 @@
+import { withJudgeEvaluation } from './conversation.js';
 import { extractVariation, getClient } from './lifecycle.js';
 import { executeAndTrack } from './tracking.js';
 import type {
@@ -107,39 +108,43 @@ export const runJudges = async ({
 
     const messageHistory = [userInput, llmResponse, FORMATTING_INSTRUCTIONS].filter(Boolean).join('\n\n');
 
-    const { usage, response: rawJudgeResponse } = await executeAndTrack({
-      configKey: judge.key,
-      config: effectiveJudgeConfig,
-      meta: judgeMeta,
-      userContext,
-      handler: judgeHandler,
-      userInput: llmResponse,
-      toolHandlers: undefined,
-      graphKey,
-      variables: {
-        message_history: messageHistory,
-        response_to_evaluate: llmResponse,
-      },
-    });
-    const judgeResponse = typeof rawJudgeResponse === 'string' ? rawJudgeResponse : JSON.stringify(rawJudgeResponse);
-
     try {
-      const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
-      if (!parsed) {
-        throw new Error('Invalid JSON');
-      }
-
-      const { score, reasoning } = parsed;
-      judgeResults[judge.key] = { usage, response: reasoning, score };
-
-      if (judgeConfig.evaluationMetricKey && score !== undefined) {
-        getClient().track(
-          judgeConfig.evaluationMetricKey,
+      await withJudgeEvaluation(judge.key, async (recordEvaluation) => {
+        const { usage, response: rawJudgeResponse } = await executeAndTrack({
+          configKey: judge.key,
+          config: effectiveJudgeConfig,
+          meta: judgeMeta,
           userContext,
-          { ...baseTrackData, judgeConfigKey: judge.key },
-          score,
-        );
-      }
+          handler: judgeHandler,
+          userInput: llmResponse,
+          toolHandlers: undefined,
+          graphKey,
+          variables: {
+            message_history: messageHistory,
+            response_to_evaluate: llmResponse,
+          },
+        });
+        const judgeResponse =
+          typeof rawJudgeResponse === 'string' ? rawJudgeResponse : JSON.stringify(rawJudgeResponse);
+
+        const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
+        if (!parsed) {
+          throw new Error('Invalid JSON');
+        }
+
+        const { score, reasoning } = parsed;
+        judgeResults[judge.key] = { usage, response: reasoning, score };
+        if (score !== undefined) recordEvaluation(score, reasoning);
+
+        if (judgeConfig.evaluationMetricKey && score !== undefined) {
+          getClient().track(
+            judgeConfig.evaluationMetricKey,
+            userContext,
+            { ...baseTrackData, judgeConfigKey: judge.key },
+            score,
+          );
+        }
+      });
     } catch (err) {
       // biome-ignore lint/suspicious/noConsole: intentional error logging for judge parse failures
       console.error(`Judge '${judge.key}' failed:`, err);
@@ -272,35 +277,38 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
 
   const messageHistory = [actualOutput, FORMATTING_INSTRUCTIONS].join('\n\n');
 
-  const {
-    usage,
-    response: rawResponse,
-    trackData,
-  } = await executeAndTrack({
-    configKey,
-    config: effectiveConfig,
-    meta: judgeMeta,
-    userContext,
-    handler: judgeHandler,
-    userInput: actualOutput,
-    toolHandlers: undefined,
-    variables: {
-      ...variables,
-      message_history: messageHistory,
-      response_to_evaluate: actualOutput,
-    },
+  return withJudgeEvaluation(configKey, async (recordEvaluation) => {
+    const {
+      usage,
+      response: rawResponse,
+      trackData,
+    } = await executeAndTrack({
+      configKey,
+      config: effectiveConfig,
+      meta: judgeMeta,
+      userContext,
+      handler: judgeHandler,
+      userInput: actualOutput,
+      toolHandlers: undefined,
+      variables: {
+        ...variables,
+        message_history: messageHistory,
+        response_to_evaluate: actualOutput,
+      },
+    });
+
+    const judgeResponse = typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse);
+    const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
+    if (!parsed) return null;
+
+    const { score, reasoning } = parsed;
+    if (score !== undefined) recordEvaluation(score, reasoning);
+
+    return {
+      score,
+      response: reasoning,
+      usage,
+      trackData: { ...parentTrackData, ...trackData, judgeConfigKey: configKey },
+    };
   });
-
-  const judgeResponse = typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse);
-  const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
-  if (!parsed) return null;
-
-  const { score, reasoning } = parsed;
-
-  return {
-    score,
-    response: reasoning,
-    usage,
-    trackData: { ...parentTrackData, ...trackData, judgeConfigKey: configKey },
-  };
 };

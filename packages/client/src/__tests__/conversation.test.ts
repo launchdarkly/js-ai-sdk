@@ -1,0 +1,129 @@
+import { context, trace } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  ConversationIdSpanProcessor,
+  GEN_AI_CONVERSATION_ID,
+  setConversationIdIfAbsent,
+  withConversationId,
+  withJudgeEvaluation,
+} from '../conversation.js';
+
+const exporter = new InMemorySpanExporter();
+const provider = new BasicTracerProvider({
+  spanProcessors: [new ConversationIdSpanProcessor(), new SimpleSpanProcessor(exporter)],
+});
+const tracer = provider.getTracer('conversation-test');
+const contextManager = new AsyncLocalStorageContextManager();
+
+afterAll(async () => {
+  context.disable();
+  await provider.shutdown();
+});
+
+beforeAll(() => {
+  contextManager.enable();
+  context.setGlobalContextManager(contextManager);
+  trace.setGlobalTracerProvider(provider);
+});
+
+beforeEach(() => {
+  exporter.reset();
+});
+
+const finished = () => exporter.getFinishedSpans();
+
+describe('withConversationId', () => {
+  it('stamps gen_ai.conversation.id on every span started in the scope', () => {
+    withConversationId('thread-123', () => {
+      const root = tracer.startSpan('invoke_agent');
+      const child = tracer.startSpan('chat gpt-4o', undefined, trace.setSpan(context.active(), root));
+      child.end();
+      root.end();
+    });
+
+    const spans = finished();
+    expect(spans).toHaveLength(2);
+    for (const span of spans) {
+      expect(span.attributes[GEN_AI_CONVERSATION_ID]).toBe('thread-123');
+    }
+  });
+
+  it('writes nothing when the caller supplies no id', () => {
+    const span = tracer.startSpan('invoke_agent');
+    span.end();
+    expect(finished()[0]?.attributes[GEN_AI_CONVERSATION_ID]).toBeUndefined();
+  });
+
+  it('treats a whitespace id as unbound', () => {
+    withConversationId('   ', () => {
+      const span = tracer.startSpan('invoke_agent');
+      span.end();
+    });
+    expect(finished()[0]?.attributes[GEN_AI_CONVERSATION_ID]).toBeUndefined();
+  });
+
+  it('does not invent an id from the trace id', () => {
+    const span = tracer.startSpan('invoke_agent');
+    span.end();
+    const recorded = finished()[0];
+    expect(recorded?.attributes[GEN_AI_CONVERSATION_ID]).toBeUndefined();
+    expect(recorded?.spanContext().traceId).toBeTruthy();
+  });
+});
+
+describe('setConversationIdIfAbsent', () => {
+  it('leaves a caller-supplied id in place', () => {
+    withConversationId('caller-id', () => {
+      const span = tracer.startSpan('invoke_agent');
+      setConversationIdIfAbsent(span, 'sess-abc');
+      span.end();
+    });
+    expect(finished()[0]?.attributes[GEN_AI_CONVERSATION_ID]).toBe('caller-id');
+  });
+
+  it('writes the session id when the caller supplied none', () => {
+    const span = tracer.startSpan('invoke_agent');
+    setConversationIdIfAbsent(span, 'sess-abc');
+    span.end();
+    expect(finished()[0]?.attributes[GEN_AI_CONVERSATION_ID]).toBe('sess-abc');
+  });
+});
+
+describe('withJudgeEvaluation', () => {
+  it('puts gen_ai.evaluation.result on the invoke_agent span after the handler has ended it', async () => {
+    await withJudgeEvaluation('relevance-judge', async (record) => {
+      await tracer.startActiveSpan('invoke_agent', async (span) => {
+        span.setAttribute('gen_ai.operation.name', 'invoke_agent');
+        span.end();
+      });
+      record(0.91, 'on topic');
+    });
+
+    const [span] = finished().filter((s) => s.name === 'invoke_agent');
+    expect(span).toBeDefined();
+    expect(span.attributes['gen_ai.evaluation.name']).toBe('relevance-judge');
+    expect(span.attributes['gen_ai.evaluation.score.value']).toBe(0.91);
+    expect(span.attributes['gen_ai.evaluation.explanation']).toBe('on topic');
+    const event = span.events.find((e) => e.name === 'gen_ai.evaluation.result');
+    expect(event).toBeDefined();
+    expect(event?.attributes?.['gen_ai.evaluation.name']).toBe('relevance-judge');
+    expect(event?.attributes?.['gen_ai.evaluation.score.value']).toBe(0.91);
+    expect(event?.attributes?.['gen_ai.evaluation.explanation']).toBe('on topic');
+    expect(event?.attributes?.['gen_ai.evaluation.score.label']).toBeUndefined();
+  });
+
+  it('does not invent a score.label', async () => {
+    await withJudgeEvaluation('judge-key', async (record) => {
+      await tracer.startActiveSpan('invoke_agent', async (span) => {
+        span.end();
+      });
+      record(0.5);
+    });
+    const [span] = finished();
+    expect(span.attributes['gen_ai.evaluation.score.label']).toBeUndefined();
+    const event = span.events.find((e) => e.name === 'gen_ai.evaluation.result');
+    expect(event?.attributes?.['gen_ai.evaluation.score.label']).toBeUndefined();
+  });
+});

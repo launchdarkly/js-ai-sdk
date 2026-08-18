@@ -21,6 +21,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 
 | File | Responsibility |
 |---|---|
+| `src/conversation.ts` | `withConversationId`, `ConversationIdSpanProcessor` — stamps `gen_ai.conversation.id` |
 | `src/lifecycle.ts` | `initClient` (options or BYOC overloads), `getClient`, `shutdown`, `waitForTelemetry`, `shutdownTelemetry`, `extractVariation` |
 | `src/client.ts` | `config()` |
 | `src/tracking.ts` | `executeAndTrack`, `executeAndStream`, `wrapToolHandlers` |
@@ -38,6 +39,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
 export type { LDContext, LDClientInterface, LDSingleKindContext, LDMultiKindContext, LDUser } from './types.js';
+export { ConversationIdSpanProcessor, setConversationIdIfAbsent, withConversationId } from './conversation.js';
 export { config } from './client.js';
 export type { AiConfigRep } from './client.js';
 export type {
@@ -102,14 +104,32 @@ Handlers may return any of these — the client normalizes them before emitting 
       - Calls `handler(config, userInput, toolHandlers, variables, history)`
       - On success: emits `$ld:ai:generation:success` + token tracks
       - On error: emits `$ld:ai:generation:error` then re-throws
-3. If `judgeConfiguration.judges` is present, runs each judge handler (sampled by `samplingRate`) against the primary response and tracks `evaluationMetricKey`.
+3. If `judgeConfiguration.judges` is present, runs each judge handler (sampled by `samplingRate`) against the primary response, tracks `evaluationMetricKey`, and emits a `gen_ai.evaluation.result` span event on the judge's `invoke_agent` span (`gen_ai.evaluation.name` / `.score.value` / `.explanation`).
 4. Returns `ProviderResponse`: `{ response: string, usage: { input, output, total }, trackData: TrackData, judgeResults?: Record<string, JudgeCallResult>, judgeTasks?: JudgeTask[] }`. `judgeResults` is populated when `skipJudges` is `false` (default) and judges ran; `judgeTasks` is populated when `skipJudges: true`.
+
+---
+
+## Conversation grouping
+
+LaunchDarkly's conversation view groups spans on `gen_ai.conversation.id`. Bind a caller-supplied id around any `invoke()` / `stream()` / `graph().invoke()` call:
+
+```ts
+import { withConversationId, config } from '@launchdarkly/ai-node';
+
+await withConversationId('thread-123', () =>
+  config({ key, handler }).invoke(userInput, ctx),
+);
+```
+
+`initClient()` registers a span processor that stamps the id write-if-absent on every SDK span (root, chat, execute_tool, graph). No id is invented when the caller supplies none — a UUID, a trace id, or a content hash would violate the semantic conventions.
+
+This is an OTel context value, not W3C baggage, so the id does not leak onto outbound provider HTTP calls. A multi-tenant process must bind a different id per request; do not put it on the tracer resource.
 
 ---
 
 ## OTel Setup
 
-The core client owns all OTel initialization. `initClient()` sets up a `NodeTracerProvider` with a `BatchSpanProcessor` and an OTLP HTTP exporter when the optional OTel peer deps are installed.
+The core client owns all OTel initialization. `initClient()` sets up a `NodeTracerProvider` with `ConversationIdSpanProcessor` and a `BatchSpanProcessor` plus an OTLP HTTP exporter when the optional OTel peer deps are installed.
 
 **Required packages (via `@launchdarkly/ai-otel` or installed manually):**
 

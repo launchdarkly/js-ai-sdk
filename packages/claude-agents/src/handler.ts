@@ -14,6 +14,7 @@ import {
   parseTemplate,
   type SpanMessage,
   type SpanMessagePart,
+  setConversationIdIfAbsent,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -444,7 +445,7 @@ class InferenceSpans {
     setModelIdentityAttributes(span, 'anthropic', inference.model);
     span.setAttribute('gen_ai.response.model', inference.model);
     if (inference.requestId) span.setAttribute('gen_ai.response.id', inference.requestId);
-    if (inference.sessionId) span.setAttribute('gen_ai.conversation.id', inference.sessionId);
+    if (inference.sessionId) setConversationIdIfAbsent(span, inference.sessionId);
     // An array because a single response may hold several choices; Anthropic returns one. Already
     // mapped onto the semconv vocabulary where the inference was captured.
     //
@@ -483,13 +484,15 @@ class InferenceSpans {
  * It is the only key LaunchDarkly's trace view groups a conversation on, and the `init` message
  * is where this side first learns it. The `chat` and `execute_tool` children read the same id
  * off their own message and hook input, so one run does not split into several conversations.
- * Set once — the id does not change within a run.
+ * Write-if-absent: a caller-supplied id from `withConversationId` is already on the span and
+ * must not be overwritten. Apps that open a fresh CLI session per turn and re-feed history
+ * must pass their own conversation id, or each turn becomes its own conversation.
  */
 function recordConversationId(span: Span, message: { type: string }): void {
   if (message.type !== 'system') return;
   const init = message as { subtype?: string; session_id?: string };
   if (init.subtype !== 'init' || !init.session_id) return;
-  span.setAttribute('gen_ai.conversation.id', init.session_id);
+  setConversationIdIfAbsent(span, init.session_id);
 }
 
 /**
@@ -614,7 +617,7 @@ function buildToolHooks(nativeToolMap: Map<string, ToolHandlerFn>, parentContext
                 span.setAttribute('gen_ai.tool.call.id', input.tool_use_id);
                 // Same grouping key as the root and as the CLI's own spans; the hook input is
                 // where this side sees it without waiting for a message.
-                if (input.session_id) span.setAttribute('gen_ai.conversation.id', input.session_id);
+                if (input.session_id) setConversationIdIfAbsent(span, input.session_id);
                 setToolCallContentAttributes(span, captureContent, { arguments: input.tool_input });
                 toolSpans.set(input.tool_use_id, span);
               }

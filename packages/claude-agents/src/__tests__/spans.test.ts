@@ -1,4 +1,4 @@
-import { NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
+import { ConversationIdSpanProcessor, NATIVE_TOOL_KEY, NativeTool, withConversationId } from '@launchdarkly/ai-server';
 import { context, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
@@ -38,7 +38,9 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 import { createClaudeAgentsHandler } from '../handler.js';
 
 const exporter = new InMemorySpanExporter();
-const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
+const provider = new BasicTracerProvider({
+  spanProcessors: [new ConversationIdSpanProcessor(), new SimpleSpanProcessor(exporter)],
+});
 const contextManager = new AsyncLocalStorageContextManager();
 
 const baseConfig = {
@@ -506,6 +508,23 @@ describe('claude-agents span tree against a real tracer', () => {
     await createClaudeAgentsHandler()(baseConfig as never, 'q');
 
     expect(root()?.attributes['gen_ai.conversation.id']).toBeUndefined();
+  });
+
+  it('keeps a caller-supplied conversation id instead of the CLI session id', async () => {
+    mockQuery.mockImplementation(async function* ({ options }: any) {
+      yield initMessage('sess-abc');
+      yield assistantMessage();
+      await fireToolHooks(options.hooks, 'tool-1', 'mcp__tool-mcp__search');
+      yield resultMessage('done');
+    });
+
+    await withConversationId('thread-stable', () =>
+      createClaudeAgentsHandler()(toolConfig as never, 'q', { search: vi.fn().mockReturnValue('r') }),
+    );
+
+    expect(root()?.attributes['gen_ai.conversation.id']).toBe('thread-stable');
+    expect(named('chat')[0]?.attributes['gen_ai.conversation.id']).toBe('thread-stable');
+    expect(named('execute_tool ')[0]?.attributes['gen_ai.conversation.id']).toBe('thread-stable');
   });
 
   // Each turn's content belongs to that turn's own `chat` span, and the root carries the final

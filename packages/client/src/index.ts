@@ -14,6 +14,11 @@ export {
   textMessage,
   toSemconvFinishReason,
 } from './content.js';
+export {
+  ConversationIdSpanProcessor,
+  setConversationIdIfAbsent,
+  withConversationId,
+} from './conversation.js';
 export { graph, resolveGraph } from './graph.js';
 export { buildJudgeTasks, runJudge } from './judges.js';
 export type { InspectConfigResult } from './lifecycle.js';
