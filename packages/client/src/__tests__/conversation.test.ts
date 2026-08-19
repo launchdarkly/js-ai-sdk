@@ -14,7 +14,7 @@ const exporter = new InMemorySpanExporter();
 const provider = new BasicTracerProvider({
   spanProcessors: [new ConversationIdSpanProcessor(), new SimpleSpanProcessor(exporter)],
 });
-const tracer = provider.getTracer('conversation-test');
+const tracer = provider.getTracer('@launchdarkly/ai-server');
 const contextManager = new AsyncLocalStorageContextManager();
 
 afterAll(async () => {
@@ -125,5 +125,43 @@ describe('withJudgeEvaluation', () => {
     expect(span.attributes['gen_ai.evaluation.score.label']).toBeUndefined();
     const event = span.events.find((e) => e.name === 'gen_ai.evaluation.result');
     expect(event?.attributes?.['gen_ai.evaluation.score.label']).toBeUndefined();
+  });
+});
+
+describe('ConversationIdSpanProcessor scope', () => {
+  // The processor is registered on the *global* provider, so it sees every span in the process.
+  // Stamping a caller-supplied id onto unrelated telemetry — Postgres queries, inbound HTTP server
+  // spans, and the outbound provider call itself — is both wrong and the leak this design avoids.
+  it('stamps spans from LaunchDarkly tracers', () => {
+    const ld = provider.getTracer('@launchdarkly/ai-claude-messages');
+    withConversationId('thread-123', () => {
+      ld.startSpan('invoke_agent').end();
+    });
+    expect(finished()[0]?.attributes[GEN_AI_CONVERSATION_ID]).toBe('thread-123');
+  });
+
+  it('does not stamp third-party instrumentation spans', () => {
+    const http = provider.getTracer('@opentelemetry/instrumentation-http');
+    const pg = provider.getTracer('@opentelemetry/instrumentation-pg');
+    withConversationId('thread-123', () => {
+      http.startSpan('HTTP POST api.openai.com').end();
+      pg.startSpan('pg.query').end();
+    });
+    for (const span of finished()) {
+      expect(span.attributes[GEN_AI_CONVERSATION_ID], span.name).toBeUndefined();
+    }
+  });
+});
+
+describe('withConversationId with a nullish id', () => {
+  it('treats a nullish id as unbound rather than throwing', () => {
+    // The natural call site is an optional header: withConversationId(req.headers['x-conv-id'], …)
+    const run = () =>
+      withConversationId(undefined as unknown as string, () => {
+        tracer.startSpan('invoke_agent').end();
+        return 'ok';
+      });
+    expect(run()).toBe('ok');
+    expect(finished()[0]?.attributes[GEN_AI_CONVERSATION_ID]).toBeUndefined();
   });
 });
