@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { context, trace } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -21,6 +24,7 @@ vi.mock('../judges.js', () => ({
   runJudges: vi.fn().mockResolvedValue({}),
 }));
 
+import { ConversationIdSpanProcessor, GEN_AI_CONVERSATION_ID, withConversationId } from '../conversation.js';
 import { graph, resolveGraph } from '../graph.js';
 import { getClient } from '../lifecycle.js';
 import type { ProviderHandler } from '../types.js';
@@ -306,5 +310,60 @@ describe('graph().invoke()', () => {
     );
     expect(runJudges).toHaveBeenCalled();
     expect(result.judgeResults).toEqual(judgeData);
+  });
+});
+
+// ─── conversation id on ld.ai.graph ───────────────────────────────────────────
+//
+// The telemetry contract claims the conversation id lands on `ld.ai.graph` spans. True by
+// construction — the shared processor stamps every span — but a graph span is created by
+// `startActiveSpan` deep inside `buildGraph`'s await chain, so this guards the claim directly.
+
+describe('graph().invoke() conversation id', () => {
+  const exporter = new InMemorySpanExporter();
+  const provider = new BasicTracerProvider({
+    spanProcessors: [new ConversationIdSpanProcessor(), new SimpleSpanProcessor(exporter)],
+  });
+  const contextManager = new AsyncLocalStorageContextManager();
+
+  beforeAll(() => {
+    contextManager.enable();
+    context.setGlobalContextManager(contextManager);
+    trace.setGlobalTracerProvider(provider);
+  });
+
+  afterAll(async () => {
+    context.disable();
+    await provider.shutdown();
+  });
+
+  beforeEach(() => {
+    exporter.reset();
+    vi.clearAllMocks();
+    mockTrack.mockReset();
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack, variation: mockVariation });
+  });
+
+  it('stamps gen_ai.conversation.id on the ld.ai.graph span', async () => {
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+
+    await withConversationId('thread-graph', () =>
+      graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext),
+    );
+
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'ld.ai.graph');
+    expect(graphSpan).toBeDefined();
+    expect(graphSpan?.attributes[GEN_AI_CONVERSATION_ID]).toBe('thread-graph');
+  });
+
+  it('leaves the ld.ai.graph span unstamped when no id is bound', async () => {
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+
+    await graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext);
+
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'ld.ai.graph');
+    expect(graphSpan?.attributes[GEN_AI_CONVERSATION_ID]).toBeUndefined();
   });
 });

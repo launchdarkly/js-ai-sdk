@@ -577,6 +577,13 @@ events these handlers used to emit were read by nothing on the LaunchDarkly
 side. The only event a handler emits is `feature_flag`, on the root, for
 trace correlation.
 
+That rule is about handlers. The core client emits one more event, on judge
+`invoke_agent` spans only: `gen_ai.evaluation.result`, written by
+`withJudgeEvaluation` in `client/src/conversation.ts`. It is defined by the
+GenAI semantic conventions and is read by the conversation view's turn badges,
+so it is not an exception to the "no content in span events" rule above — do
+not "fix" it by deleting it.
+
 **Span status:**
 - Set to OK on success.
 - Set to ERROR and record the exception on failure. Re-throw the error after recording.

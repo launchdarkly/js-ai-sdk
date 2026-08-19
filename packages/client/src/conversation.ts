@@ -109,6 +109,34 @@ export function withConversationId<T>(id: string, fn: () => T): T {
 }
 
 /**
+ * Re-applies the conversation id bound at call time around every step of `generator`.
+ *
+ * An `async function*` body does not start until the first `next()`, which for a streaming caller
+ * is normally after the {@link withConversationId} scope has already exited — so every span the
+ * handler opens while streaming would otherwise silently miss the id.
+ *
+ * Only the id travels. The rest of the context is whatever is active at iteration time, so span
+ * parenting for streaming callers is unchanged from an unbound stream.
+ */
+export function bindConversationId<T, TReturn, TNext>(
+  generator: AsyncGenerator<T, TReturn, TNext>,
+): AsyncGenerator<T, TReturn, TNext> {
+  const id = conversationIdFrom(context.active());
+  if (!id) return generator;
+
+  const reenter = <R>(fn: () => R): R => context.with(context.active().setValue(CONVERSATION_ID_KEY, id), fn);
+
+  return {
+    next: (...args: [] | [TNext]) => reenter(() => generator.next(...args)),
+    return: (value: TReturn | PromiseLike<TReturn>) => reenter(() => generator.return(value)),
+    throw: (err: unknown) => reenter(() => generator.throw(err)),
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+  } as AsyncGenerator<T, TReturn, TNext>;
+}
+
+/**
  * Holds the judge `invoke_agent` span open until `record` runs, then writes
  * `gen_ai.evaluation.result` on that span. `executeAndTrack` returns after the handler has already
  * called `span.end()`, so without this delay the event would be dropped.
