@@ -7,7 +7,6 @@ import {
   GEN_AI_CONVERSATION_ID,
   setConversationIdIfAbsent,
   withConversationId,
-  withJudgeEvaluation,
 } from '../conversation.js';
 
 const exporter = new InMemorySpanExporter();
@@ -88,42 +87,5 @@ describe('setConversationIdIfAbsent', () => {
     setConversationIdIfAbsent(span, 'sess-abc');
     span.end();
     expect(finished()[0]?.attributes[GEN_AI_CONVERSATION_ID]).toBe('sess-abc');
-  });
-});
-
-describe('withJudgeEvaluation', () => {
-  it('puts gen_ai.evaluation.result on the invoke_agent span after the handler has ended it', async () => {
-    await withJudgeEvaluation('relevance-judge', async (record) => {
-      await tracer.startActiveSpan('invoke_agent', async (span) => {
-        span.setAttribute('gen_ai.operation.name', 'invoke_agent');
-        span.end();
-      });
-      record(0.91, 'on topic');
-    });
-
-    const [span] = finished().filter((s) => s.name === 'invoke_agent');
-    expect(span).toBeDefined();
-    expect(span.attributes['gen_ai.evaluation.name']).toBe('relevance-judge');
-    expect(span.attributes['gen_ai.evaluation.score.value']).toBe(0.91);
-    expect(span.attributes['gen_ai.evaluation.explanation']).toBe('on topic');
-    const event = span.events.find((e) => e.name === 'gen_ai.evaluation.result');
-    expect(event).toBeDefined();
-    expect(event?.attributes?.['gen_ai.evaluation.name']).toBe('relevance-judge');
-    expect(event?.attributes?.['gen_ai.evaluation.score.value']).toBe(0.91);
-    expect(event?.attributes?.['gen_ai.evaluation.explanation']).toBe('on topic');
-    expect(event?.attributes?.['gen_ai.evaluation.score.label']).toBeUndefined();
-  });
-
-  it('does not invent a score.label', async () => {
-    await withJudgeEvaluation('judge-key', async (record) => {
-      await tracer.startActiveSpan('invoke_agent', async (span) => {
-        span.end();
-      });
-      record(0.5);
-    });
-    const [span] = finished();
-    expect(span.attributes['gen_ai.evaluation.score.label']).toBeUndefined();
-    const event = span.events.find((e) => e.name === 'gen_ai.evaluation.result');
-    expect(event?.attributes?.['gen_ai.evaluation.score.label']).toBeUndefined();
   });
 });
