@@ -5,6 +5,25 @@ export const GEN_AI_CONVERSATION_ID = 'gen_ai.conversation.id';
 
 const CONVERSATION_ID_KEY = createContextKey('launchdarkly.gen_ai.conversation.id');
 
+/**
+ * Every tracer this SDK creates is named `@launchdarkly/ai-<package>`. The processor is registered
+ * on the *global* provider, so without this gate it stamps a caller-supplied id onto every span in
+ * the process — Postgres queries, inbound HTTP server spans, and the outbound provider call itself.
+ */
+const LD_TRACER_PREFIX = '@launchdarkly/';
+
+/**
+ * True only when the span came from one of this SDK's own tracers.
+ *
+ * Deliberately conservative: an unrecognisable scope means "not ours", so an id is never sprayed
+ * across unrelated telemetry. The companion test asserts LD spans *are* stamped, so a rename of
+ * this field fails the suite loudly rather than silently disabling the feature.
+ */
+const isLaunchDarklySpan = (span: Span): boolean => {
+  const scope = (span as unknown as { instrumentationScope?: { name?: string } }).instrumentationScope;
+  return typeof scope?.name === 'string' && scope.name.startsWith(LD_TRACER_PREFIX);
+};
+
 const readAttribute = (span: Span, key: string): unknown => {
   const attrs = (span as unknown as { attributes?: Record<string, unknown> }).attributes;
   return attrs?.[key];
@@ -39,7 +58,10 @@ const conversationIdFrom = (ctx: Context): string | undefined => {
  * This is a context value, not W3C baggage, so the id does not leak onto outbound HTTP calls.
  */
 export function withConversationId<T>(id: string, fn: () => T): T {
-  const trimmed = id.trim();
+  // Nullish is treated as unbound, not as an error: the natural call site is an optional value
+  // such as `withConversationId(req.headers['x-conversation-id'], …)`, and JS callers get no
+  // compile-time protection on a published export.
+  const trimmed = typeof id === 'string' ? id.trim() : '';
   if (!trimmed) return fn();
   return context.with(context.active().setValue(CONVERSATION_ID_KEY, trimmed), fn);
 }
@@ -82,7 +104,7 @@ export class ConversationIdSpanProcessor {
   onStart(span: Span, parentContext?: Context): void {
     const ctx = parentContext ?? context.active();
     const id = conversationIdFrom(ctx) ?? conversationIdFrom(context.active());
-    if (id) setConversationIdIfAbsent(span, id);
+    if (id && isLaunchDarklySpan(span)) setConversationIdIfAbsent(span, id);
   }
 
   onEnd(_span: unknown): void {}

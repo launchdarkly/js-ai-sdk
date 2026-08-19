@@ -28,7 +28,7 @@ const exporter = new InMemorySpanExporter();
 const provider = new BasicTracerProvider({
   spanProcessors: [new ConversationIdSpanProcessor(), new SimpleSpanProcessor(exporter)],
 });
-const tracer = provider.getTracer('stream-conversation-test');
+const tracer = provider.getTracer('@launchdarkly/ai-server');
 const contextManager = new AsyncLocalStorageContextManager();
 
 const mockContext = { kind: 'user' as const, key: 'user-1' };
@@ -126,6 +126,24 @@ describe('withConversationId + config().stream()', () => {
     const callerSpan = finished().find((s) => s.name === 'caller');
     expect(root?.parentSpanContext?.spanId).toBe(callerSpan?.spanContext().spanId);
     expect(root?.attributes[GEN_AI_CONVERSATION_ID]).toBeUndefined();
+  });
+
+  it('leaves span parenting unchanged when an id IS bound', async () => {
+    // The unbound test above cannot catch a regression in the wrapper — `bindConversationId`
+    // returns the generator untouched when nothing is bound, so it never builds one.
+    const handler = makeSpanCreatingStreamHandler(['only']);
+
+    const caller = tracer.startSpan('caller');
+    await context.with(trace.setSpan(context.active(), caller), async () => {
+      const gen = withConversationId('thread-123', () => config({ key: 'flag', handler }).stream('q', mockContext));
+      await drain(gen);
+    });
+    caller.end();
+
+    const root = finished().find((s) => s.name === 'invoke_agent');
+    const callerSpan = finished().find((s) => s.name === 'caller');
+    expect(root?.parentSpanContext?.spanId).toBe(callerSpan?.spanContext().spanId);
+    expect(root?.attributes[GEN_AI_CONVERSATION_ID]).toBe('thread-123');
   });
 
   it('keeps overlapping streams isolated to their own conversation id', async () => {
