@@ -98,19 +98,17 @@ describe('withJudgeEvaluation', () => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         span.end();
       });
-      record(0.91, 'on topic');
+      record(0.91);
     });
 
     const [span] = finished().filter((s) => s.name === 'invoke_agent');
     expect(span).toBeDefined();
     expect(span.attributes['gen_ai.evaluation.name']).toBe('relevance-judge');
     expect(span.attributes['gen_ai.evaluation.score.value']).toBe(0.91);
-    expect(span.attributes['gen_ai.evaluation.explanation']).toBe('on topic');
     const event = span.events.find((e) => e.name === 'gen_ai.evaluation.result');
     expect(event).toBeDefined();
     expect(event?.attributes?.['gen_ai.evaluation.name']).toBe('relevance-judge');
     expect(event?.attributes?.['gen_ai.evaluation.score.value']).toBe(0.91);
-    expect(event?.attributes?.['gen_ai.evaluation.explanation']).toBe('on topic');
     expect(event?.attributes?.['gen_ai.evaluation.score.label']).toBeUndefined();
   });
 
@@ -125,6 +123,36 @@ describe('withJudgeEvaluation', () => {
     expect(span.attributes['gen_ai.evaluation.score.label']).toBeUndefined();
     const event = span.events.find((e) => e.name === 'gen_ai.evaluation.result');
     expect(event?.attributes?.['gen_ai.evaluation.score.label']).toBeUndefined();
+  });
+});
+
+describe('withJudgeEvaluation content and timing', () => {
+  it('does not export the judge explanation', async () => {
+    // Judge reasoning is model prose about the user's conversation, i.e. content. AGENTS.md gates
+    // content attributes behind `captureContent`, which this layer never receives.
+    await withJudgeEvaluation('relevance-judge', async (record) => {
+      await tracer.startActiveSpan('invoke_agent', async (span) => span.end());
+      record(0.2);
+    });
+
+    const [span] = finished().filter((s) => s.name === 'invoke_agent');
+    expect(Object.keys(span.attributes).some((k) => k.includes('explanation'))).toBe(false);
+    const event = span.events.find((e) => e.name === 'gen_ai.evaluation.result');
+    expect(Object.keys(event?.attributes ?? {}).some((k) => k.includes('explanation'))).toBe(false);
+  });
+
+  it('ends the span at the handler call, not at release', async () => {
+    let endedAt = 0;
+    await withJudgeEvaluation('slow-judge', async (record) => {
+      await tracer.startActiveSpan('invoke_agent', async (span) => span.end());
+      endedAt = Date.now();
+      await new Promise((r) => setTimeout(r, 50)); // stands in for tracking + parsing
+      record(0.5);
+    });
+
+    const [span] = finished().filter((s) => s.name === 'invoke_agent');
+    const endMs = span.endTime[0] * 1000 + span.endTime[1] / 1e6;
+    expect(endMs - endedAt).toBeLessThan(20);
   });
 });
 

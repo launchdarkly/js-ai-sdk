@@ -16,7 +16,6 @@ const JUDGE_EVAL_KEY = createContextKey('launchdarkly.judge.evaluation');
 type JudgeEvaluation = {
   name: string;
   score: number;
-  explanation?: string;
 };
 
 type JudgeEvalCapture = {
@@ -80,15 +79,8 @@ const recordEvaluationOnSpan = (span: Span, evaluation: JudgeEvaluation): void =
     'gen_ai.evaluation.name': evaluation.name,
     'gen_ai.evaluation.score.value': evaluation.score,
   };
-  if (evaluation.explanation) {
-    attrs['gen_ai.evaluation.explanation'] = evaluation.explanation;
-  }
   span.addEvent('gen_ai.evaluation.result', attrs);
-  span.setAttribute('gen_ai.evaluation.name', evaluation.name);
-  span.setAttribute('gen_ai.evaluation.score.value', evaluation.score);
-  if (evaluation.explanation) {
-    span.setAttribute('gen_ai.evaluation.explanation', evaluation.explanation);
-  }
+  for (const [key, value] of Object.entries(attrs)) span.setAttribute(key, value as never);
 };
 
 const delayInvokeAgentEnd = (span: Span, capture: JudgeEvalCapture): void => {
@@ -102,10 +94,14 @@ const delayInvokeAgentEnd = (span: Span, capture: JudgeEvalCapture): void => {
       return;
     }
     capture.span = span;
+    // Freeze the end time at the handler's call. Replaying an undefined endTime later would let
+    // the SDK stamp "now" at release, inflating the judge span by the tracking and parsing work
+    // that runs between the handler ending the span and the score being recorded.
+    const frozen = endTime ?? Date.now();
     capture.pendingEnd = () => {
       if (ended) return;
       ended = true;
-      originalEnd(endTime);
+      originalEnd(frozen);
     };
   };
   (span as { end: Span['end'] }).end = wrappedEnd;
@@ -160,20 +156,22 @@ export function bindConversationId<T, TReturn, TNext>(
 
 /**
  * Holds the judge `invoke_agent` span open until `record` runs, then writes
- * `gen_ai.evaluation.result` on that span. `executeAndTrack` returns after the handler has already
+ * `gen_ai.evaluation.result` on that span. The judge's reasoning is deliberately not exported:
+ * it is model prose about the user's conversation, and content attributes require
+ * `captureContent`, a handler-factory option this layer never receives. `executeAndTrack` returns after the handler has already
  * called `span.end()`, so without this delay the event would be dropped.
  *
  * Not part of the public API — used by `runJudges` / `runJudge`.
  */
 export async function withJudgeEvaluation<T>(
   name: string,
-  fn: (record: (score: number, explanation?: string) => void) => Promise<T>,
+  fn: (record: (score: number) => void) => Promise<T>,
 ): Promise<T> {
   const capture: JudgeEvalCapture = { name, released: false };
   return context.with(context.active().setValue(JUDGE_EVAL_KEY, capture), async () => {
     try {
-      return await fn((score, explanation) => {
-        capture.evaluation = { name: capture.name, score, explanation };
+      return await fn((score) => {
+        capture.evaluation = { name: capture.name, score };
         if (capture.span) recordEvaluationOnSpan(capture.span, capture.evaluation);
       });
     } finally {

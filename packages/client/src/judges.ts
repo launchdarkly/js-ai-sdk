@@ -27,6 +27,13 @@ export const FORMATTING_INSTRUCTIONS = [
  * judge node events and the evaluation-metric event are attributed to the graph.
  * Shared by `config().invoke()` and per-node graph execution.
  */
+/**
+ * A judge is prompted for a number but can return anything. Only a finite number goes on the span:
+ * semconv defines `gen_ai.evaluation.score.value` as a double, and OTel drops a null attribute with
+ * a diagnostic while happily exporting a string, which breaks numeric aggregation downstream.
+ */
+export const isFiniteScore = (score: unknown): score is number => typeof score === 'number' && Number.isFinite(score);
+
 export const runJudges = async ({
   config,
   userContext,
@@ -108,25 +115,27 @@ export const runJudges = async ({
 
     const messageHistory = [userInput, llmResponse, FORMATTING_INSTRUCTIONS].filter(Boolean).join('\n\n');
 
-    try {
-      await withJudgeEvaluation(judge.key, async (recordEvaluation) => {
-        const { usage, response: rawJudgeResponse } = await executeAndTrack({
-          configKey: judge.key,
-          config: effectiveJudgeConfig,
-          meta: judgeMeta,
-          userContext,
-          handler: judgeHandler,
-          userInput: llmResponse,
-          toolHandlers: undefined,
-          graphKey,
-          variables: {
-            message_history: messageHistory,
-            response_to_evaluate: llmResponse,
-          },
-        });
-        const judgeResponse =
-          typeof rawJudgeResponse === 'string' ? rawJudgeResponse : JSON.stringify(rawJudgeResponse);
+    // `executeAndTrack` stays outside the `try`, as it was before judge evaluations existed: a
+    // provider/auth/network failure must reject out of `runJudges` rather than be swallowed and
+    // logged as a parse failure. Only parsing and recording are caught.
+    await withJudgeEvaluation(judge.key, async (recordEvaluation) => {
+      const { usage, response: rawJudgeResponse } = await executeAndTrack({
+        configKey: judge.key,
+        config: effectiveJudgeConfig,
+        meta: judgeMeta,
+        userContext,
+        handler: judgeHandler,
+        userInput: llmResponse,
+        toolHandlers: undefined,
+        graphKey,
+        variables: {
+          message_history: messageHistory,
+          response_to_evaluate: llmResponse,
+        },
+      });
+      const judgeResponse = typeof rawJudgeResponse === 'string' ? rawJudgeResponse : JSON.stringify(rawJudgeResponse);
 
+      try {
         const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
         if (!parsed) {
           throw new Error('Invalid JSON');
@@ -134,7 +143,7 @@ export const runJudges = async ({
 
         const { score, reasoning } = parsed;
         judgeResults[judge.key] = { usage, response: reasoning, score };
-        if (score !== undefined) recordEvaluation(score, reasoning);
+        if (isFiniteScore(score)) recordEvaluation(score);
 
         if (judgeConfig.evaluationMetricKey && score !== undefined) {
           getClient().track(
@@ -144,11 +153,11 @@ export const runJudges = async ({
             score,
           );
         }
-      });
-    } catch (err) {
-      // biome-ignore lint/suspicious/noConsole: intentional error logging for judge parse failures
-      console.error(`Judge '${judge.key}' failed:`, err);
-    }
+      } catch (err) {
+        // biome-ignore lint/suspicious/noConsole: intentional error logging for judge parse failures
+        console.error(`Judge '${judge.key}' failed:`, err);
+      }
+    });
   }
 
   return judgeResults;
@@ -302,7 +311,7 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
     if (!parsed) return null;
 
     const { score, reasoning } = parsed;
-    if (score !== undefined) recordEvaluation(score, reasoning);
+    if (isFiniteScore(score)) recordEvaluation(score);
 
     return {
       score,
