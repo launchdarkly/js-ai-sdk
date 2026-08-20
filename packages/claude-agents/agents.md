@@ -199,7 +199,7 @@ Root-span attributes:
 - `gen_ai.operation.name` = `'invoke_agent'`
 - `gen_ai.system` / `gen_ai.provider.name` = `'anthropic'`
 - `gen_ai.request.model` / `gen_ai.response.model` = `config.model.name`
-- `gen_ai.conversation.id` = the `session_id` from the `init` message
+- `gen_ai.conversation.id` = a caller-supplied id from `withConversationId`, or the `session_id` from the `init` message when the caller supplied none. Write-if-absent: the caller id wins. An app that opens a fresh CLI session per turn and re-feeds history must pass its own conversation id, or each turn becomes its own conversation.
 - run-cumulative usage from the result message: `gen_ai.usage.input_tokens`
   (uncached + cache-read + cache-creation), `output_tokens`, `total_tokens`,
   `cache_read.input_tokens`, `cache_creation.input_tokens`
@@ -217,7 +217,7 @@ Root-span attributes:
   the field; nothing is derived in the meantime, because inferring `tool_use` from
   the presence of a `tool_use` content block would put a value on the span that the
   provider never returned.
-- `gen_ai.conversation.id` = the message's `session_id`
+- `gen_ai.conversation.id` = same write-if-absent rule as the root: caller-supplied id, else this message's `session_id`
 - that call's own usage — not the run's, which would multiply the reported cost by
   the number of turns
 

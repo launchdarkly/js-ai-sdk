@@ -58,6 +58,7 @@ vi.mock('@opentelemetry/core', () => ({
 }));
 
 vi.mock('@opentelemetry/api', () => ({
+  createContextKey: (name: string) => Symbol(name),
   trace: {
     getTracerProvider: vi.fn().mockReturnValue({ _delegate: {} }),
   },

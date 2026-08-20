@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { trace } from '@opentelemetry/api';
+import { ConversationIdSpanProcessor } from './conversation.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
 import { parseAiConfig } from './types.js';
 
@@ -91,7 +92,7 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
 
   tracerProvider = new NodeTracerProvider({
     resource,
-    spanProcessors: [new BatchSpanProcessor(exporter)],
+    spanProcessors: [new ConversationIdSpanProcessor(), new BatchSpanProcessor(exporter)],
   });
   tracerProvider.register({
     contextManager: new AsyncLocalStorageContextManager(),

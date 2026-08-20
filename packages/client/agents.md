@@ -21,6 +21,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 
 | File | Responsibility |
 |---|---|
+| `src/conversation.ts` | `withConversationId`, `ConversationIdSpanProcessor` — stamps `gen_ai.conversation.id` |
 | `src/lifecycle.ts` | `initClient` (options or BYOC overloads), `getClient`, `shutdown`, `waitForTelemetry`, `shutdownTelemetry`, `extractVariation` |
 | `src/client.ts` | `config()` |
 | `src/tracking.ts` | `executeAndTrack`, `executeAndStream`, `wrapToolHandlers` |
@@ -38,6 +39,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
 export type { LDContext, LDClientInterface, LDSingleKindContext, LDMultiKindContext, LDUser } from './types.js';
+export { ConversationIdSpanProcessor, setConversationIdIfAbsent, withConversationId } from './conversation.js';
 export { config } from './client.js';
 export type { AiConfigRep } from './client.js';
 export type {
@@ -107,9 +109,49 @@ Handlers may return any of these — the client normalizes them before emitting 
 
 ---
 
+## Conversation grouping
+
+LaunchDarkly's conversation view groups spans on `gen_ai.conversation.id`. Bind a caller-supplied id around any `invoke()` / `stream()` / `graph().invoke()` call:
+
+```ts
+import { withConversationId, config } from '@launchdarkly/ai-node';
+
+await withConversationId('thread-123', () =>
+  config({ key, handler }).invoke(userInput, ctx),
+);
+```
+
+Call `initClient()` before binding. Until it runs there is no OTel context manager registered, and
+OTel's default discards the context — so an id bound before initialization is dropped and that run's
+spans go out unstamped. The SDK warns once when this happens rather than failing silently. Lazy
+initialization is still supported; it just means the very first run of a process loses its id, and
+every run after it is fine.
+
+```ts
+await initClient();
+await withConversationId('thread-123', () => config({ key, handler }).invoke(input, ctx));
+```
+
+`stream()` binds at call time rather than on first `next()`, so handing the generator off and
+iterating it later — the normal shape for a chat app — keeps the id:
+
+```ts
+const gen = withConversationId('thread-123', () => config({ key, handler }).stream(input, ctx));
+for await (const event of gen) { /* spans opened here still carry thread-123 */ }
+```
+
+Only the id is re-applied per step; the ambient context at iteration time is otherwise untouched,
+so streaming span parenting is the same as it is with no id bound.
+
+`initClient()` registers a span processor that stamps the id write-if-absent on every SDK span (root, chat, execute_tool, graph). The processor is registered on the *global* tracer provider, so it is scoped to spans from `@launchdarkly/ai-*` tracers only — a caller-supplied id must not land on third-party instrumentation spans (HTTP, Postgres, the outbound provider call). No id is invented when the caller supplies none — a UUID, a trace id, or a content hash would violate the semantic conventions.
+
+This is an OTel context value, not W3C baggage, so the id does not leak onto outbound provider HTTP calls. A multi-tenant process must bind a different id per request; do not put it on the tracer resource.
+
+---
+
 ## OTel Setup
 
-The core client owns all OTel initialization. `initClient()` sets up a `NodeTracerProvider` with a `BatchSpanProcessor` and an OTLP HTTP exporter when the optional OTel peer deps are installed.
+The core client owns all OTel initialization. `initClient()` sets up a `NodeTracerProvider` with `ConversationIdSpanProcessor` and a `BatchSpanProcessor` plus an OTLP HTTP exporter when the optional OTel peer deps are installed.
 
 **Required packages (via `@launchdarkly/ai-otel` or installed manually):**
 
