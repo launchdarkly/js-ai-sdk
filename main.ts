@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { shutdown } from '@launchdarkly/ai-node';
+import { initClient, shutdown } from '@launchdarkly/ai-node';
 import * as agent from './examples/agent';
 import * as claudeAgents from './examples/claude-agents';
 import * as claudeMessages from './examples/claude-messages';
@@ -66,12 +66,24 @@ function parseArgs(): { example: Example; key: string; userInput: string } {
 
 async function main() {
   const { example, key, userInput } = parseArgs();
+  // Initialize before running an example. Lazy init would otherwise happen inside the first SDK
+  // call — after `withConversationId` has already tried to bind — and the OTel context manager it
+  // registers would not exist yet, so the first run's spans would carry no conversation id.
+  await initClient();
   await EXAMPLES[example].run(key, userInput);
   await shutdown();
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   process.stdout.write('\n');
   process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+  // Flush before exiting. A failed run is exactly when its trace is most worth having, and the
+  // BatchSpanProcessor drops everything it is holding if the process exits without a shutdown —
+  // so error runs used to produce no telemetry at all.
+  try {
+    await shutdown();
+  } catch {
+    // Never let a shutdown failure mask the original error.
+  }
   process.exit(1);
 });

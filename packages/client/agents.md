@@ -121,6 +121,17 @@ await withConversationId('thread-123', () =>
 );
 ```
 
+Call `initClient()` before binding. Until it runs there is no OTel context manager registered, and
+OTel's default discards the context — so an id bound before initialization is dropped and that run's
+spans go out unstamped. The SDK warns once when this happens rather than failing silently. Lazy
+initialization is still supported; it just means the very first run of a process loses its id, and
+every run after it is fine.
+
+```ts
+await initClient();
+await withConversationId('thread-123', () => config({ key, handler }).invoke(input, ctx));
+```
+
 `stream()` binds at call time rather than on first `next()`, so handing the generator off and
 iterating it later — the normal shape for a chat app — keeps the id:
 
