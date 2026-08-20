@@ -42,6 +42,35 @@ export function setConversationIdIfAbsent(span: Span, id: string): void {
   span.setAttribute(GEN_AI_CONVERSATION_ID, id);
 }
 
+const CONTEXT_PROBE_KEY = createContextKey('launchdarkly.context.probe');
+let warnedAboutContextManager = false;
+
+/**
+ * True when the global OTel context manager actually stores values.
+ *
+ * Until something registers one — `initClient()` does, via the tracer provider — the global
+ * manager is OTel's `NoopContextManager`, whose `with()` discards the context entirely. A
+ * conversation id bound before that point is silently lost, and every span goes out unstamped.
+ * Probing a round-trip is cheaper and more honest than reaching into OTel internals.
+ */
+const contextManagerStoresValues = (): boolean =>
+  context.with(context.active().setValue(CONTEXT_PROBE_KEY, true), () =>
+    context.active().getValue(CONTEXT_PROBE_KEY),
+  ) === true;
+
+/** Warns once. A per-request binding would otherwise print this on every request. */
+const warnContextManagerMissing = (): void => {
+  if (warnedAboutContextManager) return;
+  warnedAboutContextManager = true;
+  // biome-ignore lint/suspicious/noConsole: the alternative is failing silently, which is the bug
+  console.warn(
+    '[LaunchDarkly] withConversationId was called before an OpenTelemetry context manager was ' +
+      "registered, so gen_ai.conversation.id will not be set on this run's spans. Await " +
+      'initClient() before binding a conversation id (or register a context manager yourself if ' +
+      'you own the OTel setup). Later calls in this process will work once initialization completes.',
+  );
+};
+
 const conversationIdFrom = (ctx: Context): string | undefined => {
   const value = ctx.getValue(CONVERSATION_ID_KEY);
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -63,6 +92,7 @@ export function withConversationId<T>(id: string, fn: () => T): T {
   // compile-time protection on a published export.
   const trimmed = typeof id === 'string' ? id.trim() : '';
   if (!trimmed) return fn();
+  if (!contextManagerStoresValues()) warnContextManagerMissing();
   return context.with(context.active().setValue(CONVERSATION_ID_KEY, trimmed), fn);
 }
 
