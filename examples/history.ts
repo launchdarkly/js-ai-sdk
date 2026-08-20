@@ -1,6 +1,6 @@
 import './register';
 import { config, globalRegistry, withConversationId } from '@launchdarkly/ai-node';
-import { newContext, writeOutput } from './utils';
+import { newContext, newConversationId, writeOutput } from './utils';
 
 const history = [
   { role: 'user' as const, content: 'What is LaunchDarkly?' },
@@ -22,7 +22,7 @@ const HISTORY_PROMPT =
 
 export async function run(key: string, userInput: string): Promise<void> {
   const prompt = userInput || HISTORY_PROMPT;
-  const response = await withConversationId('history-example', () =>
+  const response = await withConversationId(newConversationId('history-example'), () =>
     config({
       key,
       registry: globalRegistry,
