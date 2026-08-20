@@ -498,6 +498,7 @@ export function createLangChainAgentsHandler(
         endSpanOnce(span, endedSpans, true);
       }
     },
+    captureContent,
   );
 }
 

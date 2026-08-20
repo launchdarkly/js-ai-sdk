@@ -652,6 +652,7 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
         endSpanOnce(span, endedSpans, true);
       }
     },
+    captureContent,
   );
 }
 

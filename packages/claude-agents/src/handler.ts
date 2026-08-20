@@ -1056,6 +1056,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
         endSpanOnce(span, endedSpans, true);
       }
     },
+    captureContent,
   );
 }
 

@@ -143,7 +143,9 @@ export const runJudges = async ({
 
         const { score, reasoning } = parsed;
         judgeResults[judge.key] = { usage, response: reasoning, score };
-        if (isFiniteScore(score)) recordEvaluation(score);
+        // The reasoning reaches telemetry only when the judge's own handler captures content.
+        // It is model prose about the user's conversation, so it follows the content gate.
+        if (isFiniteScore(score)) recordEvaluation(score, judgeHandler.captureContent ? reasoning : undefined);
 
         if (judgeConfig.evaluationMetricKey && score !== undefined) {
           getClient().track(
@@ -311,7 +313,7 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
     if (!parsed) return null;
 
     const { score, reasoning } = parsed;
-    if (isFiniteScore(score)) recordEvaluation(score);
+    if (isFiniteScore(score)) recordEvaluation(score, judgeHandler.captureContent ? reasoning : undefined);
 
     return {
       score,

@@ -193,3 +193,31 @@ describe('withConversationId with a nullish id', () => {
     expect(finished()[0]?.attributes[GEN_AI_CONVERSATION_ID]).toBeUndefined();
   });
 });
+
+describe('judge explanation is gated on captureContent', () => {
+  // The judge's reasoning is model prose about the user's conversation, so it follows the same
+  // gate as every other content attribute rather than being emitted unconditionally.
+  it('writes the explanation when the judge handler captures content', async () => {
+    await withJudgeEvaluation('relevance-judge', async (record) => {
+      await tracer.startActiveSpan('invoke_agent', async (span) => span.end());
+      record(0.8, 'on topic and complete');
+    });
+
+    const [span] = finished().filter((s) => s.name === 'invoke_agent');
+    expect(span.attributes['gen_ai.evaluation.explanation']).toBe('on topic and complete');
+    const event = span.events.find((e) => e.name === 'gen_ai.evaluation.result');
+    expect(event?.attributes?.['gen_ai.evaluation.explanation']).toBe('on topic and complete');
+  });
+
+  it('omits the explanation when none is supplied', async () => {
+    await withJudgeEvaluation('relevance-judge', async (record) => {
+      await tracer.startActiveSpan('invoke_agent', async (span) => span.end());
+      record(0.8);
+    });
+
+    const [span] = finished().filter((s) => s.name === 'invoke_agent');
+    expect(Object.keys(span.attributes).some((k) => k.includes('explanation'))).toBe(false);
+    const event = span.events.find((e) => e.name === 'gen_ai.evaluation.result');
+    expect(Object.keys(event?.attributes ?? {}).some((k) => k.includes('explanation'))).toBe(false);
+  });
+});

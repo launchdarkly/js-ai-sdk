@@ -43,10 +43,12 @@ export function createHandler(
   providesFor: [string, 'agent' | 'messages'],
   handler: HandlerInput,
   streamHandler?: StreamHandlerInput,
+  captureContent?: boolean,
 ): ProviderHandler {
   const ph = handler as ProviderHandler;
   ph.providesFor = providesFor;
   if (streamHandler) ph.stream = streamHandler;
+  if (captureContent !== undefined) ph.captureContent = captureContent;
   return ph;
 }
 

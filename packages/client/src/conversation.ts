@@ -16,6 +16,8 @@ const JUDGE_EVAL_KEY = createContextKey('launchdarkly.judge.evaluation');
 type JudgeEvaluation = {
   name: string;
   score: number;
+  /** Only ever set when the judge's handler captures content. See `runJudges`. */
+  explanation?: string;
 };
 
 type JudgeEvalCapture = {
@@ -108,6 +110,7 @@ const recordEvaluationOnSpan = (span: Span, evaluation: JudgeEvaluation): void =
     'gen_ai.evaluation.name': evaluation.name,
     'gen_ai.evaluation.score.value': evaluation.score,
   };
+  if (evaluation.explanation) attrs['gen_ai.evaluation.explanation'] = evaluation.explanation;
   span.addEvent('gen_ai.evaluation.result', attrs);
   for (const [key, value] of Object.entries(attrs)) span.setAttribute(key, value as never);
 };
@@ -186,22 +189,22 @@ export function bindConversationId<T, TReturn, TNext>(
 
 /**
  * Holds the judge `invoke_agent` span open until `record` runs, then writes
- * `gen_ai.evaluation.result` on that span. The judge's reasoning is deliberately not exported:
- * it is model prose about the user's conversation, and content attributes require
- * `captureContent`, a handler-factory option this layer never receives. `executeAndTrack` returns after the handler has already
+ * `gen_ai.evaluation.result` on that span. The judge's reasoning is passed only when the judge's
+ * own handler captures content — it is model prose about the user's conversation, so it follows
+ * the same gate as every other content attribute. `executeAndTrack` returns after the handler has already
  * called `span.end()`, so without this delay the event would be dropped.
  *
  * Not part of the public API — used by `runJudges` / `runJudge`.
  */
 export async function withJudgeEvaluation<T>(
   name: string,
-  fn: (record: (score: number) => void) => Promise<T>,
+  fn: (record: (score: number, explanation?: string) => void) => Promise<T>,
 ): Promise<T> {
   const capture: JudgeEvalCapture = { name, released: false };
   return context.with(context.active().setValue(JUDGE_EVAL_KEY, capture), async () => {
     try {
-      return await fn((score) => {
-        capture.evaluation = { name: capture.name, score };
+      return await fn((score, explanation) => {
+        capture.evaluation = { name: capture.name, score, explanation };
         if (capture.span) recordEvaluationOnSpan(capture.span, capture.evaluation);
       });
     } finally {

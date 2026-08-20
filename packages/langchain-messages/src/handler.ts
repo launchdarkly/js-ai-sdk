@@ -639,6 +639,7 @@ export function createLangChainHandler(
         endSpanOnce(span, endedSpans, true);
       }
     },
+    captureContent,
   );
 }
 
