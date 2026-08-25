@@ -19,6 +19,8 @@ export { buildJudgeTasks, runJudge } from './judges.js';
 export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';
+export { allSkills, getSkill, getSkillResult, getSkills, InMemorySkillStore, skillRefs } from './skills.js';
+export { MAX_SKILL_CONTENT_BYTES, SKILL_OBJECT_KIND } from './skills-core.js';
 export type {
   ConfigArgs,
   GraphArgs,
@@ -50,6 +52,8 @@ export type {
   RouteResult,
   RunNodeOptions,
   Skill,
+  SkillOutcome,
+  SkillOutcomeReason,
   SkillReference,
   SkillStore,
   StreamEvent,
@@ -62,6 +66,7 @@ export type {
 } from './types.js';
 export {
   createSkill,
+  createSkillOutcome,
   createSkillReference,
   GraphTopologySchema,
   NATIVE_TOOL_KEY,
