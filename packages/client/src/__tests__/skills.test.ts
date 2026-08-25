@@ -33,6 +33,7 @@ vi.mock('@opentelemetry/api', () => ({
 }));
 vi.mock('dotenv/config', () => ({}));
 
+import * as packageIndex from '../index.js';
 import { initClient, shutdown } from '../lifecycle.js';
 import {
   _clearState,
@@ -255,6 +256,50 @@ describe('ReconcileReport ok and errors', () => {
       const report = createReconcileReport(actions);
       expect(report.ok).toBe(report.errors.length === 0);
     }
+  });
+});
+
+// ─── Package exports ───────────────────────────────────────────────────
+
+describe('package exports', () => {
+  it('exports the five fixed values from the package root with exact values', () => {
+    // These are API, not implementation detail: a caller needs MANIFEST_FILENAME
+    // to gitignore the manifest and MAX_SKILL_CONTENT_BYTES to pre-check content.
+    expect(packageIndex.SKILL_OBJECT_KIND).toBe('skill');
+    expect(packageIndex.SKILL_FILENAME).toBe('SKILL.md');
+    expect(packageIndex.MANIFEST_FILENAME).toBe('.launchdarkly-skills.json');
+    expect(packageIndex.MANIFEST_VERSION).toBe(1);
+    expect(packageIndex.MAX_SKILL_CONTENT_BYTES).toBe(65536);
+  });
+
+  it('exports the skills functions and the in-memory store from the package root', () => {
+    expect(typeof packageIndex.skillRefs).toBe('function');
+    expect(typeof packageIndex.getSkill).toBe('function');
+    expect(typeof packageIndex.getSkills).toBe('function');
+    expect(typeof packageIndex.allSkills).toBe('function');
+    expect(typeof packageIndex.writeSkills).toBe('function');
+    expect(typeof packageIndex.createSkill).toBe('function');
+    expect(typeof packageIndex.createSkillReference).toBe('function');
+    expect(typeof packageIndex.InMemorySkillStore).toBe('function');
+  });
+
+  it('the ReconcileActionKind union admits exactly the five action strings', () => {
+    // Assert the closed set by exhaustiveness over the union.
+    // Adding a sixth member makes `exhaustive` fail to compile; removing one
+    // leaves an entry in the record with no corresponding union member.
+    const exhaustive: Record<packageIndex.ReconcileActionKind, true> = {
+      written: true,
+      updated: true,
+      skipped_current: true,
+      removed: true,
+      error: true,
+    };
+    expect(Object.keys(exhaustive).sort()).toEqual(['error', 'removed', 'skipped_current', 'updated', 'written']);
+  });
+
+  it('the OnUnavailable union admits exactly keep and raise', () => {
+    const exhaustive: Record<packageIndex.OnUnavailable, true> = { keep: true, raise: true };
+    expect(Object.keys(exhaustive).sort()).toEqual(['keep', 'raise']);
   });
 });
 
