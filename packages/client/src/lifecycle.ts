@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { trace } from '@opentelemetry/api';
+import { _clearState, _setStore } from './skills.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
 import { parseAiConfig } from './types.js';
 
@@ -221,12 +222,23 @@ function isLDClient(value: unknown): value is LDClientInterface {
  *
  * Both overloads return the client instance for further customization.
  */
-export async function initClient(client: LDClientInterface): Promise<LDClientInterface>;
+export async function initClient(
+  client: LDClientInterface,
+  options?: InitBaseClientOptions,
+): Promise<LDClientInterface>;
 export async function initClient(options?: InitBaseClientOptions): Promise<LDClientInterface>;
 export async function initClient(
   optionsOrClient?: InitBaseClientOptions | LDClientInterface,
+  clientOptions?: InitBaseClientOptions,
 ): Promise<LDClientInterface> {
   const singleton = getSingleton();
+
+  // Applied before the idempotency check below, and on every call: it is what
+  // lets a client that was lazily auto-initialized, or initialized without a
+  // store, be given one afterwards. A nullish store never clears a configured
+  // one — `shutdown()` is for that.
+  const skillStore = (isLDClient(optionsOrClient) ? clientOptions : optionsOrClient)?.skillStore;
+  if (skillStore != null) _setStore(skillStore);
 
   if (isLDClient(optionsOrClient)) {
     // Pre-initialized client path (edge / custom runtimes).
@@ -255,6 +267,11 @@ export function getClient(): LDClientInterface {
 
 export async function shutdown(): Promise<void> {
   const singleton = getSingleton();
+  // Unconditional, and ahead of the early return: the skills state can be
+  // configured without a client (`initClient({ skillStore })` on a BYOC-less
+  // path, or a direct injection), so gating it on the client would leave a
+  // configured store alive across a shutdown.
+  _clearState();
   if (!singleton.client) return;
   // Null the singleton before teardown so that any failure mid-flight still
   // leaves the process in a state where a second shutdown() call is a no-op.
