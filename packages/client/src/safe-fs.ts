@@ -161,9 +161,29 @@ async function assertUnswapped(directory: string, handle: FileHandle): Promise<v
   }
 }
 
+/** Random bytes behind every temp name. Hex-encoded, so twice this many characters. */
+const TEMP_NAME_RANDOM_BYTES = 8;
+
 /** An unpredictable temp name, so a planted path is never the one we write. */
 function tempName(target: string): string {
-  return `.${target}.${randomBytes(8).toString('hex')}.tmp`;
+  return `.${target}.${randomBytes(TEMP_NAME_RANDOM_BYTES).toString('hex')}.tmp`;
+}
+
+/**
+ * Matches exactly the names {@link tempName} produces for `target`, anchored at
+ * both ends.
+ *
+ * Exported so the orphaned-temp sweep in `skills-fs.ts` derives its pattern from
+ * the generator instead of carrying a second copy of the naming rule. That sweep
+ * is only allowed to unlink a file because its *name* identifies it as one this
+ * module created, so the day two spellings of the rule drift is the day the sweep
+ * either stops finding orphans or starts removing something it did not write.
+ * Anchored at both ends for the same reason: an unanchored match would also
+ * accept `.SKILL.md.<hex>.tmp.keep-this`.
+ */
+export function tempNamePattern(target: string): RegExp {
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^\\.${escaped}\\.[0-9a-f]{${TEMP_NAME_RANDOM_BYTES * 2}}\\.tmp$`);
 }
 
 /**
