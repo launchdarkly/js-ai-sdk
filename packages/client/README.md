@@ -80,7 +80,7 @@ await shutdown();
 | Export | Description |
 |---|---|
 | `initClient(options?)` | Auto-discover and initialize `@launchdarkly/node-server-sdk`. Optional — the first AI API call triggers lazy init when `LD_SDK_KEY` is set. Returns `Promise<LDClientInterface>`. |
-| `initClient(client)` | **BYOC overload** — accept a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk` or any edge runtime). Skips SDK auto-discovery. |
+| `initClient(client, options?)` | **BYOC overload** — accept a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk` or any edge runtime). Skips SDK auto-discovery. |
 | `getClient()` | Return the initialized `LDClientInterface`. Throws if `initClient` has not completed. |
 | `shutdown()` | Flush all events and telemetry, then close the client. Call before process exit. |
 | `waitForTelemetry()` | Wait for the OTel provider to be ready. Useful to avoid dropping early spans. |
@@ -225,6 +225,112 @@ if (!result.enabled) {
 
 ---
 
+### Agent Skills
+
+Agent Skills are versioned `SKILL.md` documents managed in LaunchDarkly, attachable to AI Config variations by reference. This package surfaces which skills a config references, retrieves their content, and materializes them onto disk where agent runtimes (the Claude Agent SDK and friends) can discover them.
+
+**Content delivery is not wired up in this release.** Everything below runs against the `SkillStore` seam; the shipped default is *absent*, so the accessors throw an actionable error until a store is configured. `InMemorySkillStore` is provided for local development, tests, and bring-your-own-content. The real transport ships in a follow-up.
+
+```ts
+import { createHash } from 'node:crypto';
+import {
+  allSkills,
+  getSkill,
+  getSkills,
+  initClient,
+  InMemorySkillStore,
+  skillRefs,
+  writeSkills,
+} from '@launchdarkly/ai-server';
+
+// A store serves wire-shaped raw objects. `contentHash` is sha256, lowercase
+// hex, over the verbatim UTF-8 bytes of `content` — content that does not hash
+// to it is withheld, so this is not a field to hand-wave.
+const content = '---\nname: PDF Extraction\n---\nExtract text from PDFs.\n';
+const store = new InMemorySkillStore();
+store.put({
+  key: 'pdf-extraction',
+  version: 2,
+  content,
+  contentHash: createHash('sha256').update(Buffer.from(content, 'utf-8')).digest('hex'),
+});
+
+// Configure it as part of ordinary initialization...
+await initClient({ skillStore: store });
+// ...or alongside a pre-initialized client on an edge runtime:
+// await initClient(myEdgeClient, { skillStore: store });
+
+// Which skills does a resolved config reference? A pure projection — no I/O,
+// and it works before any client exists.
+const refs = skillRefs({
+  model: { name: 'claude-opus-4-5' },
+  provider: { name: 'Anthropic' },
+  instructions: 'Summarize the attached document.',
+  skills: [{ key: 'pdf-extraction', version: 2 }],
+}); // [{ key: 'pdf-extraction', version: 2 }]
+
+// In real use the config comes from LaunchDarkly:
+// const info = await inspectConfig('doc-agent', { kind: 'user', key: 'user-123' });
+// const refs = skillRefs(info.config);
+
+// Retrieve content. Every skill is hash-verified before you see it.
+const newest = await getSkill('pdf-extraction'); // newest available
+const pinned = await getSkill('pdf-extraction', { version: 2 }); // exact version, or null
+const batch = await getSkills(refs); // input order; misses omitted
+const everything = await allSkills();
+
+// Materialize onto disk at <root>/<key>/SKILL.md. Only the leaf directory is
+// ever created, so `.claude` must already exist — a typo in the path is an
+// error, not an invitation to scatter a directory tree.
+const report = await writeSkills(refs, '.claude/skills');
+if (!report.ok) {
+  for (const action of report.errors) {
+    console.error(`skill ${action.key}: ${action.error}`);
+  }
+}
+```
+
+`writeSkills` is a **reconcile**, not a copy. It records what it wrote in `<root>/.launchdarkly-skills.json` and only ever overwrites or deletes paths that manifest lists under a matching key — a file you placed yourself is reported as an error and left alone. Revocation is pruning: a skill absent from the resolved set is removed on the next run.
+
+```ts
+// Everything the store holds, materialized at boot.
+const report = await writeSkills('*', '.claude/skills', {
+  prune: true,          // default — remove formerly-managed skills no longer resolved
+  timeout: 10,          // SECONDS, not milliseconds (cross-language contract)
+  onUnavailable: 'keep', // 'keep' reports a failed retrieval; 'raise' throws
+});
+```
+
+| Export | Description |
+|---|---|
+| `skillRefs(config)` | Project a config's `skills` array into typed `SkillReference[]`. Pure — no client, no store, no telemetry. `[]` when absent. |
+| `getSkill(key, { version? })` | One verified skill. Omit `version` for the newest available. Resolves to `null` for not-found or a version mismatch; throws only when no store is configured. |
+| `getSkills(refs)` | Batch form. Accepts `SkillReference` values and bare key strings (string = latest). Results follow input order; missing or unverifiable entries are omitted. |
+| `allSkills()` | Every verified skill the store holds. |
+| `writeSkills(skills, root, options?)` | Materialize to `<root>/<key>/SKILL.md`. Accepts `Skill` / `SkillReference` / key strings, or the literal `'*'`. Returns a `ReconcileReport`. Throws for a caller error — an unusable `root`, a bare string other than `'*'` — as distinct from the per-skill `error` actions in the report. |
+| `InMemorySkillStore` | A `SkillStore` backed by a plain object. `put(raw)`, `getObject(kind, key)`, `allObjects(kind)`, `addListener(kind, fn)`. |
+| `createSkill(init)` / `createSkillReference(init)` | Build frozen `Skill` / `SkillReference` values. Use `createSkill` to hand `writeSkills` content you already have. |
+| `SKILL_OBJECT_KIND` | `'skill'` — the delivery object kind. |
+| `SKILL_FILENAME` | `'SKILL.md'`. |
+| `MANIFEST_FILENAME` | `'.launchdarkly-skills.json'` — add this to your `.gitignore` if you do not commit materialized skills. |
+| `MANIFEST_VERSION` | `1`. |
+| `MAX_SKILL_CONTENT_BYTES` | `65536` — the hard cap. Content above it is refused as inauthentic. |
+
+`ReconcileReport` exposes `actions`, `ok` (true iff no action is an `error`), and `errors` (the error actions, in order), so callers never re-derive the filter. Each `ReconcileAction` carries `key`, `action` (`written` | `updated` | `skipped_current` | `removed` | `error`), and nullable `version` / `path` / `error`. A failure belonging to the whole run rather than one skill — a corrupt manifest, for instance — carries the **empty string** in `key`.
+
+**Security posture.** `writeSkills` is writing LaunchDarkly-delivered content to your disk, so it fails closed: skill keys are re-validated locally, content is hash-verified again immediately before writing, writes go through a temp file in the target's own directory and an atomic rename at mode `0644`, symlinked roots/directories/targets are refused, and a corrupt manifest suppresses every destructive action. One limitation is worth stating plainly: Node exposes no `renameat`/`unlinkat`, so the final rename cannot be performed relative to a pinned directory descriptor. An attacker who already has **write permission on the managed root** can therefore still win a race to redirect a write or a delete outside it. Keep the managed root writable only by the process running the SDK.
+
+`Skill.frontmatter()` is a lazy convenience that parses the leading `---` block with a safe parser, bounded to 8 KB and 10 levels of nesting, with aliases disabled and type-construction tags refused. It resolves to `null` on anything unexpected — including the YAML library being absent, since that library is a devDependency and never a runtime one. It is never part of the integrity path.
+
+```ts
+const skill = await getSkill('pdf-extraction');
+const meta = await skill?.frontmatter(); // { name: 'PDF Extraction' } | null
+```
+
+**No LaunchDarkly telemetry is emitted for skills.** Signals go through an internal no-op emitter; `client.track()` is never called and no LD context is involved.
+
+---
+
 ### Utility Helpers
 
 ```ts
@@ -257,3 +363,12 @@ All types are re-exported from this package. Handler packages import them from h
 | `GraphNode` / `GraphEdge` | A node (evaluated agent config + edges) and a directed edge (with handoff data) |
 | `ProviderGraphResponse` | The value returned by `graph(...).invoke()`: `{ response, usage, trackData, judgeResults? }` |
 | `GraphTopology` | The parsed graph flag shape (`root` + `edges`) |
+| `Skill` | A verified `SKILL.md` document: `key`, `version`, `content`, `contentHash`, `name`, `description`, and `frontmatter()` |
+| `SkillReference` | A version-pinned pointer to a skill: `{ key, version }` |
+| `SkillStore` | The structural seam skill content is retrieved through: `getObject`, `allObjects`, optional `addListener` |
+| `RawSkillObject` | The wire shape a `SkillStore` serves, before verification. Every field is untrusted. |
+| `ReconcileReport` | The result of `writeSkills()`: `{ actions, ok, errors }` |
+| `ReconcileAction` | One outcome from a reconcile: `{ key, action, version, path, error }` |
+| `ReconcileActionKind` | The closed set of reconcile outcomes: `'written' \| 'updated' \| 'skipped_current' \| 'removed' \| 'error'` |
+| `OnUnavailable` | `'keep' \| 'raise'` — how `writeSkills` reacts to content it could not retrieve |
+| `WriteSkillsOptions` | Options accepted by `writeSkills()` (`prune`, `timeout` in seconds, `onUnavailable`) |
