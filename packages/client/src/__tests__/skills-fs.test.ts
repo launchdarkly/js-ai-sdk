@@ -1,6 +1,6 @@
 /**
- * `writeSkills` — the security abuse matrix: path traversal, symlink attacks,
- * clobber protection, crash-mid-reconcile recovery, and a corrupt manifest.
+ * `writeSkills` — filesystem materialization, manifest reconcile semantics, and
+ * the full security abuse matrix.
  *
  * Every test writes only inside its own `os.tmpdir()` scratch directory. No
  * network, no real LaunchDarkly client, no real skill transport.
@@ -8,15 +8,28 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { fsOps, SUPPORTS_DIR_FD } from '../safe-fs.js';
-import { _clearState, skillRefs } from '../skills.js';
+import { _clearState, _setEmitterForTesting, _setStore, InMemorySkillStore, skillRefs } from '../skills.js';
 import { writeSkills } from '../skills-fs.js';
-import type { ReconcileAction, ReconcileReport, Skill } from '../types.js';
+import type { RawSkillObject, ReconcileAction, ReconcileReport, Skill, SkillStore } from '../types.js';
 import { createSkill, isValidSkillKey, parseAiConfig } from '../types.js';
 
 // ─── Constants spelled out by hand ───────────────────────────────────────────
@@ -31,6 +44,13 @@ const MANIFEST_NAME = '.launchdarkly-skills.json';
 const SKILL_BODY = '---\nname: Test Skill\n---\nDo the thing.\n';
 const INJECTED = 'simulated crash between write and rename';
 
+const INTEGRITY_SIGNAL = 'AgentControl Skill Integrity Failure';
+const MATERIALIZED_SIGNAL = 'AgentControl Skill Materialized';
+const REVOKED_SIGNAL = 'AgentControl Skill Revoked Received';
+
+const APPROVED_SIGNALS = new Set([INTEGRITY_SIGNAL, MATERIALIZED_SIGNAL, REVOKED_SIGNAL]);
+const REMOVED_SIGNALS = ['AgentControl Skill SDK Reference Returned', 'AgentControl Skill Content Retrieved'];
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function hash(content: string): string {
@@ -41,6 +61,10 @@ function skill(key = 'test-skill', version = 1, content = SKILL_BODY): Skill {
   // A `Skill` carries the verified bytes; the string form here is only test
   // convenience, hashed identically to its UTF-8 encoding.
   return createSkill({ key, version, content: new TextEncoder().encode(content), contentHash: hash(content) });
+}
+
+function rawSkill(key: string, version = 1, content = SKILL_BODY): RawSkillObject {
+  return { key, version, content, contentHash: hash(content) };
 }
 
 function manifestPath(root: string): string {
@@ -99,6 +123,19 @@ async function entryNames(dir: string): Promise<string[]> {
   return (await readdir(dir)).sort();
 }
 
+class RecordingEmitter {
+  records: Array<[string, Record<string, unknown>]> = [];
+  record(signal: string, properties: Record<string, unknown>): void {
+    this.records.push([signal, properties]);
+  }
+  signals(name: string): Array<Record<string, unknown>> {
+    return this.records.filter(([s]) => s === name).map(([, p]) => p);
+  }
+  names(): Set<string> {
+    return new Set(this.records.map(([s]) => s));
+  }
+}
+
 // ─── The rename/unlink interception hook ─────────────────────────────────────
 
 type RenameCall = { src: string; dst: string };
@@ -129,6 +166,36 @@ function interceptRename(options: { fail?: boolean } = {}): RenameCall[] {
   return calls;
 }
 
+/** The prune-side hook — one interceptable call site, same filter. */
+function interceptUnlink(options: { fail?: boolean } = {}): string[] {
+  const calls: string[] = [];
+  const real = fsOps.unlink.bind(fsOps);
+  vi.spyOn(fsOps, 'unlink').mockImplementation(async (target: string) => {
+    if (target.endsWith(SKILL_MD)) {
+      calls.push(target);
+      if (options.fail) throw new Error(INJECTED);
+    }
+    return real(target);
+  });
+  return calls;
+}
+
+/**
+ * Assert the one recorded rename put `SKILL.md` into `skillDir`.
+ *
+ * The temp file must be created in the target's own
+ * directory, so the rename is atomic rather than cross-device. TypeScript always
+ * sees the **full-path** call shape,
+ * because Node exposes no `renameat` (see the `SUPPORTS_DIR_FD` test below).
+ */
+function assertAtomicRenameOf(calls: RenameCall[], skillDir: string): void {
+  expect(calls).toHaveLength(1);
+  const { src, dst } = calls[0];
+  expect(dst).toBe(path.join(skillDir, SKILL_MD));
+  expect(path.dirname(src)).toBe(skillDir);
+  expect(path.basename(src)).not.toBe(SKILL_MD);
+}
+
 // ─── Per-test scratch directory ──────────────────────────────────────────────
 
 let scratch: string;
@@ -151,6 +218,590 @@ afterEach(async () => {
   vi.restoreAllMocks();
   _clearState();
   await rm(scratch, { recursive: true, force: true });
+});
+
+// ─── Basic writes and the returned report ──────────────────────────────
+
+describe('writeSkills basic writes', () => {
+  it('writes a new skill verbatim and reports written', async () => {
+    const report = await writeSkills([skill('pdf-extraction', 2)], root);
+
+    const target = path.join(root, 'pdf-extraction', SKILL_MD);
+    expect(await readFile(target, 'utf-8')).toBe(SKILL_BODY);
+    expect(report.ok).toBe(true);
+    const action = actionsByKey(report)['pdf-extraction'];
+    expect(action.action).toBe('written');
+    expect(action.version).toBe(2);
+    expect(action.path).toBe(target);
+  });
+
+  it('accepts Skill inputs with no store configured', async () => {
+    const report = await writeSkills([skill('a')], root);
+    expect(report.ok).toBe(true);
+  });
+
+  it('resolves SkillReference inputs through the store', async () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a', 3));
+    _setStore(store);
+
+    const report = await writeSkills([{ key: 'a', version: 3 }], root);
+
+    expect(report.ok).toBe(true);
+    expect(await readFile(path.join(root, 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+  });
+
+  it('resolves bare-string inputs as the latest version', async () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a', 9));
+    _setStore(store);
+
+    const report = await writeSkills(['a'], root);
+
+    expect(actionsByKey(report).a.version).toBe(9);
+  });
+
+  it('"*" writes everything the store holds', async () => {
+    const store = new InMemorySkillStore();
+    for (const key of ['a', 'b', 'c']) store.put(rawSkill(key));
+    _setStore(store);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    expect(report.actions.filter((a) => a.action !== 'error')).toHaveLength(3);
+  });
+
+  it('reports one action per requested skill — no silent skips', async () => {
+    const report = await writeSkills([skill('a'), skill('b')], root);
+    expect(report.actions.map((a) => a.key).sort()).toEqual(['a', 'b']);
+  });
+
+  it('an empty request on an empty root is ok', async () => {
+    const report = await writeSkills([], root);
+    expect(report.ok).toBe(true);
+  });
+});
+
+// ─── Manifest ──────────────────────────────────────────────────────────
+
+describe('writeSkills manifest', () => {
+  it('has the exact cross-language format', async () => {
+    await writeSkills([skill('a', 2)], root);
+
+    const manifest = await readManifest(root);
+    expect(manifest.manifestVersion).toBe(1);
+    const entries = manifest.entries as Record<string, Record<string, unknown>>;
+    const entry = entries[`a/${SKILL_MD}`];
+    expect(entry).toBeDefined();
+    expect(entry.key).toBe('a');
+    expect(entry.version).toBe(2);
+    expect(entry.sha256).toBe(hash(SKILL_BODY));
+    expect(typeof entry.writtenAt).toBe('string');
+  });
+
+  it('serializes exactly the way the Python SDK does', async () => {
+    // Not a correctness requirement — both languages parse either form — but a
+    // repo where both SDKs run would otherwise see the key order flip on every
+    // reconcile depending on which wrote last. Python writes
+    // json.dumps(..., indent=2, sort_keys=True): two-space indent, sorted keys,
+    // no trailing newline.
+    await writeManifest(root, { zeta: 'unknown field', manifestVersion: 1, entries: {}, alpha: 1 });
+    await writeSkills([skill('b')], root);
+    await writeSkills([skill('b'), skill('a')], root);
+
+    const raw = await readFile(manifestPath(root), 'utf-8');
+    expect(raw.endsWith('\n')).toBe(false);
+    expect(raw).toContain('\n  "');
+    const topLevel = [...raw.matchAll(/^ {2}"([^"]+)":/gm)].map((m) => m[1]);
+    expect(topLevel).toEqual([...topLevel].sort());
+    // Nested keys are sorted too, so entry order does not depend on write order.
+    const entryPaths = Object.keys((await readManifest(root)).entries as object);
+    expect(entryPaths).toEqual([...entryPaths].sort());
+  });
+
+  it('escapes non-ASCII exactly as Python does', async () => {
+    // The manifest's bytes are a cross-language contract, and
+    // Python writes it with json.dumps(..., indent=2, sort_keys=True), which
+    // defaults to ensure_ascii=True. JSON.stringify emits raw UTF-8, so the two
+    // SDKs would rewrite the same file with different bytes on alternating
+    // reconciles — the churn the sorted-key rule already exists to prevent.
+    //
+    // Every field the SDK writes is ASCII by construction, so this is only
+    // reachable through the preserved-unknown-field path — which is why
+    // the seeded field is what carries the non-ASCII.
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: {},
+      note: 'café ☕ 😀',
+    });
+
+    await writeSkills([skill('b')], root);
+
+    const raw = await readFile(manifestPath(root), 'utf-8');
+    // Escaped form, astral characters as a surrogate pair — byte-for-byte what
+    // Python emits for the same value.
+    expect(raw).toContain('"note": "caf\\u00e9 \\u2615 \\ud83d\\ude00"');
+    expect(raw).not.toContain('café');
+    // Still parses back to the original string, so preservation is unaffected.
+    expect((await readManifest(root)).note).toBe('café ☕ 😀');
+  });
+
+  it('keys entries by root-relative forward-slash paths', async () => {
+    await writeSkills([skill('a')], root);
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(Object.keys(entries)).toEqual(['a/SKILL.md']);
+  });
+
+  it('preserves unknown top-level and per-entry fields on rewrite', async () => {
+    await writeManifest(root, {
+      manifestVersion: 1,
+      futureTopLevel: 'keep me',
+      entries: { [`a/${SKILL_MD}`]: { ...manifestEntry('a', 1, SKILL_BODY), futureEntryField: 'keep me too' } },
+    });
+    await mkdir(path.join(root, 'a'));
+    await writeFile(path.join(root, 'a', SKILL_MD), SKILL_BODY, 'utf-8');
+
+    await writeSkills([skill('a', 2, 'new content\n')], root);
+
+    const manifest = await readManifest(root);
+    expect(manifest.futureTopLevel).toBe('keep me');
+    const entries = manifest.entries as Record<string, Record<string, unknown>>;
+    expect(entries[`a/${SKILL_MD}`].futureEntryField).toBe('keep me too');
+    expect(entries[`a/${SKILL_MD}`].version).toBe(2);
+  });
+});
+
+// ─── Reconcile semantics ───────────────────────────────────────────────
+
+describe('writeSkills reconcile semantics', () => {
+  it('reports skipped_current for an unchanged managed file without rewriting it', async () => {
+    await placeManaged(root, 'a', SKILL_BODY);
+    const calls = interceptRename();
+
+    const report = await writeSkills([skill('a')], root);
+
+    expect(actionsByKey(report).a.action).toBe('skipped_current');
+    expect(calls).toEqual([]);
+  });
+
+  it('reports updated when the resolved content differs', async () => {
+    const target = await placeManaged(root, 'a', 'old content\n');
+
+    const report = await writeSkills([skill('a', 2, 'new content\n')], root);
+
+    expect(actionsByKey(report).a.action).toBe('updated');
+    expect(await readFile(target, 'utf-8')).toBe('new content\n');
+  });
+
+  it('overwrites local tampering — LD-resolved content wins', async () => {
+    const target = await placeManaged(root, 'a', SKILL_BODY);
+    await writeFile(target, 'locally tampered\n', 'utf-8');
+
+    const report = await writeSkills([skill('a')], root);
+
+    expect(actionsByKey(report).a.action).toBe('updated');
+    expect(await readFile(target, 'utf-8')).toBe(SKILL_BODY);
+  });
+
+  it('prunes a formerly-managed skill, file then empty directory', async () => {
+    const target = await placeManaged(root, 'gone', SKILL_BODY);
+
+    const report = await writeSkills([], root);
+
+    const action = actionsByKey(report).gone;
+    expect(action.action).toBe('removed');
+    expect(action.version).toBe(1);
+    expect(await exists(target)).toBe(false);
+    expect(await exists(path.dirname(target))).toBe(false);
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(entries).toEqual({});
+  });
+
+  it('prune: false keeps the file and reports no removal', async () => {
+    const target = await placeManaged(root, 'gone', SKILL_BODY);
+
+    const report = await writeSkills([], root, { prune: false });
+
+    expect(await exists(target)).toBe(true);
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+  });
+
+  it('pruning never touches an unmanaged file inside the root', async () => {
+    await placeManaged(root, 'gone', SKILL_BODY);
+    const userFile = path.join(root, 'notes.md');
+    await writeFile(userFile, 'user authored\n', 'utf-8');
+
+    await writeSkills([], root);
+
+    expect(await readFile(userFile, 'utf-8')).toBe('user authored\n');
+  });
+
+  it('keeps a skill directory that still holds other files', async () => {
+    const target = await placeManaged(root, 'gone', SKILL_BODY);
+    const sibling = path.join(path.dirname(target), 'README.md');
+    await writeFile(sibling, 'user authored\n', 'utf-8');
+
+    await writeSkills([], root);
+
+    expect(await exists(target)).toBe(false);
+    expect(await readFile(sibling, 'utf-8')).toBe('user authored\n');
+  });
+
+  it('a prune refusal reports the version it already knows', async () => {
+    // The manifest entry is in hand at that point, so omitting the version
+    // would make a prune *failure* strictly less informative than a prune
+    // *success*. Here the manifest names a path this SDK could never own.
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: { 'gone/nested/SKILL.md': manifestEntry('gone', 7, SKILL_BODY) },
+    });
+
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(false);
+    const action = actionsByKey(report).gone;
+    expect(action.action).toBe('error');
+    expect(action.version).toBe(7);
+  });
+
+  it('a prune refusal for an unlink failure reports the version too', async () => {
+    await placeManaged(root, 'gone', SKILL_BODY, 4);
+    const calls = interceptUnlink({ fail: true });
+
+    const report = await writeSkills([], root);
+
+    expect(calls).toHaveLength(1);
+    const action = actionsByKey(report).gone;
+    expect(action.action).toBe('error');
+    expect(action.version).toBe(4);
+  });
+
+  it('leaves version null when it genuinely is not known', async () => {
+    // A retrieval that failed before any content arrived: no manifest entry and
+    // no Skill, so there is no version to report. Do not invent one.
+    const report = await writeSkills([{ key: 'a', version: 3 }], root);
+
+    const action = actionsByKey(report).a;
+    expect(action.action).toBe('error');
+    expect(action.version).toBeNull();
+  });
+});
+
+// ─── Root handling ─────────────────────────────────────────────────────
+
+describe('writeSkills root handling', () => {
+  it('creates an absent leaf directory whose parent exists', async () => {
+    const fresh = path.join(scratch, 'fresh-root');
+
+    const report = await writeSkills([skill('a')], fresh);
+
+    expect(report.ok).toBe(true);
+    expect(await readFile(path.join(fresh, 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+  });
+
+  it('raises rather than creating missing ancestors', async () => {
+    await expect(writeSkills([skill('a')], path.join(scratch, 'a', 'b', 'c'))).rejects.toThrow();
+    expect(await exists(path.join(scratch, 'a'))).toBe(false);
+  });
+
+  it('raises when the root is a file', async () => {
+    const asFile = path.join(scratch, 'a-file');
+    await writeFile(asFile, 'not a directory\n', 'utf-8');
+    await expect(writeSkills([skill('a')], asFile)).rejects.toThrow();
+  });
+
+  it('a root error is not a TypeError — it is a caller value error', async () => {
+    // TypeError is reserved for the accessors' bare-string guard,
+    // and TypeError extends Error, so the negative half is what makes the
+    // distinction observable in TypeScript at all.
+    const error = await writeSkills([skill('a')], path.join(scratch, 'a', 'b')).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(TypeError);
+  });
+});
+
+// ─── Argument errors ───────────────────────────────────────────────────
+
+describe('writeSkills bare-string guard', () => {
+  it('raises for a bare string that is not "*", naming the accepted forms', async () => {
+    const error = await writeSkills('pdf-extraction' as unknown as Skill[], root).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    // Unlike the accessors' guard this is a *value* error: a string is an
+    // accepted argument type here and only "*" is a valid one.
+    expect(error).not.toBeInstanceOf(TypeError);
+    expect((error as Error).message).toContain('"*"');
+  });
+
+  it('"*" is accepted — the positive control', async () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a'));
+    _setStore(store);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    expect(await exists(path.join(root, 'a', SKILL_MD))).toBe(true);
+  });
+
+  it('writes nothing before raising', async () => {
+    // Asserting only the raise would also pass for an implementation that
+    // created one directory per character before failing.
+    await expect(writeSkills('abc' as unknown as Skill[], root)).rejects.toThrow();
+    expect(await entryNames(root)).toEqual([]);
+  });
+
+  it('rejects an out-of-range onUnavailable value', async () => {
+    await expect(writeSkills([skill('a')], root, { onUnavailable: 'explode' as 'keep' })).rejects.toThrow();
+  });
+
+  it('rejects a negative timeout', async () => {
+    await expect(writeSkills([skill('a')], root, { timeout: -1 })).rejects.toThrow();
+  });
+});
+
+// ─── Atomicity and permissions ─────────────────────────────────────────
+
+describe('writeSkills atomicity and permissions', () => {
+  it.skipIf(process.platform === 'win32')('writes files as 0644, never executable', async () => {
+    await writeSkills([skill('a')], root);
+    const mode = (await stat(path.join(root, 'a', SKILL_MD))).mode & 0o777;
+    expect(mode).toBe(0o644);
+    expect(mode & fsConstants.S_IXUSR).toBe(0);
+    expect(mode & fsConstants.S_IXGRP).toBe(0);
+    expect(mode & fsConstants.S_IXOTH).toBe(0);
+  });
+
+  it('goes through a single atomic rename with the temp file in the target directory', async () => {
+    // Positive control for the interception hook. Without this,
+    // the `calls === []` assertions in the failure tests below and in the
+    // traversal matrix could pass in a suite where the hook is unreachable.
+    const calls = interceptRename();
+
+    const report = await writeSkills([skill('a')], root);
+
+    expect(report.ok).toBe(true);
+    assertAtomicRenameOf(calls, path.join(root, 'a'));
+    expect(await readFile(path.join(root, 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+  });
+
+  it('leaves prior content byte-for-byte intact when the rename fails', async () => {
+    const target = await placeManaged(root, 'a', SKILL_BODY);
+    const calls = interceptRename({ fail: true });
+
+    const report = await writeSkills([skill('a', 2, 'brand new content\n')], root);
+
+    // The injected failure — not an unrelated rejection, and not an
+    // implementation that attempted nothing — is what produced the error.
+    assertAtomicRenameOf(calls, path.dirname(target));
+    expect(report.ok).toBe(false);
+    const action = actionsByKey(report).a;
+    expect(action.action).toBe('error');
+    expect(action.error).toContain(INJECTED);
+
+    expect(await readFile(target, 'utf-8')).toBe(SKILL_BODY);
+    // No temp artifact survives the failed run.
+    expect(await entryNames(path.dirname(target))).toEqual([SKILL_MD]);
+  });
+
+  it('leaves no partial file and no temp file for a brand-new skill', async () => {
+    const calls = interceptRename({ fail: true });
+
+    const report = await writeSkills([skill('a')], root);
+
+    assertAtomicRenameOf(calls, path.join(root, 'a'));
+    expect(report.ok).toBe(false);
+    expect(actionsByKey(report).a.error).toContain(INJECTED);
+    expect(await exists(path.join(root, 'a', SKILL_MD))).toBe(false);
+    const skillDir = path.join(root, 'a');
+    expect((await exists(skillDir)) ? await entryNames(skillDir) : []).toEqual([]);
+  });
+
+  it('never reuses an existing temp path — creation is exclusive', async () => {
+    // The temp name is unpredictable and created with O_EXCL, so two writes in a
+    // row use different names and neither writes through a planted file.
+    const first = interceptRename();
+    await writeSkills([skill('a')], root);
+    const firstTemp = first[0].src;
+    vi.restoreAllMocks();
+
+    const second = interceptRename();
+    await writeSkills([skill('a', 2, 'new content\n')], root);
+
+    expect(second[0].src).not.toBe(firstTemp);
+  });
+
+  it('leaves a valid JSON manifest after a run containing per-skill errors', async () => {
+    const report = await writeSkills([skill('a'), skill('../evil')], root);
+    expect(report.ok).toBe(false);
+    expect(await readManifest(root)).toBeInstanceOf(Object);
+  });
+});
+
+// ─── Resilience ────────────────────────────────────────────────────────
+
+describe('writeSkills resilience', () => {
+  it('keep is the default: existing managed files survive and nothing raises', async () => {
+    const existing = await placeManaged(root, 'a', SKILL_BODY);
+
+    const report = await writeSkills([{ key: 'a', version: 1 }], root);
+
+    expect(report.ok).toBe(false);
+    expect(actionsByKey(report).a.action).toBe('error');
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+  });
+
+  it('raise mode propagates, with a message that says retrieval was unavailable', async () => {
+    // Assert on the message, not just the raise — a bare "not implemented"
+    // error would otherwise satisfy this.
+    await expect(writeSkills([{ key: 'a', version: 1 }], root, { onUnavailable: 'raise' })).rejects.toThrow(
+      /unavailable|skill store/i,
+    );
+  });
+
+  it('reports a throwing store rather than raising', async () => {
+    const exploding: SkillStore = {
+      getObject() {
+        throw new Error('transport failure');
+      },
+      allObjects() {
+        throw new Error('transport failure');
+      },
+    };
+    _setStore(exploding);
+
+    const report = await writeSkills([{ key: 'a', version: 1 }], root);
+
+    expect(report.ok).toBe(false);
+    expect(actionsByKey(report).a.error).toMatch(/transport failure/);
+  });
+
+  it('does not prune when a store outage left the run incomplete', async () => {
+    // Deleting managed files because a lookup failed would turn an outage into
+    // data loss.
+    const existing = await placeManaged(root, 'stays', SKILL_BODY);
+    _setStore({
+      getObject() {
+        throw new Error('transport failure');
+      },
+      allObjects() {
+        throw new Error('transport failure');
+      },
+    });
+
+    const report = await writeSkills('*', root);
+
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+  });
+
+  it('an exhausted timeout behaves as unavailable', async () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a'));
+    _setStore(store);
+    const calls = interceptRename();
+
+    const report = await writeSkills([{ key: 'a', version: 1 }], root, { timeout: 0 });
+
+    expect(report.ok).toBe(false);
+    expect(calls).toEqual([]);
+    expect(await exists(path.join(root, 'a', SKILL_MD))).toBe(false);
+  });
+
+  it('an exhausted timeout raises in raise mode', async () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a'));
+    _setStore(store);
+
+    await expect(writeSkills([{ key: 'a', version: 1 }], root, { timeout: 0, onUnavailable: 'raise' })).rejects.toThrow(
+      /timeout|unavailable/i,
+    );
+  });
+
+  it('never corrupts the manifest on an unavailable run', async () => {
+    await placeManaged(root, 'a', SKILL_BODY);
+    const before = await readManifest(root);
+
+    await writeSkills([{ key: 'b', version: 1 }], root);
+
+    const after = await readManifest(root);
+    expect((after.entries as Record<string, unknown>)[`a/${SKILL_MD}`]).toEqual(
+      (before.entries as Record<string, unknown>)[`a/${SKILL_MD}`],
+    );
+  });
+
+  it('invokes a throwing store exactly once per requested skill — no retries', async () => {
+    // There is deliberately no retry contract in either
+    // language. The number of times a throwing store is invoked is observable,
+    // so a retry added on one side alone would make the two diverge.
+    let calls = 0;
+    _setStore({
+      getObject() {
+        calls += 1;
+        throw new Error('transport failure');
+      },
+      allObjects() {
+        return {};
+      },
+    });
+
+    await writeSkills([{ key: 'a', version: 1 }], root);
+
+    expect(calls).toBe(1);
+  });
+});
+
+// ─── Verify-then-write ─────────────────────────────────────────────────
+
+describe('writeSkills verify-then-write', () => {
+  it('rejects a Skill whose hash does not match its content', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const calls = interceptRename();
+    const bad = createSkill({
+      key: 'a',
+      version: 1,
+      content: new TextEncoder().encode('new content\n'),
+      contentHash: 'f'.repeat(64),
+    });
+
+    const report = await writeSkills([bad], root);
+
+    expect(report.ok).toBe(false);
+    expect(actionsByKey(report).a.action).toBe('error');
+    expect(calls).toEqual([]);
+    expect(await exists(path.join(root, 'a', SKILL_MD))).toBe(false);
+    expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
+  });
+
+  it('rejects an oversize Skill', async () => {
+    const oversize = 'x'.repeat(64 * 1024 + 1);
+    const bad = createSkill({
+      key: 'a',
+      version: 1,
+      content: new TextEncoder().encode(oversize),
+      contentHash: hash(oversize),
+    });
+
+    const report = await writeSkills([bad], root);
+
+    expect(report.ok).toBe(false);
+    expect(await exists(path.join(root, 'a', SKILL_MD))).toBe(false);
+  });
+
+  it('does not disturb an existing managed file when verification fails', async () => {
+    const target = await placeManaged(root, 'a', SKILL_BODY);
+    const bad = createSkill({
+      key: 'a',
+      version: 2,
+      content: new TextEncoder().encode('new content\n'),
+      contentHash: 'f'.repeat(64),
+    });
+
+    await writeSkills([bad], root);
+
+    expect(await readFile(target, 'utf-8')).toBe(SKILL_BODY);
+  });
 });
 
 // ─── Path traversal matrix ───────────────────────────────────────────
@@ -738,6 +1389,111 @@ describe('writeSkills Windows reserved device names', () => {
   });
 });
 
+// ─── Orphaned temp files ─────────────────────────────────────────────
+
+/**
+ * `atomicWrite` creates its temp file exclusively in the target's own directory
+ * and removes it on any error it sees — but not after a SIGKILL. Prune walks
+ * manifest entries only, so an orphan left that way is invisible to the rest of
+ * the reconcile forever, and it also blocks the `rmdir` that would clean up an
+ * emptied skill directory. The sweep is deliberately narrow, so most of what
+ * follows is about what it must *not* remove.
+ */
+describe('writeSkills orphaned temp files', () => {
+  /** Exactly the shape `safe-fs.ts` produces: `.SKILL.md.<16 lowercase hex>.tmp`. */
+  function orphanName(hex = 'a1b2c3d4e5f60718'): string {
+    return `.${SKILL_MD}.${hex}.tmp`;
+  }
+
+  it('sweeps an orphan left behind by a killed reconcile', async () => {
+    const target = await placeManaged(root, 'a', SKILL_BODY);
+    const orphan = path.join(root, 'a', orphanName());
+    await writeFile(orphan, 'half-written\n', 'utf-8');
+
+    const report = await writeSkills([skill('a')], root);
+
+    expect(report.ok).toBe(true);
+    expect(await exists(orphan)).toBe(false);
+    expect(await readFile(target, 'utf-8')).toBe(SKILL_BODY);
+  });
+
+  it('sweeps ahead of the prune, so an orphan cannot block the rmdir', async () => {
+    // The orphan is why the directory would otherwise survive its own emptying:
+    // `rmdir` only ever succeeds on an empty directory.
+    await placeManaged(root, 'gone', SKILL_BODY);
+    await writeFile(path.join(root, 'gone', orphanName()), 'half-written\n', 'utf-8');
+
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(true);
+    expect(actionsByKey(report).gone.action).toBe('removed');
+    expect(await exists(path.join(root, 'gone'))).toBe(false);
+  });
+
+  it('leaves anything that is not one of its own temp names', async () => {
+    await placeManaged(root, 'a', SKILL_BODY);
+    const keepers = [
+      'notes.md', // an ordinary customer file
+      `.${SKILL_MD}.tmp`, // no random component
+      `.${SKILL_MD}.a1b2c3d4e5f60718.tmp.bak`, // suffixed — the trailing anchor matters
+      `.${SKILL_MD}.NOTHEXNOTHEX0000.tmp`, // not lowercase hex
+      `.${SKILL_MD}.a1b2c3d4e5f607.tmp`, // fourteen hex digits, not sixteen
+      `.other.a1b2c3d4e5f60718.tmp`, // a temp for some other target
+    ];
+    for (const name of keepers) await writeFile(path.join(root, 'a', name), 'keep\n', 'utf-8');
+
+    const report = await writeSkills([skill('a')], root);
+
+    expect(report.ok).toBe(true);
+    expect(await entryNames(path.join(root, 'a'))).toEqual([...keepers, SKILL_MD].sort());
+  });
+
+  it('never sweeps outside a skill directory', async () => {
+    // The sweep only ever opens `<root>/<key>/` for a key that passes
+    // `keyRejectionReason`, so a temp-shaped name in the managed root itself —
+    // where the manifest's own temp files live — is not its business.
+    const atRoot = path.join(root, orphanName());
+    await writeFile(atRoot, 'not swept\n', 'utf-8');
+    await placeManaged(root, 'a', SKILL_BODY);
+
+    const report = await writeSkills([skill('a')], root);
+
+    expect(report.ok).toBe(true);
+    expect(await readFile(atRoot, 'utf-8')).toBe('not swept\n');
+  });
+
+  it('does not unlink through a symlink named like a temp file', async () => {
+    // Only a regular file is removed. Unlinking the link itself would in fact be
+    // safe — `unlink` never follows a trailing symlink — but "only a regular
+    // file" is the rule that stays correct if the primitive ever changes.
+    const victim = path.join(scratch, 'victim.txt');
+    await writeFile(victim, 'victim\n', 'utf-8');
+    await placeManaged(root, 'a', SKILL_BODY);
+    const link = path.join(root, 'a', orphanName());
+    await symlink(victim, link);
+
+    const report = await writeSkills([skill('a')], root);
+
+    expect(report.ok).toBe(true);
+    expect(await exists(link)).toBe(true);
+    expect(await readFile(victim, 'utf-8')).toBe('victim\n');
+  });
+
+  it('a corrupt manifest suppresses the sweep along with every other destructive action', async () => {
+    const target = path.join(root, 'a', SKILL_MD);
+    await mkdir(path.dirname(target));
+    await writeFile(target, SKILL_BODY, 'utf-8');
+    const orphan = path.join(root, 'a', orphanName());
+    await writeFile(orphan, 'half-written\n', 'utf-8');
+    await writeManifest(root, { manifestVersion: 2, entries: {} });
+
+    const report = await writeSkills([skill('a')], root);
+
+    expect(report.ok).toBe(false);
+    expect(await exists(orphan)).toBe(true);
+  });
+});
+
 // ─── Corrupt manifest ────────────────────────────────────────────────
 
 const DIVERGENT_CONTENT = 'existing content\n';
@@ -867,5 +1623,198 @@ describe('writeSkills corrupt manifest', () => {
 
     expect(report.ok).toBe(false);
     expect(await exists(path.join(root, 'a', SKILL_MD))).toBe(true);
+  });
+});
+
+// ─── Telemetry seam (write half) ───────────────────────────────────────
+
+describe('writeSkills telemetry', () => {
+  it('records one Materialized signal per written, updated, and skipped_current', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    for (const [key, content] of [
+      ['same', SKILL_BODY],
+      ['stale', 'old\n'],
+    ] as const) {
+      await mkdir(path.join(root, key));
+      await writeFile(path.join(root, key, SKILL_MD), content, 'utf-8');
+    }
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: {
+        [`same/${SKILL_MD}`]: manifestEntry('same', 1, SKILL_BODY),
+        [`stale/${SKILL_MD}`]: manifestEntry('stale', 1, 'old\n'),
+      },
+    });
+
+    await writeSkills([skill('same'), skill('stale', 2, 'fresh\n'), skill('brand-new')], root);
+
+    const materialized = emitter.signals(MATERIALIZED_SIGNAL);
+    expect(materialized).toHaveLength(3);
+    expect(materialized.map((p) => p.reconcile_action).sort()).toEqual(['skipped_current', 'updated', 'written']);
+  });
+
+  it('records the Materialized signal with the exact property keys', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+
+    await writeSkills([skill('a', 2)], root);
+
+    const [props] = emitter.signals(MATERIALIZED_SIGNAL);
+    expect(Object.keys(props).sort()).toEqual([
+      'content_bytes',
+      'content_hash',
+      'language',
+      'reconcile_action',
+      'skill_key',
+    ]);
+    expect(props.skill_key).toBe('a');
+    expect(props.content_bytes).toBe(Buffer.byteLength(SKILL_BODY, 'utf-8'));
+    expect(props.content_hash).toBe(hash(SKILL_BODY));
+    expect(props.reconcile_action).toBe('written');
+    expect(props.language).toBe('typescript');
+  });
+
+  it('puts no filesystem path in telemetry', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+
+    await writeSkills([skill('a')], root);
+
+    for (const [, props] of emitter.records) {
+      expect(props).not.toHaveProperty('target_path');
+      for (const value of Object.values(props)) {
+        expect(String(value)).not.toContain(root);
+        expect(String(value)).not.toContain(SKILL_MD);
+      }
+    }
+  });
+
+  it('puts no skill body in telemetry', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+
+    await writeSkills([skill('a')], root);
+
+    for (const [, props] of emitter.records) {
+      for (const value of Object.values(props)) {
+        expect(String(value)).not.toContain('Do the thing.');
+      }
+    }
+  });
+
+  it('records the Revoked signal on a prune', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    await placeManaged(root, 'gone', SKILL_BODY, 3);
+
+    await writeSkills([], root);
+
+    const [props] = emitter.signals(REVOKED_SIGNAL);
+    expect(props.skill_key).toBe('gone');
+    expect(props.version).toBe(3);
+    expect(props.removed_from_disk).toBe(true);
+    expect(props.language).toBe('typescript');
+  });
+
+  it('records no Revoked signal when pruning is disabled', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    await placeManaged(root, 'gone', SKILL_BODY);
+
+    await writeSkills([], root, { prune: false });
+
+    expect(emitter.signals(REVOKED_SIGNAL)).toEqual([]);
+  });
+
+  it('records no signal outside the approved set across all four actions', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    for (const [key, content] of [
+      ['same', SKILL_BODY],
+      ['stale', 'old\n'],
+      ['gone', 'g\n'],
+    ] as const) {
+      await mkdir(path.join(root, key));
+      await writeFile(path.join(root, key, SKILL_MD), content, 'utf-8');
+    }
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: {
+        [`same/${SKILL_MD}`]: manifestEntry('same', 1, SKILL_BODY),
+        [`stale/${SKILL_MD}`]: manifestEntry('stale', 1, 'old\n'),
+        [`gone/${SKILL_MD}`]: manifestEntry('gone', 1, 'g\n'),
+      },
+    });
+
+    const report = await writeSkills([skill('same'), skill('stale', 2, 'fresh\n'), skill('brand-new')], root);
+
+    // Positive control: the subset assertion is vacuous unless the run really
+    // did produce all four actions and record for them.
+    expect(new Set(report.actions.map((a) => a.action))).toEqual(
+      new Set(['skipped_current', 'updated', 'written', 'removed']),
+    );
+    const recorded = emitter.names();
+    expect([...recorded].filter((name) => !APPROVED_SIGNALS.has(name))).toEqual([]);
+    for (const removed of REMOVED_SIGNALS) expect(recorded.has(removed)).toBe(false);
+    expect(recorded).toEqual(new Set([MATERIALIZED_SIGNAL, REVOKED_SIGNAL]));
+  });
+
+  it('a throwing emitter never breaks the reconcile', async () => {
+    _setEmitterForTesting({
+      record() {
+        throw new Error('emitter exploded');
+      },
+    });
+
+    const report = await writeSkills([skill('a')], root);
+
+    expect(report.ok).toBe(true);
+    expect(await readFile(path.join(root, 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+  });
+
+  it('records the same integrity property keys whichever layer caught the failure', async () => {
+    // Verification runs twice by design: once at the accessor boundary and again
+    // immediately before a write. `expected_hash` is an optional property,
+    // so an implementation that populates it on one path and omits it on the
+    // other passes every other assertion in this block while making the signal's
+    // shape depend on which internal code path noticed. Oversize content is the
+    // case reachable from both layers with the expected hash in hand throughout.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const oversize = 'x'.repeat(64 * 1024 + 1);
+    const contentHash = hash(oversize);
+
+    // Layer 1 — the accessor boundary.
+    const store = new InMemorySkillStore();
+    store.put({ key: 'big', version: 1, content: oversize, contentHash });
+    _setStore(store);
+    const { getSkill } = await import('../skills.js');
+    expect(await getSkill('big')).toBeNull();
+
+    // Layer 2 — verify-then-write, on a directly constructed Skill.
+    const report = await writeSkills(
+      [createSkill({ key: 'big', version: 1, content: new TextEncoder().encode(oversize), contentHash })],
+      root,
+    );
+    expect(report.ok).toBe(false);
+
+    const failures = emitter.signals(INTEGRITY_SIGNAL);
+    expect(failures).toHaveLength(2);
+    const [accessorKeys, writeKeys] = failures.map((props) => Object.keys(props).sort());
+    expect(accessorKeys).toEqual(writeKeys);
+    expect(accessorKeys).toContain('expected_hash');
+  });
+});
+
+// ─── Cleanup guard ───────────────────────────────────────────────────────────
+
+describe('test hygiene', () => {
+  it('restores the intercepted filesystem operations between tests', async () => {
+    // `vi.restoreAllMocks` in afterEach must put the real functions back, or a
+    // later test would silently run against a spy from an earlier one.
+    await chmod(root, 0o755);
+    expect(vi.isMockFunction(fsOps.rename)).toBe(false);
+    expect(vi.isMockFunction(fsOps.unlink)).toBe(false);
   });
 });
