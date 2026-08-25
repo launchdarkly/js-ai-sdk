@@ -56,6 +56,15 @@ const INTEGRITY_SIGNAL = 'AgentControl Skill Integrity Failure';
 const MATERIALIZED_SIGNAL = 'AgentControl Skill Materialized';
 const REVOKED_SIGNAL = 'AgentControl Skill Revoked Received';
 
+/** The three signal names are an allowlist, not a floor. */
+const APPROVED_SIGNALS = new Set([INTEGRITY_SIGNAL, MATERIALIZED_SIGNAL, REVOKED_SIGNAL]);
+
+/**
+ * Signal names that must never be emitted by the SDK — named explicitly so the
+ * regression is unmissable.
+ */
+const REMOVED_SIGNALS = ['AgentControl Skill SDK Reference Returned', 'AgentControl Skill Content Retrieved'];
+
 function hash(content: string): string {
   return createHash('sha256').update(Buffer.from(content, 'utf-8')).digest('hex');
 }
@@ -88,6 +97,12 @@ class RecordingEmitter {
   }
   names(): Set<string> {
     return new Set(this.records.map(([s]) => s));
+  }
+}
+
+class ThrowingEmitter {
+  record(): void {
+    throw new Error('emitter exploded');
   }
 }
 
@@ -718,5 +733,329 @@ describe('allSkills', () => {
   it('returns an empty list for an empty store', async () => {
     _setStore(new InMemorySkillStore());
     expect(await allSkills()).toEqual([]);
+  });
+});
+
+// ─── Integrity verification ────────────────────────────────────────────
+
+describe('integrity verification', () => {
+  it('withholds a skill whose hash does not match', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', contentHash: 'a'.repeat(64) }));
+    _setStore(store);
+
+    expect(await getSkill('a')).toBeNull();
+    const [props] = emitter.signals(INTEGRITY_SIGNAL);
+    expect(props.expected_hash).toBe('a'.repeat(64));
+    expect(props.observed_hash).toBe(hash(SKILL_BODY));
+  });
+
+  it('withholds content tampered by a single byte', async () => {
+    const raw = rawSkill({ key: 'a' });
+    raw.content = `${raw.content as string}x`;
+    _setStore(new DictStore({ a: raw }));
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('rejects content over 64 KiB even when its hash matches', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const oversize = 'x'.repeat(64 * 1024 + 1);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', content: oversize }));
+    _setStore(store);
+
+    expect(await getSkill('a')).toBeNull();
+    expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
+  });
+
+  it('accepts content at exactly the size cap', async () => {
+    const atCap = 'x'.repeat(64 * 1024);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', content: atCap }));
+    _setStore(store);
+    expect((await getSkill('a'))?.content).toHaveLength(64 * 1024);
+  });
+
+  it('accepts a key at the 256-character bound from the store', async () => {
+    // The accepting side of the <= 256 bound. writeSkills cannot reach
+    // it (a key is one directory name and NAME_MAX is 255), so config
+    // validation and this accessor-side revalidation are the only two layers
+    // where 256 is observable at all.
+    const key = 'a'.repeat(256);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key }));
+    _setStore(store);
+    expect((await getSkill(key))?.key).toBe(key);
+  });
+
+  it.each([
+    ['uppercase', 'Evil'],
+    ['leading dash', '-leading-dash'],
+    ['leading dot', '.hidden'],
+    ['embedded space', 'has space'],
+    ['path separator', 'a/b'],
+    ['traversal', '../escape'],
+    ['empty', ''],
+    ['overlong', 'x'.repeat(257)],
+    ['trailing newline', 'trailing\n'],
+  ])('rejects an invalid key served by the store: %s', async (_label, badKey) => {
+    // A hostile store may serve any key — the accessor revalidates.
+    const raw = rawSkill({ key: 'placeholder' });
+    raw.key = badKey;
+    _setStore(new DictStore({ [badKey]: raw }));
+    expect(await getSkill(badKey)).toBeNull();
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['non-integer', 2.5],
+    ['string', '2'],
+    ['null', null],
+    ['boolean', true],
+    ['undefined', undefined],
+    ['NaN', Number.NaN],
+  ])('rejects an invalid version served by the store: %s', async (_label, badVersion) => {
+    const raw = rawSkill({ key: 'a' });
+    raw.version = badVersion as number;
+    _setStore(new DictStore({ a: raw }));
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('rejects a raw object with no content', async () => {
+    const raw = rawSkill({ key: 'a' });
+    delete raw.content;
+    _setStore(new DictStore({ a: raw }));
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('rejects a raw object with no contentHash', async () => {
+    const raw = rawSkill({ key: 'a' });
+    delete raw.contentHash;
+    _setStore(new DictStore({ a: raw }));
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('rejects a non-object raw entry', async () => {
+    _setStore(new DictStore({ a: 'not an object' as unknown as RawSkillObject }));
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('rejects an uppercase hash — hashes are lowercase hex', async () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', contentHash: hash(SKILL_BODY).toUpperCase() }));
+    _setStore(store);
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('verifies multi-byte UTF-8 content byte-exactly', async () => {
+    const emoji = '---\nname: 🎉\n---\nUnicode ✨ body\n';
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', content: emoji }));
+    _setStore(store);
+    expect((await getSkill('a'))?.content).toBe(emoji);
+  });
+
+  it('withholds content that has no UTF-8 encoding, even when its hash matches', async () => {
+    // An unpaired surrogate has
+    // no UTF-8 encoding. Python's str.encode raises; Node's Buffer.from
+    // *silently substitutes* U+FFFD, so only an explicit round-trip check
+    // catches it — and without that check a store can supply the hash of the
+    // substituted bytes and have fabricated content pass verification.
+    //
+    // contentHash is deliberately the hash of the lossy encoding, so the hash
+    // comparison is NOT what rejects this. If the round-trip guard is removed,
+    // this skill verifies and getSkill returns content LaunchDarkly never sent.
+    const content = 'hi \ud800 there';
+    const substituted = Buffer.from(content, 'utf-8');
+    expect(substituted.toString('utf-8')).not.toBe(content); // the substitution really happens
+
+    const store = new DictStore({
+      a: { key: 'a', version: 1, content, contentHash: createHash('sha256').update(substituted).digest('hex') },
+    });
+    _setStore(store);
+
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('records the integrity signal for unencodable content', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const content = 'hi \ud800 there';
+    _setStore(
+      new DictStore({
+        a: {
+          key: 'a',
+          version: 1,
+          content,
+          contentHash: createHash('sha256').update(Buffer.from(content, 'utf-8')).digest('hex'),
+        },
+      }),
+    );
+
+    await getSkill('a');
+
+    expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
+  });
+
+  it('reports a throwing store as no result rather than propagating', async () => {
+    _setStore({
+      getObject() {
+        throw new Error('transport failure');
+      },
+      allObjects() {
+        throw new Error('transport failure');
+      },
+    });
+    expect(await getSkill('a')).toBeNull();
+    expect(await getSkills(['a'])).toEqual([]);
+    expect(await allSkills()).toEqual([]);
+  });
+});
+
+// ─── Telemetry seam (accessor half) ────────────────────────────────────
+
+describe('telemetry seam, accessor half', () => {
+  it('the default emitter is a no-op and never raises', async () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', contentHash: '0'.repeat(64) }));
+    _setStore(store);
+    // No emitter injected.
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('records the integrity failure with the exact property keys', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 4, contentHash: 'b'.repeat(64) }));
+    _setStore(store);
+
+    await getSkill('a');
+
+    const [props] = emitter.signals(INTEGRITY_SIGNAL);
+    expect(props.skill_key).toBe('a');
+    expect(props.version).toBe(4);
+    expect(props.expected_hash).toBe('b'.repeat(64));
+    expect(props.observed_hash).toBe(hash(SKILL_BODY));
+    expect(props.language).toBe('typescript');
+  });
+
+  it('never puts the skill body in a signal', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', contentHash: 'c'.repeat(64) }));
+    _setStore(store);
+
+    await getSkill('a');
+
+    for (const [, props] of emitter.records) {
+      for (const value of Object.values(props)) {
+        expect(String(value)).not.toContain('Do the thing.');
+      }
+    }
+  });
+
+  // `skill_key` and `expected_hash` are copied off the wire,
+  // so a hostile store can smuggle the body through either one. The sweep above
+  // cannot detect that: it passes a well-formed 64-char digest, so neither
+  // shape-check branch ever runs. These two cases are what make the rule
+  // observable. Assert the body's absence, not the placeholder's spelling.
+
+  it('redacts a skill body smuggled through contentHash', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const body = 'UNIQUE-SECRET-BODY-VIA-HASH';
+    _setStore(new DictStore({ a: { key: 'a', version: 1, content: body, contentHash: body } }));
+
+    expect(await getSkill('a')).toBeNull();
+
+    const signals = emitter.signals(INTEGRITY_SIGNAL);
+    expect(signals).toHaveLength(1);
+    for (const value of Object.values(signals[0])) {
+      expect(String(value)).not.toContain(body);
+    }
+  });
+
+  it('redacts a skill body smuggled through the key', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    // Not a valid skill key, so it is the invalid-key branch that must redact it.
+    const body = 'UNIQUE-SECRET-BODY-VIA-KEY/../x';
+    _setStore(new DictStore({ [body]: { key: body, version: 1, content: 'x', contentHash: 'y' } }));
+
+    expect(await getSkill(body)).toBeNull();
+
+    const signals = emitter.signals(INTEGRITY_SIGNAL);
+    expect(signals).toHaveLength(1);
+    for (const value of Object.values(signals[0])) {
+      expect(String(value)).not.toContain(body);
+    }
+  });
+
+  it('makes no client.track call from any accessor', async () => {
+    const mockClient = makeMockLdClient();
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a' }));
+    store.put(rawSkill({ key: 'bad', contentHash: '0'.repeat(64) }));
+    await initClient(mockClient, { skillStore: store });
+
+    await getSkill('a');
+    await getSkill('bad');
+    await getSkills(['a']);
+    await allSkills();
+    skillRefs({ model: { name: 'm' }, provider: { name: 'p' }, instructions: 'i', skills: [{ key: 'a', version: 1 }] });
+
+    expect(mockClient.track).not.toHaveBeenCalled();
+  });
+
+  it('a throwing emitter never breaks the operation', async () => {
+    _setEmitterForTesting(new ThrowingEmitter());
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'bad', contentHash: '0'.repeat(64) }));
+    store.put(rawSkill({ key: 'good' }));
+    _setStore(store);
+
+    expect(await getSkill('bad')).toBeNull();
+    expect((await getSkill('good'))?.key).toBe('good');
+  });
+
+  it('records no signal outside the approved set', async () => {
+    // The three names are an allowlist, not a floor. Asserted over the
+    // recorded strings, so nothing here mandates a module-level constant.
+    //
+    // Guards the most likely regression: an implementation that also emits
+    // `AgentControl Skill Content Retrieved` from getSkill, or
+    // `AgentControl Skill SDK Reference Returned` from skillRefs, passes every
+    // other test in this block.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'good' }));
+    store.put(rawSkill({ key: 'tampered', contentHash: '0'.repeat(64) }));
+    _setStore(store);
+
+    expect(await getSkill('good')).not.toBeNull();
+    expect(await getSkill('tampered')).toBeNull();
+    await getSkills(['good', 'tampered']);
+    await allSkills();
+    skillRefs({
+      model: { name: 'm' },
+      provider: { name: 'p' },
+      instructions: 'i',
+      skills: [{ key: 'good', version: 1 }],
+    });
+
+    const recorded = emitter.names();
+    const unapproved = [...recorded].filter((name) => !APPROVED_SIGNALS.has(name));
+    expect(unapproved).toEqual([]);
+    for (const removed of REMOVED_SIGNALS) expect(recorded.has(removed)).toBe(false);
+    // Positive control: a subset assertion is satisfied vacuously by an
+    // implementation that records nothing at all.
+    expect(recorded.has(INTEGRITY_SIGNAL)).toBe(true);
   });
 });
