@@ -37,13 +37,21 @@ export type {
   LDSingleKindContext,
   LDUser,
   Message,
+  OnUnavailable,
   ProviderGraphResponse,
   ProviderHandler,
   ProviderResponse,
   ProviderSetupFn,
+  RawSkillObject,
+  ReconcileAction,
+  ReconcileActionKind,
+  ReconcileReport,
   RegistryInput,
   RouteResult,
   RunNodeOptions,
+  Skill,
+  SkillReference,
+  SkillStore,
   StreamEvent,
   TokenUsage,
   Tool,
@@ -52,7 +60,13 @@ export type {
   TraverseVisitor,
   VariationMeta as LDVariationMeta,
 } from './types.js';
-export { GraphTopologySchema, NATIVE_TOOL_KEY, NativeTool } from './types.js';
+export {
+  createSkill,
+  createSkillReference,
+  GraphTopologySchema,
+  NATIVE_TOOL_KEY,
+  NativeTool,
+} from './types.js';
 export type { RunUsage, SpanUsage } from './utils.js';
 export {
   addCachedTokensToInput,
