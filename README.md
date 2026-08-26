@@ -272,7 +272,7 @@ Provider packages also export single-provider conveniences (`claudeGraph`, `open
 
 ---
 
-#### 3e. `resolveGraph(key, options)`
+#### 3d. `resolveGraph(key, options)`
 
 For framework packages that need to walk the topology and build their own execution structure (e.g. constructing a LangGraph or OpenAI Agents graph), use `resolveGraph` instead of `graph`. It returns a `GraphDefinition` without executing anything.
 
@@ -301,7 +301,7 @@ if (def.enabled) {
 
 ---
 
-#### 3f. Framework-native graph runners
+#### 3e. Framework-native graph runners
 
 Each handler package ships a native runner that converts `resolveGraph` output into the provider's own multi-agent orchestration primitives. Native runners **bypass the SDK's model-driven router** and let the provider's SDK manage handoffs, tool loops, and conversation state.
 
