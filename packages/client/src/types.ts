@@ -528,6 +528,13 @@ export type ProviderGraphResponse = {
   response: string;
   usage: TokenUsage;
   judgeResults?: ProviderResponse['judgeResults'];
+  /** Node keys in the order they were executed, starting at the root. */
+  path: string[];
+  /**
+   * Each executed node's own response, keyed by node key. Populated by
+   * `graph()`; native runners that delegate traversal to a framework omit it.
+   */
+  nodes?: Record<string, ProviderResponse>;
 };
 
 export type InitBaseClientOptions = {

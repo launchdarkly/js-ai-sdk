@@ -268,6 +268,8 @@ const result = await graph('support-graph', {
 
 console.log(result.response); // final output
 console.log(result.usage);    // aggregate { input, output, total }
+console.log(result.path);     // node keys in execution order, e.g. ['triage', 'billing']
+console.log(result.nodes);    // each node's own response, keyed by node key
 
 await shutdown();
 ```
