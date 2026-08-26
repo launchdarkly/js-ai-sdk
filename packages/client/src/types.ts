@@ -89,15 +89,46 @@ export type Tool = {
   description?: string;
 };
 
+/** A block of plain text inside a multimodal message. */
+export type TextContentBlock = { type: 'text'; text: string };
+
 /**
- * A single message in a conversation. Used both by `AiConfigRep.messages`
- * (config-time prompts) and the `history` parameter (runtime conversation state).
+ * An image block inside a multimodal message, in LaunchDarkly-canonical form.
+ * `source.type` is either an inline base64 payload (with its media type) or a
+ * URL. Handlers map this into each provider's native image shape — see the
+ * per-provider table in TESTING.md Appendix A.7.
  */
-export type Message = { role: 'user' | 'assistant' | 'system'; content: string };
+export type ImageContentBlock =
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | { type: 'image'; source: { type: 'url'; url: string } };
+
+/** One typed block of a multimodal message. */
+export type ContentBlock = TextContentBlock | ImageContentBlock;
+
+/**
+ * Message content: either a plain string (the common case, and the only shape
+ * flag-delivered `AiConfigRep.messages` ever use) or an array of typed content
+ * blocks for multimodal runtime `history` (text + images). `parseTemplate` is
+ * only applied to string content; block arrays are passed through untouched.
+ */
+export type MessageContent = string | ContentBlock[];
+
+/**
+ * A config-time message from a flag variation's `AiConfigRep.messages`. Always
+ * string content — flag-delivered prompts are never multimodal.
+ */
+export type ConfigMessage = { role: 'user' | 'assistant' | 'system'; content: string };
+
+/**
+ * A single message in a conversation. Used for the runtime `history` parameter,
+ * whose content may be a plain string or an array of multimodal content blocks.
+ * Flag-delivered config prompts use {@link ConfigMessage} (string-only) instead.
+ */
+export type Message = { role: 'user' | 'assistant' | 'system'; content: MessageContent };
 
 export type AiConfigRep = {
   instructions?: string;
-  messages?: Message[];
+  messages?: ConfigMessage[];
   model: {
     name: string;
     region?: string;
@@ -449,6 +480,13 @@ export type RunNodeOptions = {
    * `$ld:ai:graph:handoff_success` / `handoff_failure` for the transition.
    */
   from?: GraphNode;
+  /**
+   * Prior conversation turns to pass into this node's handler. Only the graph's
+   * root node receives `history` on the first hop; subsequent nodes stay
+   * oriented through the string `[Original request]` / `[Previous agent
+   * response]` threading instead.
+   */
+  history?: Message[];
 };
 
 /**

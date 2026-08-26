@@ -311,6 +311,37 @@ describe('graph().invoke()', () => {
     expect(runJudges).toHaveBeenCalled();
     expect(result.judgeResults).toEqual(judgeData);
   });
+
+  it('forwards history as the 4th invoke arg to the root handler only', async () => {
+    setupTwoNodeGraph();
+    const calls: Array<{ input: unknown; history: unknown }> = [];
+    const handler: ProviderHandler = vi.fn().mockImplementation(async (_cfg, input, _tools, _vars, history) => {
+      calls.push({ input, history });
+      return { output: 'ok', usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    handler.providesFor = ['OpenAI', 'messages'];
+
+    const history = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc' } },
+        ],
+      },
+    ];
+    await graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext, undefined, history);
+
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(calls[0].history).toEqual(history);
+    expect(calls.slice(1).every((c) => c.history == null)).toBe(true);
+  });
+
+  it('omitted history leaves root handler history undefined', async () => {
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+    await graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext);
+    expect((handler as ReturnType<typeof vi.fn>).mock.calls[0][4]).toBeUndefined();
+  });
 });
 
 // ─── conversation id on ld.ai.graph ───────────────────────────────────────────

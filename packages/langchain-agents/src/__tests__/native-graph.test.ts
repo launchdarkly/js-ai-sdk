@@ -189,6 +189,36 @@ describe('toLangGraph', () => {
     expect(edgeCalls.some(([from, to]) => from === 'leaf' && to === '__end__')).toBe(true);
   });
 
+  // ── History (root-only, native LangChain messages) ──────────────────────────
+
+  it('seeds the root message state with a plain HumanMessage when no history is passed', async () => {
+    const root = makeNode('root', '', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+    const { messages } = mockCompiledInvoke.mock.calls[0][0];
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toBe('hi');
+  });
+
+  it('forwards history to the root initial messages as native LangChain content', async () => {
+    const history = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+        ],
+      },
+    ];
+    const root = makeNode('root', '', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def)).invoke('describe', {}, history);
+    const { messages } = mockCompiledInvoke.mock.calls[0][0];
+    const serialized = JSON.stringify(messages);
+    expect(serialized).toMatch(/image_url|"type":"image"/);
+    expect(serialized).toContain('abc123');
+    expect(serialized).toContain('describe');
+  });
+
   // ── Handoff tools ───────────────────────────────────────────────────────────
 
   it('injects one transfer_to_ handoff tool per outgoing edge for a multi-child node', async () => {

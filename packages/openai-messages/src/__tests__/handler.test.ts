@@ -923,6 +923,25 @@ describe('createOpenAIHandler', () => {
     expect(contents).toContain('Hello');
     expect(contents).toContain('Hi there');
   });
+
+  it('multimodal image history content blocks are preserved on the wire', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const imageHistory = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+          { type: 'text' as const, text: 'What is in this image?' },
+        ],
+      },
+    ];
+    await createOpenAIHandler()(baseConfig as any, '', {}, {}, imageHistory);
+    const { input } = mockResponsesCreate.mock.calls[0][0];
+    const serialized = JSON.stringify(input);
+    expect(serialized).toMatch(/input_image|image/);
+    expect(serialized).toContain('abc123');
+    expect(input.filter((m: { role: string }) => m.role === 'user')).toHaveLength(1);
+  });
 });
 
 // ── §1.4 Token accumulation across multiple tool turns (blocking) ────────────

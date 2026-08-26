@@ -848,6 +848,27 @@ describe('createLangChainHandler', () => {
     expect(allContent).toContain('Hi there');
   });
 
+  it('multimodal image history content blocks are preserved on the wire', async () => {
+    const llm = makeMockLLM();
+    const handler = createLangChainHandler(llm as any);
+    const imageHistory = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+          { type: 'text' as const, text: 'What is in this image?' },
+        ],
+      },
+    ];
+    await handler(baseConfig as any, '', {}, {}, imageHistory);
+    const messages = llm.invoke.mock.calls[0][0];
+    const serialized = JSON.stringify(messages);
+    expect(serialized).toMatch(/image_url|"type":"image"/);
+    expect(serialized).toContain('abc123');
+    const humans = messages.filter((m: { _getType?: () => string }) => m._getType?.() === 'human');
+    expect(humans).toHaveLength(1);
+  });
+
   // ── 1.x.7 Streaming — tool loop ─────────────────────────────────────────────
 
   it('streams chunks from both turns around a tool call', async () => {

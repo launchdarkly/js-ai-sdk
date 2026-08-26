@@ -575,6 +575,7 @@ yarn start [example] [flag-key] [user-input]
 | ------------------- | ------------------------- | ----------------------------------------------------------------------------------------------- |
 | `agent` *(default)* | `yarn start agent`        | `config()` routed via the global registry — switches providers without code changes |
 | `graph`             | `yarn start graph`        | `graph()` multi-agent workflow driven by a LaunchDarkly agent graph flag                        |
+| `graph-history`     | `yarn start graph-history` | `graph().invoke()` with multimodal `history` forwarded to the root node                        |
 | `native-graph`      | `yarn start native-graph` | `toClaudeAgents` + `resolveGraph` — native Claude Agent SDK runner                              |
 | `openai-only`       | `yarn start openai-only`  | `config()` with a custom `Registry` restricted to OpenAI handlers                   |
 

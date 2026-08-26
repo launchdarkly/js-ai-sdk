@@ -4,7 +4,9 @@ import { tool } from '@langchain/core/tools';
 import { ChatOpenAI } from '@langchain/openai';
 import {
   type AiConfigRep,
+  type ConfigTurn,
   type ContentCaptureOptions,
+  composeHistory,
   config,
   createHandler,
   createRunUsage,
@@ -29,6 +31,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { createAgent } from 'langchain';
+import { toLangChainMessages } from './messages.js';
 
 const TRACER_NAME = '@launchdarkly/ai-langchain-agents';
 
@@ -267,49 +270,51 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
       ),
     );
 
-function formatHistory(history: Message[]): string {
-  return history.map((m) => `${m.role}: ${m.content}`).join('\n');
-}
-
-const extractSystemPrompt = (
-  config: AiConfigRep,
-  variables: Record<string, unknown>,
-  history?: Message[],
-): string | undefined => {
-  let systemPrompt: string | undefined;
+const extractSystemPrompt = (config: AiConfigRep, variables: Record<string, unknown>): string | undefined => {
   if (config.instructions) {
-    systemPrompt = parseTemplate(config.instructions, variables);
-  } else if (config.messages) {
+    return parseTemplate(config.instructions, variables);
+  }
+  if (config.messages) {
     const systemMessages = config.messages.filter((m) => m.role === 'system');
     if (systemMessages.length > 0) {
-      systemPrompt = parseTemplate(systemMessages.map((m) => m.content).join('\n'), variables);
+      return parseTemplate(systemMessages.map((m) => m.content).join('\n'), variables);
     }
   }
-
-  if (history && history.length > 0) {
-    const formatted = formatHistory(history);
-    systemPrompt = systemPrompt
-      ? `${systemPrompt}\n\nConversation History:\n\n${formatted}`
-      : `Conversation History:\n\n${formatted}`;
-  }
-
-  return systemPrompt;
+  return undefined;
 };
+
+/** Non-system config conversation messages, template-applied, in canonical form. */
+const configConversationTurns = (config: AiConfigRep, variables: Record<string, unknown>): ConfigTurn[] =>
+  (config.messages ?? [])
+    .filter((m) => m.role !== 'system')
+    .map((m) => ({ role: m.role as 'user' | 'assistant', content: parseTemplate(m.content, variables) }));
 
 const buildInitialMessages = (
   config: AiConfigRep,
   userInput: string,
   variables: Record<string, unknown>,
+  history?: Message[],
 ): BaseMessage[] => {
+  // With history, the whole conversation is composed as LangChain messages — the
+  // framework's native input path. `config.instructions` / system messages stay
+  // on `systemPrompt`; history never becomes system-prompt text.
+  if (history && history.length > 0) {
+    return toLangChainMessages(
+      composeHistory({
+        history,
+        userInput,
+        configMessages: config.instructions ? [] : configConversationTurns(config, variables),
+      }),
+    );
+  }
+
   const messages: BaseMessage[] = [];
 
   // system-role messages are passed via systemPrompt to createAgent; only
   // include user/assistant history here
   if (config.messages) {
-    const conversationMessages = config.messages.filter((m) => m.role !== 'system');
-    for (const msg of conversationMessages) {
-      const content = parseTemplate(msg.content, variables);
-      messages.push(msg.role === 'user' ? new HumanMessage(content) : new AIMessage(content));
+    for (const msg of configConversationTurns(config, variables)) {
+      messages.push(msg.role === 'user' ? new HumanMessage(msg.content) : new AIMessage(msg.content));
     }
   }
 
@@ -351,12 +356,12 @@ export function createLangChainAgentsHandler(
         const parentContext = trace.setSpan(context.active(), span);
 
         const baseModel = llm ?? (await makeDefaultChatModel(config));
-        let systemPrompt = extractSystemPrompt(config, variables, history);
+        let systemPrompt = extractSystemPrompt(config, variables);
         if (config.outputFormat) {
           const schemaInstruction = `Respond with valid JSON matching this schema:\n${JSON.stringify(config.outputFormat)}`;
           systemPrompt = systemPrompt ? `${systemPrompt}\n\n${schemaInstruction}` : schemaInstruction;
         }
-        const initialMessages = buildInitialMessages(config, userInput, variables);
+        const initialMessages = buildInitialMessages(config, userInput, variables, history);
         if (captureContent) {
           setInputContentAttributes(span, captureContent, {
             systemInstructions: systemPrompt,
@@ -428,8 +433,8 @@ export function createLangChainAgentsHandler(
       const endedSpans = new Set<Span>();
 
       const baseModel = llm ?? (await makeDefaultChatModel(config));
-      const systemPrompt = extractSystemPrompt(config, variables, history);
-      const initialMessages = buildInitialMessages(config, userInput, variables);
+      const systemPrompt = extractSystemPrompt(config, variables);
+      const initialMessages = buildInitialMessages(config, userInput, variables, history);
       if (captureContent) {
         setInputContentAttributes(span, captureContent, {
           systemInstructions: systemPrompt,

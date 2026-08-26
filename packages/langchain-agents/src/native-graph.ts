@@ -6,9 +6,11 @@ import { ToolNode, toolsCondition } from '@langchain/langgraph/prebuilt';
 import { ChatOpenAI } from '@langchain/openai';
 import type { LDContext } from '@launchdarkly/ai-server';
 import {
+  composeHistory,
   type GraphDefinition,
   type GraphNode,
   getClient,
+  type Message,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
@@ -17,6 +19,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
+import { toLangChainMessages } from './messages.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -128,10 +131,16 @@ export const toLangGraph = (
     /** LaunchDarkly context used for tracking events. Required for LD telemetry. */
     context?: LDContext;
   },
-): { invoke: (input?: string, variables?: Record<string, unknown>) => Promise<ProviderGraphResponse> } => {
+): {
+  invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
+} => {
   type ContentBlock = { type: string; text?: string };
 
-  const invoke = async (input = '', variables: Record<string, unknown> = {}): Promise<ProviderGraphResponse> => {
+  const invoke = async (
+    input = '',
+    variables: Record<string, unknown> = {},
+    history?: Message[],
+  ): Promise<ProviderGraphResponse> => {
     const def = await defPromise;
     if (!def.enabled) {
       throw new Error(`Agent graph "${def.key}" is disabled`);
@@ -269,10 +278,18 @@ export const toLangGraph = (
 
       const compiled = builder.compile();
 
+      // History is a root-only concern: it seeds the initial message state the
+      // entry node reads. Downstream nodes are reached through handoffs and see
+      // the accumulated graph state, never the original `history` array.
+      const initialMessages =
+        history && history.length > 0
+          ? toLangChainMessages(composeHistory({ history, userInput: input }))
+          : [new HumanMessage(input)];
+
       // biome-ignore lint/suspicious/noImplicitAnyLet: assigned immediately in try; catch always re-throws
       let result;
       try {
-        result = await compiled.invoke({ messages: [new HumanMessage(input)] });
+        result = await compiled.invoke({ messages: initialMessages });
         span.setStatus({ code: SpanStatusCode.OK });
       } catch (err) {
         span.recordException(err instanceof Error ? err : new Error(String(err)));

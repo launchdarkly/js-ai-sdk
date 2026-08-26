@@ -713,29 +713,42 @@ describe('createLangChainAgentsHandler', () => {
     await expect(executor({})).rejects.toThrow('tool exploded');
   });
 
-  // ── History ──────────────────────────────────────────────────────────────────
+  // ── History (§1.11 — structured messages, not system-prompt text) ────────────
 
   const sampleHistory = [
     { role: 'user' as const, content: 'What is feature flagging?' },
     { role: 'assistant' as const, content: 'Feature flagging is a technique...' },
   ];
 
-  it('history is appended to system prompt', async () => {
+  const imageHistory = [
+    {
+      role: 'user' as const,
+      content: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+      ],
+    },
+  ];
+
+  it('history is structured messages, not stuffed into systemPrompt', async () => {
     const agent = makeMockAgent();
     mockCreateAgent.mockReturnValue(agent);
     await createLangChainAgentsHandler({} as any)(baseConfig as any, 'q', {}, {}, sampleHistory);
     const systemPrompt = mockCreateAgent.mock.calls[0][0].systemPrompt;
     expect(systemPrompt).toContain('You are helpful.');
-    expect(systemPrompt).toContain('Conversation History:');
+    expect(systemPrompt).not.toContain('Conversation History:');
+    const messages = agent.invoke.mock.calls[0][0].messages;
+    expect(messages.length).toBeGreaterThanOrEqual(3);
+    expect(JSON.stringify(messages)).toContain('What is feature flagging?');
+    expect(JSON.stringify(messages)).toContain('"q"');
   });
 
-  it('history format is correct', async () => {
+  it('history turns appear before userInput in initial messages', async () => {
     const agent = makeMockAgent();
     mockCreateAgent.mockReturnValue(agent);
-    await createLangChainAgentsHandler({} as any)(baseConfig as any, 'q', {}, {}, sampleHistory);
-    const systemPrompt = mockCreateAgent.mock.calls[0][0].systemPrompt;
-    expect(systemPrompt).toContain('user: What is feature flagging?');
-    expect(systemPrompt).toContain('assistant: Feature flagging is a technique...');
+    await createLangChainAgentsHandler({} as any)(baseConfig as any, 'follow up', {}, {}, sampleHistory);
+    const messages = agent.invoke.mock.calls[0][0].messages;
+    const serialized = JSON.stringify(messages);
+    expect(serialized.indexOf('What is feature flagging?')).toBeLessThan(serialized.lastIndexOf('follow up'));
   });
 
   it('empty history is treated like no history', async () => {
@@ -747,15 +760,43 @@ describe('createLangChainAgentsHandler', () => {
     expect(systemPrompt).toBe('You are helpful.');
   });
 
-  it('history without prior system prompt', async () => {
+  it('system-role history messages are filtered from initial messages', async () => {
     const agent = makeMockAgent();
     mockCreateAgent.mockReturnValue(agent);
-    const config = { model: { name: 'gpt-4o' }, provider: { name: 'LangChain' } };
-    await createLangChainAgentsHandler({} as any)(config as any, 'q', {}, {}, sampleHistory);
-    const systemPrompt = mockCreateAgent.mock.calls[0][0].systemPrompt;
-    expect(systemPrompt).toContain('Conversation History:');
-    expect(systemPrompt).toContain('user: What is feature flagging?');
-    expect(systemPrompt).toContain('assistant: Feature flagging is a technique...');
+    const withSystem = [{ role: 'system' as const, content: 'secret system' }, ...sampleHistory];
+    await createLangChainAgentsHandler({} as any)(baseConfig as any, 'q', {}, {}, withSystem);
+    expect(JSON.stringify(agent.invoke.mock.calls[0][0].messages)).not.toContain('secret system');
+  });
+
+  it('multimodal image history maps to LangChain image content parts', async () => {
+    const agent = makeMockAgent();
+    mockCreateAgent.mockReturnValue(agent);
+    await createLangChainAgentsHandler({} as any)(baseConfig as any, 'describe', {}, {}, imageHistory);
+    const serialized = JSON.stringify(agent.invoke.mock.calls[0][0].messages);
+    expect(serialized).toMatch(/image_url|"type":"image"/);
+    expect(serialized).toContain('abc123');
+    expect(mockCreateAgent.mock.calls[0][0].systemPrompt).not.toContain('Conversation History:');
+  });
+
+  it('empty userInput with history ending in user does not append empty turn', async () => {
+    const agent = makeMockAgent();
+    mockCreateAgent.mockReturnValue(agent);
+    const fullTurn = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'xyz' } },
+          { type: 'text' as const, text: 'Analyze this diagram' },
+        ],
+      },
+    ];
+    await createLangChainAgentsHandler({} as any)(baseConfig as any, '', {}, {}, fullTurn);
+    const messages = agent.invoke.mock.calls[0][0].messages;
+    const serialized = JSON.stringify(messages);
+    expect(serialized).toContain('Analyze this diagram');
+    expect(serialized).toContain('xyz');
+    const humanCount = messages.filter((m: { _getType?: () => string }) => m._getType?.() === 'human').length;
+    expect(humanCount).toBe(1);
   });
 });
 

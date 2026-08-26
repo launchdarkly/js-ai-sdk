@@ -1,11 +1,17 @@
 import {
   type AiConfigRep,
+  type CanonicalTurn,
+  type ConfigTurn,
   type ContentCaptureOptions,
+  composeHistory,
   config,
+  contentToText,
   createHandler,
   endSpanOnce,
+  imageBlockToUrl,
   type LDContext,
   type Message,
+  type MessageContent,
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
@@ -445,8 +451,48 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
       }),
     );
 
-function formatHistory(history: Message[]): string {
-  return history.map((m) => `${m.role}: ${m.content}`).join('\n');
+/**
+ * An input item for `Runner.run`, in the Responses-API item shape the Agents
+ * SDK accepts. User turns carry typed content parts (`input_text` /
+ * `input_image`) so images survive; assistant turns are plain text.
+ */
+// The Agents SDK's `input_image` content part names the source `image` (a URL or
+// data URL), unlike the raw Responses API which uses `image_url`. Sending
+// `image_url` here makes the SDK drop the source and the API rejects the turn.
+// The Agents SDK's `input_image` content part names the source `image` (a URL or
+// data URL), unlike the raw Responses API which uses `image_url`. Sending
+// `image_url` here makes the SDK drop the source and the API rejects the turn.
+// Assistant turns likewise need an `output_text` part array, not a bare string —
+// the SDK maps over `content` and throws when handed a string.
+type OpenAIUserContentPart = { type: 'input_text'; text: string } | { type: 'input_image'; image: string };
+type OpenAIInputItem =
+  | { role: 'user'; content: OpenAIUserContentPart[] }
+  | { role: 'assistant'; content: Array<{ type: 'output_text'; text: string }> };
+
+/** Maps one canonical message's content into OpenAI user-turn content parts. */
+function toUserContentParts(content: MessageContent): OpenAIUserContentPart[] {
+  if (typeof content === 'string') return [{ type: 'input_text', text: content }];
+  return content.map((block) =>
+    block.type === 'text'
+      ? { type: 'input_text' as const, text: block.text }
+      : { type: 'input_image' as const, image: imageBlockToUrl(block) },
+  );
+}
+
+/** Turns composed canonical turns into the Agents-SDK input item list. */
+function toRunnerInput(turns: CanonicalTurn[]): OpenAIInputItem[] {
+  return turns.map((turn) =>
+    turn.role === 'assistant'
+      ? { role: 'assistant', content: [{ type: 'output_text', text: contentToText(turn.content) }] }
+      : { role: 'user', content: toUserContentParts(turn.content) },
+  );
+}
+
+/** Non-system config conversation messages, template-applied, in canonical form. */
+function configConversationTurns(config: AiConfigRep, variables: Record<string, unknown>): ConfigTurn[] {
+  return (config.messages ?? [])
+    .filter((m) => m.role !== 'system')
+    .map((m) => ({ role: m.role as 'user' | 'assistant', content: parseTemplate(m.content, variables) }));
 }
 
 function buildAgentAndPrompt(
@@ -458,25 +504,33 @@ function buildAgentAndPrompt(
   history?: Message[],
 ) {
   let instructions: string | undefined;
-  let prompt = userInput;
+  // `prompt` is what Runner.run receives: a plain string for the no-history
+  // case, or a structured input item list when history is present.
+  let prompt: string | OpenAIInputItem[] = userInput;
 
   if (config.instructions) {
     instructions = parseTemplate(config.instructions, variables);
   } else if (config.messages && config.messages.length > 0) {
     const systemMessages = config.messages.filter((m) => m.role === 'system');
-    const conversationMessages = config.messages.filter((m) => m.role !== 'system');
     if (systemMessages.length > 0) {
       instructions = parseTemplate(systemMessages.map((m) => m.content).join('\n'), variables);
     }
-    const configHistory = conversationMessages.map((m) => parseTemplate(m.content, variables)).join('\n');
+    const configHistory = configConversationTurns(config, variables)
+      .map((m) => m.content)
+      .join('\n');
     prompt = configHistory ? `${configHistory}\n\n${userInput}` : userInput;
   }
 
+  // With history, pass structured conversation turns as native Runner input
+  // rather than flattening into the system prompt. `config.instructions` /
+  // system messages stay the system prompt; history + userInput become turns.
   if (history && history.length > 0) {
-    const formatted = formatHistory(history);
-    instructions = instructions
-      ? `${instructions}\n\nConversation History:\n\n${formatted}`
-      : `Conversation History:\n\n${formatted}`;
+    const turns = composeHistory({
+      history,
+      userInput,
+      configMessages: config.instructions ? [] : configConversationTurns(config, variables),
+    });
+    prompt = toRunnerInput(turns);
   }
 
   const tools = config.tools ? buildAgentTools(config.tools, toolHandlers) : [];
@@ -492,6 +546,27 @@ function buildAgentAndPrompt(
   });
 
   return { agent, prompt, instructions };
+}
+
+/**
+ * Span messages reflecting exactly what `Runner.run` receives.
+ *
+ * A plain-string prompt is one user turn. A structured item list (history
+ * present) is recorded turn-for-turn so captured `gen_ai.input.messages` include
+ * the full composed history, not just the final user turn; images are noted as a
+ * compact `[image]` placeholder rather than inlining a large data URL.
+ */
+function promptToSpanMessages(prompt: string | OpenAIInputItem[]): SpanMessage[] {
+  if (typeof prompt === 'string') {
+    return [{ role: 'user', parts: [{ type: 'text', content: prompt }] }];
+  }
+  return prompt.map((item) => ({
+    role: item.role,
+    parts: item.content.map(
+      (part): SpanMessagePart =>
+        part.type === 'input_image' ? { type: 'text', content: '[image]' } : { type: 'text', content: part.text },
+    ),
+  }));
 }
 
 export function createOpenAIAgentHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
@@ -523,7 +598,7 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
         );
         setInputContentAttributes(span, captureContent, {
           systemInstructions: instructions,
-          messages: [{ role: 'user', parts: [{ type: 'text', content: prompt }] }],
+          messages: promptToSpanMessages(prompt),
         });
 
         const toolTelemetry = attachToolSpanHooks(agent, parentContext, captureContent);
@@ -531,7 +606,8 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
           modelProvider: new SpanningModelProvider(defaultModelProvider(), config, parentContext, captureContent),
         });
         try {
-          const result = await runner.run(agent, prompt);
+          // biome-ignore lint/suspicious/noExplicitAny: Runner.run accepts string | AgentInputItem[]; our item shape is structurally compatible
+          const result = await runner.run(agent, prompt as any);
           const finalOutput = result.finalOutput ?? '';
           const { inputTokens, outputTokens } = result.state.usage;
 
@@ -589,7 +665,7 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
       );
       setInputContentAttributes(span, captureContent, {
         systemInstructions: instructions,
-        messages: [{ role: 'user', parts: [{ type: 'text', content: prompt }] }],
+        messages: promptToSpanMessages(prompt),
       });
 
       const toolTelemetry = attachToolSpanHooks(agent, parentContext, captureContent);
@@ -598,7 +674,7 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
       });
       try {
         // biome-ignore lint/suspicious/noExplicitAny: Agents SDK run() stream overload requires an any-cast option
-        const streamed = await runner.run(agent, prompt, { stream: true, signal: abortRun.signal } as any);
+        const streamed = await runner.run(agent, prompt as any, { stream: true, signal: abortRun.signal } as any);
         // biome-ignore lint/suspicious/noExplicitAny: StreamedRunResult generics are irrelevant to this handler
         const streamedResult = streamed as StreamedRunResult<any, any>;
         let fullOutput = '';

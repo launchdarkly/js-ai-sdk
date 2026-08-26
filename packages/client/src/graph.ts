@@ -3,7 +3,7 @@ import { runJudges } from './judges.js';
 import { extractVariation, getClient, initClient } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
 import { executeAndTrack } from './tracking.js';
-import type { LDContext, ToolHandlerFn } from './types.js';
+import type { LDContext, Message, ToolHandlerFn } from './types.js';
 import {
   type AiConfigRep,
   type GraphArgs,
@@ -205,6 +205,7 @@ const buildGraph = async (
         toolHandlers,
         variables: opts.variables,
         graphKey: key,
+        history: opts.history,
       });
       const response = typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse);
 
@@ -310,6 +311,7 @@ const buildGraph = async (
         toolHandlers: { ...(toolHandlers ?? {}), ...handoffHandlers },
         variables: opts.variables,
         graphKey: key,
+        history: opts.history,
       });
       const response = typeof rawRouteResponse === 'string' ? rawRouteResponse : JSON.stringify(rawRouteResponse);
 
@@ -481,6 +483,7 @@ export const graph = (
     input: string | undefined,
     context: LDContext,
     variables?: Record<string, unknown>,
+    history?: Message[],
   ) => Promise<ProviderGraphResponse>;
 } => {
   // Resolution is cached per context reference so multiple invoke() invocations
@@ -491,6 +494,7 @@ export const graph = (
     input: string | undefined,
     context: LDContext,
     variables?: Record<string, unknown>,
+    history?: Message[],
   ): Promise<ProviderGraphResponse> => {
     const resolvedInput = input ?? '';
     const resolvedOptions: GraphOptions = {
@@ -547,6 +551,10 @@ export const graph = (
           steps += 1;
           const routeOpts: RunNodeOptions = { variables };
           if (previousNode) routeOpts.from = previousNode;
+          // History provides prior conversation context to the entry point only.
+          // After the root hop, nodes stay oriented through the string threading
+          // built below, so history is not re-sent to downstream handlers.
+          else if (history && history.length > 0) routeOpts.history = history;
           const res: RouteResult = await def.route(current, currentInput, routeOpts);
           accumulate(current, res);
           last = res;
