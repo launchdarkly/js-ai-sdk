@@ -1,8 +1,36 @@
 # LaunchDarkly AI SDK
 
-- [Repository Layout](#repository-layout)
+---
+
+Your prompts, models, tools, and agent workflows live in LaunchDarkly instead of in your code. Call the SDK and it resolves the right configuration for the user in front of you, routes the call to whichever provider that configuration names, runs the tool loop, and records cost, latency, and quality on the way back.
+
+```ts
+import { openaiMessages } from '@launchdarkly/ai-openai-messages';
+
+const result = await openaiMessages(
+  'What is feature flagging?',
+  { kind: 'user', key: 'user-123' },
+  { key: 'my-ai-config-flag' },
+);
+
+console.log(result.response);
+```
+
+That call is the whole integration. Everything it does is configured in LaunchDarkly, not in your source.
+
+## What you get
+
+- Change prompts, models, and parameters in production without redeploying
+- Serve different configurations to different users, with the same targeting you already use for feature flags
+- Roll a change out gradually, watch live metrics, and revert automatically when one crosses a threshold
+- Run agents and multi-step graphs, where each step can use a different provider
+- Score output quality with judges, including scoring that stays off the request path
+- See cost, latency, token usage, errors, and full conversations with no instrumentation code
+- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, or your own handler
+
+- [What you get](#what-you-get)
 - [How It Works](#how-it-works)
-- [Package Structure](#package-structure)
+- [Packages](#packages)
 - [Quick Start](#quick-start)
   - [1. Install](#1-install)
   - [2. Configure environment](#2-configure-environment)
@@ -20,39 +48,7 @@
 - [Telemetry](#telemetry)
 - [Development](#development)
   - [Running the examples](#running-the-examples)
-
----
-
-A Node.js monorepo for integrating LaunchDarkly AgentControl with multiple AI providers. LaunchDarkly manages which model, provider, prompt, and tools are used at runtime via feature flags — your code just calls the right handler.
-
-## Repository Layout
-
-```
-js-ai-sdk/
-├── main.ts              # Entry point — brokers to an example based on CLI args
-├── examples/            # Runnable examples (not part of any published package)
-│   ├── agent.ts         # config() with the global registry
-│   ├── graph.ts         # graph() multi-agent workflow
-│   ├── native-graph.ts  # toClaudeAgents + resolveGraph native runner
-│   ├── openai-only.ts   # config() with an OpenAI-only registry
-│   ├── register.ts      # Global registry setup (handlers + tools)
-│   ├── tools.ts         # Tool implementations (getPreferences, webSearch, etc.)
-│   └── utils.ts         # Shared helpers (newContext, writeOutput)
-├── examples/            # Sample data files (e.g. user_preferences.json)
-├── packages/
-│   ├── client/          # @launchdarkly/ai-server       — core client (Tier 0)
-│   ├── ai-node/         # @launchdarkly/ai-node         — Node.js convenience wrapper (bundles node-server-sdk)
-│   ├── claude-agents/   # @launchdarkly/ai-claude-agents
-│   ├── claude-messages/ # @launchdarkly/ai-claude-messages
-│   ├── openai-agents/   # @launchdarkly/ai-openai-agents
-│   ├── openai-messages/ # @launchdarkly/ai-openai-messages
-│   ├── langchain-agents/   # @launchdarkly/ai-langchain-agents
-│   └── langchain-messages/ # @launchdarkly/ai-langchain-messages
-├── .env.example         # Template — copy to .env and fill in your values
-└── agents.md            # Architecture reference for AI agents and contributors
-```
-
-The `examples/` directory is a **sample implementation** showing how a consumer application wires the packages together. These files are not published and are not part of any package.
+  - [Repository layout](#repository-layout)
 
 ## How It Works
 
@@ -61,9 +57,9 @@ The `examples/` directory is a **sample implementation** showing how a consumer 
 3. The SDK routes to the correct provider handler, executes the call, and emits telemetry.
 4. You can change providers, models, or prompts in LaunchDarkly without deploying code.
 
-## Package Structure
+## Packages
 
-This monorepo follows a three-tier architecture. Dependencies only flow downward.
+Packages are layered so that dependencies only flow downward.
 
 ```
 Tier 2 — Consumer Application  (main.ts, your app)
@@ -82,7 +78,7 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-node](packages/ai-node/README.md)`            | Node.js convenience wrapper — re-exports `@launchdarkly/ai-server` with `@launchdarkly/node-server-sdk` bundled as a hard dependency. Install this instead of `ai-server` for standard Node.js apps. |
 
 
-### Handler Packages
+### Pick your providers
 
 
 | Package                                                                        | Provider  | Mode       | Description                                           |
@@ -595,3 +591,32 @@ yarn start openai-only my-flag-key "What is feature flagging?"
 Output from each run is written as a timestamped JSON file to the `output/` directory.
 
 Each package has its own `tsconfig.json` that references `packages/client` for type resolution. See `[agents.md](agents.md)` for the full architecture reference.
+
+### Repository layout
+
+```
+js-ai-sdk/
+├── main.ts              # Entry point — brokers to an example based on CLI args
+├── examples/            # Runnable examples (not part of any published package)
+│   ├── agent.ts         # config() with the global registry
+│   ├── graph.ts         # graph() multi-agent workflow
+│   ├── native-graph.ts  # toClaudeAgents + resolveGraph native runner
+│   ├── openai-only.ts   # config() with an OpenAI-only registry
+│   ├── register.ts      # Global registry setup (handlers + tools)
+│   ├── tools.ts         # Tool implementations (getPreferences, webSearch, etc.)
+│   └── utils.ts         # Shared helpers (newContext, writeOutput)
+├── examples/            # Sample data files (e.g. user_preferences.json)
+├── packages/
+│   ├── client/          # @launchdarkly/ai-server       — core client (Tier 0)
+│   ├── ai-node/         # @launchdarkly/ai-node         — Node.js convenience wrapper (bundles node-server-sdk)
+│   ├── claude-agents/   # @launchdarkly/ai-claude-agents
+│   ├── claude-messages/ # @launchdarkly/ai-claude-messages
+│   ├── openai-agents/   # @launchdarkly/ai-openai-agents
+│   ├── openai-messages/ # @launchdarkly/ai-openai-messages
+│   ├── langchain-agents/   # @launchdarkly/ai-langchain-agents
+│   └── langchain-messages/ # @launchdarkly/ai-langchain-messages
+├── .env.example         # Template — copy to .env and fill in your values
+└── agents.md            # Architecture reference for AI agents and contributors
+```
+
+The `examples/` directory is a **sample implementation** showing how a consumer application wires the packages together. These files are not published and are not part of any package.
