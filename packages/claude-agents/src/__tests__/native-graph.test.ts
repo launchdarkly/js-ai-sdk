@@ -243,7 +243,7 @@ describe('toClaudeAgents', () => {
     expect(mockTrack).toHaveBeenCalledWith(
       '$ld:ai:tool_call',
       { kind: 'user', key: 'user-1' },
-      expect.objectContaining({ toolName: 'web-search' }),
+      expect.objectContaining({ toolKey: 'web-search' }),
       1,
     );
   });

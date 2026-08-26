@@ -47,7 +47,7 @@ export const wrapToolHandlers = (
     Object.entries(toolHandlers).map(([name, fn]) => {
       if (fn instanceof NativeTool) {
         const stub = () => {
-          getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolName: name }, 1);
+          getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolKey: name }, 1);
         };
         (stub as unknown as Record<symbol, unknown>)[NATIVE_TOOL_KEY] = fn;
         return [name, stub];
@@ -58,7 +58,7 @@ export const wrapToolHandlers = (
           // Synthetic handoff tools (graph routing) are not real tool calls;
           // they must not pollute `$ld:ai:tool_call` metrics.
           if (!name.startsWith('__handoff_')) {
-            getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolName: name }, 1);
+            getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolKey: name }, 1);
           }
           return (fn as (...args: unknown[]) => unknown)(...args);
         },
