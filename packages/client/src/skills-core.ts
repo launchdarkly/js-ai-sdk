@@ -386,6 +386,22 @@ export function resolveFromStore(store: SkillStore, key: string, wantedVersion: 
   if (skill === null) {
     return { error: `skill '${key}' failed integrity verification and was withheld` };
   }
+  // The store is untrusted, so the answer's own identity is re-checked against
+  // what was asked for. Integrity verification cannot catch a substitution: a
+  // different skill's object hashes correctly against its own contentHash, so
+  // without this the caller would be handed agent instructions its AI Config
+  // never referenced, with no signal that anything happened. Logged at error
+  // because a store filing content under another key is broken or hostile
+  // rather than routinely empty, and nothing yet reads the returned string.
+  // `skill.key` passed `isValidSkillKey` inside `verifyRawSkill`, so it is
+  // bounded and safe to echo.
+  if (skill.key !== key) {
+    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a substituting store must be visible
+    console.error(
+      `[LaunchDarkly] Skill store answered a lookup for '${key}' with content filed under '${skill.key}'; it was withheld.`,
+    );
+    return { error: `skill '${key}' was withheld: the store answered with content filed under '${skill.key}'` };
+  }
   if (wantedVersion !== null && skill.version !== wantedVersion) {
     return {
       error: `skill '${key}' version ${wantedVersion} is not available (the store holds version ${skill.version})`,

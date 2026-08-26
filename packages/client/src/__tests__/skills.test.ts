@@ -961,6 +961,77 @@ describe('integrity verification', () => {
   });
 });
 
+// ─── Key identity ──────────────────────────────────────────────────────
+
+describe('key identity', () => {
+  /**
+   * A store that ignores the key it was asked for and always answers with its
+   * own, self-consistent object. Nothing about it is detectable by integrity
+   * verification: the body hashes correctly against its own `contentHash`.
+   */
+  class SubstitutingStore implements SkillStore {
+    getObject(_kind: string, _key: string): RawSkillObject {
+      return rawSkill({ key: 'substituted', version: 3 });
+    }
+    allObjects(): Record<string, RawSkillObject> {
+      return { substituted: rawSkill({ key: 'substituted', version: 3 }) };
+    }
+  }
+
+  beforeEach(() => {
+    _setStore(new SubstitutingStore());
+  });
+
+  it('withholds an answer filed under a key other than the one asked for', async () => {
+    expect(await getSkill('wanted')).toBeNull();
+  });
+
+  it('withholds it with the version pinned too — the version check does not catch it', async () => {
+    expect(await getSkill('wanted', { version: 3 })).toBeNull();
+  });
+
+  it('withholds every substituted entry in a batch', async () => {
+    expect(await getSkills(['wanted', 'also-wanted'])).toEqual([]);
+  });
+
+  it('logs the mismatch at error, since a store answering under another key is broken or hostile', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await getSkill('wanted');
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(logged.mock.calls[0][0]).toContain("'wanted'");
+      expect(logged.mock.calls[0][0]).toContain("'substituted'");
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it('records no integrity signal — the substituted content hashes correctly', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await getSkill('wanted');
+      expect(emitter.signals(INTEGRITY_SIGNAL)).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('still serves a store that answers with the key it was asked for', async () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'wanted', version: 3 }));
+    _setStore(store);
+    expect((await getSkill('wanted'))?.key).toBe('wanted');
+    expect((await getSkill('wanted', { version: 3 }))?.key).toBe('wanted');
+    expect((await getSkills(['wanted'])).map((s) => s.key)).toEqual(['wanted']);
+  });
+
+  it('allSkills has no requested key to mismatch, so it serves what the store holds', async () => {
+    expect((await allSkills()).map((s) => s.key)).toEqual(['substituted']);
+  });
+});
+
 // ─── Telemetry seam (accessor half) ────────────────────────────────────
 
 describe('telemetry seam, accessor half', () => {

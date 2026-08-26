@@ -157,8 +157,9 @@ export function skillRefs(config: AiConfigRep | null | undefined): SkillReferenc
  * An omitted `version` means the newest version the store holds; a specific
  * `version` returns the skill only when that exact version is available.
  * Resolves to `null` — never rejects — when the skill is missing, the requested
- * version is not the one held, or verification fails. Throws only when no skill
- * store is configured.
+ * version is not the one held, the store answered with content filed under a
+ * different key, or verification fails. Throws only when no skill store is
+ * configured.
  *
  * There is no context parameter: skills have no targeting, so the SDK credentials
  * fully determine availability. Compose per-context resolution explicitly with
@@ -173,8 +174,8 @@ export async function getSkill(key: string, options: { version?: number } = {}):
  *
  * Accepts a mixed sequence of `SkillReference` values and bare key strings, where
  * a string means "the latest version". Results follow input order for the skills
- * that were found; entries that are missing, are the wrong version, or fail
- * verification are omitted rather than returned as placeholders.
+ * that were found; entries that are missing, are the wrong version or the wrong
+ * key, or fail verification are omitted rather than returned as placeholders.
  */
 export async function getSkills(refs: ReadonlyArray<SkillReference | string>): Promise<Skill[]> {
   if (typeof refs === 'string') {
