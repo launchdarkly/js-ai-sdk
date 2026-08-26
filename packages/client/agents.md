@@ -111,7 +111,7 @@ Handlers may return any of these — the client normalizes them before emitting 
 
 ## Conversation grouping
 
-LaunchDarkly's conversation view groups spans on `gen_ai.conversation.id`. Bind a caller-supplied id around any `invoke()` / `stream()` / `graph().invoke()` call:
+LaunchDarkly's conversation view groups spans on `gen_ai.conversation.id`. Bind a caller-supplied id around any `invoke()` / `stream()` / `graph().invoke()` / `graph().stream()` call:
 
 ```ts
 import { withConversationId, config } from '@launchdarkly/ai-node';
@@ -132,8 +132,9 @@ await initClient();
 await withConversationId('thread-123', () => config({ key, handler }).invoke(input, ctx));
 ```
 
-`stream()` binds at call time rather than on first `next()`, so handing the generator off and
-iterating it later — the normal shape for a chat app — keeps the id:
+`stream()` — both `config().stream()` and `graph().stream()` — binds at call time rather than on
+first `next()`, so handing the generator off and iterating it later, the normal shape for a chat
+app, keeps the id:
 
 ```ts
 const gen = withConversationId('thread-123', () => config({ key, handler }).stream(input, ctx));
@@ -141,7 +142,10 @@ for await (const event of gen) { /* spans opened here still carry thread-123 */ 
 ```
 
 Only the id is re-applied per step; the ambient context at iteration time is otherwise untouched,
-so streaming span parenting is the same as it is with no id bound.
+so streaming span parenting is the same as it is with no id bound. `graph().stream()` is the one
+exception: it starts the `ld.ai.graph` span itself and re-enters that span's context around every
+step of each node's stream, so node spans stay parented to the graph span no matter where the
+generator is iterated.
 
 `initClient()` registers a span processor that stamps the id write-if-absent on every SDK span (root, chat, execute_tool, graph). The processor is registered on the *global* tracer provider, so it is scoped to spans from `@launchdarkly/ai-*` tracers only — a caller-supplied id must not land on third-party instrumentation spans (HTTP, Postgres, the outbound provider call). No id is invented when the caller supplies none — a UUID, a trace id, or a content hash would violate the semantic conventions.
 

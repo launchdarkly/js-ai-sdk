@@ -320,6 +320,117 @@ describe('graph().invoke()', () => {
   });
 });
 
+// ─── graph().stream() ─────────────────────────────────────────────────────────
+
+function makeStreamingHandler(chunks = ['par', 'tial']): ProviderHandler {
+  const h = makeHandler();
+  h.stream = async function* () {
+    for (const text of chunks) yield { type: 'chunk' as const, text };
+    yield { type: 'done' as const, output: chunks.join(''), usage: { input_tokens: 2, output_tokens: 3 } };
+  };
+  return h;
+}
+
+describe('graph().stream()', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockTrack.mockReset();
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack, variation: mockVariation });
+  });
+
+  const collect = async (handler: ProviderHandler) => {
+    const events = [];
+    for await (const event of graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext)) {
+      events.push(event);
+    }
+    return events;
+  };
+
+  it('streams chunks attributed to each node it traverses', async () => {
+    setupTwoNodeGraph();
+    const events = await collect(makeStreamingHandler());
+    expect(events.filter((e) => e.type === 'chunk').map((e) => [e.key, e.text])).toEqual([
+      ['root-node', 'par'],
+      ['root-node', 'tial'],
+      ['leaf-node', 'par'],
+      ['leaf-node', 'tial'],
+    ]);
+  });
+
+  it('brackets each node with node_start / node_done', async () => {
+    setupTwoNodeGraph();
+    const events = await collect(makeStreamingHandler());
+    expect(events.filter((e) => e.type === 'node_start')).toEqual([
+      { type: 'node_start', key: 'root-node' },
+      { type: 'node_start', key: 'leaf-node', from: 'root-node' },
+    ]);
+    expect(events.filter((e) => e.type === 'node_done').map((e) => [e.key, e.next])).toEqual([
+      ['root-node', 'leaf-node'],
+      ['leaf-node', undefined],
+    ]);
+  });
+
+  it('ends with a done event carrying the path, per-node responses and aggregate usage', async () => {
+    setupTwoNodeGraph();
+    const events = await collect(makeStreamingHandler());
+    const done = events.at(-1);
+    expect(done).toMatchObject({
+      type: 'done',
+      response: 'partial',
+      path: ['root-node', 'leaf-node'],
+    });
+    expect(done?.type === 'done' && done.usage.total).toBe(10);
+    expect(done?.type === 'done' && Object.keys(done.nodes)).toEqual(['root-node', 'leaf-node']);
+  });
+
+  it('emits a single chunk per node when the handler has no stream implementation', async () => {
+    setupTwoNodeGraph();
+    const events = await collect(makeHandler());
+    expect(events.filter((e) => e.type === 'chunk')).toEqual([
+      { type: 'chunk', key: 'root-node', text: 'agent-response' },
+      { type: 'chunk', key: 'leaf-node', text: 'agent-response' },
+    ]);
+  });
+
+  it('tracks the same graph telemetry as invoke()', async () => {
+    setupTwoNodeGraph();
+    await collect(makeStreamingHandler());
+    const eventNames = mockTrack.mock.calls.map((c: any[]) => c[0]);
+    expect(eventNames).toContain('$ld:ai:graph:path');
+    expect(eventNames).toContain('$ld:ai:graph:duration:total');
+    expect(eventNames).toContain('$ld:ai:graph:total_tokens');
+    expect(eventNames).toContain('$ld:ai:graph:invocation_success');
+    const handoff = mockTrack.mock.calls.find((c: any[]) => c[0] === '$ld:ai:graph:handoff_success');
+    expect(handoff?.[2]).toMatchObject({ sourceKey: 'root-node', targetKey: 'leaf-node' });
+  });
+
+  it('tracks $ld:ai:graph:invocation_failure and re-throws on error', async () => {
+    setupTwoNodeGraph();
+    const errorHandler = makeHandler();
+    errorHandler.stream = async function* () {
+      throw new Error('agent failed');
+    };
+    await expect(collect(errorHandler)).rejects.toThrow('agent failed');
+    const eventNames = mockTrack.mock.calls.map((c: any[]) => c[0]);
+    expect(eventNames).toContain('$ld:ai:graph:invocation_failure');
+  });
+
+  it('throws when graph is disabled', async () => {
+    mockVariation.mockResolvedValue({ someOtherField: 'value' });
+    await expect(collect(makeStreamingHandler())).rejects.toThrow(/disabled/i);
+  });
+
+  it('throws when no handlers are provided', async () => {
+    setupTwoNodeGraph();
+    const iterate = async () => {
+      for await (const _ of graph('graph-flag', {}).stream('hi', mockContext)) {
+        // drain
+      }
+    };
+    await expect(iterate()).rejects.toThrow(/handlers/i);
+  });
+});
+
 // ─── conversation id on ld.ai.graph ───────────────────────────────────────────
 //
 // The telemetry contract claims the conversation id lands on `ld.ai.graph` spans. True by

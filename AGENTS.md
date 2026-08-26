@@ -347,6 +347,7 @@ A resolved agent graph returned by `resolveGraph()`. Exposes topology accessors 
 | `edgesFrom(key)` | Returns outgoing edges from a node. |
 | `runNode(node, input?, opts?)` | Executes a single node through the tracked `config().invoke()` path. |
 | `route(node, input?, opts?)` | Executes a node, presenting outgoing edges as handoff choices; returns the response plus the chosen `next` node. |
+| `streamRoute(node, input?, opts?)` | Streaming form of `route`: yields `{ type: 'chunk', text }` then `{ type: 'done', result }` with the same `RouteResult`. Falls back to a single chunk when the handler has no `stream`. |
 | `traverse(fn, ctx?)` | Walks root → leaves (BFS order), awaiting each visitor. |
 | `reverseTraverse(fn, ctx?)` | Walks leaves → root (reverse BFS), awaiting each visitor. |
 
@@ -398,7 +399,35 @@ Returns:
 
 Creates an agent graph caller bound to a graph flag key. Uses a model-driven router: starts at the root node and lets the model choose which outgoing edge to follow at each step, threading each node's output into the next. Stops when the model produces a terminal answer, a leaf is reached, a node is revisited (cycle guard), or the step cap is hit.
 
-Returns `{ invoke(input: string | undefined, context: LDContext, variables?: Record<string, any>): Promise<ProviderGraphResponse> }`.
+Returns:
+
+```
+{
+  invoke(input: string | undefined, context: LDContext, variables?: Record<string, any>): Promise<ProviderGraphResponse>
+  stream(input: string | undefined, context: LDContext, variables?: Record<string, any>): AsyncGenerator<GraphStreamEvent>
+}
+```
+
+`stream()` runs the same traversal as `invoke()` — every node executes in graph context, so handoff and path telemetry are identical — composing each node's `streamRoute` events into a single flat stream.
+
+**`GraphStreamEvent`**:
+
+```ts
+type GraphStreamEvent =
+  | { type: 'node_start'; key: string; from?: string }
+  | { type: 'chunk'; key: string; text: string }
+  | { type: 'node_done'; key: string; response: string; usage: TokenUsage; next?: string }
+  | {
+      type: 'done';
+      response: string;
+      usage: TokenUsage;
+      path: string[];
+      nodes: Record<string, ProviderResponse>;
+      judgeResults?: ProviderResponse['judgeResults'];
+    };
+```
+
+Every `chunk` carries the key of the node that produced it. As with `config().stream()`, `outputFormat` is ignored while streaming.
 
 Requires `handlers` (either in `options` or via `options.registry`) to be set. For framework packages that need to walk the topology and build their own execution structure, use `resolveGraph` instead.
 
