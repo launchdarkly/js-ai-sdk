@@ -874,12 +874,8 @@ export const graph = (
       spanEnded = true;
       throw err;
     } finally {
-      // A consumer that `break`s out of `for await`, or throws inside the loop body, resumes this
-      // generator at `return` — neither the success nor the failure path runs. Without the cleanup
-      // here the graph span stays open, so it is never exported and the nodes parented to it
-      // disappear from AI Config Monitoring. An abandoned traversal still walked whatever nodes it
-      // completed, so the duration, tokens and path it accumulated are reported too; the terminal
-      // success/failure event is not, because neither happened.
+      // An abandoned generator resumes at `return`, running neither the success nor the failure
+      // path: the only chance to close the span and report the traversal that did happen.
       if (!spanEnded) {
         getClient().track('$ld:ai:graph:duration:total', context, graphTrackData, Date.now() - startTime);
         if (totalUsage.total > 0) {
