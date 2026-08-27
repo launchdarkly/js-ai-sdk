@@ -255,7 +255,7 @@ Because each node runs through the same path as `config()`, every node emits its
 | `options.graphJudge`   | `string`                                | No       | Optional judge config key evaluated against the final output |
 
 
-Returns `{ invoke(input: string | undefined, context: LDContext, variables?: Record<string, any>): Promise<ProviderGraphResponse> }`.
+Returns `{ invoke(...): Promise<ProviderGraphResponse>, stream(...): AsyncGenerator<GraphStreamEvent> }`. Both take `(input: string | undefined, context: LDContext, variables?: Record<string, any>)`.
 
 ```ts
 import 'dotenv/config';
@@ -275,6 +275,39 @@ await shutdown();
 ```
 
 Provider packages also export single-provider conveniences (`claudeGraph`, `openaiGraph`, `langchainGraph`) that pre-bind their handler. For mixed-provider graphs, use the base `graph()` and pass multiple handlers.
+
+**Streaming a graph.** `stream()` traverses the graph exactly as `invoke()` does — same routing, telemetry, and judges — but yields each node's text as it arrives. Every `chunk` carries the `key` of the node that produced it, and `node_start` / `node_done` bracket each node so a UI can label output by agent and show handoffs as they happen. Nodes whose handler has no streaming implementation emit their full output as a single chunk.
+
+```ts
+for await (const event of graph('support-graph', { handlers: [createClaudeAgentsHandler()] }).stream(
+  'I was double charged',
+  { kind: 'user', key: 'user-123' },
+)) {
+  switch (event.type) {
+    case 'node_start':
+      console.log(`\n[${event.key}]${event.from ? ` ← ${event.from}` : ''}`);
+      break;
+    case 'chunk':
+      process.stdout.write(event.text);
+      break;
+    case 'node_done':
+      if (event.next) console.log(`\n→ handing off to ${event.next}`);
+      break;
+    case 'done':
+      console.log(event.path, event.usage); // ['triage', 'billing'], aggregate usage
+      break;
+  }
+}
+```
+
+| Event        | Fields                                             | Description                                                            |
+| ------------ | -------------------------------------------------- | ---------------------------------------------------------------------- |
+| `node_start` | `key`, `from?`                                     | A node is about to run; `from` is the node that handed off to it        |
+| `chunk`      | `key`, `text`                                      | A text delta produced by node `key`                                    |
+| `node_done`  | `key`, `response`, `usage`, `next?`                | The node finished; `next` is the node the model routed to              |
+| `done`       | `response`, `usage`, `path`, `nodes`, `judgeResults?` | The traversal finished; same data `invoke()` returns                   |
+
+As with `config().stream()`, streaming ignores `outputFormat` — use `invoke()` for structured output.
 
 ---
 

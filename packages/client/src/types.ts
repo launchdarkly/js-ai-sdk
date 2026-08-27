@@ -460,6 +460,30 @@ export type RouteResult = ProviderResponse & {
   next?: GraphNode;
 };
 
+/**
+ * Event emitted by {@link GraphDefinition.streamRoute}: text deltas for one
+ * node, then a single `done` carrying that node's {@link RouteResult}.
+ */
+export type RouteStreamEvent = { type: 'chunk'; text: string } | { type: 'done'; result: RouteResult };
+
+/**
+ * Event emitted by `graph(...).stream()`. Chunks carry the key of the node that
+ * produced them, so a caller streaming a multi-agent graph can attribute text to
+ * an agent; `node_start` / `node_done` bracket each node and report handoffs.
+ */
+export type GraphStreamEvent =
+  | { type: 'node_start'; key: string; from?: string }
+  | { type: 'chunk'; key: string; text: string }
+  | { type: 'node_done'; key: string; response: string; usage: TokenUsage; next?: string }
+  | {
+      type: 'done';
+      response: string;
+      usage: TokenUsage;
+      path: string[];
+      nodes: Record<string, ProviderResponse>;
+      judgeResults?: ProviderResponse['judgeResults'];
+    };
+
 /** A visitor invoked per node by {@link GraphDefinition.traverse}. */
 // biome-ignore lint/suspicious/noExplicitAny: T = any default keeps existing call-sites working without type annotations
 export type TraverseVisitor<T = any> = (node: GraphNode, ctx: Record<string, unknown>) => T | Promise<T>;
@@ -486,6 +510,12 @@ export type GraphDefinition = {
    * Emits `$ld:ai:graph:handoff_*` for the edge the model actually selected.
    */
   route: (node: GraphNode, input?: string, opts?: RunNodeOptions) => Promise<RouteResult>;
+  /**
+   * Streaming form of {@link GraphDefinition.route}: yields the node's text as
+   * it arrives, then a `done` event with the same {@link RouteResult}. Handlers
+   * without a `stream` implementation fall back to a single chunk.
+   */
+  streamRoute: (node: GraphNode, input?: string, opts?: RunNodeOptions) => AsyncGenerator<RouteStreamEvent>;
   /** Walk root -> leaves (deepest last), awaiting each visitor result. */
   // biome-ignore lint/suspicious/noExplicitAny: T = any default keeps existing call-sites working without type annotations
   traverse: <T = any>(fn: TraverseVisitor<T>, ctx?: Record<string, unknown>) => Promise<T | undefined>;

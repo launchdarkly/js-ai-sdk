@@ -166,6 +166,8 @@ await shutdown();
 
 Routing is by each node config's `provider.name` + `meta.mode`, so a single graph can mix providers when you pass multiple handlers. Provider packages also export a single-provider convenience (e.g. `claudeGraph`, `openaiGraph`, `langchainGraph`) that pre-binds their handler.
 
+`g.stream(...)` runs the same traversal and yields `GraphStreamEvent`s — `node_start`, `chunk` (carrying the producing node's `key`), `node_done` (with the `next` node the model routed to), then a final `done` with the same data `invoke()` returns. Nodes whose handler has no `stream` emit their output as a single chunk.
+
 `resolveGraph(key, options)` returns a `GraphDefinition` without executing it. It still requires `context` at resolution time (it has no deferred `.invoke()`). The definition carries `.enabled` so you can branch on a disabled graph before traversing. `graph(...).invoke()` throws if the graph is disabled.
 
 ### `Registry` / `globalRegistry` / `compose`
@@ -253,7 +255,9 @@ All types are re-exported from this package. Handler packages import them from h
 | `LDClientInterface` | Minimal interface `(variation, track, flush, close)` that any LD SDK client satisfies structurally. Returned by `initClient()` and `getClient()`. |
 | `GraphOptions` | Options accepted by `graph()` (handlers, toolHandlers, graphJudge — no context) |
 | `GraphArgs` | Options accepted by `resolveGraph()` — extends `GraphOptions` with a required `context` |
-| `GraphDefinition` | A resolved agent graph: topology accessors, `runNode`, and the traverse primitives |
+| `GraphDefinition` | A resolved agent graph: topology accessors, `runNode` / `route` / `streamRoute`, and the traverse primitives |
 | `GraphNode` / `GraphEdge` | A node (evaluated agent config + edges) and a directed edge (with handoff data) |
 | `ProviderGraphResponse` | The value returned by `graph(...).invoke()`: `{ response, usage, path, nodes?, judgeResults? }` |
+| `GraphStreamEvent` | An event yielded by `graph(...).stream()`: `node_start`, `chunk`, `node_done`, or `done` |
+| `RouteStreamEvent` | An event yielded by `GraphDefinition.streamRoute()`: `chunk`, then `done` carrying a `RouteResult` |
 | `GraphTopology` | The parsed graph flag shape (`root` + `edges`) |
