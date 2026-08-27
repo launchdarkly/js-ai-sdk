@@ -21,7 +21,7 @@ vi.mock('../lifecycle.js', () => ({
   shutdownTelemetry: vi.fn(),
 }));
 
-import { runJudges } from '../judges.js';
+import { isFiniteScore, runJudges } from '../judges.js';
 import type { ProviderHandler } from '../types.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -267,5 +267,18 @@ describe('runJudges', () => {
     const callArgs = mockExecuteAndTrack.mock.calls[0][0];
     // toolHandlers must NOT be forwarded to the judge — judges are evaluators only.
     expect(callArgs.toolHandlers).toBeUndefined();
+  });
+});
+
+describe('judge score validation', () => {
+  it('only treats a finite number as a recordable score', () => {
+    // A judge is prompted for a number but can return anything; OTel drops a null attribute and
+    // exports a string, which breaks numeric aggregation on gen_ai.evaluation.score.value.
+    for (const junk of [null, undefined, '0.9', '85%', {}, [], Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(isFiniteScore(junk)).toBe(false);
+    }
+    for (const ok of [0, 0.9, 1, -1]) {
+      expect(isFiniteScore(ok)).toBe(true);
+    }
   });
 });

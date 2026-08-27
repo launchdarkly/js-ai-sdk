@@ -1,9 +1,32 @@
-import { type Context, context, createContextKey, type Span } from '@opentelemetry/api';
+import {
+  type Attributes,
+  type Context,
+  context,
+  createContextKey,
+  type Span,
+  type TimeInput,
+} from '@opentelemetry/api';
 
 /** Canonical OTel GenAI conversation grouping key. LaunchDarkly's conversation view reads only this. */
 export const GEN_AI_CONVERSATION_ID = 'gen_ai.conversation.id';
 
 const CONVERSATION_ID_KEY = createContextKey('launchdarkly.gen_ai.conversation.id');
+const JUDGE_EVAL_KEY = createContextKey('launchdarkly.judge.evaluation');
+
+type JudgeEvaluation = {
+  name: string;
+  score: number;
+  /** Only ever set when the judge's handler captures content. See `runJudges`. */
+  explanation?: string;
+};
+
+type JudgeEvalCapture = {
+  name: string;
+  evaluation?: JudgeEvaluation;
+  span?: Span;
+  pendingEnd?: () => void;
+  released: boolean;
+};
 
 /**
  * Every tracer this SDK creates is named `@launchdarkly/ai-<package>`. The processor is registered
@@ -27,6 +50,11 @@ const isLaunchDarklySpan = (span: Span): boolean => {
 const readAttribute = (span: Span, key: string): unknown => {
   const attrs = (span as unknown as { attributes?: Record<string, unknown> }).attributes;
   return attrs?.[key];
+};
+
+const spanName = (span: Span): string => {
+  const name = (span as unknown as { name?: string }).name;
+  return typeof name === 'string' ? name : '';
 };
 
 /**
@@ -74,6 +102,41 @@ const warnContextManagerMissing = (): void => {
 const conversationIdFrom = (ctx: Context): string | undefined => {
   const value = ctx.getValue(CONVERSATION_ID_KEY);
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+};
+
+const recordEvaluationOnSpan = (span: Span, evaluation: JudgeEvaluation): void => {
+  if (!span.isRecording()) return;
+  const attrs: Attributes = {
+    'gen_ai.evaluation.name': evaluation.name,
+    'gen_ai.evaluation.score.value': evaluation.score,
+  };
+  if (evaluation.explanation) attrs['gen_ai.evaluation.explanation'] = evaluation.explanation;
+  span.addEvent('gen_ai.evaluation.result', attrs);
+  for (const [key, value] of Object.entries(attrs)) span.setAttribute(key, value as never);
+};
+
+const delayInvokeAgentEnd = (span: Span, capture: JudgeEvalCapture): void => {
+  const originalEnd = span.end.bind(span);
+  let ended = false;
+  const wrappedEnd = (endTime?: TimeInput) => {
+    if (ended) return;
+    if (capture.released) {
+      ended = true;
+      originalEnd(endTime);
+      return;
+    }
+    capture.span = span;
+    // Freeze the end time at the handler's call. Replaying an undefined endTime later would let
+    // the SDK stamp "now" at release, inflating the judge span by the tracking and parsing work
+    // that runs between the handler ending the span and the score being recorded.
+    const frozen = endTime ?? Date.now();
+    capture.pendingEnd = () => {
+      if (ended) return;
+      ended = true;
+      originalEnd(frozen);
+    };
+  };
+  (span as { end: Span['end'] }).end = wrappedEnd;
 };
 
 /**
@@ -125,16 +188,52 @@ export function bindConversationId<T, TReturn, TNext>(
 }
 
 /**
- * Stamps `gen_ai.conversation.id` write-if-absent on every span.
+ * Holds the judge `invoke_agent` span open until `record` runs, then writes
+ * `gen_ai.evaluation.result` on that span. The judge's reasoning is passed only when the judge's
+ * own handler captures content — it is model prose about the user's conversation, so it follows
+ * the same gate as every other content attribute. `executeAndTrack` returns after the handler has already
+ * called `span.end()`, so without this delay the event would be dropped.
+ *
+ * Not part of the public API — used by `runJudges` / `runJudge`.
+ */
+export async function withJudgeEvaluation<T>(
+  name: string,
+  fn: (record: (score: number, explanation?: string) => void) => Promise<T>,
+): Promise<T> {
+  const capture: JudgeEvalCapture = { name, released: false };
+  return context.with(context.active().setValue(JUDGE_EVAL_KEY, capture), async () => {
+    try {
+      return await fn((score, explanation) => {
+        capture.evaluation = { name: capture.name, score, explanation };
+        if (capture.span) recordEvaluationOnSpan(capture.span, capture.evaluation);
+      });
+    } finally {
+      capture.released = true;
+      capture.pendingEnd?.();
+    }
+  });
+}
+
+/**
+ * Stamps `gen_ai.conversation.id` write-if-absent on every span, and delays ending a judge
+ * `invoke_agent` span so evaluation events can land on it.
  *
  * Duck-typed to the OTel SDK `SpanProcessor` interface so this file depends only on
  * `@opentelemetry/api`. `initClient()` registers it ahead of `BatchSpanProcessor`.
  */
 export class ConversationIdSpanProcessor {
   onStart(span: Span, parentContext?: Context): void {
+    // One lookup, one precedence rule. The SDK always passes the real parent context, and falling
+    // back to `context.active()` only mis-attributes: a span deliberately started from a captured
+    // or detached context would inherit whatever conversation happens to be active on the stack.
     const ctx = parentContext ?? context.active();
-    const id = conversationIdFrom(ctx) ?? conversationIdFrom(context.active());
+    const id = conversationIdFrom(ctx);
     if (id && isLaunchDarklySpan(span)) setConversationIdIfAbsent(span, id);
+
+    // Name check first — this runs for every span in the process and almost none are judge roots.
+    if (spanName(span) !== 'invoke_agent') return;
+    const capture = ctx.getValue(JUDGE_EVAL_KEY) as JudgeEvalCapture | undefined;
+    if (capture) delayInvokeAgentEnd(span, capture);
   }
 
   onEnd(_span: unknown): void {}

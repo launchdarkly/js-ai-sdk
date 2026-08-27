@@ -3,6 +3,7 @@ import { initClient, shutdown } from '@launchdarkly/ai-node';
 import * as agent from './examples/agent';
 import * as claudeAgents from './examples/claude-agents';
 import * as claudeMessages from './examples/claude-messages';
+import * as conversation from './examples/conversation';
 import * as graph from './examples/graph';
 import * as history from './examples/history';
 import * as judge from './examples/judge';
@@ -21,6 +22,7 @@ type Example =
   | 'claude-agents'
   | 'claude-messages'
   | 'graph'
+  | 'conversation'
   | 'history'
   | 'judge'
   | 'langchain'
@@ -37,6 +39,7 @@ const EXAMPLES: Record<Example, { run: (key: string, userInput: string) => Promi
   agent: agent,
   'claude-agents': claudeAgents,
   'claude-messages': claudeMessages,
+  conversation: conversation,
   graph: graph,
   history: history,
   judge: judge,
