@@ -415,6 +415,32 @@ describe('graph().stream()', () => {
     expect(eventNames).toContain('$ld:ai:graph:invocation_failure');
   });
 
+  it('tracks $ld:ai:graph:handoff_failure when a judge throws after a node streamed', async () => {
+    setupTwoNodeGraph();
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('judge failed'));
+    await expect(collect(makeStreamingHandler())).rejects.toThrow('judge failed');
+    const handoff = mockTrack.mock.calls.find((c: any[]) => c[0] === '$ld:ai:graph:handoff_failure');
+    expect(handoff?.[2]).toMatchObject({ sourceKey: 'root-node', targetKey: 'leaf-node' });
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+  });
+
+  it('reports what an abandoned traversal completed instead of leaving the graph span open', async () => {
+    setupTwoNodeGraph();
+    const gen = graph('graph-flag', { handlers: [makeStreamingHandler()] }).stream('hi', mockContext);
+    // `break` resumes the generator at `return`: neither the success nor the failure path runs.
+    for await (const event of gen) {
+      if (event.type === 'node_done') break;
+    }
+    const eventNames = mockTrack.mock.calls.map((c: any[]) => c[0]);
+    expect(eventNames).toContain('$ld:ai:graph:duration:total');
+    expect(eventNames).toContain('$ld:ai:graph:total_tokens');
+    expect(eventNames).not.toContain('$ld:ai:graph:invocation_success');
+    expect(eventNames).not.toContain('$ld:ai:graph:invocation_failure');
+    const path = mockTrack.mock.calls.find((c: any[]) => c[0] === '$ld:ai:graph:path');
+    expect(path?.[2]).toMatchObject({ path: ['root-node'] });
+  });
+
   it('throws when graph is disabled', async () => {
     mockVariation.mockResolvedValue({ someOtherField: 'value' });
     await expect(collect(makeStreamingHandler())).rejects.toThrow(/disabled/i);
@@ -473,6 +499,15 @@ describe('graph().invoke() conversation id', () => {
     const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'ld.ai.graph');
     expect(graphSpan).toBeDefined();
     expect(graphSpan?.attributes[GEN_AI_CONVERSATION_ID]).toBe('thread-graph');
+  });
+
+  it('exports the ld.ai.graph span when a stream is abandoned mid-traversal', async () => {
+    setupTwoNodeGraph();
+
+    const gen = graph('graph-flag', { handlers: [makeHandler()] }).stream('hi', mockContext);
+    for await (const _event of gen) break;
+
+    expect(exporter.getFinishedSpans().find((s) => s.name === 'ld.ai.graph')).toBeDefined();
   });
 
   it('leaves the ld.ai.graph span unstamped when no id is bound', async () => {

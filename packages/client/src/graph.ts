@@ -413,6 +413,7 @@ const buildGraph = async (
     const executionToolHandlers = branching ? plan.executionToolHandlers : (plan.toolHandlers ?? {});
 
     let doneEvent: { response: string; usage: ProviderResponse['usage']; trackData: TrackData } | undefined;
+    let result: RouteResult;
     try {
       for await (const event of executeAndStream({
         configKey: node.key,
@@ -431,6 +432,45 @@ const buildGraph = async (
           doneEvent = event;
         }
       }
+
+      if (!doneEvent) {
+        throw new Error(`Streaming node "${node.key}" produced no result`);
+      }
+
+      const judgeResults = await runJudges({
+        config: node.config,
+        userContext: context,
+        handler: plan.handler,
+        handlers: options.handlers,
+        userInput: input,
+        llmResponse: doneEvent.response,
+        baseTrackData: doneEvent.trackData,
+        toolHandlers: plan.toolHandlers,
+        graphKey: key,
+      });
+
+      const chosen = plan.chosen();
+      const next = branching
+        ? chosen
+          ? nodes.get(chosen)
+          : undefined
+        : outgoing[0]
+          ? nodes.get(outgoing[0].targetKey)
+          : undefined;
+
+      if (branching) {
+        if (next) trackHandoffSuccess(node.key, next.key);
+      } else if (opts.from) {
+        trackHandoffSuccess(opts.from.key, node.key);
+      }
+
+      result = {
+        response: doneEvent.response,
+        usage: doneEvent.usage,
+        judgeResults,
+        trackData: doneEvent.trackData,
+        next,
+      };
     } catch (err) {
       const chosen = plan.chosen();
       if (branching) {
@@ -441,47 +481,7 @@ const buildGraph = async (
       throw err;
     }
 
-    if (!doneEvent) {
-      throw new Error(`Streaming node "${node.key}" produced no result`);
-    }
-
-    const judgeResults = await runJudges({
-      config: node.config,
-      userContext: context,
-      handler: plan.handler,
-      handlers: options.handlers,
-      userInput: input,
-      llmResponse: doneEvent.response,
-      baseTrackData: doneEvent.trackData,
-      toolHandlers: plan.toolHandlers,
-      graphKey: key,
-    });
-
-    const chosen = plan.chosen();
-    const next = branching
-      ? chosen
-        ? nodes.get(chosen)
-        : undefined
-      : outgoing[0]
-        ? nodes.get(outgoing[0].targetKey)
-        : undefined;
-
-    if (branching) {
-      if (next) trackHandoffSuccess(node.key, next.key);
-    } else if (opts.from) {
-      trackHandoffSuccess(opts.from.key, node.key);
-    }
-
-    yield {
-      type: 'done',
-      result: {
-        response: doneEvent.response,
-        usage: doneEvent.usage,
-        judgeResults,
-        trackData: doneEvent.trackData,
-        next,
-      },
-    };
+    yield { type: 'done', result };
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: T = any default keeps existing call-sites working without type annotations
@@ -794,6 +794,7 @@ export const graph = (
     const path: string[] = [];
     const nodes: Record<string, ProviderResponse> = {};
     const totalUsage = { input: 0, output: 0, total: 0 };
+    let spanEnded = false;
 
     try {
       let current: GraphNode | null = def.root;
@@ -857,6 +858,7 @@ export const graph = (
 
       span.setStatus({ code: SpanStatusCode.OK });
       span.end();
+      spanEnded = true;
 
       yield { type: 'done', response: finalResponse, usage: totalUsage, path, nodes, judgeResults };
     } catch (err) {
@@ -869,7 +871,25 @@ export const graph = (
         message: err instanceof Error ? err.message : String(err),
       });
       span.end();
+      spanEnded = true;
       throw err;
+    } finally {
+      // A consumer that `break`s out of `for await`, or throws inside the loop body, resumes this
+      // generator at `return` — neither the success nor the failure path runs. Without the cleanup
+      // here the graph span stays open, so it is never exported and the nodes parented to it
+      // disappear from AI Config Monitoring. An abandoned traversal still walked whatever nodes it
+      // completed, so the duration, tokens and path it accumulated are reported too; the terminal
+      // success/failure event is not, because neither happened.
+      if (!spanEnded) {
+        getClient().track('$ld:ai:graph:duration:total', context, graphTrackData, Date.now() - startTime);
+        if (totalUsage.total > 0) {
+          getClient().track('$ld:ai:graph:total_tokens', context, graphTrackData, totalUsage.total);
+        }
+        if (path.length > 0) {
+          getClient().track('$ld:ai:graph:path', context, { ...graphTrackData, path }, path.length);
+        }
+        span.end();
+      }
     }
   }
 
