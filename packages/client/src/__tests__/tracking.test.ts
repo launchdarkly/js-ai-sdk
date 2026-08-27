@@ -50,7 +50,7 @@ describe('wrapToolHandlers', () => {
     expect(mockTrack).toHaveBeenCalledWith(
       '$ld:ai:tool_call',
       mockContext,
-      expect.objectContaining({ toolName: 'myTool' }),
+      expect.objectContaining({ toolKey: 'myTool' }),
       1,
     );
   });
@@ -61,7 +61,7 @@ describe('wrapToolHandlers', () => {
     expect(mockTrack).toHaveBeenCalledWith(
       '$ld:ai:tool_call',
       mockContext,
-      expect.objectContaining({ configKey: 'my-flag', runId: 'run-1', toolName: 'search' }),
+      expect.objectContaining({ configKey: 'my-flag', runId: 'run-1', toolKey: 'search' }),
       1,
     );
   });
@@ -74,7 +74,7 @@ describe('wrapToolHandlers', () => {
     expect(mockTrack).toHaveBeenCalledWith(
       '$ld:ai:tool_call',
       mockContext,
-      expect.objectContaining({ toolName: 'webSearch' }),
+      expect.objectContaining({ toolKey: 'webSearch' }),
       1,
     );
   });

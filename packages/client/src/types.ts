@@ -409,7 +409,7 @@ export type TrackData = {
   modelName: string;
   providerName: string;
   graphKey?: string;
-  toolName?: string;
+  toolKey?: string;
   judgeConfigKey?: string;
   /** LD environment MongoDB ObjectId — used to set feature_flag.set.id on OTel spans. */
   environmentId?: string;

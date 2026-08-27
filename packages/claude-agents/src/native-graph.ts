@@ -62,7 +62,7 @@ const wrapNativeTools = (
       if (fn instanceof NativeTool) {
         const stub = () => {
           if (ldContext) {
-            getClient().track('$ld:ai:tool_call', ldContext, { ...trackData, toolName: name }, 1);
+            getClient().track('$ld:ai:tool_call', ldContext, { ...trackData, toolKey: name }, 1);
           }
         };
         (stub as unknown as Record<symbol, unknown>)[NATIVE_TOOL_KEY] = fn;

@@ -269,7 +269,7 @@ Payload attached to every LaunchDarkly tracking event.
 | `modelName` | string | Model name from the config. |
 | `providerName` | string | Provider name from the config. |
 | `graphKey` | string? | Present when the event was produced inside an agent graph. |
-| `toolName` | string? | Present when the event is for a tool call. |
+| `toolKey` | string? | Present when the event is for a tool call. |
 | `judgeConfigKey` | string? | Present when the event is from a judge execution. |
 
 #### `NativeTool`
