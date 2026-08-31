@@ -80,7 +80,7 @@ await shutdown();
 | Export | Description |
 |---|---|
 | `initClient(options?)` | Auto-discover and initialize `@launchdarkly/node-server-sdk`. Optional — the first AI API call triggers lazy init when `LD_SDK_KEY` is set. Returns `Promise<LDClientInterface>`. |
-| `initClient(client)` | **BYOC overload** — accept a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk` or any edge runtime). Skips SDK auto-discovery. |
+| `initClient(client, options?)` | **BYOC overload** — accept a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk` or any edge runtime). Skips SDK auto-discovery. |
 | `getClient()` | Return the initialized `LDClientInterface`. Throws if `initClient` has not completed. |
 | `shutdown()` | Flush all events and telemetry, then close the client. Call before process exit. |
 | `waitForTelemetry()` | Wait for the OTel provider to be ready. Useful to avoid dropping early spans. |
@@ -225,6 +225,208 @@ if (!result.enabled) {
 
 ---
 
+### Agent Skills
+
+Agent Skills are versioned `SKILL.md` documents managed in LaunchDarkly, attachable to AI Config variations by reference. This package surfaces which skills a config references, retrieves their content, and materializes them onto disk where agent runtimes (the Claude Agent SDK and friends) can discover them.
+
+**Content delivery is not wired up in this release.** Everything below runs against the `SkillStore` seam; the shipped default is *absent*, so the accessors throw an actionable error until a store is configured. `InMemorySkillStore` is provided for local development, tests, and bring-your-own-content. The real transport ships in a follow-up.
+
+```ts
+import { createHash } from 'node:crypto';
+import {
+  allSkills,
+  getSkill,
+  getSkillResult,
+  getSkills,
+  initClient,
+  InMemorySkillStore,
+  skillRefs,
+  writeSkills,
+} from '@launchdarkly/ai-server';
+
+// A store serves wire-shaped raw objects. `contentHash` is sha256, lowercase
+// hex, over the verbatim UTF-8 bytes of `content` — content that does not hash
+// to it is withheld, so this is not a field to hand-wave.
+const content = '---\nname: PDF Extraction\n---\nExtract text from PDFs.\n';
+const store = new InMemorySkillStore();
+store.put({
+  key: 'pdf-extraction',
+  version: 2,
+  content,
+  contentHash: createHash('sha256').update(Buffer.from(content, 'utf-8')).digest('hex'),
+});
+
+// Configure it as part of ordinary initialization...
+await initClient({ skillStore: store });
+// ...or alongside a pre-initialized client on an edge runtime:
+// await initClient(myEdgeClient, { skillStore: store });
+
+// Which skills does a resolved config reference? A pure projection — no I/O,
+// and it works before any client exists.
+const refs = skillRefs({
+  model: { name: 'claude-opus-4-5' },
+  provider: { name: 'Anthropic' },
+  instructions: 'Summarize the attached document.',
+  skills: [{ key: 'pdf-extraction', version: 2 }],
+}); // [{ key: 'pdf-extraction', version: 2 }]
+
+// In real use the config comes from LaunchDarkly:
+// const info = await inspectConfig('doc-agent', { kind: 'user', key: 'user-123' });
+// const refs = skillRefs(info.config);
+
+// Retrieve content. Every skill is hash-verified before you see it.
+// `Skill.content` is a Uint8Array — the verified verbatim bytes, exactly what
+// was hashed. The SDK never interprets them; decode or parse them yourself.
+const newest = await getSkill('pdf-extraction'); // newest available
+const pinned = await getSkill('pdf-extraction', { version: 2 }); // exact version, or null
+const batch = await getSkills(refs); // input order; misses omitted
+// `getSkill` returns null for four different reasons. When you need to tell them
+// apart — to fail closed on suspected tampering — ask for the outcome instead.
+const outcome = await getSkillResult('pdf-extraction', { version: 2 });
+if (outcome.reason === 'integrity_failure') throw new Error(outcome.detail ?? 'withheld');
+const everything = await allSkills();
+const text = new TextDecoder().decode(newest?.content); // if you want a string
+
+// Materialize onto disk at <root>/<key>/SKILL.md. Only the leaf directory is
+// ever created, so `.claude` must already exist — a typo in the path is an
+// error, not an invitation to scatter a directory tree.
+const report = await writeSkills(refs, '.claude/skills');
+if (!report.ok) {
+  for (const action of report.errors) {
+    console.error(`skill ${action.key}: ${action.error}`);
+  }
+}
+```
+
+`writeSkills` is a **reconcile**, not a copy. It records what it wrote in `<root>/.launchdarkly-skills.json` and only ever overwrites or deletes paths that manifest lists under a matching key — a file you placed yourself is reported as an error and left alone. Revocation is pruning: a skill absent from the resolved set is removed on the next run.
+
+One narrow exception keeps that conservatism from becoming a trap. The manifest is written atomically, once, last, so a process killed after a skill file lands but before that write would leave the file at a managed path with no manifest entry — which is exactly what an unmanaged collision looks like, so every later reconcile would refuse it and the skill would stay stuck. So a colliding file whose bytes **already are** the resolved content is adopted: recorded in the manifest and reported `skipped_current`, and a crashed reconcile heals itself on the next run. Nothing is overwritten, because nothing needs to be — the only file ever adopted is one that is already byte-identical to what LaunchDarkly resolved. A file whose bytes differ, or one that cannot be read at all, is still refused and left untouched.
+
+```ts
+// Everything the store holds, materialized at boot.
+const report = await writeSkills('*', '.claude/skills', {
+  prune: true,          // default — remove formerly-managed skills no longer resolved
+  timeout: 10,          // SECONDS, not milliseconds (cross-language contract)
+  onUnavailable: 'keep', // 'keep' reports a failed retrieval; 'raise' throws
+});
+```
+
+| Export | Description |
+|---|---|
+| `skillRefs(config)` | Project a config's `skills` array into typed `SkillReference[]`. Pure — no client, no store, no telemetry. `[]` when absent. |
+| `getSkill(key, { version? })` | One verified skill. Omit `version` for the newest available. Resolves to `null` for not-found or a version mismatch; throws only when no store is configured. |
+| `getSkillResult(key, { version? })` | The same retrieval as `getSkill`, reported instead of collapsed. Resolves to `{ skill, reason, detail }`, where `reason` is one of `ok` / `absent` / `integrity_failure` / `store_unavailable` / `wrong_version`. Throws only when no store is configured — same as `getSkill`. See [fail closed on tampering](#fail-closed-on-tampering-getskillresult). |
+| `getSkills(refs)` | Batch form. Accepts `SkillReference` values and bare key strings (string = latest). Results follow input order; missing or unverifiable entries are omitted. |
+| `allSkills()` | Every verified skill the store holds. |
+| `writeSkills(skills, root, options?)` | Materialize to `<root>/<key>/SKILL.md`. Accepts `Skill` / `SkillReference` / key strings, or the literal `'*'`. Returns a `ReconcileReport`. Throws for a caller error — an unusable `root`, a bare string other than `'*'` — as distinct from the per-skill `error` actions in the report. |
+| `InMemorySkillStore` | A `SkillStore` backed by a plain object. `put(raw)`, `getObject(kind, key, version?)`, `allObjects(kind)`, `addListener(kind, fn)`. Holds one object per key, so it answers a version pin with what it has and lets the accessor refuse a mismatch. |
+| `createSkill(init)` / `createSkillReference(init)` | Build frozen `Skill` / `SkillReference` values. Use `createSkill` to hand `writeSkills` content you already have. |
+| `createSkillOutcome(init)` | Build a frozen `SkillOutcome`. Exported for tests and for wrapping your own retrieval in the same shape. |
+| `SKILL_OBJECT_KIND` | `'skill'` — the delivery object kind. |
+| `SKILL_FILENAME` | `'SKILL.md'`. |
+| `MANIFEST_FILENAME` | `'.launchdarkly-skills.json'` — add this to your `.gitignore` if you do not commit materialized skills. |
+| `MANIFEST_VERSION` | `1`. |
+| `MAX_SKILL_CONTENT_BYTES` | `65536` — the hard cap. Content above it is refused as inauthentic. |
+
+`ReconcileReport` exposes `actions`, `ok` (true iff no action is an `error`), and `errors` (the error actions, in order), so callers never re-derive the filter. Each `ReconcileAction` carries `key`, `action` (`written` | `updated` | `skipped_current` | `removed` | `error`), and nullable `version` / `path` / `error`. A failure belonging to the whole run rather than one skill — a corrupt manifest, for instance — carries the **empty string** in `key`.
+
+**Security posture.** `writeSkills` is writing LaunchDarkly-delivered content to your disk, so it fails closed: skill keys are re-validated locally, content is hash-verified again immediately before writing, writes go through a temp file in the target's own directory and an atomic rename at mode `0644`, symlinked roots/directories/targets are refused, a target that is not a regular file (a FIFO, a device node) is refused rather than read, and a corrupt manifest suppresses every destructive action. One limitation is worth stating plainly: Node exposes no `renameat`/`unlinkat`, so the final rename cannot be performed relative to a pinned directory descriptor. An attacker who already has **write permission on the managed root** can therefore still win a race to redirect a write or a delete outside it. Keep the managed root writable only by the process running the SDK.
+
+**Two constraints on skill keys, imposed here rather than by the data model.** A key becomes a single directory name, so `writeSkills` rejects — as a reported `error` action, on every platform — a key over 255 bytes and the 22 Windows reserved device names (`con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`). Both are checked in the filesystem layer only: a key like `aux` remains valid everywhere else, so an AI Config referencing it still parses and its other skills still materialize. One residual the SDK cannot check for you: the 255-byte bound is per *path component*, not on the total path, so `<root>/<key>/SKILL.md` can still exceed Windows' 260-character `MAX_PATH` if the root is deep and the key is long. The root is yours, so budget for it there.
+
+**Skill content is opaque to the SDK.** A verified `Skill` carries `content` as a `Uint8Array` — the exact bytes that were hashed — and the SDK never parses, decodes, or interprets it anywhere. There is deliberately no frontmatter accessor and no YAML dependency: a consumer that wants the frontmatter decodes the bytes and parses them itself, with whatever parser and bounds it trusts.
+
+**No LaunchDarkly telemetry is emitted for skills.** Signals go through an internal no-op emitter; `client.track()` is never called and no LD context is involved.
+
+#### Observability: integrity failures are logged for your SIEM
+
+A skill that fails integrity verification is **withheld** — the accessor returns `null`, `writeSkills` reports an `error` action, and no unverified byte reaches your agent. Every failure additionally writes one line to `console.error` in a fixed, machine-parseable shape, so that withholding is *detectable* and not merely correct:
+
+```text
+[LaunchDarkly] ld.skills.integrity_failure {"action":"withheld","event":"ld.skills.integrity_failure","expected_hash":"5f2b...","language":"typescript","observed_hash":"9c14...","reason":"content hash mismatch","reason_code":"hash_mismatch","skill_key":"pdf-extraction","version":2}
+```
+
+The line is a `[LaunchDarkly] ` prefix, the event name, a space, and a single JSON object. To ingest it: match `ld.skills.integrity_failure`, take everything from the first `{`, parse it.
+
+**The record is written regardless of how you configure telemetry.** It is not sampled, not batched, and not conditional on a LaunchDarkly connection — no LaunchDarkly telemetry is emitted for skills at all. If you send LaunchDarkly nothing, this log record is your complete detection surface for tampered or malformed skill content.
+
+**`ld.skills.integrity_failure` is a stability commitment.** The event name will not be renamed, and no field will be renamed or removed, outside a major release with a changelog entry. It is safe to build an alert on.
+
+| Field | Always present | Value |
+|---|---|---|
+| `event` | yes | `ld.skills.integrity_failure`. |
+| `action` | yes | `withheld` — what the SDK did about it. Content that fails verification is never returned and never written to disk. |
+| `skill_key` | yes | The skill key, or `<invalid-key>` when the key itself failed validation. Keys arrive from the wire, so one is never echoed verbatim. |
+| `reason_code` | yes | A stable token from the closed vocabulary below. Alert on this field, not on `reason`. |
+| `reason` | yes | Human-readable detail, including byte counts. Wording may change between releases. |
+| `language` | yes | `typescript`. Distinguishes SDKs in a polyglot fleet; the Python SDK emits the same record with `python`. |
+| `version` | no | The skill version. Omitted when the delivered version was not an integer >= 1. |
+| `expected_hash` | no | The `contentHash` delivered with the content, or `<not-a-sha256-digest>` when it was not 64 lowercase hex characters. Omitted when the failure happened before any hash was read. |
+| `observed_hash` | no | The sha256 this SDK computed locally. Omitted when the failure happened before hashing. |
+
+Optional fields are **omitted, never null** — the absence of `observed_hash` means no hash was computed, which is itself information. Skill content, filesystem paths, and credentials never appear in the record; the key and the expected hash are shape-checked and replaced with the placeholders above when they do not look like what they claim to be, so a hostile store cannot use the log line to exfiltrate a skill body.
+
+| `reason_code` | What happened |
+|---|---|
+| `not_an_object` | The store served something that is not an object. |
+| `invalid_key` | The key does not match `^[a-z0-9][a-z0-9-]*$` within 256 characters. |
+| `invalid_version` | The version is not an integer >= 1. |
+| `missing_content` | `content` is absent or not a string. |
+| `missing_content_hash` | `contentHash` is absent or not a string. |
+| `not_utf8` | The content has no UTF-8 encoding (a lone surrogate), so there are no bytes LaunchDarkly could have hashed. |
+| `over_size_cap` | The content exceeds `MAX_SKILL_CONTENT_BYTES`, so it is inauthentic whatever it hashes to. |
+| `hash_mismatch` | The content does not hash to the `contentHash` delivered alongside it. |
+
+These eight tokens are the whole vocabulary, and the Python SDK emits the same eight for the same conditions — including identical JSON key order — so one parser and one alert rule cover a polyglot fleet.
+
+#### Fail closed on tampering: `getSkillResult`
+
+The log record above is the *operator's* view. Your application gets the same distinction programmatically from `getSkillResult`, which returns the outcome instead of collapsing it:
+
+```ts
+import { getSkillResult } from '@launchdarkly/ai-server';
+
+const outcome = await getSkillResult('pdf-extraction', { version: 2 });
+
+switch (outcome.reason) {
+  case 'ok':
+    return outcome.skill; // non-null exactly here
+  case 'integrity_failure':
+    // Content and its declared digest disagreed. Do not proceed on a fallback:
+    // the safe interpretation is that skill delivery is being tampered with.
+    console.error(`refusing to start: ${outcome.detail}`);
+    process.exit(1);
+  case 'absent':
+    // Nobody configured this skill, or it was revoked. Ordinary; carry on.
+    return null;
+  case 'wrong_version':
+    // The pinned version is not what the store holds — a rollout skew, usually.
+    return null;
+  case 'store_unavailable':
+    // The store could not answer. An outage, not an answer of "no" — retry or
+    // run degraded, but do not treat it as a revocation.
+    return null;
+}
+```
+
+| `reason` | `skill` | What happened |
+|---|---|---|
+| `ok` | the skill | Retrieved and verified. |
+| `absent` | `null` | The store holds nothing under that key. Not configured, not yet delivered, or revoked. |
+| `integrity_failure` | `null` | Content failed verification and was withheld. The `ld.skills.integrity_failure` record above was written for the same failure. |
+| `wrong_version` | `null` | A version was pinned and the store answered with a different one. |
+| `store_unavailable` | `null` | The store threw. Nothing was retrieved, so nothing is known either way. |
+
+`detail` carries the human-readable reason for every non-`ok` outcome and is `null` for `ok`. It is safe to log or surface: it names the key, the requested and held versions, and the failure category, and never skill content or a filesystem path.
+
+**`getSkill` is unchanged.** It still resolves to `null` for all four failure outcomes and still rejects only when no store is configured — no existing caller has to change anything. The two accessors run the identical lookup and the identical verification, and differ *only* in what they report: `getSkill` gives you the skill or `null`, `getSkillResult` also gives you the reason. Nothing is retried, cached, or logged twice — by the time either returns, an integrity failure has already written its record — so reaching for `getSkillResult` costs nothing but the wider return type.
+
+These five tokens are the whole vocabulary, and the Python SDK publishes the same five for the same conditions. There is deliberately no batch equivalent: `getSkills` and `allSkills` still omit entries they could not return, so call `getSkillResult` per key where the outcome matters.
+
+**`hash_mismatch` deserves a page, not a dashboard.** The other codes are consistent with a malformed store, a bad deployment, or a truncated response. `hash_mismatch` means content and its declared digest disagree, which is the shape of active tampering with skill delivery — in transit, in a cache, or in whatever backs your `SkillStore`. If you serve skill content only from LaunchDarkly, `over_size_cap` and `not_utf8` warrant alerts on the same reasoning: neither should ever occur.
+
+---
+
 ### Utility Helpers
 
 ```ts
@@ -257,3 +459,14 @@ All types are re-exported from this package. Handler packages import them from h
 | `GraphNode` / `GraphEdge` | A node (evaluated agent config + edges) and a directed edge (with handoff data) |
 | `ProviderGraphResponse` | The value returned by `graph(...).invoke()`: `{ response, usage, trackData, judgeResults? }` |
 | `GraphTopology` | The parsed graph flag shape (`root` + `edges`) |
+| `Skill` | A verified skill document: `key`, `version`, `content` (`Uint8Array` — the verified verbatim bytes), `contentHash`, `name`, `description` |
+| `SkillReference` | A version-pinned pointer to a skill: `{ key, version }` |
+| `SkillOutcome` | What `getSkillResult()` resolves to: `{ skill, reason, detail }`. `skill` is non-null exactly when `reason` is `'ok'` |
+| `SkillOutcomeReason` | The closed set of retrieval outcomes: `'absent' \| 'integrity_failure' \| 'ok' \| 'store_unavailable' \| 'wrong_version'` |
+| `SkillStore` | The structural seam skill content is retrieved through: `getObject(kind, key, version?)`, `allObjects`, optional `addListener` |
+| `RawSkillObject` | The wire shape a `SkillStore` serves, before verification. Every field is untrusted. |
+| `ReconcileReport` | The result of `writeSkills()`: `{ actions, ok, errors }` |
+| `ReconcileAction` | One outcome from a reconcile: `{ key, action, version, path, error }` |
+| `ReconcileActionKind` | The closed set of reconcile outcomes: `'written' \| 'updated' \| 'skipped_current' \| 'removed' \| 'error'` |
+| `OnUnavailable` | `'keep' \| 'raise'` — how `writeSkills` reacts to content it could not retrieve |
+| `WriteSkillsOptions` | Options accepted by `writeSkills()` (`prune`, `timeout` in seconds, `onUnavailable`) |
