@@ -1,4 +1,5 @@
 import type { Span } from '@opentelemetry/api';
+import { contextIdentity } from './context.js';
 import type { AiConfigRep, HandlerStreamEvent, Message, ProviderHandler, TokenUsage, TrackData } from './types.js';
 
 /**
@@ -386,6 +387,10 @@ export function endSpanOnce(span: Span, tracker: Set<Span>, abandoned = false): 
  *   satisfying the query: events.name=feature_flag AND
  *   events.attributes.feature_flag.key=<configKey> AND
  *   feature_flag.set.id=<environmentId>
+ *
+ *   Per-kind span attributes `context.contextKeys.<kind>` are what make a
+ *   single kind filterable; `feature_flag.context.id` is a composite for a
+ *   multi-kind context. See AIC-3230.
  */
 export function setLdSpanAttributes(span: Span, variables: Record<string, unknown> | undefined): void {
   span.setAttribute('launchdarkly.operation.type', 'gen_ai');
@@ -403,6 +408,24 @@ export function setLdSpanAttributes(span: Span, variables: Record<string, unknow
   if (ld.environmentId) {
     featureFlagAttrs['feature_flag.set.id'] = ld.environmentId;
   }
+
+  // `executeAndTrack` / `executeAndStream` merge `ldContext` into variables
+  // after the caller's own variables, so it is always the evaluation context
+  // and cannot be clobbered by a user-supplied variable of the same name.
+  const identity = contextIdentity(variables?.ldContext);
+  if (identity) {
+    // Matches the Go SDK's ldotel hook (`feature_flag.context.id`) and the
+    // observability browser SDK (both, plus the per-kind span attributes).
+    featureFlagAttrs['feature_flag.context.id'] = identity.canonicalKey;
+    featureFlagAttrs['feature_flag.contextKeys'] = JSON.stringify(identity.contextKeys);
+    // The canonical key is a composite for a multi-kind context, so it cannot
+    // answer "filter to this one user". These per-kind attributes can, and they
+    // use the spelling AI Config Monitoring's group-by already speaks.
+    for (const [kind, key] of Object.entries(identity.contextKeys)) {
+      span.setAttribute(`context.contextKeys.${kind}`, key);
+    }
+  }
+
   span.addEvent('feature_flag', featureFlagAttrs);
 }
 

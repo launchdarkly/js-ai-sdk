@@ -377,6 +377,79 @@ describe('setLdSpanAttributes', () => {
     const eventCall = span.addEvent.mock.calls.find((c: any[]) => c[0] === 'feature_flag');
     expect(eventCall?.[1]).not.toHaveProperty('feature_flag.set.id');
   });
+
+  it('puts the canonical context key on the feature_flag event', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: ldFixture, ldContext: { kind: 'user', key: 'bob' } });
+    expect(span.addEvent).toHaveBeenCalledWith(
+      'feature_flag',
+      expect.objectContaining({ 'feature_flag.context.id': 'bob' }),
+    );
+  });
+
+  it('puts the per-kind keys on the feature_flag event as JSON', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, {
+      __ld: ldFixture,
+      ldContext: { kind: 'multi', user: { kind: 'user', key: 'u1' }, org: { kind: 'org', key: 'o1' } },
+    });
+    expect(span.addEvent).toHaveBeenCalledWith(
+      'feature_flag',
+      expect.objectContaining({ 'feature_flag.contextKeys': '{"org":"o1","user":"u1"}' }),
+    );
+  });
+
+  it('uses the composite canonical key for a multi-kind context', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, {
+      __ld: ldFixture,
+      ldContext: { kind: 'multi', user: { kind: 'user', key: 'u1' }, org: { kind: 'org', key: 'o1' } },
+    });
+    expect(span.addEvent).toHaveBeenCalledWith(
+      'feature_flag',
+      expect.objectContaining({ 'feature_flag.context.id': 'org:o1:user:u1' }),
+    );
+  });
+
+  it('writes one span attribute per context kind, so a single kind is filterable on its own', () => {
+    // The composite canonical key cannot answer "filter to this user" for a
+    // multi-kind context. These per-kind attributes are what can.
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, {
+      __ld: ldFixture,
+      ldContext: { kind: 'multi', user: { kind: 'user', key: 'u1' }, org: { kind: 'org', key: 'o1' } },
+    });
+    expect(span.setAttribute).toHaveBeenCalledWith('context.contextKeys.user', 'u1');
+    expect(span.setAttribute).toHaveBeenCalledWith('context.contextKeys.org', 'o1');
+  });
+
+  it('emits no context attributes when variables carry no ldContext', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: ldFixture });
+    const eventAttrs = span.addEvent.mock.calls[0][1];
+    expect(eventAttrs).not.toHaveProperty('feature_flag.context.id');
+    expect(eventAttrs).not.toHaveProperty('feature_flag.contextKeys');
+    expect(span.setAttribute.mock.calls.filter(([k]: [string]) => k.startsWith('context.'))).toEqual([]);
+  });
+
+  it('emits no context attributes for a malformed ldContext, and does not throw', () => {
+    const span = makeMockSpan();
+    expect(() => setLdSpanAttributes(span as any, { __ld: ldFixture, ldContext: 'bob' })).not.toThrow();
+    expect(span.addEvent.mock.calls[0][1]).not.toHaveProperty('feature_flag.context.id');
+  });
+
+  it('emits no context attribute values, only keys', () => {
+    // AC 5: attribute values are where the PII lives. Nothing but keys leaves
+    // the SDK, and no option exists to change that.
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, {
+      __ld: ldFixture,
+      ldContext: { kind: 'user', key: 'bob', email: 'bob@example.com', name: 'Bob' },
+    });
+    const emitted = JSON.stringify([span.setAttribute.mock.calls, span.addEvent.mock.calls]);
+    expect(emitted).not.toContain('bob@example.com');
+    expect(emitted).not.toContain('Bob');
+  });
 });
 
 // ─── numberOrZero ─────────────────────────────────────────────────────────────
