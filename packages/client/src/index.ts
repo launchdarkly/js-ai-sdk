@@ -21,6 +21,8 @@ export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, wait
 export { compose, globalRegistry, Registry } from './registry.js';
 export { allSkills, getSkill, getSkillResult, getSkills, InMemorySkillStore, skillRefs } from './skills.js';
 export { MAX_SKILL_CONTENT_BYTES, SKILL_OBJECT_KIND } from './skills-core.js';
+export type { WriteSkillsOptions } from './skills-fs.js';
+export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
 export type {
   ConfigArgs,
   GraphArgs,
