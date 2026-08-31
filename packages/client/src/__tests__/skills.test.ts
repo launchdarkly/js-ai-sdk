@@ -1,6 +1,7 @@
 /**
  * Agent Skills — value types, reference discovery, the `SkillStore` seam, the
- * content accessors, and the accessor half of the telemetry seam.
+ * content accessors, the accessor half of the telemetry seam, and the local
+ * integrity-failure log record.
  *
  * No network, no real LaunchDarkly client, no real skill transport.
  */
@@ -39,12 +40,19 @@ import {
   _setStore,
   allSkills,
   getSkill,
+  getSkillResult,
   getSkills,
   InMemorySkillStore,
   skillRefs,
 } from '../skills.js';
-import type { RawSkillObject, Skill, SkillStore } from '../types.js';
-import { createReconcileAction, createReconcileReport, createSkill, createSkillReference } from '../types.js';
+import type { RawSkillObject, Skill, SkillOutcomeReason, SkillStore } from '../types.js';
+import {
+  createReconcileAction,
+  createReconcileReport,
+  createSkill,
+  createSkillOutcome,
+  createSkillReference,
+} from '../types.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -56,6 +64,15 @@ const SKILL_BODY_BYTES = new TextEncoder().encode(SKILL_BODY);
 const INTEGRITY_SIGNAL = 'AgentControl Skill Integrity Failure';
 const MATERIALIZED_SIGNAL = 'AgentControl Skill Materialized';
 const REVOKED_SIGNAL = 'AgentControl Skill Revoked Received';
+
+/** The three signal names are an allowlist, not a floor. */
+const APPROVED_SIGNALS = new Set([INTEGRITY_SIGNAL, MATERIALIZED_SIGNAL, REVOKED_SIGNAL]);
+
+/**
+ * Signal names that must never be emitted by the SDK — named explicitly so the
+ * regression is unmissable.
+ */
+const REMOVED_SIGNALS = ['AgentControl Skill SDK Reference Returned', 'AgentControl Skill Content Retrieved'];
 
 function hash(content: string | Uint8Array): string {
   return createHash('sha256')
@@ -91,6 +108,12 @@ class RecordingEmitter {
   }
   names(): Set<string> {
     return new Set(this.records.map(([s]) => s));
+  }
+}
+
+class ThrowingEmitter {
+  record(): void {
+    throw new Error('emitter exploded');
   }
 }
 
@@ -610,5 +633,901 @@ describe('allSkills', () => {
   it('returns an empty list for an empty store', async () => {
     _setStore(new InMemorySkillStore());
     expect(await allSkills()).toEqual([]);
+  });
+});
+
+// ─── Integrity verification ────────────────────────────────────────────
+
+describe('integrity verification', () => {
+  it('withholds a skill whose hash does not match', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', contentHash: 'a'.repeat(64) }));
+    _setStore(store);
+
+    expect(await getSkill('a')).toBeNull();
+    const [props] = emitter.signals(INTEGRITY_SIGNAL);
+    expect(props.expected_hash).toBe('a'.repeat(64));
+    expect(props.observed_hash).toBe(hash(SKILL_BODY));
+  });
+
+  it('withholds content tampered by a single byte', async () => {
+    const raw = rawSkill({ key: 'a' });
+    raw.content = `${raw.content as string}x`;
+    _setStore(new DictStore({ a: raw }));
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('rejects content over 64 KiB even when its hash matches', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const oversize = 'x'.repeat(64 * 1024 + 1);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', content: oversize }));
+    _setStore(store);
+
+    expect(await getSkill('a')).toBeNull();
+    expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
+  });
+
+  it('accepts content at exactly the size cap', async () => {
+    const atCap = 'x'.repeat(64 * 1024);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', content: atCap }));
+    _setStore(store);
+    expect((await getSkill('a'))?.content).toHaveLength(64 * 1024);
+  });
+
+  it('accepts a key at the 256-character bound from the store', async () => {
+    // The accepting side of the <= 256 bound. writeSkills cannot reach
+    // it (a key is one directory name and NAME_MAX is 255), so config
+    // validation and this accessor-side revalidation are the only two layers
+    // where 256 is observable at all.
+    const key = 'a'.repeat(256);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key }));
+    _setStore(store);
+    expect((await getSkill(key))?.key).toBe(key);
+  });
+
+  it.each([
+    ['uppercase', 'Evil'],
+    ['leading dash', '-leading-dash'],
+    ['leading dot', '.hidden'],
+    ['embedded space', 'has space'],
+    ['path separator', 'a/b'],
+    ['traversal', '../escape'],
+    ['empty', ''],
+    ['overlong', 'x'.repeat(257)],
+    ['trailing newline', 'trailing\n'],
+  ])('rejects an invalid key served by the store: %s', async (_label, badKey) => {
+    // A hostile store may serve any key — the accessor revalidates.
+    const raw = rawSkill({ key: 'placeholder' });
+    raw.key = badKey;
+    _setStore(new DictStore({ [badKey]: raw }));
+    expect(await getSkill(badKey)).toBeNull();
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['non-integer', 2.5],
+    ['string', '2'],
+    ['null', null],
+    ['boolean', true],
+    ['undefined', undefined],
+    ['NaN', Number.NaN],
+  ])('rejects an invalid version served by the store: %s', async (_label, badVersion) => {
+    const raw = rawSkill({ key: 'a' });
+    raw.version = badVersion as number;
+    _setStore(new DictStore({ a: raw }));
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('rejects a raw object with no content', async () => {
+    const raw = rawSkill({ key: 'a' });
+    delete raw.content;
+    _setStore(new DictStore({ a: raw }));
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('rejects a raw object with no contentHash', async () => {
+    const raw = rawSkill({ key: 'a' });
+    delete raw.contentHash;
+    _setStore(new DictStore({ a: raw }));
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('rejects a non-object raw entry', async () => {
+    _setStore(new DictStore({ a: 'not an object' as unknown as RawSkillObject }));
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('rejects an uppercase hash — hashes are lowercase hex', async () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', contentHash: hash(SKILL_BODY).toUpperCase() }));
+    _setStore(store);
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('verifies multi-byte UTF-8 content byte-exactly', async () => {
+    const emoji = '---\nname: 🎉\n---\nUnicode ✨ body\n';
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', content: emoji }));
+    _setStore(store);
+    expect((await getSkill('a'))?.content).toEqual(new TextEncoder().encode(emoji));
+  });
+
+  it('withholds content that has no UTF-8 encoding, even when its hash matches', async () => {
+    // An unpaired surrogate has
+    // no UTF-8 encoding. Python's str.encode raises; Node's Buffer.from
+    // *silently substitutes* U+FFFD, so only an explicit round-trip check
+    // catches it — and without that check a store can supply the hash of the
+    // substituted bytes and have fabricated content pass verification.
+    //
+    // contentHash is deliberately the hash of the lossy encoding, so the hash
+    // comparison is NOT what rejects this. If the round-trip guard is removed,
+    // this skill verifies and getSkill returns content LaunchDarkly never sent.
+    const content = 'hi \ud800 there';
+    const substituted = Buffer.from(content, 'utf-8');
+    expect(substituted.toString('utf-8')).not.toBe(content); // the substitution really happens
+
+    const store = new DictStore({
+      a: { key: 'a', version: 1, content, contentHash: createHash('sha256').update(substituted).digest('hex') },
+    });
+    _setStore(store);
+
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('records the integrity signal for unencodable content', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const content = 'hi \ud800 there';
+    _setStore(
+      new DictStore({
+        a: {
+          key: 'a',
+          version: 1,
+          content,
+          contentHash: createHash('sha256').update(Buffer.from(content, 'utf-8')).digest('hex'),
+        },
+      }),
+    );
+
+    await getSkill('a');
+
+    expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
+  });
+
+  it('reports a throwing store as no result rather than propagating', async () => {
+    _setStore({
+      getObject() {
+        throw new Error('transport failure');
+      },
+      allObjects() {
+        throw new Error('transport failure');
+      },
+    });
+    expect(await getSkill('a')).toBeNull();
+    expect(await getSkills(['a'])).toEqual([]);
+    expect(await allSkills()).toEqual([]);
+  });
+});
+
+// ─── Telemetry seam (accessor half) ────────────────────────────────────
+
+describe('telemetry seam, accessor half', () => {
+  it('the default emitter is a no-op and never raises', async () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', contentHash: '0'.repeat(64) }));
+    _setStore(store);
+    // No emitter injected.
+    expect(await getSkill('a')).toBeNull();
+  });
+
+  it('records the integrity failure with the exact property keys', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 4, contentHash: 'b'.repeat(64) }));
+    _setStore(store);
+
+    await getSkill('a');
+
+    const [props] = emitter.signals(INTEGRITY_SIGNAL);
+    expect(props.skill_key).toBe('a');
+    expect(props.version).toBe(4);
+    expect(props.expected_hash).toBe('b'.repeat(64));
+    expect(props.observed_hash).toBe(hash(SKILL_BODY));
+    expect(props.language).toBe('typescript');
+  });
+
+  it('never puts the skill body in a signal', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', contentHash: 'c'.repeat(64) }));
+    _setStore(store);
+
+    await getSkill('a');
+
+    for (const [, props] of emitter.records) {
+      for (const value of Object.values(props)) {
+        expect(String(value)).not.toContain('Do the thing.');
+      }
+    }
+  });
+
+  // `skill_key` and `expected_hash` are copied off the wire,
+  // so a hostile store can smuggle the body through either one. The sweep above
+  // cannot detect that: it passes a well-formed 64-char digest, so neither
+  // shape-check branch ever runs. These two cases are what make the rule
+  // observable. Assert the body's absence, not the placeholder's spelling.
+
+  it('redacts a skill body smuggled through contentHash', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const body = 'UNIQUE-SECRET-BODY-VIA-HASH';
+    _setStore(new DictStore({ a: { key: 'a', version: 1, content: body, contentHash: body } }));
+
+    expect(await getSkill('a')).toBeNull();
+
+    const signals = emitter.signals(INTEGRITY_SIGNAL);
+    expect(signals).toHaveLength(1);
+    for (const value of Object.values(signals[0])) {
+      expect(String(value)).not.toContain(body);
+    }
+  });
+
+  it('redacts a skill body smuggled through the key', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    // Not a valid skill key, so it is the invalid-key branch that must redact it.
+    const body = 'UNIQUE-SECRET-BODY-VIA-KEY/../x';
+    _setStore(new DictStore({ [body]: { key: body, version: 1, content: 'x', contentHash: 'y' } }));
+
+    expect(await getSkill(body)).toBeNull();
+
+    const signals = emitter.signals(INTEGRITY_SIGNAL);
+    expect(signals).toHaveLength(1);
+    for (const value of Object.values(signals[0])) {
+      expect(String(value)).not.toContain(body);
+    }
+  });
+
+  it('makes no client.track call from any accessor', async () => {
+    const mockClient = makeMockLdClient();
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a' }));
+    store.put(rawSkill({ key: 'bad', contentHash: '0'.repeat(64) }));
+    await initClient(mockClient, { skillStore: store });
+
+    await getSkill('a');
+    await getSkill('bad');
+    await getSkills(['a']);
+    await allSkills();
+    skillRefs({ model: { name: 'm' }, provider: { name: 'p' }, instructions: 'i', skills: [{ key: 'a', version: 1 }] });
+
+    expect(mockClient.track).not.toHaveBeenCalled();
+  });
+
+  it('a throwing emitter never breaks the operation', async () => {
+    _setEmitterForTesting(new ThrowingEmitter());
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'bad', contentHash: '0'.repeat(64) }));
+    store.put(rawSkill({ key: 'good' }));
+    _setStore(store);
+
+    expect(await getSkill('bad')).toBeNull();
+    expect((await getSkill('good'))?.key).toBe('good');
+  });
+
+  it('records no signal outside the approved set', async () => {
+    // The three names are an allowlist, not a floor. Asserted over the
+    // recorded strings, so nothing here mandates a module-level constant.
+    //
+    // Guards the most likely regression: an implementation that also emits
+    // `AgentControl Skill Content Retrieved` from getSkill, or
+    // `AgentControl Skill SDK Reference Returned` from skillRefs, passes every
+    // other test in this block.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'good' }));
+    store.put(rawSkill({ key: 'tampered', contentHash: '0'.repeat(64) }));
+    _setStore(store);
+
+    expect(await getSkill('good')).not.toBeNull();
+    expect(await getSkill('tampered')).toBeNull();
+    await getSkills(['good', 'tampered']);
+    await allSkills();
+    skillRefs({
+      model: { name: 'm' },
+      provider: { name: 'p' },
+      instructions: 'i',
+      skills: [{ key: 'good', version: 1 }],
+    });
+
+    const recorded = emitter.names();
+    const unapproved = [...recorded].filter((name) => !APPROVED_SIGNALS.has(name));
+    expect(unapproved).toEqual([]);
+    for (const removed of REMOVED_SIGNALS) expect(recorded.has(removed)).toBe(false);
+    // Positive control: a subset assertion is satisfied vacuously by an
+    // implementation that records nothing at all.
+    expect(recorded.has(INTEGRITY_SIGNAL)).toBe(true);
+  });
+});
+
+// ─── The local integrity-failure log record ────────────────────────────
+
+describe('integrity-failure log record', () => {
+  // A documented customer-facing contract: operators point a SIEM at this line
+  // and alert on it, and it is the *only* detection surface when telemetry is
+  // off. So these assertions parse the JSON back rather than matching message
+  // text, and they cover the field set, not just the fact that something logged.
+  const EVENT = 'ld.skills.integrity_failure';
+
+  type LoggedRecord = { line: string; record: Record<string, unknown> };
+
+  async function logged(run: () => Promise<unknown>): Promise<LoggedRecord[]> {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let calls: unknown[][] = [];
+    try {
+      await run();
+    } finally {
+      // Read the calls out before restoring: `mockRestore` also resets the
+      // recorded history, so a read afterwards sees nothing.
+      calls = [...spy.mock.calls];
+      spy.mockRestore();
+    }
+    return calls
+      .map(([first]) => String(first))
+      .filter((line) => line.includes(EVENT))
+      .map((line) => ({ line, record: JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown> }));
+  }
+
+  const surrogate = 'hi \ud800 there';
+
+  // `getSkill` reaches seven of the eight call sites. The eighth is only
+  // reachable through the listing path: `resolveFromStore` treats a non-object
+  // store entry as absence before `verifyRawSkill` ever sees it, while
+  // `allSkills` hands every raw value straight in.
+  const GET = () => getSkill('a');
+  const ALL = () => allSkills();
+
+  /** A one-key store serving exactly what a hostile store might serve. */
+  const serving = (raw: unknown) => () => new DictStore({ a: raw as RawSkillObject });
+
+  /** A store serving a wire-shaped object with fields spoiled or dropped. */
+  const spoiled =
+    (overrides: Partial<RawSkillObject> & { key?: unknown }, drop: Array<'content' | 'contentHash'> = []) =>
+    () => {
+      const raw = rawSkill({ key: 'a', ...overrides });
+      for (const field of drop) delete raw[field];
+      return new DictStore({ a: raw });
+    };
+
+  /** One store per `reason_code`, each reaching a different call site. */
+  const cases: Array<[string, () => SkillStore, () => Promise<unknown>]> = [
+    ['not_an_object', serving('not an object'), ALL],
+    ['invalid_key', spoiled({ key: 'Not/A/Key' }), GET],
+    ['invalid_version', spoiled({ version: 0 }), GET],
+    ['missing_content', spoiled({}, ['content']), GET],
+    ['missing_content_hash', spoiled({}, ['contentHash']), GET],
+    ['not_utf8', spoiled({ content: surrogate, contentHash: hash(Buffer.from(surrogate, 'utf-8')) }), GET],
+    ['over_size_cap', spoiled({ content: 'x'.repeat(64 * 1024 + 1) }), GET],
+    ['hash_mismatch', spoiled({ contentHash: 'd'.repeat(64) }), GET],
+  ];
+
+  it.each(cases)('logs one record carrying reason_code %s', async (code, makeStore, run) => {
+    _setStore(makeStore());
+
+    const records = await logged(run);
+
+    expect(records).toHaveLength(1);
+    const { record } = records[0];
+    expect(record.reason_code).toBe(code);
+    expect(record.event).toBe(EVENT);
+    expect(record.action).toBe('withheld');
+    expect(record.language).toBe('typescript');
+    expect(typeof record.reason).toBe('string');
+  });
+
+  it('covers the whole reason_code vocabulary and nothing else', () => {
+    // The eight tokens are one per call site of `recordIntegrityFailure`, and
+    // the Python SDK emits the same eight. A ninth on one side only is the
+    // regression this test exists to catch.
+    expect(cases.map(([code]) => code).sort()).toEqual([
+      'hash_mismatch',
+      'invalid_key',
+      'invalid_version',
+      'missing_content',
+      'missing_content_hash',
+      'not_an_object',
+      'not_utf8',
+      'over_size_cap',
+    ]);
+  });
+
+  it('logs the event name and nothing but the record, so a grep finds it', async () => {
+    _setStore(new DictStore({ a: rawSkill({ key: 'a', contentHash: 'd'.repeat(64) }) }));
+
+    const [{ line, record }] = await logged(() => getSkill('a'));
+
+    expect(line).toBe(`[LaunchDarkly] ${EVENT} ${JSON.stringify(record)}`);
+  });
+
+  it('orders keys alphabetically, so the JSON mirrors the Python SDK byte for byte', async () => {
+    // Python emits json.dumps(record, sort_keys=True). Insertion order here is
+    // what makes the two outputs comparable with one parser and one alert rule.
+    _setStore(new DictStore({ a: rawSkill({ key: 'a', version: 7, contentHash: 'd'.repeat(64) }) }));
+    const [{ record }] = await logged(() => getSkill('a'));
+    const keys = Object.keys(record);
+    expect(keys).toEqual([...keys].sort());
+    expect(keys).toEqual([
+      'action',
+      'event',
+      'expected_hash',
+      'language',
+      'observed_hash',
+      'reason',
+      'reason_code',
+      'skill_key',
+      'version',
+    ]);
+  });
+
+  it('redacts a hostile key, body and all', async () => {
+    // The key comes off the wire, so it gets the same shape-check-then-redact
+    // treatment as the signal — the body must not reach the log line either.
+    const body = 'UNIQUE-SECRET-BODY-VIA-BOTH/../x';
+    _setStore(new DictStore({ [body]: { key: body, version: 1, content: body, contentHash: body } }));
+
+    const [{ line, record }] = await logged(() => getSkill(body));
+
+    expect(record.skill_key).toBe('<invalid-key>');
+    expect(line).not.toContain(body);
+  });
+
+  it('redacts a non-sha256 expected hash while still reporting the failure', async () => {
+    const raw = rawSkill({ key: 'a' });
+    raw.contentHash = 'not-a-digest';
+    _setStore(new DictStore({ a: raw }));
+
+    const [{ record }] = await logged(() => getSkill('a'));
+
+    expect(record.expected_hash).toBe('<not-a-sha256-digest>');
+    expect(record.reason_code).toBe('hash_mismatch');
+  });
+
+  it('omits observed_hash when the failure happened before hashing', async () => {
+    const raw = rawSkill({ key: 'a' });
+    delete raw.content;
+    _setStore(new DictStore({ a: raw }));
+
+    const [{ record }] = await logged(() => getSkill('a'));
+
+    expect('observed_hash' in record).toBe(false);
+    expect('expected_hash' in record).toBe(false);
+    expect(record.version).toBe(1);
+  });
+
+  it('carries both hashes on a mismatch — the possible-tampering case', async () => {
+    _setStore(new DictStore({ a: rawSkill({ key: 'a', contentHash: 'd'.repeat(64) }) }));
+
+    const [{ record }] = await logged(() => getSkill('a'));
+
+    expect(record.expected_hash).toBe('d'.repeat(64));
+    expect(record.observed_hash).toBe(hash(SKILL_BODY));
+  });
+
+  it('omits an invalid version rather than emitting it', async () => {
+    const raw = rawSkill({ key: 'a' });
+    raw.version = 0;
+    _setStore(new DictStore({ a: raw }));
+
+    const [{ record }] = await logged(() => getSkill('a'));
+
+    expect('version' in record).toBe(false);
+  });
+
+  it('never emits a null or an empty value in any record', async () => {
+    // Absent fields are omitted. A null would make a SIEM field mapping
+    // ambiguous between "not computed" and "computed as nothing".
+    for (const [, makeStore, run] of cases) {
+      _clearState();
+      _setStore(makeStore());
+      const [{ line, record }] = await logged(run);
+      expect(line).not.toContain('null');
+      for (const [key, value] of Object.entries(record)) {
+        expect(value, key).not.toBeNull();
+        expect(value, key).not.toBe('');
+        expect(value, key).toBeDefined();
+      }
+    }
+  });
+
+  it('never contains the skill content', async () => {
+    const secret = 'UNIQUE-SECRET-BODY-IN-CONTENT';
+    _setStore(new DictStore({ a: rawSkill({ key: 'a', content: secret, contentHash: 'd'.repeat(64) }) }));
+
+    const [{ line }] = await logged(() => getSkill('a'));
+
+    expect(line).not.toContain(secret);
+  });
+
+  it('is logged with no emitter configured — telemetry off is not detection off', async () => {
+    // The reason this record exists: it is the whole detection story for a
+    // customer whose telemetry is switched off, or who has no destination.
+    _setStore(new DictStore({ a: rawSkill({ key: 'a', contentHash: 'd'.repeat(64) }) }));
+
+    const records = await logged(() => getSkill('a'));
+
+    expect(records).toHaveLength(1);
+    expect(records[0].record.reason_code).toBe('hash_mismatch');
+  });
+});
+
+// ─── getSkillResult ────────────────────────────────────────────────────
+
+describe('getSkillResult', () => {
+  // The finding this suite covers: `getSkill` returns `null` for four distinct
+  // outcomes, so a caller cannot fail closed on suspected tampering while
+  // tolerating a skill nobody configured. These tests pin the distinction, and
+  // they pin that adding it changed nothing about `getSkill`.
+
+  const TAMPERED_HASH = 'd'.repeat(64);
+
+  /** A store that cannot answer at all — an outage, not an absence. */
+  function throwingStore(): SkillStore {
+    return {
+      getObject() {
+        throw new Error('transport failure');
+      },
+      allObjects() {
+        throw new Error('transport failure');
+      },
+    };
+  }
+
+  function storeHolding(...raws: RawSkillObject[]): InMemorySkillStore {
+    const store = new InMemorySkillStore();
+    for (const raw of raws) store.put(raw);
+    return store;
+  }
+
+  /**
+   * One store per reason token. The stores are shaped so each reaches a
+   * different construction site in `resolveFromStore`, which is what makes the
+   * mapping — not just the union — the thing under test.
+   */
+  const cases: Array<[SkillOutcomeReason, () => SkillStore, () => Promise<unknown>]> = [
+    ['ok', () => storeHolding(rawSkill({ key: 'a' })), () => getSkillResult('a')],
+    ['absent', () => new InMemorySkillStore(), () => getSkillResult('a')],
+    [
+      'integrity_failure',
+      () => storeHolding(rawSkill({ key: 'a', contentHash: TAMPERED_HASH })),
+      () => getSkillResult('a'),
+    ],
+    ['store_unavailable', throwingStore, () => getSkillResult('a')],
+    [
+      'wrong_version',
+      () => storeHolding(rawSkill({ key: 'a', version: 3 })),
+      () => getSkillResult('a', { version: 2 }),
+    ],
+  ];
+
+  it.each(cases)('reports reason %s', async (reason, makeStore, run) => {
+    _setStore(makeStore());
+
+    const outcome = (await run()) as Awaited<ReturnType<typeof getSkillResult>>;
+
+    expect(outcome.reason).toBe(reason);
+    if (reason === 'ok') {
+      // `skill` is populated exactly when the reason is `ok`, and `detail` is
+      // the null that says there is nothing to explain.
+      expect(outcome.skill).not.toBeNull();
+      expect(outcome.skill?.key).toBe('a');
+      expect(outcome.detail).toBeNull();
+    } else {
+      expect(outcome.skill).toBeNull();
+      // Every failure carries an explanation. An empty string would be a
+      // reason token with no detail behind it, which is worse than useless to
+      // whoever is reading the alert.
+      expect(typeof outcome.detail).toBe('string');
+      expect((outcome.detail as string).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('covers the whole reason vocabulary and nothing else', () => {
+    expect(cases.map(([reason]) => reason).sort()).toEqual([
+      'absent',
+      'integrity_failure',
+      'ok',
+      'store_unavailable',
+      'wrong_version',
+    ]);
+  });
+
+  it('distinguishes a store that could not answer from one that answered no', async () => {
+    // The pair the whole feature exists for on the operational side: an outage
+    // and an absence must not read the same, or a caller cannot tell "retry or
+    // page someone" from "this skill was never configured".
+    _setStore(throwingStore());
+    const outage = await getSkillResult('a');
+
+    _clearState();
+    _setStore(new InMemorySkillStore());
+    const missing = await getSkillResult('a');
+
+    expect(outage.reason).toBe('store_unavailable');
+    expect(missing.reason).toBe('absent');
+    expect(outage.reason).not.toBe(missing.reason);
+  });
+
+  it('distinguishes tampering from absence — the fail-closed case', async () => {
+    _setStore(storeHolding(rawSkill({ key: 'a', contentHash: TAMPERED_HASH })));
+    const tampered = await getSkillResult('a');
+
+    _clearState();
+    _setStore(new InMemorySkillStore());
+    const missing = await getSkillResult('a');
+
+    expect(tampered.reason).toBe('integrity_failure');
+    expect(missing.reason).toBe('absent');
+    // Both are `null` from `getSkill`. That is the defect.
+    expect(tampered.skill).toBeNull();
+    expect(missing.skill).toBeNull();
+  });
+
+  // ── The store seam carries the version ──────────────────────────────
+
+  /**
+   * A store that genuinely holds two versions of one key and honours the pin.
+   *
+   * Inline rather than a rebuilt `InMemorySkillStore`: the point is the seam, and
+   * multi-version semantics for the bundled store is a separate question.
+   */
+  function twoVersionStore(key: string, versions: number[]): SkillStore {
+    const held = new Map<number, RawSkillObject>(versions.map((v) => [v, rawSkill({ key, version: v })]));
+    return {
+      getObject(_kind: string, k: string, version?: number | null) {
+        if (k !== key) return null;
+        if (version === null || version === undefined) return held.get(Math.max(...held.keys())) ?? null;
+        return held.get(version) ?? null;
+      },
+      allObjects() {
+        return {};
+      },
+    };
+  }
+
+  it('resolves a pinned version against a store holding several, not the newest', async () => {
+    // Without the version threaded into `getObject`, the store answers with
+    // version 5, the equality check refuses it, and the outcome reports
+    // `wrong_version` for a pin the store could have satisfied — a wrong reason,
+    // which is worse than a coarse one.
+    _setStore(twoVersionStore('a', [2, 5]));
+
+    const pinned = await getSkillResult('a', { version: 2 });
+
+    expect(pinned.reason).toBe('ok');
+    expect(pinned.skill?.version).toBe(2);
+  });
+
+  it('an omitted version still means the newest the store holds', async () => {
+    _setStore(twoVersionStore('a', [2, 5]));
+
+    const newest = await getSkillResult('a');
+
+    expect(newest.reason).toBe('ok');
+    expect(newest.skill?.version).toBe(5);
+  });
+
+  it('passes the requested version through to the store lookup', async () => {
+    const seen: Array<number | null | undefined> = [];
+    _setStore({
+      getObject(_kind: string, _key: string, version?: number | null) {
+        seen.push(version);
+        return null;
+      },
+      allObjects() {
+        return {};
+      },
+    });
+
+    await getSkillResult('a', { version: 7 });
+    await getSkillResult('a');
+
+    expect(seen).toEqual([7, null]);
+  });
+
+  it('still refuses an answer that is not the version that was asked for', async () => {
+    // The equality check is a defense, not the selection mechanism. A store that
+    // ignores the pin — or lies about it — must not get its answer through.
+    _setStore({
+      getObject(_kind: string, _key: string, _version?: number | null) {
+        return rawSkill({ key: 'a', version: 9 });
+      },
+      allObjects() {
+        return {};
+      },
+    });
+
+    const outcome = await getSkillResult('a', { version: 1 });
+
+    expect(outcome.reason).toBe('wrong_version');
+    expect(outcome.skill).toBeNull();
+    expect(outcome.detail).toContain('version 1');
+  });
+
+  // ── getSkill is unchanged ───────────────────────────────────────────
+
+  it('getSkill still resolves to null, and never rejects, for all four failures', async () => {
+    // The no-behaviour-change guarantee. `getSkill`'s documented contract is
+    // "resolves to `null` — never rejects", and every existing caller treats
+    // that `null` as "no skill". Reporting the reason is additive or it is a
+    // silent breaking change.
+    for (const [reason, makeStore] of cases) {
+      if (reason === 'ok') continue;
+      _clearState();
+      _setStore(makeStore());
+
+      const wanted = reason === 'wrong_version' ? { version: 2 } : {};
+      await expect(getSkill('a', wanted)).resolves.toBeNull();
+    }
+  });
+
+  it('agrees with getSkill on the skill itself when there is one', async () => {
+    _setStore(storeHolding(rawSkill({ key: 'a', version: 4 })));
+
+    const outcome = await getSkillResult('a');
+    const direct = await getSkill('a');
+
+    expect(outcome.skill).toEqual(direct);
+  });
+
+  // ── Same single throw as getSkill ───────────────────────────────────
+
+  it('throws when no store is configured, with the same message as getSkill', async () => {
+    // "Throws only when no store is configured" is the contract both accessors
+    // share; a caller switching between them must not have to catch anything new.
+    const fromResult = await getSkillResult('a').catch((e: unknown) => e as Error);
+    const fromGetSkill = await getSkill('a').catch((e: unknown) => e as Error);
+
+    expect(fromResult).toBeInstanceOf(Error);
+    expect(fromResult.message).toBe(fromGetSkill.message);
+    expect(fromResult.message).toMatch(/skillStore/);
+  });
+
+  // ── Telemetry and the log record are untouched ───────────────────────
+
+  it('emits no second integrity record — the failure was already reported', async () => {
+    // The `ld.skills.integrity_failure` record fires inside verification, before
+    // the resolution returns. Recording anything here would double-log one
+    // failure and inflate a customer's alert count.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    _setStore(storeHolding(rawSkill({ key: 'a', contentHash: TAMPERED_HASH })));
+
+    let lines: string[] = [];
+    try {
+      const outcome = await getSkillResult('a');
+      expect(outcome.reason).toBe('integrity_failure');
+    } finally {
+      lines = spy.mock.calls.map(([first]) => String(first));
+      spy.mockRestore();
+    }
+
+    expect(lines.filter((line) => line.includes('ld.skills.integrity_failure'))).toHaveLength(1);
+    expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
+  });
+
+  it('emits no signal at all for an absent skill', async () => {
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    _setStore(new InMemorySkillStore());
+
+    expect((await getSkillResult('a')).reason).toBe('absent');
+
+    expect(emitter.records).toEqual([]);
+  });
+
+  it('detail never contains the skill content', async () => {
+    // `detail` is documented as safe to surface, so it gets the same treatment
+    // the log record gets: a hostile store must not be able to route the body
+    // through it.
+    const secret = 'UNIQUE-SECRET-BODY-IN-DETAIL';
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const raw of [
+        rawSkill({ key: 'a', content: secret, contentHash: TAMPERED_HASH }),
+        { key: 'a', version: 1, content: secret, contentHash: secret },
+      ]) {
+        _clearState();
+        _setStore(new DictStore({ a: raw as RawSkillObject }));
+
+        const outcome = await getSkillResult('a');
+
+        expect(outcome.reason).toBe('integrity_failure');
+        expect(outcome.detail).not.toContain(secret);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('detail names the key and both versions on a mismatch, and no path', async () => {
+    _setStore(storeHolding(rawSkill({ key: 'pdf-extraction', version: 3 })));
+
+    const { detail } = await getSkillResult('pdf-extraction', { version: 2 });
+
+    expect(detail).toContain('pdf-extraction');
+    expect(detail).toContain('version 2');
+    expect(detail).toContain('version 3');
+  });
+});
+
+// ─── createSkillOutcome ────────────────────────────────────────────────
+
+describe('createSkillOutcome', () => {
+  it('returns a frozen value, like the other value-type factories', () => {
+    const outcome = createSkillOutcome({ reason: 'absent' });
+
+    expect(Object.isFrozen(outcome)).toBe(true);
+    expect(() => {
+      (outcome as { reason: string }).reason = 'ok';
+    }).toThrow(TypeError);
+    expect(outcome.reason).toBe('absent');
+  });
+
+  it('defaults skill and detail to null', () => {
+    const outcome = createSkillOutcome({ reason: 'store_unavailable' });
+
+    expect(outcome.skill).toBeNull();
+    expect(outcome.detail).toBeNull();
+  });
+
+  it('carries what it was given', () => {
+    const built = skill();
+    const outcome = createSkillOutcome({ skill: built, reason: 'ok', detail: null });
+
+    expect(outcome.skill).toBe(built);
+    expect(outcome.reason).toBe('ok');
+  });
+});
+
+// ─── Package exports ───────────────────────────────────────────────────
+
+describe('getSkillResult package exports', () => {
+  it('exports the accessor and the outcome factory from the package root', async () => {
+    // Imported here rather than at the top of the file so this stays a
+    // self-contained check of the barrel.
+    const pkg = await import('../index.js');
+    expect(typeof pkg.getSkillResult).toBe('function');
+    expect(typeof pkg.createSkillOutcome).toBe('function');
+  });
+
+  it('the SkillOutcomeReason union admits exactly the five reason tokens', () => {
+    // The five tokens are API — customers branch on them, and the Python SDK
+    // publishes the same five for the same conditions. Adding a sixth here
+    // should force a matching change on the Python side, not just a green test.
+    const exhaustive: Record<SkillOutcomeReason, true> = {
+      absent: true,
+      integrity_failure: true,
+      ok: true,
+      store_unavailable: true,
+      wrong_version: true,
+    };
+    expect(Object.keys(exhaustive).sort()).toEqual([
+      'absent',
+      'integrity_failure',
+      'ok',
+      'store_unavailable',
+      'wrong_version',
+    ]);
   });
 });
