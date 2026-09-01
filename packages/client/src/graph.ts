@@ -590,7 +590,7 @@ export const graph = (
         span.setStatus({ code: SpanStatusCode.OK });
         span.end();
 
-        return { response: finalResponse, usage: totalUsage, judgeResults };
+        return { response: finalResponse, usage: totalUsage, judgeResults, path, nodes };
       } catch (err) {
         const elapsed = Date.now() - startTime;
         getClient().track('$ld:ai:graph:duration:total', context, graphTrackData, elapsed);

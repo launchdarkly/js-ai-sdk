@@ -243,6 +243,8 @@ The value returned by `graph().invoke()`.
 | `response` | string | The final text output (from the last node executed). |
 | `usage` | `{ input, output, total }` | Aggregate token counts across all nodes. |
 | `judgeResults` | `ProviderResponse['judgeResults']?` | Results from a graph-level judge, if configured. |
+| `path` | `string[]` | Node keys in execution order, starting at the root — use this to show which branch the router picked. |
+| `nodes` | `Record<string, ProviderResponse>?` | Each executed node's own response, keyed by node key. Populated by `graph()`; native runners (`toClaudeAgents()`, `toOpenAIAgents()`, `toLangGraph()`) return `path` only. |
 
 #### `ConfigArgs`
 
