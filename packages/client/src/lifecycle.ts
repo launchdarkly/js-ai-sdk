@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { trace } from '@opentelemetry/api';
 import { ConversationIdSpanProcessor } from './conversation.js';
+import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
 import { parseAiConfig } from './types.js';
 
@@ -237,14 +238,23 @@ export async function initClient(
     await setupTelemetry({}, process.env.LD_SDK_KEY ?? '');
     singleton.client = optionsOrClient;
     singleton.initPromise = Promise.resolve(optionsOrClient);
+    flushAiSdkInfo(optionsOrClient);
     return optionsOrClient;
   }
 
-  if (singleton.client) return singleton.client;
+  if (singleton.client) {
+    // Every AI call reaches this line, because `extractVariation` and `graph`
+    // await `initClient()` first. Flushing here is what reports a package that
+    // was imported after the first call, and costs one map size check once
+    // every loaded package has reported.
+    flushAiSdkInfo(singleton.client);
+    return singleton.client;
+  }
   if (!singleton.initPromise) {
     singleton.initPromise = initBaseClient(optionsOrClient);
   }
   singleton.client = await singleton.initPromise;
+  flushAiSdkInfo(singleton.client);
   return singleton.client;
 }
 
@@ -262,6 +272,8 @@ export async function shutdown(): Promise<void> {
   const client = singleton.client;
   singleton.client = null;
   singleton.initPromise = null;
+  // The next client is a new one, so the loaded packages report again.
+  resetAiSdkInfo();
   await shutdownTelemetry();
   try {
     await client.flush();
