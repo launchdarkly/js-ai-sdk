@@ -29,6 +29,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.2",
+    "@launchdarkly/ai-bedrock-agents": "*",
+    "@launchdarkly/ai-bedrock-messages": "*",
     "@launchdarkly/ai-claude-agents": "*",
     "@launchdarkly/ai-claude-messages": "*",
     "@launchdarkly/ai-langchain-agents": "*",

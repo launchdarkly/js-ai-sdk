@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import { initClient, shutdown } from '@launchdarkly/ai-node';
 import * as agent from './examples/agent';
+import * as bedrockAgents from './examples/bedrock-agents';
+import * as bedrockMessages from './examples/bedrock-messages';
 import * as claudeAgents from './examples/claude-agents';
 import * as claudeMessages from './examples/claude-messages';
 import * as conversation from './examples/conversation';
@@ -19,6 +21,8 @@ import * as streaming from './examples/streaming';
 
 type Example =
   | 'agent'
+  | 'bedrock-agents'
+  | 'bedrock-messages'
   | 'claude-agents'
   | 'claude-messages'
   | 'graph'
@@ -37,6 +41,8 @@ type Example =
 
 const EXAMPLES: Record<Example, { run: (key: string, userInput: string) => Promise<void> }> = {
   agent: agent,
+  'bedrock-agents': bedrockAgents,
+  'bedrock-messages': bedrockMessages,
   'claude-agents': claudeAgents,
   'claude-messages': claudeMessages,
   conversation: conversation,
