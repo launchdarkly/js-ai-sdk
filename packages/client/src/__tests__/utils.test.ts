@@ -450,6 +450,14 @@ describe('setLdSpanAttributes', () => {
     expect(emitted).not.toContain('bob@example.com');
     expect(emitted).not.toContain('Bob');
   });
+
+  it('emits a non-ASCII context key as the raw characters, not a unicode escape', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: ldFixture, ldContext: { kind: 'user', key: 'José' } });
+    const eventAttrs = span.addEvent.mock.calls[0][1] as Record<string, string>;
+    expect(eventAttrs['feature_flag.contextKeys']).toBe('{"user":"José"}');
+    expect(eventAttrs['feature_flag.contextKeys']).not.toContain('\\u');
+  });
 });
 
 // ─── numberOrZero ─────────────────────────────────────────────────────────────
