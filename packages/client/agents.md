@@ -22,6 +22,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | File | Responsibility |
 |---|---|
 | `src/conversation.ts` | `withConversationId`, `ConversationIdSpanProcessor` — stamps `gen_ai.conversation.id` |
+| `src/sdk-info.ts` | `$ld:ai:sdk:info` package registry and flush |
 | `src/lifecycle.ts` | `initClient` (options or BYOC overloads), `getClient`, `shutdown`, `waitForTelemetry`, `shutdownTelemetry`, `extractVariation` |
 | `src/client.ts` | `config()` |
 | `src/tracking.ts` | `executeAndTrack`, `executeAndStream`, `wrapToolHandlers` |
@@ -38,6 +39,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 ```ts
 export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
+export { registerAiSdkPackage } from './sdk-info.js';
 export type { LDContext, LDClientInterface, LDSingleKindContext, LDMultiKindContext, LDUser } from './types.js';
 export { ConversationIdSpanProcessor, setConversationIdIfAbsent, withConversationId } from './conversation.js';
 export { config } from './client.js';

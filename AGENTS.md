@@ -148,12 +148,13 @@ The client manages a singleton connection to LaunchDarkly and the associated tel
 
 | Export | Description |
 |---|---|
-| `initClient(options?)` | Auto-discovers and initializes `@launchdarkly/node-server-sdk` (optional peer dep, loaded via dynamic import). Optional — the first AI API call triggers lazy init when `LD_SDK_KEY` is set. Accepts optional overrides for SDK key, base URIs, service name, environment, and OTLP endpoint. Returns `Promise<LDClientInterface>`. |
-| `initClient(client)` | **BYOC overload** — accepts a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk`). Stores it directly without calling the node SDK. |
+| `initClient(options?)` | Auto-discovers and initializes `@launchdarkly/node-server-sdk` (optional peer dep, loaded via dynamic import). Optional — the first AI API call triggers lazy init when `LD_SDK_KEY` is set. Accepts optional overrides for SDK key, base URIs, service name, environment, and OTLP endpoint. Returns `Promise<LDClientInterface>`. On every successful path, including the already-initialized path, flushes `$ld:ai:sdk:info` for any LaunchDarkly AI packages that have not yet reported. |
+| `initClient(client)` | **BYOC overload** — accepts a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk`). Stores it directly without calling the node SDK. Flushes pending `$ld:ai:sdk:info` events. |
 | `getClient()` | Returns the initialized `LDClientInterface`. Throws if initialization has not completed. |
-| `shutdown()` | Flushes all pending events and telemetry, then closes the client. Must be called before the process exits. |
+| `shutdown()` | Flushes all pending events and telemetry, then closes the client. Must be called before the process exits. Clears sdk-info reporting so a later client reports again. |
 | `waitForTelemetry()` | Waits for the OTel provider to be ready. Useful when spans must not be dropped at startup. |
 | `shutdownTelemetry()` | Flushes and stops the OTel exporter independently of the LD client. |
+| `registerAiSdkPackage(name, version)` | Records a LaunchDarkly AI package identity. Handler and convenience packages call this at import time. |
 
 ### Core Data Types
 
