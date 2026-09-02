@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerAiSdkPackage, resetAiSdkInfo } from '../sdk-info.js';
 
 // ─── Mock external dependencies before any imports ───────────────────────────
 
@@ -91,6 +92,7 @@ function clearSingleton() {
 describe('lifecycle', () => {
   beforeEach(() => {
     clearSingleton();
+    resetAiSdkInfo({ clearKnown: true });
     vi.clearAllMocks();
     delete process.env.LD_SDK_KEY;
   });
@@ -258,6 +260,42 @@ describe('lifecycle', () => {
       await initClient();
       expect(mockLdInit).toHaveBeenCalledOnce();
     });
+
+    it('flushes registered AI package information on the BYOC path', async () => {
+      const client = makeMockClient();
+      registerAiSdkPackage('@launchdarkly/ai-server', '0.1.1');
+
+      const { initClient } = await import('../lifecycle.js');
+      await initClient(client);
+
+      expect(client.track).toHaveBeenCalledWith(
+        '$ld:ai:sdk:info',
+        { kind: 'ld_ai', key: 'ld-internal-tracking', anonymous: true },
+        {
+          aiSdkName: '@launchdarkly/ai-server',
+          aiSdkVersion: '0.1.1',
+          aiSdkLanguage: 'javascript',
+        },
+        1,
+      );
+    });
+
+    it('flushes a package registered after initialization without reinitializing', async () => {
+      const client = makeMockClient();
+      mockLdInit.mockReturnValue(client);
+      process.env.LD_SDK_KEY = 'test-key';
+      registerAiSdkPackage('@launchdarkly/ai-server', '0.1.1');
+
+      const { initClient } = await import('../lifecycle.js');
+      await initClient();
+      client.track.mockClear();
+      registerAiSdkPackage('@launchdarkly/ai-openai-agents', '0.1.1');
+      await initClient();
+
+      expect(mockLdInit).toHaveBeenCalledOnce();
+      expect(client.track).toHaveBeenCalledOnce();
+      expect(client.track.mock.calls[0][2].aiSdkName).toBe('@launchdarkly/ai-openai-agents');
+    });
   });
 
   describe('shutdown', () => {
@@ -296,6 +334,21 @@ describe('lifecycle', () => {
       clearSingleton();
       await initClient();
       expect(getClient()).toBe(mockClient);
+    });
+
+    it('reports registered packages again after shutdown and re-initialization', async () => {
+      const client = makeMockClient();
+      mockLdInit.mockReturnValue(client);
+      process.env.LD_SDK_KEY = 'test-key';
+      registerAiSdkPackage('@launchdarkly/ai-server', '0.1.1');
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      await initClient();
+      await shutdown();
+      client.track.mockClear();
+      await initClient();
+
+      expect(client.track).toHaveBeenCalledOnce();
     });
 
     it('is a no-op (does not throw) when called without a prior initClient', async () => {

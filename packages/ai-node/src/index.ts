@@ -17,4 +17,9 @@
  * For edge runtimes (Vercel, Cloudflare, etc.) use @launchdarkly/ai-server
  * directly and pass a pre-initialized client to initClient(client).
  */
+import { registerAiSdkPackage } from '@launchdarkly/ai-server';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
+
+registerAiSdkPackage(LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+
 export * from '@launchdarkly/ai-server';
