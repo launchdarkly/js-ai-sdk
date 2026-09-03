@@ -576,7 +576,9 @@ Span events are not a content carrier. OTEP 4430 deprecated the span-event
 recording API, and the `gen_ai.content.prompt` / `gen_ai.content.completion`
 events these handlers used to emit were read by nothing on the LaunchDarkly
 side. The only event a handler emits is `feature_flag`, on the root, for
-trace correlation.
+trace correlation. When `variables.ldContext` has a usable identity, that
+event also carries `feature_flag.context.id` and `feature_flag.contextKeys`,
+and the root span gets `context.contextKeys.<kind>`. Child spans must not.
 
 That rule is about handlers. The core client emits one more event, on judge
 `invoke_agent` spans only: `gen_ai.evaluation.result`, written by

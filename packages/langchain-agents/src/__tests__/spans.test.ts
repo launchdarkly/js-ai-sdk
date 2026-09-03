@@ -59,6 +59,32 @@ class FakeToolModel extends FakeChatModel {
 
 const makeLLM = (content = 'Hello!') => new FakeToolModel(new AIMessage({ content, usage_metadata: usage })) as never;
 
+class TwoTurnToolModel extends FakeChatModel {
+  private calls = 0;
+
+  constructor() {
+    super({});
+  }
+
+  bindTools() {
+    return this;
+  }
+
+  async _generate(): Promise<{ generations: Array<{ text: string; message: AIMessage }> }> {
+    this.calls++;
+    if (this.calls === 1) {
+      const message = new AIMessage({
+        content: '',
+        usage_metadata: usage,
+        tool_calls: [{ name: 'search', args: { q: 'x' }, id: 'call_1' }],
+      });
+      return { generations: [{ text: '', message }] };
+    }
+    const message = new AIMessage({ content: 'done', usage_metadata: usage });
+    return { generations: [{ text: 'done', message }] };
+  }
+}
+
 /**
  * Answers the first call and throws on every one after it, so a run fails with exactly one turn's
  * usage already reported through the callbacks. The first reply carries tool calls, which is what
@@ -253,5 +279,31 @@ describe('langchain-agents span tree against a real tracer', () => {
 
     expect(result.usage).toMatchObject({ input_tokens: 10, output_tokens: 5 });
     expect(new HumanMessage('q').usage_metadata).toBeUndefined();
+  });
+
+  it('puts context identity on the invoke_agent root and on no child span', async () => {
+    const llm = new TwoTurnToolModel() as never;
+
+    await createLangChainAgentsHandler(llm)(
+      toolConfig as never,
+      'q',
+      { search: vi.fn().mockReturnValue('r') },
+      {
+        __ld: { configKey: 'cfg', variationKey: 'var', runId: 'run-1' },
+        ldContext: { kind: 'user', key: 'user-123' },
+      },
+    );
+
+    const featureFlag = root()?.events.find((event) => event.name === 'feature_flag');
+    expect(root()?.attributes['context.contextKeys.user']).toBe('user-123');
+    expect(featureFlag?.attributes?.['feature_flag.context.id']).toBe('user-123');
+    expect(featureFlag?.attributes?.['feature_flag.contextKeys']).toBe('{"user":"user-123"}');
+
+    expect(named('chat').length).toBeGreaterThan(0);
+    expect(named('execute_tool ').length).toBeGreaterThan(0);
+    for (const child of spans().filter((span) => span.name !== 'invoke_agent')) {
+      expect(child.attributes['context.contextKeys.user']).toBeUndefined();
+      expect(child.events.find((event) => event.name === 'feature_flag')).toBeUndefined();
+    }
   });
 });

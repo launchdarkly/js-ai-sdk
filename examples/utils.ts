@@ -12,6 +12,14 @@ export function newContext() {
   };
 }
 
+export function newMultiContext() {
+  return {
+    kind: 'multi' as const,
+    organization: { key: 'example-org:west%region' },
+    user: { key: `example-user-${randomUUID().slice(0, 8)}` },
+  };
+}
+
 /**
  * A fresh conversation id per run.
  *
