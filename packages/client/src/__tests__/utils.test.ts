@@ -379,6 +379,130 @@ describe('setLdSpanAttributes', () => {
   });
 });
 
+// ─── setLdSpanAttributes — context identity (TESTING.md §3.18) ────────────────
+
+function spanAttrs(span: ReturnType<typeof makeMockSpan>): Record<string, unknown> {
+  return Object.fromEntries(span.setAttribute.mock.calls.map((call: unknown[]) => [call[0], call[1]]));
+}
+
+function featureFlagAttrs(span: ReturnType<typeof makeMockSpan>): Record<string, unknown> {
+  const call = span.addEvent.mock.calls.find((event: unknown[]) => event[0] === 'feature_flag');
+  return (call?.[1] as Record<string, unknown>) ?? {};
+}
+
+function contextKeyAttrs(span: ReturnType<typeof makeMockSpan>): unknown[][] {
+  return span.setAttribute.mock.calls.filter((call: unknown[]) => String(call[0]).startsWith('context.contextKeys.'));
+}
+
+function expectNoContextIdentity(span: ReturnType<typeof makeMockSpan>) {
+  expect(contextKeyAttrs(span)).toEqual([]);
+  const event = featureFlagAttrs(span);
+  expect(event).not.toHaveProperty('feature_flag.context.id');
+  expect(event).not.toHaveProperty('feature_flag.contextKeys');
+  expect(event).not.toHaveProperty('feature_flag.context.key.user');
+}
+
+describe('setLdSpanAttributes context identity', () => {
+  const vars = (ldContext: unknown) => ({ __ld: ldFixture, ldContext });
+
+  it('canonicalises a legacy user with no kind to the bare key', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, vars({ key: 'u-1' }));
+    expect(featureFlagAttrs(span)['feature_flag.context.id']).toBe('u-1');
+    expect(featureFlagAttrs(span)['feature_flag.contextKeys']).toBe('{"user":"u-1"}');
+    expect(spanAttrs(span)['context.contextKeys.user']).toBe('u-1');
+  });
+
+  it('canonicalises kind user to the bare key', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, vars({ kind: 'user', key: 'u-1' }));
+    expect(featureFlagAttrs(span)['feature_flag.context.id']).toBe('u-1');
+    expect(featureFlagAttrs(span)['feature_flag.contextKeys']).toBe('{"user":"u-1"}');
+    expect(spanAttrs(span)['context.contextKeys.user']).toBe('u-1');
+  });
+
+  it('prefixes a non-user single kind', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, vars({ kind: 'org', key: 'o-1' }));
+    expect(featureFlagAttrs(span)['feature_flag.context.id']).toBe('org:o-1');
+    expect(featureFlagAttrs(span)['feature_flag.contextKeys']).toBe('{"org":"o-1"}');
+    expect(spanAttrs(span)['context.contextKeys.org']).toBe('o-1');
+  });
+
+  it('sorts multi-kind pairs by kind, not declaration order', () => {
+    // user before org is the reverse of sorted order (org < user). A fixture that
+    // already matches sorted order would pass an insertion-order implementation.
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, vars({ kind: 'multi', user: { key: 'u-1' }, org: { key: 'o-1' } }));
+    expect(featureFlagAttrs(span)['feature_flag.context.id']).toBe('org:o-1:user:u-1');
+    expect(featureFlagAttrs(span)['feature_flag.contextKeys']).toBe('{"org":"o-1","user":"u-1"}');
+    expect(spanAttrs(span)['context.contextKeys.user']).toBe('u-1');
+    expect(spanAttrs(span)['context.contextKeys.org']).toBe('o-1');
+  });
+
+  it('escapes % before : on the canonical key and keeps the per-kind map raw', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, vars({ kind: 'org', key: 'a%b:c' }));
+    expect(featureFlagAttrs(span)['feature_flag.context.id']).toBe('org:a%25b%3Ac');
+    expect(featureFlagAttrs(span)['feature_flag.contextKeys']).toBe('{"org":"a%b:c"}');
+    expect(spanAttrs(span)['context.contextKeys.org']).toBe('a%b:c');
+  });
+
+  it('serialises a non-ASCII key without unicode escaping', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, vars({ kind: 'user', key: 'José' }));
+    expect(featureFlagAttrs(span)['feature_flag.context.id']).toBe('José');
+    expect(featureFlagAttrs(span)['feature_flag.contextKeys']).toBe('{"user":"José"}');
+    expect(spanAttrs(span)['context.contextKeys.user']).toBe('José');
+  });
+
+  it('serialises integer-like kinds in lexicographic order, not JSON.stringify index order', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, vars({ kind: 'multi', '2': { key: 'b' }, '10': { key: 'a' } }));
+    expect(featureFlagAttrs(span)['feature_flag.context.id']).toBe('10:a:2:b');
+    expect(featureFlagAttrs(span)['feature_flag.contextKeys']).toBe('{"10":"a","2":"b"}');
+    expect(spanAttrs(span)['context.contextKeys.10']).toBe('a');
+    expect(spanAttrs(span)['context.contextKeys.2']).toBe('b');
+  });
+
+  it('keeps the prefixed form when a multi-kind is left with one usable pair', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, vars({ kind: 'multi', user: { key: 'u-1' }, org: {} }));
+    expect(featureFlagAttrs(span)['feature_flag.context.id']).toBe('user:u-1');
+    expect(featureFlagAttrs(span)['feature_flag.contextKeys']).toBe('{"user":"u-1"}');
+    expect(spanAttrs(span)['context.contextKeys.user']).toBe('u-1');
+    expect(spanAttrs(span)).not.toHaveProperty('context.contextKeys.org');
+  });
+
+  it('emits keys only and never context attribute values', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, vars({ key: 'u-1', email: 'ada@example.com', name: 'Ada' }));
+    const values = [
+      ...span.setAttribute.mock.calls.map((call: unknown[]) => call[1]),
+      ...Object.values(featureFlagAttrs(span)),
+    ];
+    expect(values).toContain('u-1');
+    expect(values).not.toContain('ada@example.com');
+    expect(values).not.toContain('Ada');
+  });
+
+  it.each([
+    ['missing', { __ld: ldFixture }],
+    ['null', vars(null)],
+    ['string', vars('user-123')],
+    ['number', vars(123)],
+    ['empty object', vars({})],
+    ['non-string key', vars({ kind: 'user', key: 123 })],
+    ['empty key', vars({ kind: 'user', key: '' })],
+    ['empty multi', vars({ kind: 'multi' })],
+    ['multi with no usable key', vars({ kind: 'multi', user: { name: 'Ada' } })],
+  ])('emits none of the three attributes and does not throw when ldContext is %s', (_label, variables) => {
+    const span = makeMockSpan();
+    expect(() => setLdSpanAttributes(span as any, variables)).not.toThrow();
+    expectNoContextIdentity(span);
+  });
+});
+
 // ─── numberOrZero ─────────────────────────────────────────────────────────────
 
 describe('numberOrZero', () => {

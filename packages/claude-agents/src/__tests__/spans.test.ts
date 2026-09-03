@@ -893,4 +893,35 @@ describe('claude-agents span tree against a real tracer', () => {
     // And the same figure is what the caller is told it spent.
     expect(result.usage).toMatchObject({ input_tokens: 300, output_tokens: 50 });
   });
+
+  it('puts context identity on the invoke_agent root and on no child span', async () => {
+    mockQuery.mockImplementation(async function* ({ options }: any) {
+      yield assistantMessage(10, 2, 'req_1');
+      await fireToolHooks(options.hooks, 'tool-1');
+      yield assistantMessage(12, 3, 'req_2');
+      yield resultMessage('done');
+    });
+
+    await createClaudeAgentsHandler()(
+      toolConfig as never,
+      'q',
+      { search: vi.fn().mockReturnValue('r') },
+      {
+        __ld: { configKey: 'cfg', variationKey: 'var', runId: 'run-1' },
+        ldContext: { kind: 'user', key: 'user-123' },
+      },
+    );
+
+    const featureFlag = root()?.events.find((event) => event.name === 'feature_flag');
+    expect(root()?.attributes['context.contextKeys.user']).toBe('user-123');
+    expect(featureFlag?.attributes?.['feature_flag.context.id']).toBe('user-123');
+    expect(featureFlag?.attributes?.['feature_flag.contextKeys']).toBe('{"user":"user-123"}');
+
+    expect(named('chat').length).toBeGreaterThan(0);
+    expect(named('execute_tool ').length).toBeGreaterThan(0);
+    for (const child of spans().filter((span) => span.name !== 'invoke_agent')) {
+      expect(child.attributes['context.contextKeys.user']).toBeUndefined();
+      expect(child.events.find((event) => event.name === 'feature_flag')).toBeUndefined();
+    }
+  });
 });
