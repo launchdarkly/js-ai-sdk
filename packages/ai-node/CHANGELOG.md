@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-node-0.1.1...@launchdarkly/ai-node-0.2.0) (2026-09-03)
+
+
+### Features
+
+* emit $ld:ai:sdk:info event per AI package ([#43](https://github.com/launchdarkly/js-ai-sdk/issues/43)) ([ba09c09](https://github.com/launchdarkly/js-ai-sdk/commit/ba09c09590a00042cf2435debafac6d2f87ee1b2))
+
 ## [0.1.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-node-0.1.0...@launchdarkly/ai-node-0.1.1) (2026-08-07)
 
 
