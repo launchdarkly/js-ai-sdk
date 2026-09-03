@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-agents-0.1.1...@launchdarkly/ai-langchain-agents-0.2.0) (2026-09-03)
+
+
+### Features
+
+* **AIC-3230:** emit evaluation context identity ([#47](https://github.com/launchdarkly/js-ai-sdk/issues/47)) ([45f585f](https://github.com/launchdarkly/js-ai-sdk/commit/45f585fd25d7ee0dc6ad58c55424b3835f98f693))
+* emit $ld:ai:sdk:info event per AI package ([#43](https://github.com/launchdarkly/js-ai-sdk/issues/43)) ([ba09c09](https://github.com/launchdarkly/js-ai-sdk/commit/ba09c09590a00042cf2435debafac6d2f87ee1b2))
+* emit evaluation context identity on feature_flag spans ([85fcae5](https://github.com/launchdarkly/js-ai-sdk/commit/85fcae5ace01b3c5de164600ccdffbadace10802))
+* gate the judge explanation on captureContent ([e820247](https://github.com/launchdarkly/js-ai-sdk/commit/e82024744ec8eff0f9f41f8aededb5d97f3ba8e2))
+* record judge scores as gen_ai.evaluation.result ([#27](https://github.com/launchdarkly/js-ai-sdk/issues/27)) ([a8d3bd5](https://github.com/launchdarkly/js-ai-sdk/commit/a8d3bd5b43da38696ea0c516ba26c8e760a4aab7))
+
 ## [0.1.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-agents-0.1.0...@launchdarkly/ai-langchain-agents-0.1.1) (2026-08-07)
 
 
