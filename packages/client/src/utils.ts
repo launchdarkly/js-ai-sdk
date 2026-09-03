@@ -413,10 +413,16 @@ function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | und
 
     const key = usableContextKey(ctx.key);
     if (key === undefined) return undefined;
-    const kind = typeof ctx.kind === 'string' && ctx.kind !== '' ? ctx.kind : 'user';
+    let kind: string;
+    if (!('kind' in ctx)) {
+      kind = 'user';
+    } else if (typeof ctx.kind === 'string' && ctx.kind !== '') {
+      kind = ctx.kind;
+    } else {
+      return undefined;
+    }
     const keys = { [kind]: key };
-    const canonical =
-      kind === 'user' ? escapeCanonicalPart(key) : `${escapeCanonicalPart(kind)}:${escapeCanonicalPart(key)}`;
+    const canonical = kind === 'user' ? key : `${escapeCanonicalPart(kind)}:${escapeCanonicalPart(key)}`;
     return { canonical, keys };
   } catch {
     return undefined;

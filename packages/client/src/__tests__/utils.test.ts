@@ -421,6 +421,17 @@ describe('setLdSpanAttributes context identity', () => {
     expect(spanAttrs(span)['context.contextKeys.user']).toBe('u-1');
   });
 
+  it.each([
+    ['legacy user', { key: 'u%1:west' }],
+    ['explicit user', { kind: 'user', key: 'u%1:west' }],
+  ])('keeps %, : raw in the canonical and per-kind keys for %s', (_label, context) => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, vars(context));
+    expect(featureFlagAttrs(span)['feature_flag.context.id']).toBe('u%1:west');
+    expect(featureFlagAttrs(span)['feature_flag.contextKeys']).toBe('{"user":"u%1:west"}');
+    expect(spanAttrs(span)['context.contextKeys.user']).toBe('u%1:west');
+  });
+
   it('prefixes a non-user single kind', () => {
     const span = makeMockSpan();
     setLdSpanAttributes(span as any, vars({ kind: 'org', key: 'o-1' }));
@@ -494,6 +505,9 @@ describe('setLdSpanAttributes context identity', () => {
     ['empty object', vars({})],
     ['non-string key', vars({ kind: 'user', key: 123 })],
     ['empty key', vars({ kind: 'user', key: '' })],
+    ['empty explicit kind', vars({ kind: '', key: 'u-1' })],
+    ['null explicit kind', vars({ kind: null, key: 'u-1' })],
+    ['number explicit kind', vars({ kind: 123, key: 'u-1' })],
     ['empty multi', vars({ kind: 'multi' })],
     ['multi with no usable key', vars({ kind: 'multi', user: { name: 'Ada' } })],
   ])('emits none of the three attributes and does not throw when ldContext is %s', (_label, variables) => {
