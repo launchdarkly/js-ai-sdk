@@ -21,8 +21,12 @@ export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, wait
 export { compose, globalRegistry, Registry } from './registry.js';
 export { allSkills, getSkill, getSkillResult, getSkills, InMemorySkillStore, skillRefs } from './skills.js';
 export { MAX_SKILL_CONTENT_BYTES, SKILL_OBJECT_KIND } from './skills-core.js';
+export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills-fdv2.js';
+export { DEFAULT_BASE_URI, FDv2SkillStore, SDK_DATA_MODEL_VERSION } from './skills-fdv2.js';
 export type { WriteSkillsOptions } from './skills-fs.js';
 export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
+export type { WatchSkillsOptions } from './skills-watch.js';
+export { DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
 export type {
   ConfigArgs,
   GraphArgs,
