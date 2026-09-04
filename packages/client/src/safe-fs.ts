@@ -13,6 +13,26 @@
  * opened with `O_NOFOLLOW`, every temp file is created exclusively in the
  * target's own directory, and the pinned directory's identity is re-checked
  * immediately before each destructive step.
+ *
+ * **Platform bound — the floor is what runs everywhere, deliberately.** The
+ * Python SDK closes the swap window on POSIX with a descriptor walk; this module
+ * cannot, on any platform, because Node exposes no `*at()` family at all (see
+ * {@link SUPPORTS_DIR_FD}). So unlike Python, where the racy floor is the
+ * Windows-only fallback, here it is the *only* implementation — Linux included.
+ * Windows is additionally not a supported or tested platform for this release:
+ * reparse-point checks (`GetFileAttributesW`, or opening with
+ * `FILE_FLAG_OPEN_REPARSE_POINT`) are **not implemented, by decision rather than
+ * oversight**, since neither SDK repository has a Windows CI runner and Node
+ * gives this module no primitive that would make them meaningful.
+ *
+ * The consequence is a single sentence, and it belongs in every deployment
+ * review: write permission on the managed root is *the* security boundary for
+ * skills materialization, so the privilege-separated deployment the README
+ * documents — reconcile identity separate from agent identity — is not advice but
+ * the mitigation. Relatedly, this bound retroactively lowers the priority of the
+ * Windows reserved-device-name work in `skills-fs.ts`: that code stays, because
+ * it keeps a managed root written on Linux usable when read from Windows, but it
+ * is not evidence that Windows is a hardened target. It is not.
  */
 
 import { randomBytes } from 'node:crypto';

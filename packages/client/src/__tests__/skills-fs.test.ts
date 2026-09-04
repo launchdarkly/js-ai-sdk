@@ -1626,6 +1626,113 @@ describe('writeSkills corrupt manifest', () => {
   });
 });
 
+// ─── A well-formed manifest naming a path the SDK could not have written ─────
+
+/**
+ * The three literal cases the security review names for the prune path.
+ *
+ * The distinction from the corrupt-manifest block above is the whole point: a
+ * corrupt manifest suppresses every destructive action wholesale, so those tests
+ * say nothing about these. Each manifest here is *well-formed* — parseable, a
+ * `manifestVersion` this release understands, a real `entries` map, and an entry
+ * whose `key` is a perfectly valid skill key genuinely absent from the requested
+ * set. The implementation has every input it needs to prune, and must refuse
+ * anyway, because the recorded *path* is not one this SDK could have written.
+ *
+ * The manifest is untrusted input: a plain file on the customer's disk that
+ * anything with write access to the managed root can edit, and `prune` is the
+ * one code path in the SDK that deletes. So a recorded path never authorizes its
+ * own removal — it must match `<key>/SKILL.md` for a re-validated key, and the
+ * target is recomputed from the *current* managed root rather than read back out
+ * of the entry.
+ */
+const HOSTILE_RECORDED_PATHS: string[] = [
+  // Absolute: the classic. A recorded path read back and unlinked as-is is a
+  // delete of an attacker-chosen file with the reconcile's own privileges.
+  '/etc/passwd',
+  // Traversing: the same attack against an implementation that rejects a
+  // leading slash and then joins the rest onto the managed root.
+  '../../../etc/passwd',
+];
+
+/**
+ * Records every prune unlink without performing it.
+ *
+ * Asserting only that `/etc/passwd` still exists proves nothing: the test
+ * process cannot delete it anyway, so that assertion passes against an
+ * implementation with no path check at all — permissions would be doing the
+ * work. What has teeth is that the removal is never *attempted*: the refusal
+ * happens above the syscall, on a path the SDK recomputes rather than trusts.
+ * `fsOps.unlink` is the single call site the prune deletes through.
+ */
+function recordUnlinks(): string[] {
+  const targets: string[] = [];
+  vi.spyOn(fsOps, 'unlink').mockImplementation(async (target: string) => {
+    targets.push(target);
+  });
+  return targets;
+}
+
+describe('writeSkills hostile manifest prune', () => {
+  it.each(HOSTILE_RECORDED_PATHS)('refuses a recorded path outside the root: %s', async (recorded) => {
+    const unlinked = recordUnlinks();
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: { [recorded]: manifestEntry('a', 1, SKILL_BODY) },
+    });
+
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(false);
+    const action = actionsByKey(report).a;
+    expect(action.action).toBe('error');
+    // The refusal is about ownership of the path, not about the file's state.
+    expect(action.error).toContain('could own');
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    // Nothing was even attempted, let alone completed.
+    expect(unlinked).toEqual([]);
+    expect(await exists('/etc/passwd')).toBe(true);
+    // Left in place rather than tidied away: dropping the entry would let a
+    // single hostile edit erase the SDK's own record of what it manages.
+    expect(await readManifest(root)).toHaveProperty(['entries', recorded]);
+  });
+
+  it('refuses an entry under a parent that has since become a symlink', async () => {
+    // The recorded path is the SDK's own, and is still not enough. The entry is
+    // exactly what a legitimate reconcile writes — `a/SKILL.md` under key `a` —
+    // so the shape check that catches the two cases above passes here. What
+    // changed is the disk underneath it. This is the case a validate-then-act
+    // implementation fails: the manifest and the entry are both entirely
+    // legitimate, and only the current state of the parent is not.
+    const elsewhere = path.join(scratch, 'elsewhere');
+    await mkdir(elsewhere);
+    const victim = path.join(elsewhere, SKILL_MD);
+    await writeFile(victim, 'victim content\n', 'utf-8');
+
+    // Managed legitimately first, so the manifest entry is one this SDK really
+    // did write...
+    const managed = await placeManaged(root, 'a', SKILL_BODY);
+    // ...then the parent directory is swapped for a link out of the root.
+    await rm(managed);
+    await rm(path.join(root, 'a'), { recursive: true });
+    await symlink(elsewhere, path.join(root, 'a'), 'dir');
+
+    const unlinked = recordUnlinks();
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(false);
+    const action = actionsByKey(report).a;
+    expect(action.action).toBe('error');
+    expect(action.error).toContain('symlink');
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(unlinked).toEqual([]);
+    // The file the symlink pointed at is untouched, and so is the link.
+    expect(await readFile(victim, 'utf-8')).toBe('victim content\n');
+    expect((await lstat(path.join(root, 'a'))).isSymbolicLink()).toBe(true);
+    expect(await readManifest(root)).toHaveProperty(['entries', `a/${SKILL_MD}`]);
+  });
+});
+
 // ─── Telemetry seam (write half) ───────────────────────────────────────
 
 describe('writeSkills telemetry', () => {
