@@ -2,31 +2,32 @@
  * `writeSkills` — the swap one level up: the managed *root* replaced by a
  * symlink, not `<root>/<key>`.
  *
- * `resolveRoot` validates the root once and returns a path; nothing holds it
- * open. Each write and each prune then opens `<root>/<key>` *by path* with
- * `O_NOFOLLOW | O_DIRECTORY` and pins that. `O_NOFOLLOW` guards only the final
- * component, so the root and every ancestor are re-resolved on every such open,
- * and a root swapped for a symlink after validation redirects the open into the
- * attacker's directory. `assertUnswapped` does not notice: it compares the
- * handle against an `lstat` of the *same swapped path*, so the two agree.
- * `atomicWriteIn` does refuse the manifest rewrite afterwards, but by then the
- * skill file is already outside the root.
+ * The defect these were written against (SEC-8985 row 2): `resolveRoot`
+ * validated the root once and returned a path, and nothing held it open. Each
+ * write and each prune then opened `<root>/<key>` *by path* with
+ * `O_NOFOLLOW | O_DIRECTORY` and pinned that. `O_NOFOLLOW` guards only the final
+ * component, so the root and every ancestor were re-resolved on every such open,
+ * and a root swapped for a symlink after validation redirected the open into the
+ * attacker's directory. `assertUnswapped` did not notice, because it compared the
+ * handle against an `lstat` of the *same swapped path*. Only the manifest write
+ * pinned the root, and by then the skill file was already outside it. The
+ * precondition is write permission on the root's *parent* — in the documented
+ * layout (`<app>/.claude/skills`) that is `.claude`, which the agent identity
+ * typically owns.
  *
- * The `<root>/<key>` swap races in `skills-fs.test.ts` are skipped off
- * `SUPPORTS_DIR_FD`, because Node cannot close that window. These are not
- * skipped: they show that the *documented* mitigation for the residual exposure
- * is not sufficient either. The README's privilege-separation checklist denies
- * the agent identity the root, the skill directories, the files and the
- * manifest, and says nothing about the root's parent. In the documented layout
- * (`<app>/.claude/skills`) that parent is `.claude`, which the agent identity
- * typically owns, and write permission there is all this takes.
+ * The fix pins the root to a descriptor for the whole reconcile and addresses
+ * every child as `/proc/self/fd/<fd>/<name>`, which the kernel resolves against
+ * the pinned inode rather than against the name. That exists on Linux only, so
+ * this file is gated on `SUPPORTS_PROC_FD`: it runs on CI and is skipped on macOS
+ * development machines, where the per-component `lstat` floor applies and the
+ * mitigation is the README's privilege-separation checklist — now including the
+ * root's ancestors.
  *
- * Every test states the contract — nothing lands outside the root, no outside
- * file is overwritten, no outside file is removed. The code does not meet it, so
- * they fail, and the red run is the demonstration. On Linux the fix is to hold
- * the root handle and address children through `/proc/self/fd/<fd>/<name>`,
- * which the kernel resolves against the pinned inode rather than the name;
- * everywhere else it is adding the root's parent to the README checklist.
+ * Every test states the contract rather than the mechanism: nothing lands outside
+ * the root, no outside file is overwritten, no outside file is removed. The
+ * trigger matches both the pre-fix and post-fix spellings of the child path (see
+ * the hook below), so these same bodies failed against the unfixed code and pass
+ * against the fixed one — which is the only thing that makes them evidence.
  *
  * In its own file because the swap has to land *before* the per-skill directory
  * is opened, which means intercepting `mkdir` and `open` from `node:fs/promises`
@@ -39,6 +40,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { SUPPORTS_PROC_FD } from '../safe-fs.js';
 import { _clearState } from '../skills.js';
 import { writeSkills } from '../skills-fs.js';
 import type { Skill } from '../types.js';
@@ -51,14 +53,30 @@ const NEVER_FIRED = 'the race never fired; the test proves nothing';
 
 // ─── The mkdir/open interception hook ────────────────────────────────────────
 //
-// Pass-throughs until a test arms one of them for one exact path; everything
-// else `node:fs/promises` exports is the real thing. `nth` picks which matching
-// call fires, because a run can open the same skill directory more than once
-// and only the open *after* the last containment check is the one that counts.
+// Pass-throughs until a test arms one of them; everything else
+// `node:fs/promises` exports is the real thing. `nth` picks which matching call
+// fires, because a run can open the same skill directory more than once and only
+// the open *after* the last containment check is the one that counts.
+//
+// The trigger matches on the operation's **final component plus the shape of its
+// parent**, not on one exact string. That is deliberate and it is what makes
+// these tests worth anything: the fixed code addresses `<root>/<key>` as
+// `/proc/self/fd/<fd>/<key>`, so a trigger pinned to `path.join(root, key)`
+// would stop matching the moment the fix landed — the swap would never fire, the
+// contract would never be tested, and the suite would go green for the wrong
+// reason. Matching both spellings means one test body runs against either
+// implementation, which is the only way the red-to-green transition means
+// anything.
 
 const race = vi.hoisted(() => ({
+  /** Which operation the swap rides on, or `null` when disarmed. */
   on: null as 'mkdir' | 'open' | null,
-  trigger: '',
+  /** `'child'` matches an operation on a child of the root; `'root'` the root open itself. */
+  mode: 'child' as 'child' | 'root',
+  /** For `'child'`: the final component the operation must target. */
+  name: '',
+  /** The realpath'd managed root — the name a child carries before the fix. */
+  root: '',
   nth: 1,
   seen: 0,
   fire: null as (() => Promise<void>) | null,
@@ -68,13 +86,26 @@ const race = vi.hoisted(() => ({
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   const call = (fn: unknown, args: unknown[]) => (fn as (...a: unknown[]) => Promise<unknown>)(...args);
+  const PROC = '/proc/self/fd';
+
+  function matches(op: 'mkdir' | 'open', target: unknown): boolean {
+    if (race.on !== op || race.fired || typeof target !== 'string') return false;
+    if (race.mode === 'root') return target === race.root;
+    if (path.basename(target) !== race.name) return false;
+    // A child of the managed root, named either through the root's own path
+    // (unfixed) or through a held descriptor (fixed).
+    const parent = path.dirname(target);
+    return parent === race.root || parent.startsWith(`${PROC}/`);
+  }
+
   async function maybeFire(op: 'mkdir' | 'open', target: unknown): Promise<void> {
-    if (race.on !== op || race.fired || target !== race.trigger) return;
+    if (!matches(op, target)) return;
     race.seen += 1;
     if (race.seen < race.nth) return;
     race.fired = true;
     await race.fire?.();
   }
+
   return {
     ...actual,
     mkdir: async (...args: unknown[]) => {
@@ -88,12 +119,18 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
-function arm(on: 'mkdir' | 'open', trigger: string, fire: () => Promise<void>, nth = 1): void {
-  Object.assign(race, { on, trigger, nth, seen: 0, fire, fired: false });
+/** Fires `fire` on the `nth` `op` targeting `<root-or-descriptor>/<name>`. */
+function arm(on: 'mkdir' | 'open', name: string, fire: () => Promise<void>, nth = 1): void {
+  Object.assign(race, { on, mode: 'child', name, nth, seen: 0, fire, fired: false });
+}
+
+/** Fires `fire` on the open of the managed root itself — i.e. just before it is pinned. */
+function armRootOpen(fire: () => Promise<void>): void {
+  Object.assign(race, { on: 'open', mode: 'root', name: '', nth: 1, seen: 0, fire, fired: false });
 }
 
 function disarm(): void {
-  Object.assign(race, { on: null, trigger: '', nth: 1, seen: 0, fire: null, fired: false });
+  Object.assign(race, { on: null, mode: 'child', name: '', nth: 1, seen: 0, fire: null, fired: false });
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -151,6 +188,7 @@ beforeEach(async () => {
   scratch = await realpath(await mkdtemp(path.join(tmpdir(), 'ld-ai-skills-root-swap-')));
   root = path.join(scratch, 'skills');
   await mkdir(root);
+  race.root = root;
 });
 
 afterEach(async () => {
@@ -161,7 +199,7 @@ afterEach(async () => {
 
 // ─── The three root-swap races ───────────────────────────────────────────────
 
-describe('writeSkills root swap races', () => {
+describe.skipIf(!SUPPORTS_PROC_FD)('writeSkills root swap races', () => {
   it('a root swapped at the skill directory create cannot redirect the write', async () => {
     // First reconcile against a fresh root: `<root>/a` does not exist, so
     // `openOrCreateDirectory` calls `mkdir(<root>/a)`. The swap fires there;
@@ -169,7 +207,7 @@ describe('writeSkills root swap races', () => {
     // through the link, and SKILL.md is written into `<outside>/a/`.
     const outside = path.join(scratch, 'outside');
     await mkdir(outside);
-    arm('mkdir', path.join(root, 'a'), () => swapRoot(outside));
+    arm('mkdir', 'a', () => swapRoot(outside));
 
     const report = await writeSkills([skill('a')], root);
 
@@ -189,7 +227,7 @@ describe('writeSkills root swap races', () => {
     const victim = path.join(outside, 'a', SKILL_MD);
     await writeFile(victim, 'precious\n', 'utf-8');
     await placeManaged(root, 'a', SKILL_BODY);
-    arm('open', path.join(root, 'a'), () => swapRoot(outside));
+    arm('open', 'a', () => swapRoot(outside));
 
     const report = await writeSkills([skill('a', 2, 'served update\n')], root);
 
@@ -209,7 +247,7 @@ describe('writeSkills root swap races', () => {
     const victim = path.join(outside, 'a', SKILL_MD);
     await writeFile(victim, 'precious\n', 'utf-8');
     await placeManaged(root, 'a', SKILL_BODY);
-    arm('open', path.join(root, 'a'), () => swapRoot(outside), 2);
+    arm('open', 'a', () => swapRoot(outside), 2);
 
     const report = await writeSkills([], root);
 
@@ -217,5 +255,30 @@ describe('writeSkills root swap races', () => {
     expect(await exists(victim)).toBe(true);
     expect(await readFile(victim, 'utf-8')).toBe('precious\n');
     if (report.ok) expect(await exists(path.join(movedTo(), 'a', SKILL_MD))).toBe(false);
+  });
+
+  it('a root swapped before it is pinned is refused with a run-level error', async () => {
+    // The one window pinning cannot cover, and the reason the pin is not the
+    // whole story: `resolveRoot` validated the root's *name*, and the swap lands
+    // between that and the open that turns the name into a descriptor. The
+    // O_NOFOLLOW open then fails on the symlink.
+    //
+    // Refused as a run-level `error` action rather than thrown. `resolveRoot`
+    // throws because an unusable root is a caller mistake; a root that was a
+    // real directory an instant ago and is a symlink now is an attack in
+    // flight, and it belongs in the report next to every other refusal.
+    const outside = path.join(scratch, 'outside');
+    await mkdir(outside);
+    await placeManaged(root, 'a', SKILL_BODY);
+    armRootOpen(() => swapRoot(outside));
+
+    const report = await writeSkills([skill('a', 2, 'served update\n')], root);
+
+    if (!race.fired) throw new Error(NEVER_FIRED);
+    expect(report.ok).toBe(false);
+    expect(report.errors.some((action) => action.key === '')).toBe(true);
+    // Nothing was attempted through the link, and the real root is untouched.
+    expect(await readdir(outside)).toEqual([]);
+    expect(await readFile(path.join(movedTo(), 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
   });
 });
