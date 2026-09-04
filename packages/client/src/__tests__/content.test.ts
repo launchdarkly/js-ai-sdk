@@ -190,6 +190,45 @@ describe('OpenLLMetry carrier', () => {
 
     expect(attrs['gen_ai.prompt.0.content']).toBe('{"ok":true}');
   });
+
+  it('leaves a tool result the provider never sent out of the transcript', () => {
+    // The three carriers are written from the same messages so they cannot disagree, and the
+    // canonical one omits an absent `result` entirely. This one used to render it as the literal
+    // text `null`, so the trace view showed a tool that returned nothing as one that returned a
+    // null value.
+    const attrs = attributesOf((span) =>
+      setOutputContentAttributes(span, true, [{ role: 'tool', parts: [{ type: 'tool_call_response', id: 'c1' }] }]),
+    );
+
+    expect(attrs['gen_ai.completion.0.content']).toBe('');
+    // The carrier the LaunchDarkly reader parses, and the canonical one, agree that there is no result.
+    expect(attrs['gen_ai.output.messages']).toBe(
+      JSON.stringify([{ role: 'tool', parts: [{ type: 'tool_call_response', id: 'c1' }] }]),
+    );
+  });
+
+  it('still reports a result the tool explicitly returned as null', () => {
+    // A different claim from the one above: the tool ran and returned null. The canonical carrier
+    // keeps `"result": null`, so the flat ones have to say the same thing.
+    const attrs = attributesOf((span) =>
+      setOutputContentAttributes(span, true, [
+        { role: 'tool', parts: [{ type: 'tool_call_response', id: 'c1', result: null }] },
+      ]),
+    );
+
+    expect(attrs['gen_ai.completion.0.content']).toBe('null');
+  });
+
+  it('keeps a falsy result that is not absent', () => {
+    // `0`, `false` and `''` are results. Only `undefined` means the provider sent nothing.
+    const attrs = attributesOf((span) =>
+      setOutputContentAttributes(span, true, [
+        { role: 'tool', parts: [{ type: 'tool_call_response', id: 'c1', result: 0 }] },
+      ]),
+    );
+
+    expect(attrs['gen_ai.completion.0.content']).toBe('0');
+  });
 });
 
 describe('tool call I/O', () => {
