@@ -36,9 +36,7 @@ vi.mock('node:fs/promises', async () => {
   };
 });
 
-const { atomicWrite, atomicWriteIn, openDirectoryNoFollow, openOrCreateDirectory, unlinkNoFollow } = await import(
-  '../safe-fs.js'
-);
+const { atomicWrite, openDirectoryNoFollow, openOrCreateDirectory, unlinkNoFollow } = await import('../safe-fs.js');
 
 let scratch: string;
 
@@ -158,16 +156,6 @@ describe('atomicWrite', () => {
     }
     expect(await readdir(dir)).toEqual(['SKILL.md']);
   });
-
-  it('atomicWriteIn refuses a symlinked directory', async () => {
-    const outside = path.join(scratch, 'outside');
-    await mkdir(outside);
-    const link = path.join(scratch, 'link');
-    await symlink(outside, link, 'dir');
-
-    await expect(atomicWriteIn(link, 'SKILL.md', Buffer.from('body\n', 'utf-8'))).rejects.toThrow();
-    expect(await readdir(outside)).toEqual([]);
-  });
 });
 
 /**
@@ -175,9 +163,21 @@ describe('atomicWrite', () => {
  * between validation and the destructive call: there is no `*at()` family, so the
  * rename and the unlink resolve their directory by path.
  *
- * The swap is staged directly: pin the handle, replace the directory, then invoke
- * the primitive. Both primitives re-check independently, so both halves are
- * required.
+ * Off `SUPPORTS_PROC_FD` it is the *whole* defense against a directory swapped
+ * between validation and the destructive call: Node exposes no `*at()` family, so
+ * the rename and the unlink resolve their directory by path. The swap-race cases
+ * in `skills-fs.test.ts` cannot reach it — they fire the swap from the
+ * rename/unlink hook, which by construction runs *after* the check. Verified by
+ * mutation: with the check neutered, the entire suite stays green.
+ *
+ * So the swap is staged here instead: pin the handle, then replace the directory,
+ * then invoke the primitive. Both primitives re-check independently, so both
+ * halves are required.
+ *
+ * These call the primitives with a plain path, which is what keeps them
+ * meaningful on Linux too: the check is skipped only for a directory addressed
+ * through `directoryAddress`, so passing a path exercises the floor on every
+ * platform rather than testing nothing wherever the fast path exists.
  */
 describe('pinned-directory identity re-check', () => {
   /** Moves `dir` aside and leaves a symlink to `outside` in its place. */
