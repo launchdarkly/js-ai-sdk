@@ -13,15 +13,22 @@
  * key, a corrupt manifest suppresses every destructive action, and an incomplete
  * retrieval suppresses pruning. Content is re-verified immediately before the
  * write, because a `Skill` can also be constructed directly by a caller.
+ *
+ * The managed root is pinned to a descriptor once, at the top of `writeSkills`,
+ * and held for the whole reconcile. Every path below it is built from
+ * {@link PinnedDirectory.address} rather than from the root's name, so on Linux
+ * the kernel resolves each operation from the pinned inode and a root swapped for
+ * a symlink mid-reconcile cannot redirect one. See `safe-fs.ts` for the mechanism
+ * and for what the other platforms get instead.
  */
 
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { lstat, mkdir, open, readdir, readFile, realpath, rmdir, stat } from 'node:fs/promises';
+import { type FileHandle, lstat, mkdir, open, readdir, readFile, realpath, rmdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
   atomicWrite,
-  atomicWriteIn,
+  directoryAddress,
   openDirectoryNoFollow,
   openOrCreateDirectory,
   tempNamePattern,
@@ -64,6 +71,35 @@ export const MANIFEST_VERSION = 1;
 
 /** The single file each skill materializes to, under `<root>/<key>/`. */
 export const SKILL_FILENAME = 'SKILL.md';
+
+/**
+ * A directory held open for the duration of an operation, with both of the ways
+ * it needs to be named.
+ *
+ * The two are the same string off the Linux fast path, and the split exists
+ * because they answer different questions:
+ *
+ * - `path` is the real, `realpath`'d location. It is what containment checks
+ *   compare against, what the manifest records, and the only one of the two that
+ *   may ever reach a caller — in a `ReconcileAction.path` or an error message.
+ * - `address` is what filesystem calls are issued against. On Linux it is
+ *   `/proc/self/fd/<fd>`, which the kernel resolves from the pinned inode, so
+ *   nothing done to the directory's *name* afterwards can redirect the call.
+ *
+ * Mixing them up is the bug this type exists to make hard, in both directions:
+ * an operation issued against `path` is racy, and an `address` shown to a caller
+ * is meaningless.
+ */
+type PinnedDirectory = {
+  readonly path: string;
+  readonly address: string;
+  readonly handle: FileHandle;
+};
+
+/** Pairs a freshly opened directory handle with the two names for it. */
+function pin(realPath: string, handle: FileHandle): PinnedDirectory {
+  return { path: realPath, address: directoryAddress(handle, realPath), handle };
+}
 
 /**
  * Prefix on every error describing content that could not be retrieved. Tests
@@ -186,7 +222,40 @@ export async function writeSkills(
 
   const deadline = performance.now() + timeout * 1000;
   const rootPath = await resolveRoot(root);
-  const { manifest, error: manifestError } = await loadManifest(rootPath);
+
+  // Pin the root before anything reads or writes below it, and hold it until the
+  // reconcile is done. `resolveRoot` validated a *name*; from here on every path
+  // is built from the descriptor instead, so a root swapped for a symlink after
+  // that validation cannot redirect an operation into the attacker's directory.
+  //
+  // A swap that lands in the window before this open fails the open, and that is
+  // a run-level `error` action rather than a throw. The distinction is
+  // deliberate: `resolveRoot` throws because an unusable root is a caller
+  // mistake, whereas a root that was a real directory a moment ago and is a
+  // symlink now is an attack in flight, which belongs in the report next to
+  // every other refusal.
+  let rootHandle: FileHandle;
+  try {
+    rootHandle = await openDirectoryNoFollow(rootPath);
+  } catch (error) {
+    return createReconcileReport([runError(`the skills root could not be pinned: ${messageOf(error)}`)]);
+  }
+
+  try {
+    return await reconcile(pin(rootPath, rootHandle), skills, { prune, timeout, onUnavailable, deadline });
+  } finally {
+    await rootHandle.close().catch(() => undefined);
+  }
+}
+
+/** Everything `writeSkills` does once the managed root is pinned. */
+async function reconcile(
+  root: PinnedDirectory,
+  skills: ReadonlyArray<Skill | SkillReference | string> | '*',
+  options: { prune: boolean; timeout: number; onUnavailable: OnUnavailable; deadline: number },
+): Promise<ReconcileReport> {
+  const { prune, timeout, onUnavailable, deadline } = options;
+  const { manifest, error: manifestError } = await loadManifest(root);
   const entries: Record<string, unknown> = (manifest.entries as Record<string, unknown>) ?? {};
 
   const actions: ReconcileAction[] = [];
@@ -195,7 +264,7 @@ export async function writeSkills(
 
   const { requests, incomplete: retrievalIncomplete } = await resolveRequests(skills, deadline, onUnavailable);
 
-  const { actions: written, timedOut } = await writeAll(rootPath, requests, entries, deadline, timeout);
+  const { actions: written, timedOut } = await writeAll(root, requests, entries, deadline, timeout);
   actions.push(...written);
   const incomplete = retrievalIncomplete || timedOut;
 
@@ -208,7 +277,7 @@ export async function writeSkills(
   // other destructive action, and skipped once the deadline is gone: this is
   // hygiene, not part of converging on the requested set.
   if (manifestError === null && performance.now() < deadline) {
-    actions.push(...(await sweepOrphanTemps(rootPath, sweepableKeys(requests, entries))));
+    actions.push(...(await sweepOrphanTemps(root, sweepableKeys(requests, entries))));
   }
 
   // Pruning is destructive, so it needs a trustworthy picture of both sides: a
@@ -216,10 +285,10 @@ export async function writeSkills(
   // retrieval that failed, or a deadline that expired mid-write — means we do not
   // know what is still current. Either way, deleting would be a guess.
   if (prune && manifestError === null && !incomplete) {
-    actions.push(...(await pruneEntries(rootPath, entries, new Set(requests.map((r) => r.key)))));
+    actions.push(...(await pruneEntries(root, entries, new Set(requests.map((r) => r.key)))));
   }
 
-  if (manifestError === null) actions.push(...(await rewriteManifest(rootPath, manifest, entries)));
+  if (manifestError === null) actions.push(...(await rewriteManifest(root, manifest, entries)));
 
   return createReconcileReport(actions);
 }
@@ -234,8 +303,28 @@ function runError(message: string): ReconcileAction {
   return createReconcileAction({ key: '', action: 'error', error: message });
 }
 
+/**
+ * The descriptor addressing, as it appears quoted inside an `errno` message.
+ *
+ * Anchored on the literal procfs prefix and a run of digits, so it matches what
+ * {@link directoryAddress} builds and not a customer path that merely contains the
+ * words.
+ */
+const DESCRIPTOR_ADDRESS_IN_MESSAGE = /\/proc\/self\/fd\/\d+\//g;
+
+/**
+ * An error's message, with descriptor addressing stripped back out.
+ *
+ * On Linux a child is addressed as `/proc/self/fd/<fd>/<name>`, so a raw `errno`
+ * message quotes that instead of a path anyone recognizes. Removing the prefix
+ * leaves the name relative to whichever directory was pinned — `a/SKILL.md` for
+ * the root, `SKILL.md` for a skill directory — which is the form the rest of the
+ * messages in this file already use. How the write was made safe is not something
+ * an operator should have to decode out of an error string.
+ */
 function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.replace(DESCRIPTOR_ADDRESS_IN_MESSAGE, '');
 }
 
 /**
@@ -246,7 +335,7 @@ function messageOf(error: unknown): string {
  * manifest rewrite and orphan every file already written in this run.
  */
 async function writeAll(
-  root: string,
+  root: PinnedDirectory,
   requests: readonly PendingWrite[],
   entries: Record<string, unknown>,
   deadline: number,
@@ -342,7 +431,7 @@ function serializeManifest(manifest: Record<string, unknown>): Buffer {
 
 /** Writes the updated manifest. Returns an error action, or nothing. */
 async function rewriteManifest(
-  root: string,
+  root: PinnedDirectory,
   manifest: Record<string, unknown>,
   entries: Record<string, unknown>,
 ): Promise<ReconcileAction[]> {
@@ -356,7 +445,7 @@ async function rewriteManifest(
     // byte-for-byte what the Python SDK's
     // json.dumps(..., indent=2, sort_keys=True) produces.
     const serialized = serializeManifest(updated);
-    await atomicWriteIn(root, MANIFEST_FILENAME, serialized);
+    await atomicWrite(root.address, MANIFEST_FILENAME, serialized, root.handle);
   } catch (error) {
     return [runError(`the skills manifest could not be written: ${messageOf(error)}`)];
   }
@@ -528,6 +617,12 @@ function resolveAll(deadline: number, onUnavailable: OnUnavailable): { requests:
  * An unusable root is a caller error rather than a per-skill outcome, so this
  * throws. Only the leaf directory is ever created — recursively creating missing
  * ancestors would let a typo scatter a directory tree.
+ *
+ * What this establishes is that a *name* was usable at one instant. It is not a
+ * defense on its own and never was: the caller pins the returned path to a
+ * descriptor immediately and addresses everything below it from there, because
+ * between this function's last `realpath` and any later operation the name can be
+ * swapped for a symlink by anyone with write access to the root's parent.
  */
 async function resolveRoot(root: string): Promise<string> {
   if (typeof root !== 'string' || root.length === 0) {
@@ -586,12 +681,14 @@ async function resolveRoot(root: string): Promise<string> {
  *
  * An absent manifest is not corrupt — that is simply a fresh root.
  */
-async function loadManifest(root: string): Promise<{ manifest: Record<string, unknown>; error: string | null }> {
+async function loadManifest(
+  root: PinnedDirectory,
+): Promise<{ manifest: Record<string, unknown>; error: string | null }> {
   const fresh = { manifestVersion: MANIFEST_VERSION, entries: {} };
 
   let text: string;
   try {
-    text = await readFile(path.join(root, MANIFEST_FILENAME), 'utf-8');
+    text = await readFile(path.join(root.address, MANIFEST_FILENAME), 'utf-8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { manifest: fresh, error: null };
     return {
@@ -706,6 +803,14 @@ async function pathExists(target: string): Promise<boolean> {
  * The containment check runs even when `skillDir` does not exist yet: `realpath`
  * on the deepest existing ancestor plus the remainder is what a fresh key under a
  * valid root has to satisfy.
+ *
+ * `root` is the real path; `skillDir` and `target` are addresses, which on the
+ * Linux fast path resolve through the pinned root's descriptor. `realpath`
+ * collapses those to the real location, so the comparison against `root` reads
+ * the same on both paths. Kept as **defense in depth** rather than as the
+ * boundary: on Linux the descriptor addressing is what makes containment
+ * structural, and these checks now catch a misbehaving key or a symlink planted
+ * inside the root rather than a swap of the root itself.
  */
 async function unsafePathReason(
   root: string,
@@ -733,7 +838,11 @@ async function unsafePathReason(
 }
 
 /** Reconciles one verified skill against the managed root. */
-async function writeOne(root: string, skill: Skill, entries: Record<string, unknown>): Promise<ReconcileAction> {
+async function writeOne(
+  root: PinnedDirectory,
+  skill: Skill,
+  entries: Record<string, unknown>,
+): Promise<ReconcileAction> {
   const key = skill.key;
   const failed = (message: string): ReconcileAction =>
     createReconcileAction({ key, action: 'error', version: skill.version, error: message });
@@ -746,11 +855,14 @@ async function writeOne(root: string, skill: Skill, entries: Record<string, unkn
     );
   }
 
-  const skillDir = path.join(root, key);
+  // Addressed through the pinned root; `reportedPath` is the same location named
+  // the way a caller would recognize it.
+  const skillDir = path.join(root.address, key);
   const target = path.join(skillDir, SKILL_FILENAME);
+  const reportedPath = path.join(root.path, key, SKILL_FILENAME);
   const relative = `${key}/${SKILL_FILENAME}`;
 
-  const unsafe = await unsafePathReason(root, skillDir, target, key, true);
+  const unsafe = await unsafePathReason(root.path, skillDir, target, key, true);
   if (unsafe !== null) return failed(`'${relative}' was refused: ${unsafe}; nothing was written`);
 
   // Verify-then-write, through the same core the accessors use (the accessor
@@ -810,7 +922,7 @@ async function writeOne(root: string, skill: Skill, entries: Record<string, unkn
       // is only filled in when the entry does not have one yet.
       updateEntry(entries, relative, skill, contentHash, false);
       recordMaterialized(key, encoded.byteLength, contentHash, 'skipped_current');
-      return createReconcileAction({ key, action: 'skipped_current', version: skill.version, path: target });
+      return createReconcileAction({ key, action: 'skipped_current', version: skill.version, path: reportedPath });
     }
 
     if (!managed) {
@@ -827,7 +939,7 @@ async function writeOne(root: string, skill: Skill, entries: Record<string, unkn
 
   updateEntry(entries, relative, skill, contentHash, true);
   recordMaterialized(key, encoded.byteLength, contentHash, action);
-  return createReconcileAction({ key, action, version: skill.version, path: target });
+  return createReconcileAction({ key, action, version: skill.version, path: reportedPath });
 }
 
 /**
@@ -862,9 +974,15 @@ async function readRegularFile(target: string): Promise<Buffer> {
  * Performs the write itself. Returns a failure reason, or `null` on success.
  *
  * Split out of `writeOne` because everything above it decides *whether* to write
- * and this decides nothing: the directory is pinned to a handle and its identity
- * is re-checked immediately before the rename, which is as much of the
- * symlink-swap defense as Node permits (see `safe-fs.ts`).
+ * and this decides nothing: the directory is pinned to a handle and the write is
+ * then addressed relative to that handle (see `safe-fs.ts`).
+ *
+ * `skillDir` already resolves through the pinned *root*, so it cannot have been
+ * redirected. The per-skill directory is pinned in turn and `SKILL.md` addressed
+ * relative to it, because the skill directory's own name is the next thing an
+ * attacker with write access can swap — and off the fast path `skillDir` is a
+ * plain path, where that swap is exactly the window the identity re-check inside
+ * `atomicWrite` is left to narrow.
  */
 async function writeThroughPinnedDirectory(
   skillDir: string,
@@ -880,7 +998,7 @@ async function writeThroughPinnedDirectory(
   }
 
   try {
-    await atomicWrite(skillDir, SKILL_FILENAME, encoded, handle);
+    await atomicWrite(directoryAddress(handle, skillDir), SKILL_FILENAME, encoded, handle);
   } catch (error) {
     return `'${relative}' could not be written: ${messageOf(error)}`;
   } finally {
@@ -948,7 +1066,7 @@ function pruneError(key: string, message: string, version: unknown = null): Reco
  * opt-out.
  */
 async function pruneEntries(
-  root: string,
+  root: PinnedDirectory,
   entries: Record<string, unknown>,
   requested: ReadonlySet<string>,
 ): Promise<ReconcileAction[]> {
@@ -984,16 +1102,17 @@ async function pruneEntries(
 
 /** Removes one managed skill file, and its directory when that empties it. */
 async function pruneOne(
-  root: string,
+  root: PinnedDirectory,
   relative: string,
   key: string,
   entries: Record<string, unknown>,
 ): Promise<ReconcileAction> {
-  const skillDir = path.join(root, key);
+  const skillDir = path.join(root.address, key);
   const target = path.join(skillDir, SKILL_FILENAME);
+  const reportedPath = path.join(root.path, key, SKILL_FILENAME);
   const version = (entries[relative] as Record<string, unknown>).version;
 
-  const unsafe = await unsafePathReason(root, skillDir, target, key, false);
+  const unsafe = await unsafePathReason(root.path, skillDir, target, key, false);
   if (unsafe !== null) return pruneError(key, `'${relative}' was not removed: ${unsafe}`, version);
 
   let removedFromDisk = false;
@@ -1005,16 +1124,18 @@ async function pruneOne(
       return pruneError(key, `'${relative}' was not removed: ${messageOf(error)}`, version);
     }
     try {
-      await unlinkNoFollow(skillDir, SKILL_FILENAME, handle);
+      await unlinkNoFollow(directoryAddress(handle, skillDir), SKILL_FILENAME, handle);
     } catch (error) {
       return pruneError(key, `'${relative}' could not be removed: ${messageOf(error)}`, version);
     } finally {
       await handle.close().catch(() => undefined);
     }
     removedFromDisk = true;
-    // Path-based, and safe that way: rmdir never follows a trailing symlink (it
-    // fails ENOTDIR) and only ever succeeds on an empty directory. The customer
-    // keeps their own files here too, so a failure is expected and ignored.
+    // Addressed through the pinned root rather than the skill directory's own
+    // handle, which is already closed — and safe path-based regardless: rmdir
+    // never follows a trailing symlink (it fails ENOTDIR) and only ever succeeds
+    // on an empty directory. The customer keeps their own files here too, so a
+    // failure is expected and ignored.
     await rmdir(skillDir).catch(() => undefined);
   }
 
@@ -1026,7 +1147,7 @@ async function pruneOne(
     key,
     action: 'removed',
     version: isValidSkillVersion(version) ? version : null,
-    path: target,
+    path: reportedPath,
   });
 }
 
@@ -1056,7 +1177,7 @@ function sweepableKeys(requests: readonly PendingWrite[], entries: Record<string
 }
 
 /** Sweeps each key's directory. Failures are reported, never thrown. */
-async function sweepOrphanTemps(root: string, keys: ReadonlySet<string>): Promise<ReconcileAction[]> {
+async function sweepOrphanTemps(root: PinnedDirectory, keys: ReadonlySet<string>): Promise<ReconcileAction[]> {
   const actions: ReconcileAction[] = [];
   for (const key of keys) actions.push(...(await sweepSkillDirectory(root, key)));
   return actions;
@@ -1080,10 +1201,10 @@ async function sweepOrphanTemps(root: string, keys: ReadonlySet<string>): Promis
  * That is a visible failure rather than a corrupt file, and concurrent reconciles
  * against a single managed root are outside the contract either way.
  */
-async function sweepSkillDirectory(root: string, key: string): Promise<ReconcileAction[]> {
+async function sweepSkillDirectory(root: PinnedDirectory, key: string): Promise<ReconcileAction[]> {
   if (keyRejectionReason(key) !== null) return [];
 
-  const skillDir = path.join(root, key);
+  const skillDir = path.join(root.address, key);
   const pattern = tempNamePattern(SKILL_FILENAME);
 
   let handle: Awaited<ReturnType<typeof openDirectoryNoFollow>>;
@@ -1093,11 +1214,16 @@ async function sweepSkillDirectory(root: string, key: string): Promise<Reconcile
     return [];
   }
 
+  // Listed and unlinked through the directory's own descriptor, so the name the
+  // readdir enumerated and the name the unlink removes cannot come from two
+  // different directories.
+  const inside = directoryAddress(handle, skillDir);
+
   const actions: ReconcileAction[] = [];
   try {
     let names: string[];
     try {
-      names = await readdir(skillDir);
+      names = await readdir(inside);
     } catch {
       return [];
     }
@@ -1105,8 +1231,8 @@ async function sweepSkillDirectory(root: string, key: string): Promise<Reconcile
       if (!pattern.test(name)) continue;
       try {
         // Never a symlink and never a directory, whatever the name says.
-        if (!(await lstat(path.join(skillDir, name))).isFile()) continue;
-        await unlinkNoFollow(skillDir, name, handle);
+        if (!(await lstat(path.join(inside, name))).isFile()) continue;
+        await unlinkNoFollow(inside, name, handle);
       } catch (error) {
         actions.push(
           createReconcileAction({
