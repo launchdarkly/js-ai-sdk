@@ -311,6 +311,12 @@ const report = await writeSkills('*', '.claude/skills', {
 });
 ```
 
+**Know what `'*'` asks for.** It materializes the **whole project library**, which puts every
+skill's `description` into the agent's context — including skills no AI Config references and
+skills belonging to other teams. `writeSkills(skillRefs(config), root)`, the form used in the
+example above, materializes only what the resolved variation actually asked for. Reach for
+`'*'` when you genuinely want the entire library on disk.
+
 | Export | Description |
 |---|---|
 | `skillRefs(config)` | Project a config's `skills` array into typed `SkillReference[]`. Pure — no client, no store, no telemetry. `[]` when absent. |
@@ -330,7 +336,7 @@ const report = await writeSkills('*', '.claude/skills', {
 
 `ReconcileReport` exposes `actions`, `ok` (true iff no action is an `error`), and `errors` (the error actions, in order), so callers never re-derive the filter. Each `ReconcileAction` carries `key`, `action` (`written` | `updated` | `skipped_current` | `removed` | `error`), and nullable `version` / `path` / `error`. A failure belonging to the whole run rather than one skill — a corrupt manifest, for instance — carries the **empty string** in `key`.
 
-**Security posture.** `writeSkills` is writing LaunchDarkly-delivered content to your disk, so it fails closed: skill keys are re-validated locally, content is hash-verified again immediately before writing, writes go through a temp file in the target's own directory and an atomic rename at mode `0644`, symlinked roots/directories/targets are refused, a target that is not a regular file (a FIFO, a device node) is refused rather than read, and a corrupt manifest suppresses every destructive action. One limitation is worth stating plainly: Node exposes no `renameat`/`unlinkat`, so the final rename cannot be performed relative to a pinned directory descriptor. An attacker who already has **write permission on the managed root** can therefore still win a race to redirect a write or a delete outside it. Keep the managed root writable only by the process running the SDK.
+**Security posture.** `writeSkills` is writing LaunchDarkly-delivered content to your disk, so it fails closed: skill keys are re-validated locally, content is hash-verified again immediately before writing, writes go through a temp file in the target's own directory and an atomic rename at mode `0644`, symlinked roots/directories/targets are refused, a target that is not a regular file (a FIFO, a device node) is refused rather than read, and a corrupt manifest suppresses every destructive action. One limitation is worth stating plainly, and it is a platform bound rather than a detail: Node exposes no `renameat`/`unlinkat`/`openat`, so no destructive step can be performed relative to a pinned directory descriptor. Every check here is therefore a per-component `lstat` taken immediately before the path-based operation — a check-then-use race, not a closed window — and unlike the Python SDK, which closes that window on POSIX by holding a descriptor opened `O_RDONLY|O_DIRECTORY|O_NOFOLLOW` for the whole reconcile, **this floor is what runs on every platform Node supports, Linux included.** An attacker who already has **write permission on the managed root** can therefore win a race to redirect a write or a delete outside it. Windows adds nothing worse and nothing better: reparse-point checks (`GetFileAttributesW` / `FILE_FLAG_OPEN_REPARSE_POINT`) are deliberately not implemented in this release, and Windows is not a tested platform for it — neither SDK repository has a Windows CI runner. So write permission on the managed root is *the* security boundary here. Keep it writable only by the identity running the reconcile — see [privilege separation](#privilege-separation-the-agent-must-not-be-able-to-rewrite-its-own-skills).
 
 **Two constraints on skill keys, imposed here rather than by the data model.** A key becomes a single directory name, so `writeSkills` rejects — as a reported `error` action, on every platform — a key over 255 bytes and the 22 Windows reserved device names (`con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`). Both are checked in the filesystem layer only: a key like `aux` remains valid everywhere else, so an AI Config referencing it still parses and its other skills still materialize. One residual the SDK cannot check for you: the 255-byte bound is per *path component*, not on the total path, so `<root>/<key>/SKILL.md` can still exceed Windows' 260-character `MAX_PATH` if the root is deep and the key is long. The root is yours, so budget for it there.
 
@@ -424,6 +430,31 @@ switch (outcome.reason) {
 These five tokens are the whole vocabulary, and the Python SDK publishes the same five for the same conditions. There is deliberately no batch equivalent: `getSkills` and `allSkills` still omit entries they could not return, so call `getSkillResult` per key where the outcome matters.
 
 **`hash_mismatch` deserves a page, not a dashboard.** The other codes are consistent with a malformed store, a bad deployment, or a truncated response. `hash_mismatch` means content and its declared digest disagree, which is the shape of active tampering with skill delivery — in transit, in a cache, or in whatever backs your `SkillStore`. If you serve skill content only from LaunchDarkly, `over_size_cap` and `not_utf8` warrant alerts on the same reasoning: neither should ever occur.
+
+#### Privilege separation: the agent must not be able to rewrite its own skills
+
+**The recommended deployment runs `writeSkills` as a different identity than the agent.** Reconcile as one user, run the agent as another. Everything the reconcile puts on disk is owner-write-only, and set explicitly rather than inherited from the process umask: skill files and the manifest at `0644` (applied to the open file handle, so it cannot be redirected), the per-skill `<root>/<key>/` directories at `0755`, and the execute bit never set on anything. Those modes are only a defense if the two identities actually differ — under a single identity they describe a directory the agent can freely rewrite.
+
+**What to verify, as the identity that will run the agent.** The SDK cannot check this for you (see below), so make it a deployment step: confirm the agent's identity has no write access to
+
+- the managed root itself,
+- the per-skill directories `<root>/<key>/` and the files `<root>/<key>/SKILL.md`,
+- the manifest at `<root>/.launchdarkly-skills.json`.
+
+```bash
+# Run as the agent's user. Every line should print DENIED.
+root=.claude/skills
+for target in "$root" "$root/.launchdarkly-skills.json" "$root"/*/ "$root"/*/SKILL.md; do
+  [ -e "$target" ] || continue
+  if [ -w "$target" ]; then echo "WRITABLE — fix this: $target"; else echo "DENIED: $target"; fi
+done
+```
+
+The managed root's own mode is **yours, not the SDK's**: `writeSkills` creates only that one leaf directory, and does so with the process umask, precisely because the root is a path you chose. Own it — `chown reconcile-user:agent-group` plus `chmod 0755` on the root is the shape that makes the rest of the tree's modes mean something. It is also the mitigation for the race described under *Security posture* above: that race requires write permission on the managed root, which privilege separation is what denies.
+
+**Why this is the mitigation that matters.** A `SKILL.md` is agent *instructions*. An agent that can write its own skills directory can rewrite its own instructions, and an agent processing untrusted input is exactly the thing that might be induced to do so. Write access to the manifest is worse than write access to a skill, because the manifest is what tells the *next* reconcile which paths the SDK owns and may delete: an agent that can edit it can keep a skill LaunchDarkly has revoked, or aim the SDK's own delete path at something it should not touch. `writeSkills` re-validates every manifest entry from scratch for exactly that reason — it treats that file as untrusted input, never as authorization — but an agent that cannot edit it at all is the stronger position, and only your deployment can provide that.
+
+**The SDK deliberately does not report whether the root is writable.** There is no such field on `ReconcileReport`, and its absence is a decision rather than an oversight. The SDK knows only its own identity, which trivially has write access — it just wrote there. It cannot know which identity will later run the agent, so any check it could make would answer a different question than the one that matters, and would read as reassurance exactly where caution is wanted. You know both identities; the SDK knows one.
 
 ---
 
