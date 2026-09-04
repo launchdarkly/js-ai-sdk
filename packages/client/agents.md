@@ -30,11 +30,39 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/registry.ts` | `Registry`, `globalRegistry`, `compose` |
 | `src/skills-core.ts` | Agent Skills internals shared by the two layers above it: the store and telemetry seams, module state, integrity verification, store resolution |
 | `src/skills.ts` | `skillRefs`, the content accessors, `InMemorySkillStore`, and the documented test-injection hooks |
+| `src/skills-fdv2.ts` | Agent Skills delivery transport — the FDv2 protocol, the `objectVersion`/`version` translation, the held object set, and `FDv2SkillStore`. Sits **below** the store seam; imports `skills-core` only, and nothing imports it |
+| `src/skills-watch.ts` | Agent Skills eager re-reconcile — `watchSkills` / `SkillWatcher`, wiring the store's change listener to `writeSkills`. Sits **above** `skills-fs` and modifies none of it |
 | `src/skills-fs.ts` | `writeSkills` — the manifest format, on-disk filenames, and reconcile semantics |
 | `src/safe-fs.ts` | Symlink-refusing filesystem primitives. Knows nothing about skills; owns the single interceptable rename and unlink call sites |
 | `src/index.ts` | Public barrel — the only surface handler packages import from |
 
-The Agent Skills modules are a deliberate split, and the dependencies run **one way only**: `types` ← `skills-core` ← `skills`, and `types` + `safe-fs` + `skills-core` ← `skills-fs`. `skills-core.ts` imports neither `skills.ts` nor `skills-fs.ts`. Do not add an edge that closes a cycle; the reason the store and the emitter live in `skills-core.ts` is so the accessor layer and the filesystem layer cannot disagree about whether one is configured.
+The Agent Skills modules are a deliberate split, and the dependencies run **one way only**: `types` ← `skills-core` ← `skills`, and `types` + `safe-fs` + `skills-core` ← `skills-fs`. `skills-core.ts` imports neither `skills.ts` nor `skills-fs.ts`. The two later modules extend the same shape: `skills-fdv2.ts` sits *below* the seam and imports only `skills-core` + `types` — nothing imports it — and `skills-watch.ts` sits *above* `skills-fs` and imports it without being imported back. Do not add an edge that closes a cycle; the reason the store and the emitter live in `skills-core.ts` is so the accessor layer and the filesystem layer cannot disagree about whether one is configured.
+
+---
+
+## Agent Skills — the delivery transport, and the one field that will bite you
+
+`FDv2SkillStore` speaks LaunchDarkly's SDK-facing FDv2 channel (`GET /sdk/poll`, `GET /sdk/stream`, server-side SDK key in `Authorization`, `basis` + `mv` params, `If-None-Match`/304). It lives below the seam and produces raw objects in the shape `SkillStore` documents; **nothing above the seam knows it exists**. The transport design was replaced wholesale late in this feature's life and cost zero changes above this line, which is the strongest evidence the seam is drawn correctly. If a transport change ever seems to require editing an accessor, verification, or `writeSkills`, the adapter boundary is wrong.
+
+**`objectVersion` is the skill's version. `version` is the payload's.** On the wire a skill `put-object` carries both, and they are not interchangeable:
+
+```json
+{"key":"pdf-extraction","kind":"inline-resource","category":"skill",
+ "objectVersion":3,"version":42,
+ "object":{"contentType":"text/markdown","content":"…","contentHash":"…","name":"…"}}
+```
+
+`objectVersion` (3) is what a `{key, version}` reference pins and what becomes the seam's `version`. `version` (42) is the version of the *payload* the object arrived in — it moves when anything in the environment moves, including a flag with nothing to do with skills. Reading it as the skill's version fails **silently**: the object verifies, the hash matches, and the caller gets content under a version number that means nothing. Flags and segments carry only `version` and omit both `category` and `objectVersion`, which is exactly why the two fields look interchangeable. `seamObjectFromPut` is the only place the translation happens, and the `version translation` suite asserts it in both directions.
+
+**Skills are identified by `kind === 'inline-resource' && category === 'skill'`; everything else is ignored, not rejected.** An environment's payload assignment carries the flagging payload alongside the agent-skill payload, so flag and segment objects arrive as a matter of course. Throwing on an unrecognised kind is the unknown-kind reconnect loop this feature must not reproduce — a flag-delivery outage caused by a skills rollout.
+
+**Changes commit at `payload-transferred`, not as objects arrive.** A payload version is the unit of consistency: a half-applied full transfer would publish a state the server never described, and would briefly empty the store — which, with pruning on, is the difference between a reconcile and deleting a customer's skill files. An interrupted transfer therefore leaves last known good intact, and listeners fire once per commit.
+
+**A hashless object is held, not dropped.** Verification withholds it with `missing_content_hash`; the transport's job is to make that loud (an error per object, a summary per wholly-hashless payload, `diagnostics.hashlessObjects`) rather than to work around it. Dropping it at the transport would report `absent` — indistinguishable from "no such skill" — and would let a prune delete the last known-good copy on disk. Never synthesize a hash from the delivered content: that certifies the content against itself and verifies nothing.
+
+**`SkillObjectSet.snapshot` collapses to one object per key, and that is load-bearing here in a way it is not in Python.** `<root>/<key>/SKILL.md` is a single path, so a whole-store consumer must see one object per key or a `'*'` reconcile writes the same path twice and `allSkills` returns two versions of one skill. The Python SDK collapses in `newest_by_key`, above the seam; that helper is not in this SDK yet, so the collapse happens in the adapter. End-to-end behaviour is identical, and `getObject` still resolves a pinned version out of the full set. When `newestByKey` lands in `skills-core.ts`, move it and delete the note on the class.
+
+**`close` aborts the signal, it does not just set a flag.** The delivery task spends its life awaiting a stream read, and a flag it never checks would leave a healthy stream running until the process exited. Every backoff timer and the `waitForSkills` timer are `unref`ed for the same reason: a background store must not be why `node` stays up.
 
 ---
 
@@ -62,6 +90,8 @@ export { parseUsage, normalizeMode, parseAiConfig } from './tracking.js';
 export { skillRefs, getSkill, getSkillResult, getSkills, allSkills, InMemorySkillStore } from './skills.js';
 export { SKILL_OBJECT_KIND, MAX_SKILL_CONTENT_BYTES } from './skills-core.js';
 export { writeSkills, SKILL_FILENAME, MANIFEST_FILENAME, MANIFEST_VERSION } from './skills-fs.js';
+export { FDv2SkillStore, DEFAULT_BASE_URI, SDK_DATA_MODEL_VERSION } from './skills-fdv2.js';
+export { watchSkills, SkillWatcher, DEFAULT_DEBOUNCE_MS } from './skills-watch.js';
 export type { WriteSkillsOptions } from './skills-fs.js';
 export { createSkill, createSkillOutcome, createSkillReference } from './types.js';
 export type {
