@@ -22,8 +22,8 @@
  * typically owns, and write permission there is all this takes.
  *
  * Every test states the contract — nothing lands outside the root, no outside
- * file is overwritten, no outside file is removed — and runs under `knownGap`,
- * which passes only while the contract is violated. On Linux the fix is to hold
+ * file is overwritten, no outside file is removed. The code does not meet it, so
+ * they fail, and the red run is the demonstration. On Linux the fix is to hold
  * the root handle and address children through `/proc/self/fd/<fd>/<name>`,
  * which the kernel resolves against the pinned inode rather than the name;
  * everywhere else it is adding the root's parent to the README checklist.
@@ -96,24 +96,6 @@ function disarm(): void {
   Object.assign(race, { on: null, trigger: '', nth: 1, seen: 0, fire: null, fired: false });
 }
 
-/**
- * pytest's `xfail(strict=True, raises=AssertionError)`, which `it.fails` is not.
- *
- * `it.fails` accepts *any* throw as the expected failure, so a harness bug — a
- * race that never fires, a `writeSkills` that rejects — would masquerade as the
- * known gap. This accepts only a failed assertion, rethrows everything else, and
- * fails loudly the day the body passes, so the wrapper cannot outlive the fix.
- */
-async function knownGap(body: () => Promise<void>): Promise<void> {
-  try {
-    await body();
-  } catch (error) {
-    if ((error as Error | undefined)?.name === 'AssertionError') return;
-    throw error;
-  }
-  throw new Error('the root-swap gap is closed: drop knownGap() and assert the contract directly');
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function hash(content: string): string {
@@ -180,63 +162,60 @@ afterEach(async () => {
 // ─── The three root-swap races ───────────────────────────────────────────────
 
 describe('writeSkills root swap races', () => {
-  it('a root swapped at the skill directory create cannot redirect the write', () =>
-    knownGap(async () => {
-      // First reconcile against a fresh root: `<root>/a` does not exist, so
-      // `openOrCreateDirectory` calls `mkdir(<root>/a)`. The swap fires there;
-      // the mkdir, the O_NOFOLLOW open and assertUnswapped's lstat all resolve
-      // through the link, and SKILL.md is written into `<outside>/a/`.
-      const outside = path.join(scratch, 'outside');
-      await mkdir(outside);
-      arm('mkdir', path.join(root, 'a'), () => swapRoot(outside));
+  it('a root swapped at the skill directory create cannot redirect the write', async () => {
+    // First reconcile against a fresh root: `<root>/a` does not exist, so
+    // `openOrCreateDirectory` calls `mkdir(<root>/a)`. The swap fires there;
+    // the mkdir, the O_NOFOLLOW open and assertUnswapped's lstat all resolve
+    // through the link, and SKILL.md is written into `<outside>/a/`.
+    const outside = path.join(scratch, 'outside');
+    await mkdir(outside);
+    arm('mkdir', path.join(root, 'a'), () => swapRoot(outside));
 
-      const report = await writeSkills([skill('a')], root);
+    const report = await writeSkills([skill('a')], root);
 
-      if (!race.fired) throw new Error(NEVER_FIRED);
-      expect(await readdir(outside)).toEqual([]);
-      // Either the skill landed in the real root or the run says it did not.
-      if (report.ok) expect(await readFile(path.join(movedTo(), 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
-    }));
+    if (!race.fired) throw new Error(NEVER_FIRED);
+    expect(await readdir(outside)).toEqual([]);
+    // Either the skill landed in the real root or the run says it did not.
+    if (report.ok) expect(await readFile(path.join(movedTo(), 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+  });
 
-  it('a root swapped at the skill directory open cannot clobber an outside file', () =>
-    knownGap(async () => {
-      // Update of an already-managed skill: `<root>/a` exists, so the mkdir
-      // fails EEXIST and the swap fires at the O_NOFOLLOW open that follows.
-      // `<outside>/a/SKILL.md` — a file the manifest never recorded — is
-      // replaced with LaunchDarkly-served content.
-      const outside = path.join(scratch, 'outside');
-      await mkdir(path.join(outside, 'a'), { recursive: true });
-      const victim = path.join(outside, 'a', SKILL_MD);
-      await writeFile(victim, 'precious\n', 'utf-8');
-      await placeManaged(root, 'a', SKILL_BODY);
-      arm('open', path.join(root, 'a'), () => swapRoot(outside));
+  it('a root swapped at the skill directory open cannot clobber an outside file', async () => {
+    // Update of an already-managed skill: `<root>/a` exists, so the mkdir
+    // fails EEXIST and the swap fires at the O_NOFOLLOW open that follows.
+    // `<outside>/a/SKILL.md` — a file the manifest never recorded — is
+    // replaced with LaunchDarkly-served content.
+    const outside = path.join(scratch, 'outside');
+    await mkdir(path.join(outside, 'a'), { recursive: true });
+    const victim = path.join(outside, 'a', SKILL_MD);
+    await writeFile(victim, 'precious\n', 'utf-8');
+    await placeManaged(root, 'a', SKILL_BODY);
+    arm('open', path.join(root, 'a'), () => swapRoot(outside));
 
-      const report = await writeSkills([skill('a', 2, 'served update\n')], root);
+    const report = await writeSkills([skill('a', 2, 'served update\n')], root);
 
-      if (!race.fired) throw new Error(NEVER_FIRED);
-      expect(await readFile(victim, 'utf-8')).toBe('precious\n');
-      if (report.ok) expect(await readFile(path.join(movedTo(), 'a', SKILL_MD), 'utf-8')).toBe('served update\n');
-    }));
+    if (!race.fired) throw new Error(NEVER_FIRED);
+    expect(await readFile(victim, 'utf-8')).toBe('precious\n');
+    if (report.ok) expect(await readFile(path.join(movedTo(), 'a', SKILL_MD), 'utf-8')).toBe('served update\n');
+  });
 
-  it('a root swapped at the prune cannot redirect the unlink', () =>
-    knownGap(async () => {
-      // The destructive side. The orphan-temp sweep opens `<root>/a` first and
-      // `pruneOne` re-runs the realpath containment check after it, so a swap
-      // at that open would be caught; the second open — pruneOne's own, after
-      // the check — is not. The unlink and the rmdir then both resolve through
-      // the swapped root, and an outside file and its directory are removed.
-      const outside = path.join(scratch, 'outside');
-      await mkdir(path.join(outside, 'a'), { recursive: true });
-      const victim = path.join(outside, 'a', SKILL_MD);
-      await writeFile(victim, 'precious\n', 'utf-8');
-      await placeManaged(root, 'a', SKILL_BODY);
-      arm('open', path.join(root, 'a'), () => swapRoot(outside), 2);
+  it('a root swapped at the prune cannot redirect the unlink', async () => {
+    // The destructive side. The orphan-temp sweep opens `<root>/a` first and
+    // `pruneOne` re-runs the realpath containment check after it, so a swap
+    // at that open would be caught; the second open — pruneOne's own, after
+    // the check — is not. The unlink and the rmdir then both resolve through
+    // the swapped root, and an outside file and its directory are removed.
+    const outside = path.join(scratch, 'outside');
+    await mkdir(path.join(outside, 'a'), { recursive: true });
+    const victim = path.join(outside, 'a', SKILL_MD);
+    await writeFile(victim, 'precious\n', 'utf-8');
+    await placeManaged(root, 'a', SKILL_BODY);
+    arm('open', path.join(root, 'a'), () => swapRoot(outside), 2);
 
-      const report = await writeSkills([], root);
+    const report = await writeSkills([], root);
 
-      if (!race.fired) throw new Error(NEVER_FIRED);
-      expect(await exists(victim)).toBe(true);
-      expect(await readFile(victim, 'utf-8')).toBe('precious\n');
-      if (report.ok) expect(await exists(path.join(movedTo(), 'a', SKILL_MD))).toBe(false);
-    }));
+    if (!race.fired) throw new Error(NEVER_FIRED);
+    expect(await exists(victim)).toBe(true);
+    expect(await readFile(victim, 'utf-8')).toBe('precious\n');
+    if (report.ok) expect(await exists(path.join(movedTo(), 'a', SKILL_MD))).toBe(false);
+  });
 });
