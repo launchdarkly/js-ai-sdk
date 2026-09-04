@@ -229,7 +229,7 @@ if (!result.enabled) {
 
 Agent Skills are versioned `SKILL.md` documents managed in LaunchDarkly, attachable to AI Config variations by reference. This package surfaces which skills a config references, retrieves their content, and materializes them onto disk where agent runtimes (the Claude Agent SDK and friends) can discover them.
 
-**Content delivery is not wired up in this release.** Everything below runs against the `SkillStore` seam; the shipped default is *absent*, so the accessors throw an actionable error until a store is configured. `InMemorySkillStore` is provided for local development, tests, and bring-your-own-content. The real transport ships in a follow-up.
+**Everything below runs against the `SkillStore` seam**, and the shipped default is *absent*, so the accessors throw an actionable error until a store is configured. `InMemorySkillStore` is provided for local development, tests, and bring-your-own-content; `FDv2SkillStore` is the delivery transport that receives content from LaunchDarkly — see [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly).
 
 ```ts
 import { createHash } from 'node:crypto';
@@ -326,6 +326,44 @@ example above, materializes only what the resolved variation actually asked for.
 | `allSkills()` | Every verified skill the store holds. |
 | `writeSkills(skills, root, options?)` | Materialize to `<root>/<key>/SKILL.md`. Accepts `Skill` / `SkillReference` / key strings, or the literal `'*'`. Returns a `ReconcileReport`. Throws for a caller error — an unusable `root`, a bare string other than `'*'` — as distinct from the per-skill `error` actions in the report. |
 | `InMemorySkillStore` | A `SkillStore` backed by a plain object. `put(raw)`, `getObject(kind, key, version?)`, `allObjects(kind)`, `addListener(kind, fn)`. Holds one object per key, so it answers a version pin with what it has and lets the accessor refuse a mismatch. |
+| `FDv2SkillStore(sdkKey, options?)` | The delivery transport: a `SkillStore` fed by LaunchDarkly over the SDK-facing FDv2 channel. `start()`, `waitForSkills(timeoutMs)`, `close()`, `diagnostics`, `failed`. **Server-side only** — a mobile key or client-side environment ID throws. See [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly). |
+| `watchSkills(skills, root, options?)` | `writeSkills` plus a re-reconcile on every delivery change. Resolves to `{ report, watcher }`; `await watcher.close()` when done. Revocation then takes effect within `debounceMs` of arriving rather than at the next restart. |
+
+#### Receiving skills from LaunchDarkly
+
+`InMemorySkillStore` is for tests and bring-your-own-content. In production, skill content arrives through `FDv2SkillStore`, which speaks LaunchDarkly's SDK-facing FDv2 delivery channel — the same `GET /sdk/poll` and `GET /sdk/stream` endpoints the base SDK's FDv2 data source uses, authenticated with the environment's server-side SDK key.
+
+```ts
+import { FDv2SkillStore, initClient, watchSkills } from '@launchdarkly/ai-server';
+
+const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
+await store.waitForSkills(10_000);
+await initClient({ skillStore: store });
+
+// Materialize now, and re-materialize whenever delivery changes.
+const { report, watcher } = await watchSkills('*', '.claude/skills');
+try {
+  // ...
+} finally {
+  await watcher.close();
+  await store.close();
+}
+```
+
+**Nothing above the store changes.** The accessors, integrity verification, and `writeSkills` are transport-agnostic: they see raw objects through the `SkillStore` seam and cannot tell which store produced them. Everything documented above about verification and reconcile semantics applies unchanged.
+
+**Server-side only.** Skills are for server-side agent runtimes and skill content is customer-confidential. A mobile key (`mob-…`) or a client-side environment ID throws from the constructor.
+
+**Streaming is the default, and it is what makes revocation fast.** A `delete-object` reaches a live stream in seconds; with `mode: 'poll'` it arrives within one `pollIntervalMs`. Paired with `watchSkills`, a revoked skill's `SKILL.md` leaves the disk without a restart. During an outage the store keeps serving the last content it received and `writeSkills`' default `onUnavailable: 'keep'` leaves managed files alone — an outage must not read as "everything was revoked".
+
+**The connection also carries your flags.** A client cannot request only the skill payload, so a skills-enabled environment delivers flag and segment objects on the same connection. They are skipped, not evaluated — this store does no evaluation of any kind — and `diagnostics.objectsIgnored` counts them.
+
+> **Beta caveats, worth knowing before you deploy.** Payload signing does not exist on this channel yet, so delivery is TLS-only and the content hash establishes self-consistency, not origin authenticity. FDv2 is opt-in per account: without it the endpoints return HTTP 403, which the store reports as a fatal error naming the setting. `ld-relay` does not speak the FDv2 endpoints, so relay-only deployments cannot receive skills.
+
+**If every skill comes back empty, check `diagnostics.hashlessObjects`.** Verification requires `contentHash` on the delivered object and withholds anything without one, so a nonzero count there means skills are being withheld rather than that the environment has none. The store logs an error per hashless object and one summary per wholly-hashless payload, both naming the reason. There is deliberately no fallback that skips verification: a hash the SDK computed from the content it was handed would certify the content against itself.
+
+| Export | Description |
+|---|---|
 | `createSkill(init)` / `createSkillReference(init)` | Build frozen `Skill` / `SkillReference` values. Use `createSkill` to hand `writeSkills` content you already have. |
 | `createSkillOutcome(init)` | Build a frozen `SkillOutcome`. Exported for tests and for wrapping your own retrieval in the same shape. |
 | `SKILL_OBJECT_KIND` | `'skill'` — the delivery object kind. |
