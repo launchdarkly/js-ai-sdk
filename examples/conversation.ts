@@ -23,7 +23,7 @@
 import './register';
 import type { Message } from '@launchdarkly/ai-node';
 import { config, globalRegistry, withConversationId } from '@launchdarkly/ai-node';
-import { newContext, newConversationId } from './utils';
+import { newConversationId, newMultiContext } from './utils';
 
 const FOLLOW_UPS = [
   'Can you give me a concrete example of that?',
@@ -32,7 +32,8 @@ const FOLLOW_UPS = [
 
 export async function run(key: string, userInput: string): Promise<void> {
   const conversationId = newConversationId('conversation-example');
-  const ctx = newContext();
+  const ctx = newMultiContext();
+  process.stderr.write(`[context] ${JSON.stringify(ctx)}\n`);
   const history: Message[] = [];
 
   process.stderr.write(`[conversation] ${conversationId}\n`);

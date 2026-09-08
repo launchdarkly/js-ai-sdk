@@ -365,12 +365,77 @@ export function endSpanOnce(span: Span, tracker: Set<Span>, abandoned = false): 
   span.end();
 }
 
+type ContextIdentity = { canonical: string; keys: Record<string, string> };
+
+function usableContextKey(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+function escapeCanonicalPart(value: string): string {
+  return value.replace(/%/g, '%25').replace(/:/g, '%3A');
+}
+
+/** Compact JSON of per-kind keys in lexicographic kind order. */
+function compactContextKeysJson(keys: Record<string, string>): string {
+  return `{${Object.keys(keys)
+    .sort()
+    .map((kind) => `${JSON.stringify(kind)}:${JSON.stringify(keys[kind])}`)
+    .join(',')}}`;
+}
+
+/**
+ * Canonical key plus per-kind map from `variables.ldContext`.
+ * Never throws. Returns undefined when there is no usable identity.
+ */
+function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | undefined {
+  try {
+    if (ldContext === null || typeof ldContext !== 'object') return undefined;
+    const ctx = ldContext as Record<string, unknown>;
+
+    if (ctx.kind === 'multi') {
+      const raw: Record<string, string> = {};
+      for (const [kind, value] of Object.entries(ctx)) {
+        if (kind === 'kind' || kind === '_meta') continue;
+        if (value === null || typeof value !== 'object') continue;
+        const key = usableContextKey((value as Record<string, unknown>).key);
+        if (key !== undefined) raw[kind] = key;
+      }
+      const kinds = Object.keys(raw).sort();
+      if (kinds.length === 0) return undefined;
+      const keys: Record<string, string> = {};
+      const parts: string[] = [];
+      for (const kind of kinds) {
+        keys[kind] = raw[kind];
+        parts.push(`${escapeCanonicalPart(kind)}:${escapeCanonicalPart(raw[kind])}`);
+      }
+      return { canonical: parts.join(':'), keys };
+    }
+
+    const key = usableContextKey(ctx.key);
+    if (key === undefined) return undefined;
+    let kind: string;
+    if (!('kind' in ctx)) {
+      kind = 'user';
+    } else if (typeof ctx.kind === 'string' && ctx.kind !== '') {
+      kind = ctx.kind;
+    } else {
+      return undefined;
+    }
+    const keys = { [kind]: key };
+    const canonical = kind === 'user' ? key : `${escapeCanonicalPart(kind)}:${escapeCanonicalPart(key)}`;
+    return { canonical, keys };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Sets LaunchDarkly config-identifying attributes on an OTel span and emits
  * the `feature_flag` span event required by the AI Config Monitoring Traces tab.
  *
  * Reads the `__ld` entry injected into `variables` by `executeAndTrack` /
  * `executeAndStream`, so handlers never need to receive `TrackData` directly.
+ * Context identity is read from `variables.ldContext`, never from `TrackData`.
  *
  * Span attributes (for LLM dashboard discovery and custom queries):
  *   launchdarkly.operation.type  = 'gen_ai'
@@ -378,10 +443,12 @@ export function endSpanOnce(span: Span, tracker: Set<Span>, abandoned = false): 
  *   launchdarkly.variation.key   = variationKey
  *   launchdarkly.run.id          = runId
  *   launchdarkly.graph.key       = graphKey    (only when present)
+ *   context.contextKeys.<kind>   = raw per-kind key (when ldContext has identity)
  *
  * Span event (required for AI Config Monitoring tab trace correlation):
  *   name: 'feature_flag'
- *   attributes: feature_flag.key, feature_flag.provider.name, feature_flag.set.id
+ *   attributes: feature_flag.key, feature_flag.provider.name, feature_flag.set.id,
+ *               feature_flag.context.id, feature_flag.contextKeys
  *   The observability backend projects these event attrs to span-level attrs,
  *   satisfying the query: events.name=feature_flag AND
  *   events.attributes.feature_flag.key=<configKey> AND
@@ -403,6 +470,16 @@ export function setLdSpanAttributes(span: Span, variables: Record<string, unknow
   if (ld.environmentId) {
     featureFlagAttrs['feature_flag.set.id'] = ld.environmentId;
   }
+
+  const identity = contextIdentityFromLdContext(variables?.ldContext);
+  if (identity) {
+    featureFlagAttrs['feature_flag.context.id'] = identity.canonical;
+    featureFlagAttrs['feature_flag.contextKeys'] = compactContextKeysJson(identity.keys);
+    for (const [kind, key] of Object.entries(identity.keys)) {
+      span.setAttribute(`context.contextKeys.${kind}`, key);
+    }
+  }
+
   span.addEvent('feature_flag', featureFlagAttrs);
 }
 
