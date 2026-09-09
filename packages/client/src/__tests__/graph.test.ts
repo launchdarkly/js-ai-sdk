@@ -210,8 +210,15 @@ describe('graph().invoke()', () => {
     const result = await graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext);
     expect(result.usage.total).toBeGreaterThan(0);
     expect(result.response).toBeDefined();
-    expect((result as any).path).toBeUndefined();
-    expect((result as any).nodes).toBeUndefined();
+  });
+
+  it('returns the traversal path and per-node responses', async () => {
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+    const result = await graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext);
+    expect(result.path).toEqual(['root-node', 'leaf-node']);
+    expect(Object.keys(result.nodes ?? {})).toEqual(['root-node', 'leaf-node']);
+    expect(result.nodes?.['leaf-node']?.response).toBe('agent-response');
   });
 
   it('tracks $ld:ai:graph:invocation_success on success', async () => {

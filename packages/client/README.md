@@ -255,5 +255,5 @@ All types are re-exported from this package. Handler packages import them from h
 | `GraphArgs` | Options accepted by `resolveGraph()` — extends `GraphOptions` with a required `context` |
 | `GraphDefinition` | A resolved agent graph: topology accessors, `runNode`, and the traverse primitives |
 | `GraphNode` / `GraphEdge` | A node (evaluated agent config + edges) and a directed edge (with handoff data) |
-| `ProviderGraphResponse` | The value returned by `graph(...).invoke()`: `{ response, usage, trackData, judgeResults? }` |
+| `ProviderGraphResponse` | The value returned by `graph(...).invoke()`: `{ response, usage, path, nodes?, judgeResults? }` |
 | `GraphTopology` | The parsed graph flag shape (`root` + `edges`) |
