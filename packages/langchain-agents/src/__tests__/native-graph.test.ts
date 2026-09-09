@@ -293,11 +293,11 @@ describe('toLangGraph', () => {
 
   // ── OTel span ────────────────────────────────────────────────────────────────
 
-  it('sets ld.ai.graph.key span attribute', async () => {
+  it('sets launchdarkly.graph.key span attribute', async () => {
     const root = makeNode('root', '', []);
     const def = makeGraphDef([root], {}, 'root');
     await toLangGraph(Promise.resolve(def)).invoke('hi');
-    expect(mockSpan.setAttribute).toHaveBeenCalledWith('ld.ai.graph.key', 'test-graph');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.key', 'test-graph');
   });
 
   it('sets span status to OK on success', async () => {
@@ -511,11 +511,11 @@ describe('toLangGraph', () => {
 
   // ── OTel span attributes ─────────────────────────────────────────────────────
 
-  it('sets ld.ai.graph.path span attribute after traversal', async () => {
+  it('sets launchdarkly.graph.path span attribute after traversal', async () => {
     const root = makeNode('root', '', []);
     const def = makeGraphDef([root], {}, 'root');
     await toLangGraph(Promise.resolve(def)).invoke('hi');
-    expect(mockSpan.setAttribute).toHaveBeenCalledWith('ld.ai.graph.path', expect.any(String));
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.path', expect.any(String));
   });
 
   it('sets gen_ai.usage.* span attributes on success', async () => {

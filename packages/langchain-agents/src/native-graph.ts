@@ -144,8 +144,8 @@ export const toLangGraph = (
     const modelFactory = opts?.modelFactory ?? ((node) => new ChatOpenAI({ model: node.config.model.name }));
     const ldContext = opts?.context;
 
-    return trace.getTracer('@launchdarkly/ai-langchain-agents').startActiveSpan('ld.ai.graph', async (span) => {
-      span.setAttribute('ld.ai.graph.key', def.key);
+    return trace.getTracer('@launchdarkly/ai-langchain-agents').startActiveSpan('launchdarkly.graph', async (span) => {
+      span.setAttribute('launchdarkly.graph.key', def.key);
       const startTime = Date.now();
       const runId = crypto.randomUUID();
 
@@ -300,7 +300,7 @@ export const toLangGraph = (
             : ''
         : '';
 
-      span.setAttribute('ld.ai.graph.path', path.join('->'));
+      span.setAttribute('launchdarkly.graph.path', path.join('->'));
       span.setAttribute('gen_ai.usage.input_tokens', totalUsage.input);
       span.setAttribute('gen_ai.usage.output_tokens', totalUsage.output);
       span.setAttribute('gen_ai.usage.total_tokens', totalUsage.total);

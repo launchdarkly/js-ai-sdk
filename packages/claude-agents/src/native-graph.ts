@@ -179,8 +179,8 @@ export const toClaudeAgents = (
     const ldContext = opts?.context;
     const rawHandlers = opts?.toolHandlers ?? {};
 
-    return trace.getTracer('@launchdarkly/ai-claude-agents').startActiveSpan('ld.ai.graph', async (span) => {
-      span.setAttribute('ld.ai.graph.key', def.key);
+    return trace.getTracer('@launchdarkly/ai-claude-agents').startActiveSpan('launchdarkly.graph', async (span) => {
+      span.setAttribute('launchdarkly.graph.key', def.key);
       const startTime = Date.now();
       const runId = crypto.randomUUID();
 
@@ -299,7 +299,7 @@ export const toClaudeAgents = (
 
       const graphDuration = Date.now() - startTime;
 
-      span.setAttribute('ld.ai.graph.path', path.join('->'));
+      span.setAttribute('launchdarkly.graph.path', path.join('->'));
       span.setAttribute('gen_ai.usage.input_tokens', totalUsage.input);
       span.setAttribute('gen_ai.usage.output_tokens', totalUsage.output);
       span.setAttribute('gen_ai.usage.total_tokens', totalUsage.total);

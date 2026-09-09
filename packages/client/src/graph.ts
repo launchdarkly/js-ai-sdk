@@ -515,8 +515,8 @@ export const graph = (
       throw new Error(`Agent graph "${key}" is disabled`);
     }
 
-    return trace.getTracer('@launchdarkly/ai-server').startActiveSpan('ld.ai.graph', async (span) => {
-      span.setAttribute('ld.ai.graph.key', key);
+    return trace.getTracer('@launchdarkly/ai-server').startActiveSpan('launchdarkly.graph', async (span) => {
+      span.setAttribute('launchdarkly.graph.key', key);
       const startTime = Date.now();
 
       const path: string[] = [];
