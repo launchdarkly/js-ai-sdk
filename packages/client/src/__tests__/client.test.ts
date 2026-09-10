@@ -19,7 +19,7 @@ vi.mock('../judges.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../judges.js')>();
   return {
     ...actual,
-    runJudges: vi.fn().mockResolvedValue({}),
+    runJudges: vi.fn().mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] }),
   };
 });
 
@@ -75,7 +75,7 @@ describe('config() — single handler', () => {
     vi.clearAllMocks();
     mockTrack.mockReset();
     (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({ config: mockConfig, meta: mockMeta });
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] });
     (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack });
   });
 
@@ -169,7 +169,7 @@ describe('config() — single handler', () => {
 
   it('includes judgeResults from runJudges in the response', async () => {
     const judgeData = { 'judge-flag': { usage: { input: 1, output: 1, total: 2 }, response: 'good', score: 0.9 } };
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue(judgeData);
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: judgeData, judgeDiagnostics: [] });
     const handler = makeHandler();
     const result = await config({ key: 'flag', handler }).invoke('q', mockContext);
     expect(result.judgeResults).toEqual(judgeData);
@@ -296,7 +296,7 @@ describe('config() — multi-handler routing', () => {
     vi.clearAllMocks();
     mockTrack.mockReset();
     (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({ config: mockConfig, meta: mockMeta });
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] });
     (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack });
   });
 
@@ -384,7 +384,7 @@ describe('config() — multi-handler routing', () => {
 
   it('includes judgeResults from runJudges in the response', async () => {
     const judgeData = { 'judge-flag': { usage: { input: 1, output: 1, total: 2 }, response: 'good', score: 0.9 } };
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue(judgeData);
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: judgeData, judgeDiagnostics: [] });
     const handler = makeHandler();
     const result = await config({ key: 'flag', handler: [handler] }).invoke('q', mockContext);
     expect(runJudges).toHaveBeenCalled();
@@ -466,7 +466,7 @@ describe('config().stream() — single handler', () => {
     vi.clearAllMocks();
     mockTrack.mockReset();
     (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({ config: mockConfig, meta: mockMeta });
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] });
     (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack });
   });
 
@@ -557,7 +557,7 @@ describe('config().stream() — single handler', () => {
 
   it('includes judgeResults from runJudges in the done event', async () => {
     const judgeData = { 'judge-flag': { usage: { input: 1, output: 1, total: 2 }, response: 'good', score: 0.9 } };
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue(judgeData);
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: judgeData, judgeDiagnostics: [] });
     const handler = makeStreamingHandler();
     const events = await collectStream(config({ key: 'flag', handler }).stream('q', mockContext));
     const done = events.find((e) => e.type === 'done') as any;
@@ -565,7 +565,7 @@ describe('config().stream() — single handler', () => {
   });
 
   it('done.judgeResults is undefined when judges return empty', async () => {
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] });
     const handler = makeStreamingHandler();
     const events = await collectStream(config({ key: 'flag', handler }).stream('q', mockContext));
     const done = events.find((e) => e.type === 'done') as any;
@@ -610,7 +610,10 @@ describe('config({ skipJudges: true })', () => {
     vi.clearAllMocks();
     mockTrack.mockReset();
     (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({ config: mockConfig, meta: mockMeta });
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ 'judge-key': { score: 0.9 } });
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({
+      judgeResults: { 'judge-key': { score: 0.9 } },
+      judgeDiagnostics: [],
+    });
     (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack });
   });
 
@@ -787,7 +790,7 @@ describe('config().stream() — multi-handler routing', () => {
     vi.clearAllMocks();
     mockTrack.mockReset();
     (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({ config: mockConfig, meta: mockMeta });
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] });
     (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack });
   });
 

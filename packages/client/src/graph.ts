@@ -208,7 +208,10 @@ const buildGraph = async (
       });
       const response = typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse);
 
-      const judgeResults = await runJudges({
+      // Graph nodes do not get a caller-supplied judgeContext in v1 — grounded judge context is
+      // wired only through config().invoke()/.stream(). A node judge here still gets full
+      // isolation and diagnostics; it just never sees an evidence block.
+      const judgeRun = await runJudges({
         config: node.config,
         userContext: context,
         handler,
@@ -229,7 +232,13 @@ const buildGraph = async (
         );
       }
 
-      return { response, usage, judgeResults, trackData };
+      return {
+        response,
+        usage,
+        judgeResults: judgeRun.judgeResults,
+        ...(judgeRun.judgeDiagnostics.length > 0 ? { judgeDiagnostics: judgeRun.judgeDiagnostics } : {}),
+        trackData,
+      };
     } catch (err) {
       if (opts.from) {
         getClient().track(
@@ -313,8 +322,9 @@ const buildGraph = async (
       });
       const response = typeof rawRouteResponse === 'string' ? rawRouteResponse : JSON.stringify(rawRouteResponse);
 
-      // Judge against the node's original config, not the routing-augmented one.
-      const judgeResults = await runJudges({
+      // Judge against the node's original config, not the routing-augmented one. See the comment in
+      // `runNode` above: graph nodes do not get a caller-supplied judgeContext in v1.
+      const judgeRun = await runJudges({
         config: node.config,
         userContext: context,
         handler,
@@ -337,7 +347,14 @@ const buildGraph = async (
         );
       }
 
-      return { response, usage, judgeResults, trackData, next };
+      return {
+        response,
+        usage,
+        judgeResults: judgeRun.judgeResults,
+        ...(judgeRun.judgeDiagnostics.length > 0 ? { judgeDiagnostics: judgeRun.judgeDiagnostics } : {}),
+        trackData,
+        next,
+      };
     } catch (err) {
       if (chosen) {
         getClient().track(
@@ -572,8 +589,9 @@ export const graph = (
         getClient().track('$ld:ai:graph:invocation_success', context, graphTrackData, 1);
 
         let judgeResults: ProviderResponse['judgeResults'] | undefined;
+        let judgeDiagnostics: ProviderResponse['judgeDiagnostics'];
         if (resolvedOptions.graphJudge && def.root && resolvedOptions.handlers) {
-          judgeResults = await runJudges({
+          const judgeRun = await runJudges({
             config: {
               judgeConfiguration: { judges: [{ key: resolvedOptions.graphJudge, samplingRate: 1 }] },
             } as unknown as AiConfigRep,
@@ -585,12 +603,19 @@ export const graph = (
             toolHandlers: resolvedOptions.toolHandlers,
             graphKey: key,
           });
+          judgeResults = judgeRun.judgeResults;
+          judgeDiagnostics = judgeRun.judgeDiagnostics.length > 0 ? judgeRun.judgeDiagnostics : undefined;
         }
 
         span.setStatus({ code: SpanStatusCode.OK });
         span.end();
 
-        return { response: finalResponse, usage: totalUsage, judgeResults };
+        return {
+          response: finalResponse,
+          usage: totalUsage,
+          judgeResults,
+          ...(judgeDiagnostics ? { judgeDiagnostics } : {}),
+        };
       } catch (err) {
         const elapsed = Date.now() - startTime;
         getClient().track('$ld:ai:graph:duration:total', context, graphTrackData, elapsed);

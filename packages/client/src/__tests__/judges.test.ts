@@ -77,7 +77,7 @@ describe('runJudges', () => {
       llmResponse: 'world',
       baseTrackData,
     });
-    expect(result).toEqual({});
+    expect(result).toEqual({ judgeResults: {}, judgeDiagnostics: [] });
     expect(mockExecuteAndTrack).not.toHaveBeenCalled();
   });
 
@@ -96,7 +96,7 @@ describe('runJudges', () => {
       llmResponse: 'world',
       baseTrackData,
     });
-    expect(result).toEqual({});
+    expect(result).toEqual({ judgeResults: {}, judgeDiagnostics: [] });
     expect(mockExecuteAndTrack).not.toHaveBeenCalled();
   });
 
@@ -295,7 +295,10 @@ describe('runJudges', () => {
       baseTrackData,
     });
 
-    expect(results).toEqual({});
+    expect(results.judgeResults).toEqual({});
+    expect(results.judgeDiagnostics).toEqual([
+      { judgeKey: 'judge-flag', status: 'failed', stage: 'config', code: 'judge_config_failed' },
+    ]);
     expect(mockExecuteAndTrack).not.toHaveBeenCalled();
     expect(consoleError).toHaveBeenCalledWith("Judge 'judge-flag' skipped:", 'Variation judge-flag is not enabled');
 
@@ -333,8 +336,11 @@ describe('runJudges', () => {
     });
 
     // The disabled judge is absent; the healthy one still produced a score.
-    expect(Object.keys(results)).toEqual(['working-judge']);
-    expect(results['working-judge']?.score).toBe(0.9);
+    expect(Object.keys(results.judgeResults)).toEqual(['working-judge']);
+    expect(results.judgeResults['working-judge']?.score).toBe(0.9);
+    expect(results.judgeDiagnostics).toEqual([
+      { judgeKey: 'disabled-judge', status: 'failed', stage: 'config', code: 'judge_config_failed' },
+    ]);
     expect(mockExecuteAndTrack).toHaveBeenCalledTimes(1);
 
     consoleError.mockRestore();
@@ -399,7 +405,8 @@ describe('runJudges strips outputFormat before it reaches a handler', () => {
       baseTrackData,
     });
 
-    expect(result['judge-flag'].score).toBe(0.9);
+    expect(result.judgeResults['judge-flag'].score).toBe(0.9);
+    expect(result.judgeDiagnostics).toEqual([]);
   });
 
   it('logs the reason exactly once per judge, naming the judge key, only when outputFormat was present', async () => {
@@ -510,9 +517,10 @@ describe('buildJudgeTasks strips outputFormat from the stored JudgeTask', () => 
       baseTrackData,
     });
 
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].judgeConfig.outputFormat).toBeUndefined();
-    expect(tasks[0].judgeConfig.model).toEqual(judgeConfigWithSchema.model);
+    expect(tasks.judgeTasks).toHaveLength(1);
+    expect(tasks.judgeTasks[0].judgeConfig.outputFormat).toBeUndefined();
+    expect(tasks.judgeTasks[0].judgeConfig.model).toEqual(judgeConfigWithSchema.model);
+    expect(tasks.judgeDiagnostics).toEqual([]);
   });
 });
 

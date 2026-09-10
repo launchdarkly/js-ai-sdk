@@ -205,6 +205,37 @@ export const GraphTopologySchema = {
   },
 };
 
+/**
+ * A JSON-safe value: the boundary a caller-supplied judge context must live inside so it can be
+ * frozen, serialized, and replayed into a judge's prompt without transformation.
+ */
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+/**
+ * Reports why a judge, or the caller-supplied judge context, did not produce a result.
+ *
+ * A diagnostic never carries raw error text — only a stable `stage`/`code` pair — so it is safe
+ * to log, track, or show to an end user without risking a leaked stack trace or provider error
+ * message.
+ */
+export type JudgeDiagnostic = {
+  /** Absent for a `context`-stage diagnostic: the context callback is not scoped to one judge. */
+  judgeKey?: string;
+  /** `skipped` when the judge never ran (context invalid, duplicate key); `failed` otherwise. */
+  status: 'skipped' | 'failed';
+  stage: 'context' | 'config' | 'provider' | 'parse' | 'track' | 'timeout';
+  code:
+    | 'context_callback_failed'
+    | 'context_invalid_json'
+    | 'context_too_large'
+    | 'judge_duplicate_key'
+    | 'judge_config_failed'
+    | 'judge_provider_failed'
+    | 'judge_response_invalid'
+    | 'judge_tracking_failed'
+    | 'judge_timed_out';
+};
+
 export type TokenUsage = {
   /** Total input tokens, including uncached, cache-read, and cache-creation input. */
   input: number;
@@ -237,9 +268,15 @@ export type JudgeCallResult = {
   usage: { total: number; input: number; output: number };
 };
 
-export type ProviderResponse<T = string> = {
+export type ProviderResponse<T = string, JudgeContext extends JsonValue = JsonValue> = {
   response: T;
   usage: TokenUsage;
+  /**
+   * The caller-supplied judge context, frozen and echoed back unchanged. Present whenever
+   * `judgeContext` was configured on {@link ConfigArgs} and resolved to a valid value —
+   * independently of whether any judge was actually sampled.
+   */
+  judgeContext?: JudgeContext;
   /**
    * Judge evaluation results. Populated when `skipJudges` is `false` (the
    * default) and at least one judge ran during `invoke()` / `stream()`.
@@ -253,6 +290,12 @@ export type ProviderResponse<T = string> = {
    * `undefined` when `skipJudges` is `false` (judges ran inline).
    */
   judgeTasks?: JudgeTask[];
+  /**
+   * One entry per judge (or per judge context) that was skipped or failed. Omitted, never `[]`,
+   * when nothing went wrong. A diagnostic never suppresses a successful `judgeResults` entry from
+   * another judge, or the primary `response`.
+   */
+  judgeDiagnostics?: JudgeDiagnostic[];
   /**
    * Tracking payload from this invocation. Carried inside each {@link JudgeTask}
    * so that background judge results are attributed to the originating request
@@ -300,6 +343,12 @@ export type JudgeTask = {
    * originating request.
    */
   parentTrackData: TrackData;
+  /**
+   * The already-resolved, already-validated judge context from the originating invocation, if one
+   * was configured. Pre-resolved on the main thread so `runJudge` in a worker thread injects the
+   * identical block into `message_history` without re-running the caller's context callback.
+   */
+  judgeContext?: JsonValue;
 };
 
 /**
@@ -331,13 +380,17 @@ export type HandlerStreamEvent =
  * Callers iterate an `AsyncGenerator<StreamEvent>` to receive text chunks as
  * they arrive, then handle the final `done` event for usage and judge results.
  */
-export type StreamEvent =
+export type StreamEvent<JudgeContext extends JsonValue = JsonValue> =
   | { type: 'chunk'; text: string }
   | {
       type: 'done';
       response: string;
       usage: TokenUsage;
+      /** See {@link ProviderResponse.judgeContext}. */
+      judgeContext?: JudgeContext;
       judgeResults?: ProviderResponse['judgeResults'];
+      /** See {@link ProviderResponse.judgeDiagnostics}. */
+      judgeDiagnostics?: JudgeDiagnostic[];
     };
 
 export type ProviderHandler = ((
@@ -384,7 +437,7 @@ export type ModelArgs = {
 };
 
 /** Instantiation args for {@link config}. */
-export type ConfigArgs = {
+export type ConfigArgs<JudgeContext extends JsonValue = JsonValue> = {
   key: string;
   /** One handler or an ordered array of handlers. Routing selects the match by provider + mode. */
   handler?: ProviderHandler | ProviderHandler[];
@@ -401,6 +454,19 @@ export type ConfigArgs = {
    * response has been returned to the caller.
    */
   skipJudges?: boolean;
+  /**
+   * Lazily resolves JSON-safe context to ground attached judges, after the primary handler
+   * settles and before output-format parsing. Lazy on purpose: the value usually does not exist
+   * yet when `config()` is called — it is produced by tools the primary handler runs. Resolved at
+   * most once per `invoke()`/`stream()` call, even when no judge ends up sampled.
+   */
+  judgeContext?: () => JudgeContext | Promise<JudgeContext>;
+  /**
+   * Timeout, in milliseconds, for one judge's config lookup, provider execution, and response
+   * parsing. Tracking the score runs after this window, so it is never cut short by it.
+   * Default: `30_000`.
+   */
+  judgeTimeoutMs?: number;
 };
 
 /**
@@ -534,6 +600,8 @@ export type ProviderGraphResponse = {
   response: string;
   usage: TokenUsage;
   judgeResults?: ProviderResponse['judgeResults'];
+  /** See {@link ProviderResponse.judgeDiagnostics}. Forwarded from the graph-level judge only. */
+  judgeDiagnostics?: JudgeDiagnostic[];
 };
 
 export type InitBaseClientOptions = {
