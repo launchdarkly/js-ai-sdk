@@ -20,6 +20,15 @@ const mockAddEdge = vi.hoisted(() => vi.fn());
 const mockAddConditionalEdges = vi.hoisted(() => vi.fn());
 const mockCompile = vi.hoisted(() => vi.fn());
 const mockCompiledInvoke = vi.hoisted(() => vi.fn());
+const MockChatOpenAI = vi.hoisted(() =>
+  vi.fn().mockImplementation(function MockChatOpenAI(this: {
+    invoke: ReturnType<typeof vi.fn>;
+    bindTools: ReturnType<typeof vi.fn>;
+  }) {
+    this.invoke = vi.fn();
+    this.bindTools = vi.fn().mockReturnThis();
+  }),
+);
 
 // ─── Module mocks ─────────────────────────────────────────────────────────────
 
@@ -59,7 +68,7 @@ vi.mock('@langchain/langgraph/prebuilt', () => ({
 }));
 
 vi.mock('@langchain/openai', () => ({
-  ChatOpenAI: class {},
+  ChatOpenAI: MockChatOpenAI,
 }));
 
 vi.mock('@langchain/core/tools', () => ({
@@ -167,6 +176,15 @@ describe('toLangGraph', () => {
     const registeredNames = mockAddNode.mock.calls.map((c: any[]) => c[0]);
     expect(registeredNames).toContain('root');
     expect(registeredNames).toContain('leaf');
+  });
+
+  it('spreads model.parameters into the default ChatOpenAI constructor', async () => {
+    const root = makeNode('root', '', []);
+    root.config.model.parameters = { temperature: 0.2, max_tokens: 512 };
+    const def = makeGraphDef([root], {}, 'root');
+    MockChatOpenAI.mockClear();
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, max_tokens: 512, model: 'gpt-4o' });
   });
 
   it('wires the root node from START', async () => {

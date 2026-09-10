@@ -6,4 +6,4 @@ import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 registerAiSdkPackage(LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
 
-export { createLangChainHandler, langchainMessages } from './handler.js';
+export { createLangChainHandler, type LangChainModelSource, langchainMessages } from './handler.js';

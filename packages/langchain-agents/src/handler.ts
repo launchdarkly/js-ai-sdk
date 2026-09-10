@@ -10,6 +10,7 @@ import {
   createRunUsage,
   endSpanOnce,
   type LDContext,
+  langChainContentText,
   langChainFinishReasons,
   langChainSpanMessages,
   langChainSpanUsage,
@@ -37,7 +38,7 @@ const TRACER_NAME = '@launchdarkly/ai-langchain-agents';
  *
  * `gen_ai.provider.name` names who served the request, and its semconv enum has no `langchain`
  * member — LangChain is the framework, not the provider. This mirrors the choice
- * `makeDefaultChatModel` makes, so the attribute agrees with the client that is really used.
+ * `resolveBaseModel` makes, so the attribute agrees with the client that is really used.
  * `gen_ai.system` keeps the `langchain` value the handler shipped, so existing dashboards do not
  * break.
  */
@@ -239,14 +240,25 @@ export function buildSpanCallbacks(
   };
 }
 
-async function makeDefaultChatModel(aiConfig: AiConfigRep): Promise<BaseChatModel> {
+export type LangChainModelSource = BaseChatModel | ((config: AiConfigRep) => BaseChatModel | Promise<BaseChatModel>);
+
+function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record<string, unknown> {
+  const parameters =
+    config.model?.parameters && typeof config.model.parameters === 'object' ? config.model.parameters : {};
+  return { ...parameters, model: config.model?.name || fallbackName };
+}
+
+async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSource): Promise<BaseChatModel> {
+  if (typeof llm === 'function') return llm(aiConfig);
+  if (llm) return llm;
   const provider = (aiConfig.provider?.name ?? '').toLowerCase();
-  const modelName = aiConfig.model?.name ?? '';
   if (provider === 'anthropic') {
     const { ChatAnthropic } = await import('@langchain/anthropic');
-    return new ChatAnthropic({ model: modelName || 'claude-3-5-sonnet-20241022' });
+    // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
+    return new ChatAnthropic(modelConstructorArgs(aiConfig, 'claude-3-5-sonnet-20241022') as any);
   }
-  return new ChatOpenAI({ model: modelName || 'gpt-4o' });
+  // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
+  return new ChatOpenAI(modelConstructorArgs(aiConfig, 'gpt-4o') as any);
 }
 
 const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record<string, ToolHandlerFn>) =>
@@ -328,8 +340,9 @@ const toToolDefinitions = (configTools: Record<string, Tool> | undefined): ToolD
     parameters: tool.parameters,
   }));
 
+/** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
 export function createLangChainAgentsHandler(
-  llm?: BaseChatModel,
+  llm?: LangChainModelSource,
   { captureContent = false }: ContentCaptureOptions = {},
 ): ProviderHandler {
   return createHandler(
@@ -350,7 +363,7 @@ export function createLangChainAgentsHandler(
         // TracerProvider without one would otherwise get a flat trace.
         const parentContext = trace.setSpan(context.active(), span);
 
-        const baseModel = llm ?? (await makeDefaultChatModel(config));
+        const baseModel = await resolveBaseModel(config, llm);
         let systemPrompt = extractSystemPrompt(config, variables, history);
         if (config.outputFormat) {
           const schemaInstruction = `Respond with valid JSON matching this schema:\n${JSON.stringify(config.outputFormat)}`;
@@ -385,11 +398,10 @@ export function createLangChainAgentsHandler(
           }
 
           const lastMessage: BaseMessage = result.messages[result.messages.length - 1];
-          const output: unknown = typeof lastMessage.content === 'string' ? lastMessage.content : '';
+          const output = langChainContentText(lastMessage.content);
 
-          const outputStr = typeof output === 'string' ? output : JSON.stringify(output);
           setOutputContentAttributes(span, captureContent, [
-            { role: 'assistant', parts: [{ type: 'text', content: outputStr }] },
+            { role: 'assistant', parts: [{ type: 'text', content: output }] },
           ]);
           finishRootSpan(span, config, runUsage.total);
           span.setStatus({ code: SpanStatusCode.OK });
@@ -427,7 +439,7 @@ export function createLangChainAgentsHandler(
       // Monitoring along with the `feature_flag` event it carries.
       const endedSpans = new Set<Span>();
 
-      const baseModel = llm ?? (await makeDefaultChatModel(config));
+      const baseModel = await resolveBaseModel(config, llm);
       const systemPrompt = extractSystemPrompt(config, variables, history);
       const initialMessages = buildInitialMessages(config, userInput, variables);
       if (captureContent) {
@@ -460,7 +472,7 @@ export function createLangChainAgentsHandler(
               runUsage.add(langChainSpanUsage(usage));
               // Yield text content from AI messages (complete turns)
               if (msg._getType() === 'ai') {
-                const text = typeof msg.content === 'string' ? msg.content : '';
+                const text = langChainContentText(msg.content);
                 if (text) {
                   yield { type: 'chunk' as const, text };
                   fullOutput = text;

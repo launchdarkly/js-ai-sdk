@@ -287,13 +287,18 @@ export function langChainSpanMessages(messages: ReadonlyArray<unknown>): {
   return { systemInstructions: system.length > 0 ? system.join('\n') : undefined, messages: converted };
 }
 
-/** LangChain message content is a string or a list of typed blocks. */
-function langChainContentText(content: unknown): string {
+/** Extracts user-visible text from LangChain string or content-block message content. */
+export function langChainContentText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
-  return (content as Array<Record<string, unknown>>)
-    .filter((block) => block.type === 'text')
-    .map((block) => String(block.text ?? ''))
+  return content
+    .map((block) => {
+      if (typeof block === 'string') return block;
+      if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'text') {
+        return String((block as Record<string, unknown>).text ?? '');
+      }
+      return '';
+    })
     .join('');
 }
 
