@@ -61,14 +61,25 @@ import { isValidSkillVersion } from './types.js';
 /**
  * The FDv2 `kind` skills are delivered under.
  *
- * Distinct from `SKILL_OBJECT_KIND` (`'skill'`), which is the *seam* value the
- * SDK asks a store for. Translating this pair — kind `inline-resource` plus
- * category `skill` — onto that single value is exactly the adapter's job.
+ * Object kinds on the SDK-facing channel are open strings: the agent-skill
+ * payload is classified `generic` and every object in it carries the kind its
+ * producer registered, which for skills is the bare category name. Delivery
+ * lower-cases the kind, so an exact comparison is the whole test. The kind
+ * happens to equal `SKILL_OBJECT_KIND` today; they are still separate constants,
+ * because one is a wire value LaunchDarkly owns and the other is an SDK seam.
  */
-export const FDV2_OBJECT_KIND = 'inline-resource';
+export const FDV2_OBJECT_KIND = 'skill';
 
-/** The `category` that narrows `inline-resource` to an agent skill. */
-export const FDV2_OBJECT_CATEGORY = 'skill';
+/**
+ * What separates a skill's key from its version inside the object's wire `key`.
+ *
+ * A generic object is identified on the wire as `<key>:<version>` — the skill's
+ * own key, one delimiter, the skill's own version — because each version of a
+ * skill is a distinct object in the payload. Delivery forbids the delimiter
+ * inside a registered category and skill keys cannot contain it, so a
+ * well-formed wire key has exactly one.
+ */
+export const FDV2_KEY_DELIMITER = ':';
 
 /**
  * Where the SDK-facing FDv2 endpoints live. Overridable for Federal instances,
@@ -78,18 +89,6 @@ export const DEFAULT_BASE_URI = 'https://sdk.launchdarkly.com';
 
 export const POLL_PATH = '/sdk/poll';
 export const STREAM_PATH = '/sdk/stream';
-
-/**
- * The `mv` request parameter — the SDK data model version this adapter speaks.
- *
- * Overridable through `new FDv2SkillStore(key, { dataModelVersion })` because it
- * is the one request parameter this side cannot verify: the LaunchDarkly base
- * SDK's own FDv2 data source does not send `mv` at all today, and the streamer
- * branch that carries skills is unmerged, so the value the server expects has not
- * been observed. Confirm it with FDN before Beta rather than trusting this
- * default.
- */
-export const SDK_DATA_MODEL_VERSION = 1;
 
 const EVENT_SERVER_INTENT = 'server-intent';
 const EVENT_PUT_OBJECT = 'put-object';
@@ -279,7 +278,7 @@ function warnIfNothingCanVerify(held: RawSkillObject[]): void {
 }
 
 // ---------------------------------------------------------------------------
-// Deserialization — where objectVersion is not version
+// Deserialization — where the skill's version lives in the key, not in version
 // ---------------------------------------------------------------------------
 
 /** A `delete-object` narrowed to the identity it revokes. */
@@ -288,63 +287,96 @@ export type Tombstone = { readonly key: string; readonly objectVersion: number |
 /**
  * Whether one `put-object` / `delete-object` payload is a skill.
  *
- * `kind === 'inline-resource' && category === 'skill'`, and nothing else. Both
- * halves are required: `inline-resource` is a broad kind that may carry other
- * categories, and flags and segments omit `category` entirely.
- *
- * Every other kind is **ignored, not rejected**. An environment's payload
- * assignment carries the flagging payload alongside the agent-skill payload, so a
- * connection delivers flag and segment objects as a matter of course. Throwing on
- * them would turn a normal payload into a permanent failure — which is exactly
- * the unknown-kind reconnect loop this feature must not reproduce.
+ * The kind alone decides it. Every other kind is **ignored, not rejected**,
+ * because flag and segment objects share the connection and erroring on them
+ * would turn a normal payload into a reconnect loop — exactly the unknown-kind
+ * failure this feature must not reproduce.
  */
 export function isSkillEvent(data: unknown): boolean {
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return false;
-  const candidate = data as { kind?: unknown; category?: unknown };
-  return candidate.kind === FDV2_OBJECT_KIND && candidate.category === FDV2_OBJECT_CATEGORY;
+  return (data as { kind?: unknown }).kind === FDV2_OBJECT_KIND;
+}
+
+/**
+ * A skill object's wire `key`, split into the skill's key and version.
+ *
+ * `version` is a number when the wire carried one, the offending text when it
+ * did not, and absent (`undefined`, with `hasVersion === false`) when the wire
+ * key had no delimiter at all.
+ */
+export type WireIdentity = { readonly key: string; readonly hasVersion: boolean; readonly version?: unknown };
+
+const DIGITS_ONLY = /^[0-9]+$/;
+
+/**
+ * Reads `<key>:<version>` off one object's wire `key`.
+ *
+ * Lenient where leniency keeps the object diagnosable and strict only where
+ * there is nothing to diagnose:
+ *
+ * - No delimiter: the whole wire key is the skill key and there is no version,
+ *   so the object is held version-less and verification reports
+ *   `invalid_version` under a key the caller can recognise.
+ * - A version that is not a run of ASCII digits (`"pdf:latest"`, `"pdf:"`,
+ *   `"a:1:2"`): the text is carried through *as the version*, for the same
+ *   reason — the caller learns that `pdf` arrived broken, not that it is absent.
+ * - An empty key before the delimiter (`":3"`): there is no identity to hold it
+ *   under, so `null`, and the caller drops it.
+ *
+ * Leading zeros are accepted (`"pdf:03"` is version 3) since the number is the
+ * identity a reference pins, not the spelling.
+ */
+export function splitWireKey(wireKey: unknown): WireIdentity | null {
+  if (typeof wireKey !== 'string' || wireKey === '') return null;
+  const delimiter = wireKey.indexOf(FDV2_KEY_DELIMITER);
+  if (delimiter === -1) return { key: wireKey, hasVersion: false };
+  const key = wireKey.slice(0, delimiter);
+  if (key === '') return null;
+  const versionText = wireKey.slice(delimiter + 1);
+  if (DIGITS_ONLY.test(versionText)) return { key, hasVersion: true, version: Number(versionText) };
+  return { key, hasVersion: true, version: versionText };
 }
 
 /**
  * Translates one FDv2 skill `put-object` into a seam-shaped raw object.
  *
- * `null` when the event cannot be filed at all — only when `key` is not a string,
- * since a keyless object has no identity to store it under and no key to
- * attribute a failure to. Every other defect is carried through verbatim so that
- * *verification* withholds it, with a reason code and an integrity signal, rather
- * than the transport dropping it silently. A silent drop is indistinguishable
- * from "no such skill" and would additionally let a prune delete the last
- * known-good copy on disk.
- *
  * **The translation this whole module exists to get right:**
  *
  * ```
- * wire `objectVersion`  →  seam `version`      (the skill's own version)
- * wire `version`        →  dropped              (the *payload* version)
+ * wire `key`      →  seam `key` and `version`   (split on `:`)
+ * wire `version`  →  dropped                    (the *payload* version)
  * ```
  *
- * `objectVersion` is what a `{key, version}` reference pins. `version` is the
- * version of the payload the object arrived in — it changes when anything in the
- * environment changes, including a flag that has nothing to do with skills.
- * Reading it as the skill's version resolves the wrong content with no error
- * anywhere: the object verifies, the hash matches, and the caller is handed a
- * skill under a version number that means nothing. Flags and segments carry only
- * `version`, which is why the two fields look interchangeable and are not.
+ * Each version of a skill is its own object on the wire, identified as
+ * `<key>:<version>`; that version is what a `{key, version}` reference pins. The
+ * event's `version` field is the version of the payload the object arrived in and
+ * moves whenever anything in the environment moves, including a flag that has
+ * nothing to do with skills. Confusing them fails silently: the object verifies,
+ * the hash matches, and the caller is handed a skill under a version number that
+ * means nothing.
+ *
+ * `null` only when the wire `key` carries no skill key at all, since such an
+ * object has no identity to store it under. Every other defect is carried through
+ * verbatim so that *verification* withholds it, with a reason code and an
+ * integrity signal, rather than the transport dropping it silently. A silent drop
+ * is indistinguishable from "no such skill" and would additionally let a prune
+ * delete the last known-good copy on disk.
  */
 export function seamObjectFromPut(data: Record<string, unknown>): RawSkillObject | null {
-  const { key } = data as { key?: unknown };
-  if (typeof key !== 'string' || key === '') {
+  const identity = splitWireKey(data.key);
+  if (identity === null) {
     warn(
-      "An FDv2 skill put-object carried no string 'key' and could not be stored under any identity; it was dropped.",
+      `An FDv2 skill put-object carried no usable 'key' (${JSON.stringify(data.key)}) and could not be stored ` +
+        'under any identity; it was dropped.',
     );
     return null;
   }
 
-  const raw: RawSkillObject = { key };
+  const raw: RawSkillObject = { key: identity.key };
 
-  // The single translation. Written as a property-presence test rather than a
-  // defaulted read so an explicitly-null objectVersion stays null and reaches
-  // verification as `invalid_version`, instead of being invented here.
-  if ('objectVersion' in data) raw.version = data.objectVersion;
+  // Absent stays absent and malformed stays malformed, so verification sees what
+  // arrived (as `invalid_version`) rather than something invented here.
+  if (identity.hasVersion) raw.version = identity.version;
 
   const envelope = data.object;
   if (typeof envelope === 'object' && envelope !== null && !Array.isArray(envelope)) {
@@ -356,25 +388,30 @@ export function seamObjectFromPut(data: Record<string, unknown>): RawSkillObject
 }
 
 /**
- * Narrows one FDv2 skill `delete-object` to the identity it revokes.
+ * Narrows one FDv2 skill `delete-object` to the identity it revokes, reading the
+ * wire `key` the same way a put does.
  *
- * A delete for an inline resource **is revocation** — the object leaves the
- * payload, this store drops it, the accessors stop resolving it, and the next
- * reconcile prunes its files. Same `objectVersion` translation as a put.
+ * A delete for a skill **is revocation** — the object leaves the payload, this
+ * store drops it, the accessors stop resolving it, and the next reconcile prunes
+ * its files.
  *
  * An `objectVersion` of `null` means the delete named no usable version, and is
  * read as "revoke every version of this key". That is the safe direction: the
  * alternative is ignoring an unparseable revocation and continuing to serve
- * content LaunchDarkly has withdrawn.
+ * content LaunchDarkly has withdrawn. It also removes whatever a malformed put of
+ * the same wire key left held, since that was stored version-less under the same
+ * skill key.
  */
 export function tombstoneFromDelete(data: Record<string, unknown>): Tombstone | null {
-  const { key } = data as { key?: unknown };
-  if (typeof key !== 'string' || key === '') {
-    warn("An FDv2 skill delete-object carried no string 'key'; it was ignored.");
+  const identity = splitWireKey(data.key);
+  if (identity === null) {
+    warn(`An FDv2 skill delete-object carried no usable 'key' (${JSON.stringify(data.key)}); it was ignored.`);
     return null;
   }
-  const objectVersion = data.objectVersion;
-  return { key, objectVersion: isValidSkillVersion(objectVersion) ? objectVersion : null };
+  return {
+    key: identity.key,
+    objectVersion: identity.hasVersion && isValidSkillVersion(identity.version) ? identity.version : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +419,7 @@ export function tombstoneFromDelete(data: Record<string, unknown>): Tombstone | 
 // ---------------------------------------------------------------------------
 
 /**
- * Raw skill objects held in memory, keyed by `(key, objectVersion)`.
+ * Raw skill objects held in memory, keyed by `(key, version)`.
  *
  * Several versions of one key coexist, because they coexist in a real payload:
  * the newest version of every skill plus every version a variation currently
@@ -715,9 +752,8 @@ export class RecoverableTransportError extends Error {
 }
 
 const FORBIDDEN_ADVICE =
-  "FDv2 is opt-in per account: the 'fdv2-protocol-control' setting defaults to 'forbid', which is served as " +
-  'HTTP 403. Skill delivery over this channel needs that flag flipped for the account, and needs the ' +
-  'FDCore/streamer inline-resource support merged and deployed.';
+  'The FDv2 protocol is opt-in per LaunchDarkly account and is served as HTTP 403 while it is off. Skill ' +
+  'delivery needs it enabled; contact LaunchDarkly support to enable it for your account.';
 
 /** `Retry-After` in milliseconds, when the server sent a usable one. */
 export function retryAfterMs(headers: Headers | null | undefined): number | null {
@@ -748,7 +784,8 @@ export function classifyStatus(status: number, headers?: Headers | null): Error 
   if ([400, 405, 406, 414, 501].includes(status)) {
     return new FatalTransportError(
       `LaunchDarkly returned HTTP ${status}, which retrying will not fix. The request this adapter sent was not ` +
-        `understood; the 'mv' data model version (${SDK_DATA_MODEL_VERSION}) is the parameter most likely to be wrong.`,
+        "understood. It carries only the SDK key and, after the first payload, a 'basis' selector, so check the " +
+        'base URI and that the endpoint speaks FDv2.',
     );
   }
   return new RecoverableTransportError(`LaunchDarkly returned HTTP ${status}`, retryAfterMs(headers));
@@ -869,15 +906,21 @@ export class FetchRequester implements Requester {
   constructor(
     private readonly sdkKey: string,
     baseUri: string,
-    private readonly dataModelVersion: number,
   ) {
     this.baseUri = baseUri.replace(/\/+$/, '');
   }
 
+  /**
+   * The request URL: the path, plus `basis` once a payload has committed.
+   *
+   * Deliberately no `mv` (data model version). That parameter selects the *flag*
+   * data model and the connection rejects any value but the flag default; the
+   * agent-skill payload is generic, is served regardless of it, and has no model
+   * version of its own to ask for.
+   */
   private url(path: string, basis: string | null): string {
-    const params = new URLSearchParams({ mv: String(this.dataModelVersion) });
-    if (basis) params.set('basis', basis);
-    return `${this.baseUri}${path}?${params.toString()}`;
+    if (!basis) return `${this.baseUri}${path}`;
+    return `${this.baseUri}${path}?${new URLSearchParams({ basis }).toString()}`;
   }
 
   /**
@@ -991,7 +1034,6 @@ export type FDv2SkillStoreOptions = {
    * live — `failed` reports it.
    */
   readonly maxConsecutiveFailures?: number;
-  readonly dataModelVersion?: number;
   /** Test seam: a transport double in place of `FetchRequester`. */
   readonly requester?: Requester;
 };
@@ -1066,9 +1108,7 @@ export class FDv2SkillStore implements SkillStore {
     this.initialBackoffMs = options.initialBackoffMs ?? 1_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
     this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? 10;
-    this.requester =
-      options.requester ??
-      new FetchRequester(key, options.baseUri ?? DEFAULT_BASE_URI, options.dataModelVersion ?? SDK_DATA_MODEL_VERSION);
+    this.requester = options.requester ?? new FetchRequester(key, options.baseUri ?? DEFAULT_BASE_URI);
   }
 
   // -- lifecycle ---------------------------------------------------------

@@ -4,16 +4,16 @@
  * Two layers, deliberately, mirroring the Python suite:
  *
  * - **A real fake endpoint.** `FakeFDv2Endpoint` is an in-process
- *   `node:http` server implementing the wire contract — `basis` and `mv` query
- *   parameters, `Authorization`, `If-None-Match`/304, the `{"events": [...]}`
+ *   `node:http` server implementing the wire contract — the `basis` query
+ *   parameter, `Authorization`, `If-None-Match`/304, the `{"events": [...]}`
  *   polling envelope, and SSE for streaming. The store under test opens real
  *   sockets against it, so request construction and header handling are
- *   exercised rather than mocked. This is what stands in for a live server while
- *   the backend work is unmerged.
+ *   exercised rather than mocked.
  * - **The protocol reader driven directly.** Wire semantics — which objects are
- *   skills, `objectVersion` versus `version`, revocation, mixed payloads — are
- *   asserted against `ProtocolReader`, which has no I/O, so those cases read as
- *   the contract they are instead of as a server script.
+ *   skills, the skill's version in the wire `key` versus the payload's in
+ *   `version`, revocation, mixed payloads — are asserted against
+ *   `ProtocolReader`, which has no I/O, so those cases read as the contract they
+ *   are instead of as a server script.
  */
 
 import { createHash } from 'node:crypto';
@@ -31,7 +31,7 @@ import {
   backoffDelayMs,
   classifyStatus,
   decodePollBody,
-  FDV2_OBJECT_CATEGORY,
+  FDV2_KEY_DELIMITER,
   FDV2_OBJECT_KIND,
   FDv2SkillStore,
   isSkillEvent,
@@ -41,6 +41,7 @@ import {
   retryAfterMs,
   SkillObjectSet,
   seamObjectFromPut,
+  splitWireKey,
   tombstoneFromDelete,
 } from '../skills-fdv2.js';
 import { watchSkills } from '../skills-watch.js';
@@ -55,6 +56,18 @@ const hash = (content: string): string => createHash('sha256').update(content, '
 
 type WireEvent = { event: string; data?: unknown };
 
+/**
+ * The wire `key` of one skill object: `<key>:<version>`.
+ *
+ * `null` builds a key with no version at all, which is how the tests spell a
+ * malformed object; anything else is spelled after the delimiter verbatim.
+ */
+function wireKey(key: string, objectVersion: unknown): string {
+  if (objectVersion === null) return key;
+  return `${key}${FDV2_KEY_DELIMITER}${String(objectVersion)}`;
+}
+
+/** One skill `put-object` event's data, in the shape the wire delivers it. */
 function putSkill(
   key = 'pdf-extraction',
   {
@@ -63,7 +76,6 @@ function putSkill(
     content = SKILL_BODY,
     contentHash = null as string | null,
     omitHash = false,
-    omitObjectVersion = false,
   } = {},
 ): Record<string, unknown> {
   const envelope: Record<string, unknown> = {
@@ -73,28 +85,23 @@ function putSkill(
     description: 'Extracts text',
   };
   if (!omitHash) envelope.contentHash = contentHash ?? hash(content);
-  const wire: Record<string, unknown> = {
-    key,
+  return {
+    key: wireKey(key, objectVersion),
     kind: FDV2_OBJECT_KIND,
-    category: FDV2_OBJECT_CATEGORY,
     version: payloadVersion,
     object: envelope,
   };
-  if (!omitObjectVersion) wire.objectVersion = objectVersion;
-  return wire;
 }
 
 function deleteSkill(key = 'pdf-extraction', { objectVersion = 3 as unknown, payloadVersion = 43 } = {}) {
   return {
-    key,
+    key: wireKey(key, objectVersion),
     kind: FDV2_OBJECT_KIND,
-    category: FDV2_OBJECT_CATEGORY,
-    objectVersion,
     version: payloadVersion,
   };
 }
 
-/** A flag `put-object`: no `category`, no `objectVersion`. */
+/** A flag `put-object`: the same envelope fields, a different `kind`. */
 function putFlag(key = 'my-flag', version = 17) {
   return { key, kind: 'flag', version, object: { key, version, on: true, variations: [true, false] } };
 }
@@ -307,8 +314,15 @@ const consoleErrors = (): string => logged(errorSpy);
 // ─── Identifying skill objects, and ignoring everything else ─────────────────
 
 describe('object identification', () => {
-  it('identifies a skill by kind and category together', () => {
+  it('identifies a skill by the kind alone', () => {
     expect(isSkillEvent(putSkill())).toBe(true);
+  });
+
+  it('spells the kind as the bare category name', () => {
+    // Object kinds on the channel are open strings and the agent-skill payload
+    // is `generic`, so a skill arrives under the kind its producer registered —
+    // `skill` — not under a broader wrapper kind.
+    expect(FDV2_OBJECT_KIND).toBe('skill');
   });
 
   it('does not treat a flag as a skill', () => {
@@ -319,17 +333,18 @@ describe('object identification', () => {
     expect(isSkillEvent(putSegment())).toBe(false);
   });
 
-  it('requires the category: inline-resource is a broad kind', () => {
-    expect(isSkillEvent({ ...putSkill(), category: 'prompt-template' })).toBe(false);
+  it('does not treat another generic kind as a skill', () => {
+    // A generic payload may carry other registered kinds one day.
+    expect(isSkillEvent({ ...putSkill(), kind: 'prompt-template' })).toBe(false);
   });
 
-  it('requires the kind: a skill category under another kind is not a skill', () => {
+  it('does not treat a skill-shaped envelope under another kind as a skill', () => {
     expect(isSkillEvent({ ...putSkill(), kind: 'some-future-kind' })).toBe(false);
   });
 
-  it('documents that flags omit both category and objectVersion', () => {
-    expect('category' in putFlag()).toBe(false);
-    expect('objectVersion' in putFlag()).toBe(false);
+  it('consults nothing but the kind', () => {
+    // No secondary field narrows the kind, and none may be required.
+    expect(Object.keys(putSkill()).sort()).toEqual(['key', 'kind', 'object', 'version']);
   });
 
   it.each([null, undefined, 'skill', 3, []])('does not treat %s as a skill', (value) => {
@@ -337,11 +352,22 @@ describe('object identification', () => {
   });
 });
 
-// ─── objectVersion is not version. This is the whole ballgame. ───────────────
+// ─── The skill's version is in the wire key; `version` is the payload's. ─────
 
 describe('version translation', () => {
-  it('turns objectVersion into the seam version', () => {
-    expect(seamObjectFromPut(putSkill('pdf-extraction', { objectVersion: 3, payloadVersion: 42 }))?.version).toBe(3);
+  it('spells the wire key as key colon version', () => {
+    expect(putSkill('pdf-extraction', { objectVersion: 3 }).key).toBe('pdf-extraction:3');
+  });
+
+  it('turns the version after the delimiter into the seam version', () => {
+    const raw = seamObjectFromPut(putSkill('pdf-extraction', { objectVersion: 3, payloadVersion: 42 }));
+    expect(raw?.version).toBe(3);
+    expect(typeof raw?.version).toBe('number');
+  });
+
+  it('turns the key before the delimiter into the seam key', () => {
+    // A caller asks for `pdf-extraction`, never for `pdf-extraction:3`.
+    expect(seamObjectFromPut(putSkill('pdf-extraction', { objectVersion: 3 }))?.key).toBe('pdf-extraction');
   });
 
   it('never lets the payload version reach the seam', () => {
@@ -357,28 +383,85 @@ describe('version translation', () => {
     expect(seamObjectFromPut(putSkill('k', { objectVersion: 99, payloadVersion: 1 }))?.version).toBe(99);
   });
 
-  it('does not default a missing objectVersion from the payload version', () => {
-    const raw = seamObjectFromPut(putSkill('k', { omitObjectVersion: true }));
+  it('holds a key with no delimiter version-less', () => {
+    // Not defaulted from the payload version, and not dropped: verification
+    // reports `invalid_version` under a key the caller recognises.
+    const raw = seamObjectFromPut(putSkill('pdf-extraction', { objectVersion: null }));
     expect(raw).not.toBeNull();
+    expect(raw?.key).toBe('pdf-extraction');
     expect('version' in (raw as RawSkillObject)).toBe(false);
   });
 
-  it('carries an explicitly null objectVersion through rather than inventing one', () => {
-    // Carried, not invented: verification reports `invalid_version`.
-    expect(seamObjectFromPut(putSkill('k', { objectVersion: null }))?.version).toBeNull();
+  it.each([
+    'latest',
+    '',
+    '3.0',
+    '-1',
+    '1:2',
+    '３',
+  ])('carries a version that is not digits (%j) through as invalid', (spelling) => {
+    // Carried, not invented: verification reports `invalid_version` for the
+    // object rather than the transport reporting it absent.
+    const raw = seamObjectFromPut(putSkill('pdf-extraction', { objectVersion: spelling }));
+    expect(raw).not.toBeNull();
+    expect(raw?.key).toBe('pdf-extraction');
+    expect(raw?.version).toBe(spelling);
   });
 
-  it('translates objectVersion on a delete too', () => {
-    expect(tombstoneFromDelete(deleteSkill('k', { objectVersion: 3, payloadVersion: 43 }))?.objectVersion).toBe(3);
+  it('reads leading zeros as the same version', () => {
+    expect(seamObjectFromPut(putSkill('pdf-extraction', { objectVersion: '03' }))?.version).toBe(3);
   });
 
-  it('reads a delete with no usable objectVersion as revoking every version', () => {
-    expect(tombstoneFromDelete(deleteSkill('k', { objectVersion: null }))?.objectVersion).toBeNull();
+  it('reads the wire key the same way on a delete', () => {
+    const tombstone = tombstoneFromDelete(deleteSkill('pdf-extraction', { objectVersion: 3, payloadVersion: 43 }));
+    expect(tombstone?.key).toBe('pdf-extraction');
+    expect(tombstone?.objectVersion).toBe(3);
+  });
+
+  it.each([null, 'latest', '0'])('reads a delete with no usable version (%j) as revoking every version', (spelling) => {
+    const tombstone = tombstoneFromDelete(deleteSkill('pdf-extraction', { objectVersion: spelling }));
+    expect(tombstone?.key).toBe('pdf-extraction');
+    expect(tombstone?.objectVersion).toBeNull();
+  });
+
+  it.each([
+    ':3',
+    '',
+    null,
+    3,
+  ])('drops a put whose key (%j) carries no skill key, since it has no identity', (badKey) => {
+    expect(seamObjectFromPut({ ...putSkill(), key: badKey })).toBeNull();
   });
 
   it('drops a keyless put, which has no identity to store it under', () => {
     const { key: _dropped, ...keyless } = putSkill();
     expect(seamObjectFromPut(keyless)).toBeNull();
+  });
+
+  it('ignores a delete with no skill key', () => {
+    expect(tombstoneFromDelete({ ...deleteSkill(), key: ':3' })).toBeNull();
+  });
+
+  it('splits both halves in one place', () => {
+    expect(splitWireKey('pdf-extraction:3')).toEqual({ key: 'pdf-extraction', hasVersion: true, version: 3 });
+    expect(splitWireKey('pdf-extraction')).toEqual({ key: 'pdf-extraction', hasVersion: false });
+    expect(splitWireKey('pdf-extraction:latest')).toEqual({
+      key: 'pdf-extraction',
+      hasVersion: true,
+      version: 'latest',
+    });
+    expect(splitWireKey(':3')).toBeNull();
+    expect(splitWireKey('')).toBeNull();
+    expect(splitWireKey(3)).toBeNull();
+  });
+
+  it('round-trips the stored identity to the wire key', () => {
+    // `SkillObjectSet.snapshot` spells its opaque keys the way the wire does, so
+    // a held object can be matched back to the event that carried it.
+    const held = new SkillObjectSet();
+    const wire = putSkill('pdf-extraction', { objectVersion: 3 });
+    held.put(seamObjectFromPut(wire) as RawSkillObject);
+    expect(Object.keys(held.snapshot())).toEqual([wire.key]);
   });
 
   it('copies the envelope verbatim', () => {
@@ -672,14 +755,18 @@ describe('polling against the endpoint', () => {
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')?.version).toBe(3);
   });
 
-  it('sends the SDK key and the data model version', async () => {
+  it('sends the SDK key and no data model version', async () => {
+    // No `mv`: that parameter selects the *flag* data model, the connection
+    // rejects any value but the flag default, and the generic agent-skill
+    // payload is served regardless of it. Sending `mv=1` — the skill payload's
+    // own model version — gets the whole connection refused.
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     const store = pollStore();
     store.start();
     await store.waitForSkills(5000);
     expect(endpoint.requests[0].path).toBe('/sdk/poll');
     expect(endpoint.requests[0].authorization).toBe(SDK_KEY);
-    expect(endpoint.requests[0].query.mv).toBe('1');
+    expect('mv' in endpoint.requests[0].query).toBe(false);
   });
 
   it('sends no basis on the first request', async () => {
@@ -901,14 +988,14 @@ class ScriptedRequester implements Requester {
 }
 
 describe('failure handling', () => {
-  it('stops on 403 and names the protocol control flag', async () => {
+  it('stops on 403 and explains why', async () => {
     endpoint.queuePoll([], { status: 403 });
     const store = pollStore();
     store.start();
     expect(await waitUntil(() => store.failed !== null)).toBe(true);
     expect(store.failed).toContain('403');
-    expect(store.failed).toContain('fdv2-protocol-control');
-    expect(consoleErrors()).toContain('fdv2-protocol-control');
+    expect(store.failed).toContain('opt-in');
+    expect(consoleErrors()).toContain('opt-in');
   });
 
   it('stops on 401', async () => {
@@ -1163,7 +1250,7 @@ describe('the missing contentHash', () => {
     expect(skill?.name).toBe('PDF Extraction');
   });
 
-  it('resolves a pinned reference to the pinned objectVersion', async () => {
+  it('resolves a pinned reference to the pinned version', async () => {
     endpoint.queuePoll(
       fullPayload([
         ['put-object', putSkill('pdf-extraction', { objectVersion: 2, content: 'v2 body' })],
@@ -1181,7 +1268,7 @@ describe('the missing contentHash', () => {
   });
 
   it('does not resolve the payload version as a skill version', async () => {
-    // The end-to-end form of the objectVersion/version assertion. Asking for the
+    // The end-to-end form of the wire-key/version assertion. Asking for the
     // payload version resolves nothing — reported `absent`, because the store
     // answers "I hold no such version" rather than answering with the wrong one.
     endpoint.queuePoll(
