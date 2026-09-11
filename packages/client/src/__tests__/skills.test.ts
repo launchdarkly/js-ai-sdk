@@ -46,6 +46,7 @@ import {
   InMemorySkillStore,
   skillRefs,
 } from '../skills.js';
+import { allRawObjects, requireStore } from '../skills-core.js';
 import type { RawSkillObject, Skill, SkillOutcomeReason, SkillStore } from '../types.js';
 import {
   createReconcileAction,
@@ -602,6 +603,29 @@ describe('getSkill', () => {
   it('returns null for a missing key, never raising', async () => {
     expect(await getSkill('nope')).toBeNull();
   });
+
+  it('withholds a store answering under a different key', async () => {
+    // The key needs the same post-fetch defense the version already has.
+    // Identity is read off the object itself, and the store is untrusted. An
+    // answer served under a different key would otherwise be handed back under
+    // the key the caller asked for while carrying its own.
+    const aliasing: SkillStore = {
+      getObject() {
+        return rawSkill({ key: 'other-key' });
+      },
+      allObjects() {
+        return {};
+      },
+    };
+    _setStore(aliasing);
+
+    expect(await getSkill('asked-for')).toBeNull();
+
+    const outcome = await getSkillResult('asked-for');
+    expect(outcome.skill).toBeNull();
+    expect(outcome.reason).toBe('wrong_version');
+    expect(outcome.detail).toBe("skill 'asked-for' is not available: the store answered under key 'other-key'");
+  });
 });
 
 // ─── getSkills ─────────────────────────────────────────────────────────
@@ -678,6 +702,55 @@ describe('allSkills', () => {
   it('returns an empty list for an empty store', async () => {
     _setStore(new InMemorySkillStore());
     expect(await allSkills()).toEqual([]);
+  });
+
+  it('reports a non-object listing as a broken store, not an empty one', async () => {
+    // `allSkills` has no way to report the difference, so it returns an empty
+    // list either way — but the reason has to reach the caller that does act on
+    // it. Collapsing the answer to "no skills" reads downstream as "every skill
+    // was revoked".
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const brokenListing: SkillStore = {
+        getObject() {
+          return null;
+        },
+        allObjects() {
+          return null as unknown as Record<string, RawSkillObject>;
+        },
+      };
+      _setStore(brokenListing);
+
+      expect(await allSkills()).toEqual([]);
+
+      const { objects, error } = allRawObjects(requireStore());
+      expect(objects).toEqual({});
+      expect(error).toBe('the skill store listed skills as null rather than an object');
+      expect(spy.mock.calls.map(([line]) => String(line))).toEqual([
+        '[LaunchDarkly] Skill store listed skills as null rather than an object',
+        '[LaunchDarkly] Skill store listed skills as null rather than an object',
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('names the type a broken listing came back as', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const listingAs = (value: unknown): SkillStore => ({
+        getObject: () => null,
+        allObjects: () => value as Record<string, RawSkillObject>,
+      });
+      expect(allRawObjects(listingAs([])).error).toBe('the skill store listed skills as array rather than an object');
+      expect(allRawObjects(listingAs('x')).error).toBe('the skill store listed skills as string rather than an object');
+      expect(allRawObjects(listingAs(undefined)).error).toBe(
+        'the skill store listed skills as undefined rather than an object',
+      );
+      expect(allRawObjects(new InMemorySkillStore())).toEqual({ objects: {}, error: null });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

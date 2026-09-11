@@ -412,10 +412,49 @@ export function verifyRawSkill(raw: unknown): Skill | null {
   });
 }
 
-/** Lists every raw object the store holds. Propagates whatever it throws. */
-export function allRawObjects(store: SkillStore): Record<string, RawSkillObject> {
-  const objects = store.allObjects(SKILL_OBJECT_KIND);
-  return typeof objects === 'object' && objects !== null && !Array.isArray(objects) ? objects : {};
+/** The one wording for "the store could not answer", used by every path. */
+export function storeThrew(error: unknown): string {
+  const name = error instanceof Error ? error.constructor.name : 'unknown error';
+  const message = error instanceof Error ? error.message : String(error);
+  return `the skill store threw ${name}: ${message}`;
+}
+
+/** Every raw object the store holds, or the reason it could not answer. */
+export type RawListing = {
+  readonly objects: Record<string, RawSkillObject>;
+  /** `null` when the store answered; otherwise why it could not. */
+  readonly error: string | null;
+};
+
+/**
+ * Lists every raw object the store holds, or reports why it could not.
+ *
+ * A throwing store is caught here rather than propagated so that `allSkills` and
+ * the `'*'` reconcile path log and word the failure identically. Letting the
+ * exception out instead would make each of them re-derive the log line and the
+ * message, which is the drift this module exists to prevent.
+ *
+ * An answer that is not an object is a broken store, on the same footing as one
+ * that threw — **not** an empty one. Collapsing it to `{}` would make a store
+ * that served nothing usable indistinguishable from a store that holds no
+ * skills, which reads downstream as "every skill was revoked".
+ */
+export function allRawObjects(store: SkillStore): RawListing {
+  let objects: unknown;
+  try {
+    objects = store.allObjects(SKILL_OBJECT_KIND);
+  } catch (error) {
+    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a failing store must be visible
+    console.error(`[LaunchDarkly] Skill store threw while listing skills: ${storeThrew(error)}`);
+    return { objects: {}, error: storeThrew(error) };
+  }
+  if (typeof objects !== 'object' || objects === null || Array.isArray(objects)) {
+    const typeName = Array.isArray(objects) ? 'array' : objects === null ? 'null' : typeof objects;
+    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a failing store must be visible
+    console.error(`[LaunchDarkly] Skill store listed skills as ${typeName} rather than an object`);
+    return { objects: {}, error: `the skill store listed skills as ${typeName} rather than an object` };
+  }
+  return { objects: objects as Record<string, RawSkillObject>, error: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -463,18 +502,19 @@ export type Resolution = {
  * versions of one key and only it can pick between them; `null` asks for the
  * newest. The equality check afterwards is kept as a **defense**, not as the
  * selection mechanism: the store is untrusted, so an answer that is not the
- * version that was asked for is withheld rather than returned.
+ * version that was asked for is withheld rather than returned. The key is
+ * checked the same way and for the same reason: identity is read off the object
+ * itself, so an answer served under a different key would otherwise be returned
+ * under the caller's key while carrying its own.
  */
 export function resolveFromStore(store: SkillStore, key: string, wantedVersion: number | null): Resolution {
   let raw: RawSkillObject | null | undefined;
   try {
     raw = store.getObject(SKILL_OBJECT_KIND, key, wantedVersion);
   } catch (error) {
-    const name = error instanceof Error ? error.constructor.name : 'unknown error';
-    const message = error instanceof Error ? error.message : String(error);
     // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a failing store must be visible
-    console.error(`[LaunchDarkly] Skill store threw while retrieving '${key}': ${message}`);
-    return { error: `the skill store threw ${name}: ${message}`, reason: 'store_unavailable', unavailable: true };
+    console.error(`[LaunchDarkly] Skill store threw while retrieving '${key}': ${storeThrew(error)}`);
+    return { error: storeThrew(error), reason: 'store_unavailable', unavailable: true };
   }
 
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -484,6 +524,12 @@ export function resolveFromStore(store: SkillStore, key: string, wantedVersion: 
   const skill = verifyRawSkill(raw);
   if (skill === null) {
     return { error: `skill '${key}' failed integrity verification and was withheld`, reason: 'integrity_failure' };
+  }
+  if (skill.key !== key) {
+    return {
+      error: `skill '${key}' is not available: the store answered under key '${skill.key}'`,
+      reason: 'wrong_version',
+    };
   }
   if (wantedVersion !== null && skill.version !== wantedVersion) {
     return {
