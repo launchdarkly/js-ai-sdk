@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer as createTcpServer, type Socket, type Server as TcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,11 +31,15 @@ import {
   _warnedHashless,
   backoffDelayMs,
   classifyStatus,
+  DEFAULT_POLL_TIMEOUT_MS,
+  DEFAULT_STREAM_READ_TIMEOUT_MS,
   decodePollBody,
   FDV2_KEY_DELIMITER,
   FDV2_OBJECT_KIND,
   FDv2SkillStore,
+  FetchRequester,
   isSkillEvent,
+  type PollResult,
   ProtocolReader,
   RecoverableTransportError,
   type Requester,
@@ -147,6 +152,7 @@ type RecordedRequest = {
 class FakeFDv2Endpoint {
   readonly requests: RecordedRequest[] = [];
   holdStreamOpen = false;
+  dropStreams = false;
   private readonly polls: Array<{
     status: number;
     events: WireEvent[];
@@ -220,9 +226,17 @@ class FakeFDv2Endpoint {
   private serveStream(res: ServerResponse): void {
     const payloadEvents = this.streams.shift() ?? [];
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
-    for (const event of payloadEvents) {
-      res.write(`event: ${event.event}\ndata: ${JSON.stringify(event.data ?? null)}\n\n`);
+    const body = payloadEvents
+      .map((event) => `event: ${event.event}\ndata: ${JSON.stringify(event.data ?? null)}\n\n`)
+      .join('');
+    if (this.dropStreams) {
+      // Kills the socket once the events have been flushed, rather than ending
+      // the chunked response cleanly: how a live stream actually dies, as a
+      // reset or a truncated chunk, not as an orderly end of body.
+      res.write(body, () => res.socket?.destroy());
+      return;
     }
+    res.write(body);
     if (this.holdStreamOpen) {
       // Held so a test can assert on the store's state without racing the
       // reconnect path; released on `close`.
@@ -1151,29 +1165,106 @@ describe('streaming against the endpoint', () => {
     await store.close();
     expect(store.failed).toBeNull();
   });
+
+  it('reconnects when the stream dies mid-body', async () => {
+    // A stream fails in its body far more often than at its connect. Treating
+    // such a failure as unexpected would stop delivery — including revocation
+    // — for the process lifetime the first time a socket died.
+    endpoint.dropStreams = true;
+    for (let i = 1; i <= 5; i += 1) {
+      endpoint.queueStream(fullPayload([['put-object', putSkill()]], `basis-${i}`));
+    }
+    const store = streamStore({ maxConsecutiveFailures: 3 });
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await waitUntil(() => endpoint.requests.length >= 5)).toBe(true);
+    expect(store.failed).toBeNull();
+    expect(store.diagnostics.payloadsTransferred).toBeGreaterThanOrEqual(4);
+  });
+
+  it('reconnects when the stream goes quiet past readTimeoutMs', async () => {
+    // `readTimeoutMs` exists to bound a stream that has gone quiet so the loop
+    // can reconnect; tripping it must do that and not the opposite.
+    endpoint.holdStreamOpen = true;
+    endpoint.queueStream(fullPayload([['put-object', putSkill()]]));
+    endpoint.queueStream(fullPayload([['put-object', putSkill()]], 'basis-2'));
+    const store = streamStore({ readTimeoutMs: 100 });
+    store.start();
+    expect(await waitUntil(() => endpoint.requests.length >= 2)).toBe(true);
+    expect(store.failed).toBeNull();
+    expect(await waitUntil(() => (store.diagnostics.lastError ?? '').includes('timed out'))).toBe(true);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+  });
 });
 
 // ─── Failure handling ────────────────────────────────────────────────────────
 
-/** Throws a scripted sequence, so backoff is asserted without real sockets. */
+/**
+ * Plays a scripted sequence, so backoff is asserted without real sockets.
+ *
+ * Each outcome is an `Error` to throw, an array of `[event, data]` pairs to
+ * deliver (a stream that then ends, or one poll's events), or a promise to await
+ * as-is. Exhausted, it fails recoverably on every call.
+ */
 class ScriptedRequester implements Requester {
   readonly calls: Array<[string | null, string | null]> = [];
 
   constructor(private readonly outcomes: unknown[] = []) {}
 
-  private next(): unknown {
-    return this.outcomes.length > 0 ? this.outcomes.shift() : new RecoverableTransportError('scripted failure');
+  private async next(): Promise<Array<[string, unknown]>> {
+    const outcome = this.outcomes.length > 0 ? this.outcomes.shift() : new RecoverableTransportError('x');
+    if (outcome instanceof Error) throw outcome;
+    if (outcome instanceof Promise) return outcome as Promise<Array<[string, unknown]>>;
+    return outcome as Array<[string, unknown]>;
   }
 
-  async poll(basis: string | null, etag: string | null): Promise<never> {
+  async poll(basis: string | null, etag: string | null): Promise<PollResult> {
     this.calls.push([basis, etag]);
-    throw this.next();
+    return { notModified: false, events: await this.next(), etag: null };
   }
 
-  async stream(basis: string | null): Promise<never> {
+  async stream(basis: string | null): Promise<AsyncIterable<[string, unknown]>> {
     this.calls.push([basis, null]);
-    throw this.next();
+    const scripted = await this.next();
+    return (async function* () {
+      yield* scripted;
+    })();
   }
+}
+
+const asPairs = (wire: WireEvent[]): Array<[string, unknown]> => wire.map((e) => [e.event, e.data]);
+
+/**
+ * A healthy server that recycles connections: every `stream` call succeeds,
+ * transfers a full payload, and then ends the connection, as LaunchDarkly and
+ * any proxy in between do to a long-lived stream.
+ */
+class RecyclingRequester implements Requester {
+  connections = 0;
+
+  poll(): Promise<PollResult> {
+    throw new Error('not a polling double');
+  }
+
+  async stream(): Promise<AsyncIterable<[string, unknown]>> {
+    this.connections += 1;
+    const scripted = asPairs(fullPayload([['put-object', putSkill()]], `basis-${this.connections}`));
+    return (async function* () {
+      yield* scripted;
+    })();
+  }
+}
+
+function scriptedStreamStore(requester: Requester, options: Record<string, unknown> = {}): FDv2SkillStore {
+  const store = new FDv2SkillStore(SDK_KEY, {
+    mode: 'stream',
+    initialBackoffMs: 1,
+    maxBackoffMs: 2,
+    requester,
+    ...options,
+  });
+  openStores.push(store);
+  return store;
 }
 
 describe('failure handling', () => {
@@ -1245,6 +1336,53 @@ describe('failure handling', () => {
     openStores.push(store);
     store.start();
     expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    // Four, not three: the bound is the number of failures *tolerated*, so the
+    // run that exceeds it is the one that gives up.
+    expect(store.failed).toContain('gave up after 4 consecutive failures');
+  });
+
+  it('does not count recycled stream connections as failures', async () => {
+    // A streaming connection only ever ends by being dropped, so a loop that
+    // counted every drop as a failure would give up on a healthy server after
+    // maxConsecutiveFailures + 1 recycles, and delivery (including revocation)
+    // would silently stop for the process lifetime.
+    const requester = new RecyclingRequester();
+    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 3 });
+    store.start();
+    expect(await waitUntil(() => requester.connections >= 8)).toBe(true);
+    expect(store.failed).toBeNull();
+    expect(store.diagnostics.payloadsTransferred).toBeGreaterThanOrEqual(8);
+    // A drop is a failure until the next commit clears it, so the count may
+    // read 1 mid-reconnect. What it must never do is climb.
+    expect(store.diagnostics.connectionFailures).toBeLessThanOrEqual(1);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+  });
+
+  it('resets the failure count on a stream commit', async () => {
+    const requester = new ScriptedRequester([
+      new RecoverableTransportError('x'),
+      new RecoverableTransportError('x'),
+      new RecoverableTransportError('x'),
+      asPairs(fullPayload([['put-object', putSkill()]])),
+    ]);
+    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 3 });
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    // Three failures reach the bound, then a commit, then the exhausted
+    // requester fails on every reconnect. The count must start again at the
+    // commit: the stream's own drop is failure one, and three more connects are
+    // owed before giving up. Carrying the three over would give up on the drop
+    // itself, with no further connect at all.
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    expect(store.failed).toContain('gave up after 4 consecutive failures');
+    expect(store.failed).toContain('last error: x');
+    expect(requester.calls).toHaveLength(7);
+  });
+
+  it('bounds stream retries', async () => {
+    const store = scriptedStreamStore(new ScriptedRequester(), { maxConsecutiveFailures: 3 });
+    store.start();
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
     expect(store.failed).toContain('gave up after 4 consecutive failures');
   });
 
@@ -1255,6 +1393,28 @@ describe('failure handling', () => {
     const store = pollStore({ initialBackoffMs: 5000 });
     store.start();
     expect(await store.waitForSkills(3000)).toBe(true);
+  });
+
+  it('neither dies on nor parks behind an unreasonable Retry-After', async () => {
+    // `Retry-After` is a request and `maxBackoffMs` is a promise: the header
+    // may come from a proxy rather than LaunchDarkly, and an hour would park
+    // revocation for that long.
+    const requester = new ScriptedRequester([
+      new RecoverableTransportError('slow down', 3_600_000),
+      asPairs(fullPayload([['put-object', putSkill()]])),
+    ]);
+    const store = new FDv2SkillStore(SDK_KEY, {
+      mode: 'poll',
+      pollIntervalMs: 10_000,
+      initialBackoffMs: 5_000,
+      maxBackoffMs: 20,
+      requester,
+    });
+    openStores.push(store);
+    store.start();
+    expect(await store.waitForSkills(3000)).toBe(true);
+    expect(requester.calls.length).toBeGreaterThanOrEqual(2);
+    expect(store.failed).toBeNull();
   });
 
   it('parses Retry-After into milliseconds', () => {
@@ -1689,5 +1849,120 @@ describe('lifecycle', () => {
     const store = new FDv2SkillStore(SDK_KEY);
     expect(store.getObject(SKILL_OBJECT_KIND, 'anything')).toBeNull();
     expect(store.allObjects(SKILL_OBJECT_KIND)).toEqual({});
+  });
+});
+
+// ─── Timeouts ────────────────────────────────────────────────────────────────
+
+/**
+ * A listening socket that accepts connections and never sends a byte.
+ *
+ * This is the host `readTimeoutMs` exists for: the TCP handshake completes, so
+ * nothing fails fast, and then no response ever comes. A request against it can
+ * only end by timing out, which makes the elapsed time a direct measurement of
+ * the timeout actually applied.
+ */
+class BlackHole {
+  private server!: TcpServer;
+  private readonly accepted: Socket[] = [];
+  baseUri = '';
+
+  async listen(): Promise<void> {
+    this.server = createTcpServer((socket) => {
+      this.accepted.push(socket);
+      socket.on('error', () => {});
+    });
+    await new Promise<void>((resolve) => this.server.listen(0, '127.0.0.1', resolve));
+    const address = this.server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+    this.baseUri = `http://127.0.0.1:${port}`;
+  }
+
+  async close(): Promise<void> {
+    for (const socket of this.accepted) socket.destroy();
+    await new Promise<void>((resolve) => this.server.close(() => resolve()));
+  }
+}
+
+const requesterOf = (store: FDv2SkillStore): FetchRequester =>
+  (store as unknown as { requester: FetchRequester }).requester;
+
+describe('timeouts', () => {
+  // `readTimeoutMs` is the only network timeout, and every request honours it.
+  // The bounds asserted here are loose on purpose: the point is that a request
+  // against an unresponsive host fails in roughly `readTimeoutMs` rather than
+  // in minutes, and that a regression back to a much longer default fails this
+  // suite quickly instead of hanging it.
+  let blackHole: BlackHole;
+
+  beforeEach(async () => {
+    blackHole = new BlackHole();
+    await blackHole.listen();
+  });
+
+  afterEach(async () => {
+    await blackHole.close();
+  });
+
+  it('fails a poll against an unresponsive host within readTimeoutMs', async () => {
+    const requester = new FetchRequester(SDK_KEY, blackHole.baseUri, 300);
+    const started = Date.now();
+    await expect(requester.poll(null, null, new AbortController().signal)).rejects.toThrow(/timed out/);
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(200);
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  it('fails a stream connect against an unresponsive host within readTimeoutMs', async () => {
+    const requester = new FetchRequester(SDK_KEY, blackHole.baseUri, 300);
+    const started = Date.now();
+    await expect(requester.stream(null, new AbortController().signal)).rejects.toThrow(RecoverableTransportError);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('reports the timeout and keeps going', async () => {
+    const store = new FDv2SkillStore(SDK_KEY, {
+      baseUri: blackHole.baseUri,
+      mode: 'poll',
+      pollIntervalMs: 50,
+      initialBackoffMs: 10,
+      maxBackoffMs: 50,
+      readTimeoutMs: 300,
+    });
+    openStores.push(store);
+    store.start();
+    expect(await waitUntil(() => store.diagnostics.connectionFailures >= 1)).toBe(true);
+    expect(store.failed).toBeNull();
+    expect(store.diagnostics.lastError).toContain('timed out');
+  });
+
+  it('returns promptly from close while a connect is pending', async () => {
+    // Before the connect returns there is no body read to interrupt; aborting
+    // the signal has to reach the pending `fetch` itself, or close waits on a
+    // host that will never speak.
+    const store = new FDv2SkillStore(SDK_KEY, { baseUri: blackHole.baseUri, mode: 'stream', readTimeoutMs: 60_000 });
+    store.start();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const started = Date.now();
+    await store.close();
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(store.failed).toBeNull();
+  });
+
+  it('defaults the bound per mode', () => {
+    expect(DEFAULT_POLL_TIMEOUT_MS).toBe(10_000);
+    expect(DEFAULT_STREAM_READ_TIMEOUT_MS).toBe(300_000);
+    expect(requesterOf(new FDv2SkillStore(SDK_KEY, { mode: 'poll' })).readTimeoutMs).toBe(DEFAULT_POLL_TIMEOUT_MS);
+    expect(requesterOf(new FDv2SkillStore(SDK_KEY, { mode: 'stream' })).readTimeoutMs).toBe(
+      DEFAULT_STREAM_READ_TIMEOUT_MS,
+    );
+  });
+
+  it.each(['poll', 'stream'] as const)('lets an explicit readTimeoutMs override the %s default', (mode) => {
+    expect(requesterOf(new FDv2SkillStore(SDK_KEY, { mode, readTimeoutMs: 42_000 })).readTimeoutMs).toBe(42_000);
+  });
+
+  it.each([0, -1, Number.POSITIVE_INFINITY, Number.NaN])('rejects a non-positive readTimeoutMs (%s)', (value) => {
+    expect(() => new FDv2SkillStore(SDK_KEY, { readTimeoutMs: value })).toThrow(/readTimeoutMs/);
   });
 });
