@@ -419,6 +419,37 @@ describe('InMemorySkillStore', () => {
     expect(other).not.toHaveBeenCalled();
   });
 
+  it('stops notifying a listener once removed', () => {
+    const store = new InMemorySkillStore();
+    const seen = vi.fn();
+    store.addListener('skill', seen);
+    store.removeListener('skill', seen);
+    store.put(rawSkill({ key: 'a' }));
+    expect(seen).not.toHaveBeenCalled();
+  });
+
+  it('removes one occurrence per removeListener call', () => {
+    const store = new InMemorySkillStore();
+    const seen = vi.fn();
+    store.addListener('skill', seen);
+    store.addListener('skill', seen);
+    store.removeListener('skill', seen);
+    store.put(rawSkill({ key: 'a' }));
+    expect(seen).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats removing an unregistered listener as a no-op', () => {
+    const store = new InMemorySkillStore();
+    const fn = vi.fn();
+    store.removeListener('skill', fn);
+    store.addListener('skill', fn);
+    store.removeListener('flag', fn);
+    store.removeListener('skill', fn);
+    store.removeListener('skill', fn);
+    store.put(rawSkill({ key: 'a' }));
+    expect(fn).not.toHaveBeenCalled();
+  });
+
   it('rejects a raw object with no string key', () => {
     expect(() => new InMemorySkillStore().put({ version: 1 } as RawSkillObject)).toThrow();
   });
@@ -453,6 +484,19 @@ describe('store configuration', () => {
     // would otherwise satisfy the test.
     await expect(getSkill('a')).rejects.toThrow(/skillStore/);
     await expect(getSkill('a')).rejects.toThrow(/InMemorySkillStore/);
+  });
+
+  it('the no-store message names the delivery store first', async () => {
+    // A deployment that hits this message must be pointed at the store that
+    // receives content from LaunchDarkly, not only at the development one.
+    const message = await getSkill('a').then(
+      () => '',
+      (cause: Error) => cause.message,
+    );
+    expect(message).toContain('FDv2SkillStore');
+    expect(message).toContain('InMemorySkillStore');
+    expect(message.indexOf('FDv2SkillStore')).toBeLessThan(message.indexOf('InMemorySkillStore'));
+    expect(message).not.toContain('follow-up release');
   });
 
   it('shutdown clears the store', async () => {
