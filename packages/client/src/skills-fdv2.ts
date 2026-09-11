@@ -90,6 +90,15 @@ export const DEFAULT_BASE_URI = 'https://sdk.launchdarkly.com';
 export const POLL_PATH = '/sdk/poll';
 export const STREAM_PATH = '/sdk/stream';
 
+/** Default `readTimeoutMs` in `'poll'` mode: the bound on one whole request. */
+export const DEFAULT_POLL_TIMEOUT_MS = 10_000;
+
+/**
+ * Default `readTimeoutMs` in `'stream'` mode: the longest gap tolerated between
+ * two reads. LaunchDarkly's heartbeats arrive well inside this.
+ */
+export const DEFAULT_STREAM_READ_TIMEOUT_MS = 300_000;
+
 const EVENT_SERVER_INTENT = 'server-intent';
 const EVENT_PUT_OBJECT = 'put-object';
 const EVENT_DELETE_OBJECT = 'delete-object';
@@ -945,13 +954,99 @@ export function decodePollBody(body: string): Array<[string, unknown]> {
 }
 
 /**
+ * A signal that aborts when `parent` does, or when `ms` pass without `touch()`.
+ *
+ * This is the one network timeout. In `'poll'` mode nothing touches it, so it
+ * bounds the whole request; in `'stream'` mode every completed read touches it,
+ * so it bounds the gap between reads. `expired` tells the two abort causes
+ * apart: a store closing is not a failure, a stream gone quiet is.
+ */
+export type ReadDeadline = {
+  readonly signal: AbortSignal;
+  readonly parent: AbortSignal;
+  readonly ms: number;
+  readonly expired: boolean;
+  /** Restarts the clock. Call after each successful read. */
+  touch(): void;
+  /** Stops the clock and detaches from `parent`. Idempotent. */
+  clear(): void;
+};
+
+export function readDeadline(parent: AbortSignal, ms: number): ReadDeadline {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let expired = false;
+  const stopTimer = (): void => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  };
+  const onParentAbort = (): void => {
+    stopTimer();
+    controller.abort(parent.reason);
+  };
+  const arm = (): void => {
+    stopTimer();
+    if (controller.signal.aborted) return;
+    timer = setTimeout(() => {
+      expired = true;
+      controller.abort(new Error(`no response within ${ms}ms`));
+    }, ms);
+    // Unreffed for the same reason the backoff timer is: a background store is
+    // not a reason for `node` to keep running.
+    (timer as unknown as { unref?: () => void }).unref?.();
+  };
+  if (parent.aborted) controller.abort(parent.reason);
+  else parent.addEventListener('abort', onParentAbort, { once: true });
+  arm();
+  return {
+    signal: controller.signal,
+    parent,
+    ms,
+    get expired() {
+      return expired;
+    },
+    touch: arm,
+    clear: () => {
+      stopTimer();
+      parent.removeEventListener('abort', onParentAbort);
+    },
+  };
+}
+
+/**
+ * Presents a failed body read as retryable — unless the store is closing, in
+ * which case the abort is passed through untouched so the delivery loop reads it
+ * as the shutdown it is.
+ *
+ * A live stream dies mid-body far more often than it refuses to open: a read
+ * timeout on a stream that went quiet, a reset, a truncated chunk. Each of those
+ * arrives as whatever `fetch` threw, and the delivery loop retries only the
+ * transport errors this module defines — anything else it reads as a bug and
+ * stops for the process lifetime. Connecting is already wrapped in
+ * `FetchRequester.stream`; this is the same promise for the body.
+ */
+function readFailure(cause: unknown, what: string, deadline: ReadDeadline | undefined): unknown {
+  if (deadline?.parent.aborted) return cause;
+  if (deadline?.expired) return new RecoverableTransportError(`${what} timed out: no bytes in ${deadline.ms}ms`);
+  return new RecoverableTransportError(`${what} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+}
+
+/**
  * Decodes an SSE byte stream into `[event name, data]` pairs.
  *
  * Minimal on purpose — this consumes one LaunchDarkly endpoint, not the whole
  * spec: `event:`/`data:` fields, multi-line `data` joined with newlines, a blank
  * line dispatching, and `:` comments skipped.
+ *
+ * Only the read itself is wrapped as recoverable (see {@link readFailure}).
+ * Whatever the consumer's loop body throws while this generator is suspended at
+ * a `yield` — a protocol reader bug, a fatal goodbye — passes through `finally`
+ * untouched and still surfaces as what it is.
  */
-export async function* iterSse(body: ReadableStream<Uint8Array>): AsyncGenerator<[string, unknown], void, undefined> {
+export async function* iterSse(
+  body: ReadableStream<Uint8Array>,
+  deadline?: ReadDeadline,
+): AsyncGenerator<[string, unknown], void, undefined> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -975,7 +1070,14 @@ export async function* iterSse(body: ReadableStream<Uint8Array>): AsyncGenerator
 
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (cause) {
+        throw readFailure(cause, 'reading the FDv2 stream', deadline);
+      }
+      deadline?.touch();
+      const { done, value } = chunk;
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       let newline = buffer.indexOf('\n');
@@ -997,6 +1099,11 @@ export async function* iterSse(body: ReadableStream<Uint8Array>): AsyncGenerator
       }
     }
   } finally {
+    deadline?.clear();
+    // Cancelling closes the connection underneath, so a consumer that stops
+    // early — a goodbye, an error event — does not leave a socket open behind
+    // the reconnect. Best effort: the stream may already be errored or closed.
+    reader.cancel().catch(() => {});
     try {
       reader.releaseLock();
     } catch {
@@ -1017,6 +1124,10 @@ export type Requester = {
  * Platform globals only, on purpose: this package's runtime dependencies are
  * `@opentelemetry/api` and `dotenv`, and its LaunchDarkly base-SDK dependency is
  * an optional peer, so the content path must not smuggle in an HTTP client.
+ *
+ * `readTimeoutMs` is applied to every request through a {@link ReadDeadline}:
+ * connecting, waiting for headers and each body read are all bounded by the
+ * same value, and there is deliberately no separate connect timeout.
  */
 export class FetchRequester implements Requester {
   private readonly baseUri: string;
@@ -1024,6 +1135,7 @@ export class FetchRequester implements Requester {
   constructor(
     private readonly sdkKey: string,
     baseUri: string,
+    readonly readTimeoutMs: number,
   ) {
     this.baseUri = baseUri.replace(/\/+$/, '');
   }
@@ -1049,23 +1161,24 @@ export class FetchRequester implements Requester {
     const headers: Record<string, string> = { Authorization: this.sdkKey, Accept: 'application/json' };
     if (etag) headers['If-None-Match'] = etag;
 
-    let response: Response;
+    // Nothing touches the deadline, so it bounds the whole request: connect,
+    // headers and body together.
+    const deadline = readDeadline(signal, this.readTimeoutMs);
     try {
-      response = await fetch(this.url(POLL_PATH, basis), { headers, signal });
+      const response = await fetch(this.url(POLL_PATH, basis), { headers, signal: deadline.signal });
+      if (response.status === 304) return { notModified: true, events: [], etag };
+      if (!response.ok) throw classifyStatus(response.status, response.headers);
+      return {
+        notModified: false,
+        events: decodePollBody(await response.text()),
+        etag: response.headers.get('ETag') ?? etag,
+      };
     } catch (cause) {
-      if (signal.aborted) throw cause;
-      throw new RecoverableTransportError(
-        `polling request failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
+      if (cause instanceof FatalTransportError || cause instanceof RecoverableTransportError) throw cause;
+      throw readFailure(cause, 'polling request', deadline);
+    } finally {
+      deadline.clear();
     }
-
-    if (response.status === 304) return { notModified: true, events: [], etag };
-    if (!response.ok) throw classifyStatus(response.status, response.headers);
-    return {
-      notModified: false,
-      events: decodePollBody(await response.text()),
-      etag: response.headers.get('ETag') ?? etag,
-    };
   }
 
   /** Opens `GET /sdk/stream` and yields `[event name, data]` pairs. */
@@ -1076,19 +1189,27 @@ export class FetchRequester implements Requester {
       'Cache-Control': 'no-cache',
     };
 
+    // The same deadline bounds the connect and then, touched by `iterSse` on
+    // every read, the gap between reads.
+    const deadline = readDeadline(signal, this.readTimeoutMs);
     let response: Response;
     try {
-      response = await fetch(this.url(STREAM_PATH, basis), { headers, signal });
+      response = await fetch(this.url(STREAM_PATH, basis), { headers, signal: deadline.signal });
     } catch (cause) {
-      if (signal.aborted) throw cause;
-      throw new RecoverableTransportError(
-        `streaming request failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
+      deadline.clear();
+      throw readFailure(cause, 'streaming request', deadline);
     }
 
-    if (!response.ok) throw classifyStatus(response.status, response.headers);
-    if (response.body === null) throw new RecoverableTransportError('the FDv2 stream carried no body');
-    return iterSse(response.body);
+    if (!response.ok) {
+      deadline.clear();
+      throw classifyStatus(response.status, response.headers);
+    }
+    if (response.body === null) {
+      deadline.clear();
+      throw new RecoverableTransportError('the FDv2 stream carried no body');
+    }
+    deadline.touch();
+    return iterSse(response.body, deadline);
   }
 }
 
@@ -1144,12 +1265,26 @@ export type FDv2SkillStoreOptions = {
   readonly mode?: FDv2Mode;
   readonly baseUri?: string;
   readonly pollIntervalMs?: number;
+  /**
+   * The only network timeout, in milliseconds. Its meaning and default follow
+   * the mode: in `'poll'` it bounds the whole request
+   * ({@link DEFAULT_POLL_TIMEOUT_MS}); in `'stream'` it bounds each wait for the
+   * next bytes ({@link DEFAULT_STREAM_READ_TIMEOUT_MS}), so a stream that goes
+   * quiet reconnects instead of hanging. Must be positive and finite when given.
+   */
+  readonly readTimeoutMs?: number;
   readonly initialBackoffMs?: number;
+  /**
+   * Caps every delay between retries, including one the server asks for with
+   * `Retry-After`. The header may come from a proxy rather than LaunchDarkly,
+   * and a value in the hours would park revocation for that long.
+   */
   readonly maxBackoffMs?: number;
   /**
    * Bounds the retry loop. On exceeding it the transport stops, logs an error,
    * and the store keeps serving last known good rather than pretending to be
-   * live — `failed` reports it.
+   * live — `failed` reports it. Only failures in a row count: a committed
+   * payload resets the count.
    */
   readonly maxConsecutiveFailures?: number;
   /** Test seam: a transport double in place of `FetchRequester`. */
@@ -1212,6 +1347,11 @@ export class FDv2SkillStore implements SkillStore {
   private failedReason: string | null = null;
   private firstPayload = false;
   private readonly firstPayloadWaiters: Array<() => void> = [];
+  // Recoverable failures since the last committed payload. Reset at the commit
+  // rather than when a connection returns: a stream only ever ends by being
+  // dropped, so resetting on return would count every healthy, server-recycled
+  // connection as a failure.
+  private failures = 0;
 
   constructor(sdkKey: string, options: FDv2SkillStoreOptions = {}) {
     const key = requireServerSideCredential(sdkKey);
@@ -1223,10 +1363,15 @@ export class FDv2SkillStore implements SkillStore {
     if (this.pollIntervalMs <= 0) {
       throw new Error(`pollIntervalMs must be positive, got ${JSON.stringify(options.pollIntervalMs)}`);
     }
+    const readTimeoutMs =
+      options.readTimeoutMs ?? (this.mode === 'stream' ? DEFAULT_STREAM_READ_TIMEOUT_MS : DEFAULT_POLL_TIMEOUT_MS);
+    if (typeof readTimeoutMs !== 'number' || !Number.isFinite(readTimeoutMs) || readTimeoutMs <= 0) {
+      throw new Error(`readTimeoutMs must be positive, got ${String(options.readTimeoutMs)}`);
+    }
     this.initialBackoffMs = options.initialBackoffMs ?? 1_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
     this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? 10;
-    this.requester = options.requester ?? new FetchRequester(key, options.baseUri ?? DEFAULT_BASE_URI);
+    this.requester = options.requester ?? new FetchRequester(key, options.baseUri ?? DEFAULT_BASE_URI, readTimeoutMs);
   }
 
   // -- lifecycle ---------------------------------------------------------
@@ -1357,13 +1502,14 @@ export class FDv2SkillStore implements SkillStore {
   // -- the delivery loop -------------------------------------------------
 
   private async run(signal: AbortSignal): Promise<void> {
-    let failures = 0;
     while (!signal.aborted) {
       try {
         if (this.mode === 'stream') await this.streamOnce(signal);
         else await this.pollOnce(signal);
-        failures = 0;
-        this.reader.diagnostics.connectionFailures = 0;
+        // A poll that returned is a current answer even when it committed
+        // nothing (HTTP 304). A stream never returns normally; its successes
+        // are counted at each commit in `apply`.
+        this.recordSuccess();
       } catch (cause) {
         if (signal.aborted) return;
         if (cause instanceof FatalTransportError) {
@@ -1374,14 +1520,22 @@ export class FDv2SkillStore implements SkillStore {
           this.giveUp(`unexpected error in skill delivery: ${cause instanceof Error ? cause.message : String(cause)}`);
           return;
         }
-        failures += 1;
+        this.failures += 1;
+        const failures = this.failures;
         this.reader.diagnostics.connectionFailures = failures;
         this.reader.diagnostics.lastError = cause.message;
         if (failures > this.maxConsecutiveFailures) {
           this.giveUp(`gave up after ${failures} consecutive failures; last error: ${cause.message}`);
           return;
         }
-        const delay = cause.retryAfterMs ?? backoffDelayMs(failures, this.initialBackoffMs, this.maxBackoffMs);
+        const requested = cause.retryAfterMs;
+        const delay = Math.min(
+          requested !== null && Number.isFinite(requested)
+            ? requested
+            : backoffDelayMs(failures, this.initialBackoffMs, this.maxBackoffMs),
+          // `Retry-After` is a request and `maxBackoffMs` is a promise.
+          this.maxBackoffMs,
+        );
         warn(`Skill delivery failed (${cause.message}); retrying in ${Math.round(delay)}ms`);
         await sleep(delay, signal);
         continue;
@@ -1389,6 +1543,11 @@ export class FDv2SkillStore implements SkillStore {
 
       if (this.mode === 'poll') await sleep(this.pollIntervalMs, signal);
     }
+  }
+
+  private recordSuccess(): void {
+    this.failures = 0;
+    this.reader.diagnostics.connectionFailures = 0;
   }
 
   private giveUp(reason: string): void {
@@ -1407,6 +1566,8 @@ export class FDv2SkillStore implements SkillStore {
     const outcome = this.reader.handle(name, data);
     if (outcome.committed) {
       if (outcome.basis) this.basis = outcome.basis;
+      // A commit breaks the row of consecutive failures.
+      this.recordSuccess();
       this.markFirstPayload();
       if (outcome.changes && outcome.changes.length > 0) this.notify(outcome.changes);
     }
