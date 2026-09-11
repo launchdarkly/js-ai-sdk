@@ -21,7 +21,7 @@ vi.mock('../lifecycle.js', () => ({
 }));
 
 vi.mock('../judges.js', () => ({
-  runJudges: vi.fn().mockResolvedValue({}),
+  runJudges: vi.fn().mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] }),
 }));
 
 import { ConversationIdSpanProcessor, GEN_AI_CONVERSATION_ID, withConversationId } from '../conversation.js';
@@ -301,7 +301,7 @@ describe('graph().invoke()', () => {
   it('includes graphJudge results when graphJudge is configured', async () => {
     const judgeData = { 'graph-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'ok', score: 0.8 } };
     const { runJudges } = await import('../judges.js');
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue(judgeData);
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: judgeData, judgeDiagnostics: [] });
     setupTwoNodeGraph();
     const handler = makeHandler();
     const result = await graph('graph-flag', { handlers: [handler], graphJudge: 'graph-judge' }).invoke(

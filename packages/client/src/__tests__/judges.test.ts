@@ -77,7 +77,7 @@ describe('runJudges', () => {
       llmResponse: 'world',
       baseTrackData,
     });
-    expect(result).toEqual({});
+    expect(result).toEqual({ judgeResults: {}, judgeDiagnostics: [] });
     expect(mockExecuteAndTrack).not.toHaveBeenCalled();
   });
 
@@ -96,7 +96,7 @@ describe('runJudges', () => {
       llmResponse: 'world',
       baseTrackData,
     });
-    expect(result).toEqual({});
+    expect(result).toEqual({ judgeResults: {}, judgeDiagnostics: [] });
     expect(mockExecuteAndTrack).not.toHaveBeenCalled();
   });
 
@@ -268,6 +268,83 @@ describe('runJudges', () => {
     // toolHandlers must NOT be forwarded to the judge — judges are evaluators only.
     expect(callArgs.toolHandlers).toBeUndefined();
   });
+
+  // ─── A judge's own config failing must not fail the run ────────────────────
+  //
+  // By the time judges run, the provider call is finished and billed. A judge
+  // whose AI Config cannot be resolved — most often because it was toggled off
+  // in LaunchDarkly — must be skipped, not allowed to discard that response.
+
+  it('skips a judge whose AI Config is disabled instead of throwing', async () => {
+    mockExtractVariation.mockRejectedValue(new Error('Variation judge-flag is not enabled'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const config = {
+      model: { name: 'gpt-4o' },
+      provider: { name: 'OpenAI' },
+      instructions: 'Be helpful.',
+      judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
+    };
+
+    const results = await runJudges({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    expect(results.judgeResults).toEqual({});
+    expect(results.judgeDiagnostics).toEqual([
+      { judgeKey: 'judge-flag', status: 'failed', stage: 'config', code: 'judge_config_failed' },
+    ]);
+    expect(mockExecuteAndTrack).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith("Judge 'judge-flag' skipped:", 'Variation judge-flag is not enabled');
+
+    consoleError.mockRestore();
+  });
+
+  it('still runs the judges it can resolve when another one is disabled', async () => {
+    mockExtractVariation.mockImplementation((key: string) => {
+      if (key === 'disabled-judge') {
+        return Promise.reject(new Error('Variation disabled-judge is not enabled'));
+      }
+      return Promise.resolve({ config: mockJudgeConfig, meta: mockJudgeMeta });
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const config = {
+      model: { name: 'gpt-4o' },
+      provider: { name: 'OpenAI' },
+      instructions: 'Be helpful.',
+      judgeConfiguration: {
+        judges: [
+          { key: 'disabled-judge', samplingRate: 1 },
+          { key: 'working-judge', samplingRate: 1 },
+        ],
+      },
+    };
+
+    const results = await runJudges({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    // The disabled judge is absent; the healthy one still produced a score.
+    expect(Object.keys(results.judgeResults)).toEqual(['working-judge']);
+    expect(results.judgeResults['working-judge']?.score).toBe(0.9);
+    expect(results.judgeDiagnostics).toEqual([
+      { judgeKey: 'disabled-judge', status: 'failed', stage: 'config', code: 'judge_config_failed' },
+    ]);
+    expect(mockExecuteAndTrack).toHaveBeenCalledTimes(1);
+
+    consoleError.mockRestore();
+  });
 });
 
 describe('runJudges strips outputFormat before it reaches a handler', () => {
@@ -328,7 +405,8 @@ describe('runJudges strips outputFormat before it reaches a handler', () => {
       baseTrackData,
     });
 
-    expect(result['judge-flag'].score).toBe(0.9);
+    expect(result.judgeResults['judge-flag'].score).toBe(0.9);
+    expect(result.judgeDiagnostics).toEqual([]);
   });
 
   it('logs the reason exactly once per judge, naming the judge key, only when outputFormat was present', async () => {
@@ -439,9 +517,10 @@ describe('buildJudgeTasks strips outputFormat from the stored JudgeTask', () => 
       baseTrackData,
     });
 
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].judgeConfig.outputFormat).toBeUndefined();
-    expect(tasks[0].judgeConfig.model).toEqual(judgeConfigWithSchema.model);
+    expect(tasks.judgeTasks).toHaveLength(1);
+    expect(tasks.judgeTasks[0].judgeConfig.outputFormat).toBeUndefined();
+    expect(tasks.judgeTasks[0].judgeConfig.model).toEqual(judgeConfigWithSchema.model);
+    expect(tasks.judgeDiagnostics).toEqual([]);
   });
 });
 
