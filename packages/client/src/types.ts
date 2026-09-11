@@ -262,9 +262,16 @@ export type RawSkillObject = {
  * streams or polls LaunchDarkly's SDK-facing FDv2 channel — drops in behind this
  * interface without touching the public API, and did.
  *
- * `addListener` is part of the seam but **optional**: a store
- * without it must still be accepted. `watchSkills` is its one consumer, and
- * refuses loudly rather than degrading when a configured store lacks it.
+ * `addListener` and `removeListener` are part of the seam but **optional**: a
+ * store without them must still be accepted. Nothing in the accessors calls
+ * either — they exist for the delivery transport to push updates through, and
+ * for a consumer such as `watchSkills` to stop receiving them. `watchSkills` is
+ * the one consumer: it refuses loudly rather than degrading when a configured
+ * store lacks `addListener`, and probes for `removeListener` on close, so a
+ * store without it keeps working at the cost of a listener that lives as long
+ * as the store does. A store that implements `addListener` should implement
+ * `removeListener` too; it removes one occurrence of `fn` under `kind` and is a
+ * no-op when `fn` is not registered.
  *
  * Everything a store serves is untrusted input. The transport is not part of the
  * trust boundary — key, version, size, and content hash are revalidated at the
@@ -285,6 +292,7 @@ export type SkillStore = {
   getObject(kind: string, key: string, version?: number | null): RawSkillObject | null | undefined;
   allObjects(kind: string): Record<string, RawSkillObject>;
   addListener?(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+  removeListener?(kind: string, fn: (raw: RawSkillObject) => unknown): void;
 };
 
 /** Builds a frozen {@link SkillReference}. */
