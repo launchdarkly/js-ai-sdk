@@ -325,9 +325,10 @@ example above, materializes only what the resolved variation actually asked for.
 | `getSkills(refs)` | Batch form. Accepts `SkillReference` values and bare key strings (string = latest). Results follow input order; missing or unverifiable entries are omitted. |
 | `allSkills()` | Every verified skill the store holds. |
 | `writeSkills(skills, root, options?)` | Materialize to `<root>/<key>/SKILL.md`. Accepts `Skill` / `SkillReference` / key strings, or the literal `'*'`. Returns a `ReconcileReport`. Throws for a caller error — an unusable `root`, a bare string other than `'*'` — as distinct from the per-skill `error` actions in the report. |
-| `InMemorySkillStore` | A `SkillStore` backed by a plain object. `put(raw)`, `getObject(kind, key, version?)`, `allObjects(kind)`, `addListener(kind, fn)`. Holds one object per key, so it answers a version pin with what it has and lets the accessor refuse a mismatch. |
-| `FDv2SkillStore(sdkKey, options?)` | The delivery transport: a `SkillStore` fed by LaunchDarkly over the SDK-facing FDv2 channel. `start()`, `waitForSkills(timeoutMs)`, `close()`, `diagnostics`, `failed`. **Server-side only** — a mobile key or client-side environment ID throws. See [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly). |
-| `watchSkills(skills, root, options?)` | `writeSkills` plus a re-reconcile on every delivery change. Resolves to `{ report, watcher }`; `await watcher.close()` when done. Revocation then takes effect within `debounceMs` of arriving rather than at the next restart. |
+| `InMemorySkillStore` | A `SkillStore` backed by a plain object. `put(raw)`, `getObject(kind, key, version?)`, `allObjects(kind)`, `addListener(kind, fn)`, `removeListener(kind, fn)`. Holds one object per key, so it answers a version pin with what it has and lets the accessor refuse a mismatch. |
+| `FDv2SkillStore(sdkKey, options?)` | The delivery transport: a `SkillStore` fed by LaunchDarkly over the SDK-facing FDv2 channel. `start()`, `waitForSkills(timeoutMs)`, `close()`, `diagnostics`, `failed`, `addListener` / `removeListener`. Options: `mode` (`'stream'` default, or `'poll'`), `baseUri`, `pollIntervalMs`, `readTimeoutMs`, `initialBackoffMs`, `maxBackoffMs`, `maxConsecutiveFailures`. **Server-side only** — a mobile key or client-side environment ID throws. See [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly). |
+| `watchSkills(skills, root, options?)` | `writeSkills` plus a re-reconcile on every delivery change. Resolves to `{ report, watcher }`; `await watcher.close()` when done, which also detaches the watcher from the store. Revocation then takes effect within `debounceMs` of arriving rather than at the next restart. |
+| `StoreDiagnostics` | What the transport has seen: `payloadsTransferred`, `skillObjectsReceived`, `objectsIgnored`, `objectsRevoked`, `payloadsIgnored`, `hashlessObjects`, `connectionFailures`, `lastError`. |
 
 #### Receiving skills from LaunchDarkly
 
@@ -356,9 +357,11 @@ try {
 
 **Streaming is the default, and it is what makes revocation fast.** A `delete-object` reaches a live stream in seconds; with `mode: 'poll'` it arrives within one `pollIntervalMs`. Paired with `watchSkills`, a revoked skill's `SKILL.md` leaves the disk without a restart. During an outage the store keeps serving the last content it received and `writeSkills`' default `onUnavailable: 'keep'` leaves managed files alone — an outage must not read as "everything was revoked".
 
+**One network timeout, and its default depends on the mode.** `readTimeoutMs` bounds every step of a request, connecting included. In `mode: 'poll'` it bounds the whole request and defaults to 10 seconds; in `mode: 'stream'` it bounds each wait for the next bytes and defaults to 300 seconds, well beyond LaunchDarkly's heartbeat interval. A stream that goes quiet past it reconnects rather than hanging, and a stream that dies mid-body — a reset, a truncated chunk — reconnects the same way. Every delay between retries, including one the server asks for with `Retry-After`, is capped at `maxBackoffMs`.
+
 **The connection also carries your flags.** A client cannot request only the skill payload, so a skills-enabled environment delivers flag and segment objects on the same connection. They are skipped, not evaluated — this store does no evaluation of any kind — and `diagnostics.objectsIgnored` counts them.
 
-> **Beta caveats, worth knowing before you deploy.** Payload signing does not exist on this channel yet, so delivery is TLS-only and the content hash establishes self-consistency, not origin authenticity. FDv2 is opt-in per account: without it the endpoints return HTTP 403, which the store reports as a fatal error naming the setting. `ld-relay` does not speak the FDv2 endpoints, so relay-only deployments cannot receive skills.
+> **Beta caveats, worth knowing before you deploy.** Payload signing does not exist on this channel yet, so delivery is TLS-only and the content hash establishes self-consistency, not origin authenticity. The FDv2 protocol is opt-in per account: without it the endpoints return HTTP 403, which the store reports as a fatal error explaining what to do. `ld-relay` does not speak the FDv2 endpoints, so relay-only deployments cannot receive skills.
 
 **If every skill comes back empty, check `diagnostics.hashlessObjects`.** Verification requires `contentHash` on the delivered object and withholds anything without one, so a nonzero count there means skills are being withheld rather than that the environment has none. The store logs an error per hashless object and one summary per wholly-hashless payload, both naming the reason. There is deliberately no fallback that skips verification: a hash the SDK computed from the content it was handed would certify the content against itself.
 
@@ -532,7 +535,7 @@ All types are re-exported from this package. Handler packages import them from h
 | `SkillReference` | A version-pinned pointer to a skill: `{ key, version }` |
 | `SkillOutcome` | What `getSkillResult()` resolves to: `{ skill, reason, detail }`. `skill` is non-null exactly when `reason` is `'ok'` |
 | `SkillOutcomeReason` | The closed set of retrieval outcomes: `'absent' \| 'integrity_failure' \| 'ok' \| 'store_unavailable' \| 'wrong_version'` |
-| `SkillStore` | The structural seam skill content is retrieved through: `getObject(kind, key, version?)`, `allObjects`, optional `addListener` |
+| `SkillStore` | The structural seam skill content is retrieved through: `getObject(kind, key, version?)`, `allObjects`, optional `addListener` / `removeListener` |
 | `RawSkillObject` | The wire shape a `SkillStore` serves, before verification. Every field is untrusted. |
 | `ReconcileReport` | The result of `writeSkills()`: `{ actions, ok, errors }` |
 | `ReconcileAction` | One outcome from a reconcile: `{ key, action, version, path, error }` |
