@@ -113,6 +113,16 @@ const INTENT_TRANSFER_NONE = 'none';
  */
 const ENVELOPE_FIELDS = ['contentType', 'content', 'contentHash', 'name', 'description'] as const;
 
+/**
+ * The payload identity inside a transfer's selector, `(p:<id>:<version>)`.
+ *
+ * The selector is the only place a completed transfer names its own payload:
+ * `put-object`, `delete-object` and `payload-transferred` carry no payload id of
+ * their own. `ProtocolReader` reads it as a fallback for an intent that named no
+ * `id`.
+ */
+const PAYLOAD_SELECTOR = /\(p:([^:()]+):\d+\)/;
+
 export type FDv2Mode = 'stream' | 'poll';
 
 const MOBILE_KEY_PREFIX = 'mob-';
@@ -211,6 +221,11 @@ export type StoreDiagnostics = {
   readonly objectsIgnored: number;
   /** `delete-object` events applied to skills. */
   readonly objectsRevoked: number;
+  /**
+   * Transfers not applied because they completed a payload other than the one
+   * skills arrive on. Zero while delivery sends one payload per connection.
+   */
+  readonly payloadsIgnored: number;
   /**
    * Skill objects whose envelope carried no `contentHash`.
    *
@@ -385,6 +400,20 @@ export function seamObjectFromPut(data: Record<string, unknown>): RawSkillObject
     }
   }
   return raw;
+}
+
+/** The payload id one payload intent names, when it names a usable one. */
+function payloadIdOf(intent: unknown): string | null {
+  if (typeof intent !== 'object' || intent === null) return null;
+  const { id } = intent as { id?: unknown };
+  return typeof id === 'string' && id !== '' ? id : null;
+}
+
+/** The payload id inside a transfer's selector, when it carries one. */
+function payloadIdFromSelector(state: unknown): string | null {
+  if (typeof state !== 'string') return null;
+  const match = PAYLOAD_SELECTOR.exec(state);
+  return match ? match[1] : null;
 }
 
 /**
@@ -564,6 +593,7 @@ function freshDiagnostics(): MutableDiagnostics {
     skillObjectsReceived: 0,
     objectsIgnored: 0,
     objectsRevoked: 0,
+    payloadsIgnored: 0,
     hashlessObjects: 0,
     connectionFailures: 0,
     lastError: null,
@@ -584,12 +614,32 @@ function freshDiagnostics(): MutableDiagnostics {
  * which, with pruning on, is the difference between a reconcile and deleting a
  * customer's skill files. Listeners therefore fire once per commit, not once per
  * object, which is also exactly the granularity the re-reconcile wants.
+ *
+ * **The first payload intent is read, and is assumed to be the skill payload.**
+ * Delivery provides one payload per credential and the protocol requires a client
+ * to ignore all but the first payload intent, so `payloads[0]` is both what
+ * arrives and what the protocol says to read. If that ever widens, an `xfer-full`
+ * for somebody else's payload would empty the skill set and the next
+ * `payload-transferred` would publish it empty — with pruning on, the difference
+ * between a reconcile and deleting a customer's files. This layer therefore learns
+ * which payload skills arrive on and declines to apply a transfer of any other,
+ * once at warning level and counted. The residual is the first transfer of a
+ * connection: before a skill has arrived there is nothing to compare a payload
+ * against.
  */
 export class ProtocolReader {
   readonly diagnostics = freshDiagnostics();
   private intent: string | null = null;
   private pending: SkillObjectSet | null = null;
   private changes: RawSkillObject[] = [];
+  // The payload the current intent describes, and the payload skills have
+  // actually arrived on. One payload per connection makes these the same
+  // payload; the class docstring says why they are kept apart regardless.
+  private intentPayloadId: string | null = null;
+  private skillPayloadId: string | null = null;
+  private skillsInPayload = 0;
+  private warnedMultiplePayloads = false;
+  private warnedForeignPayload = false;
 
   constructor(private readonly committed: SkillObjectSet) {}
 
@@ -620,10 +670,14 @@ export class ProtocolReader {
     if (!Array.isArray(payloads) || payloads.length === 0) {
       return { disconnect: 'server-intent carried no payload description' };
     }
+    if (payloads.length > 1) this.warnMultiplePayloads(payloads);
+    // The first payload only, as the protocol requires.
     const first = payloads[0] as { intentCode?: unknown } | null;
     const intent = typeof first?.intentCode === 'string' ? first.intentCode : null;
     this.intent = intent;
+    this.intentPayloadId = payloadIdOf(first);
     this.changes = [];
+    this.skillsInPayload = 0;
     if (intent === INTENT_TRANSFER_FULL) {
       // A fresh set: the payload about to arrive replaces everything held. Built
       // alongside the live set rather than in place, so an interrupted transfer
@@ -665,6 +719,7 @@ export class ProtocolReader {
     target.put(raw);
     this.changes.push(raw);
     this.diagnostics.skillObjectsReceived += 1;
+    this.skillsInPayload += 1;
     if (typeof raw.contentHash !== 'string') {
       this.diagnostics.hashlessObjects += 1;
       warnHashless(raw);
@@ -685,6 +740,8 @@ export class ProtocolReader {
     if (tombstone === null) return {};
     target.delete(tombstone);
     this.diagnostics.objectsRevoked += 1;
+    // A revocation identifies the payload as ours just as a put does.
+    this.skillsInPayload += 1;
     // A tombstone, not a skill object: it carries identity and no content, so a
     // listener that only needs "something changed" works unchanged while one that
     // reads content sees no `content` field. Documented on `addListener`.
@@ -694,12 +751,25 @@ export class ProtocolReader {
 
   private payloadTransferred(data: unknown): TransferOutcome {
     const state = (data as { state?: unknown } | null)?.state;
-    if (this.pending !== null) {
+    const payloadId = this.intentPayloadId ?? payloadIdFromSelector(state);
+    if (this.pending !== null && this.isForeignPayload(payloadId)) {
+      this.warnForeignPayload(payloadId);
+      this.diagnostics.payloadsIgnored += 1;
+      this.changes = [];
+    } else if (this.pending !== null) {
       this.committed.replaceWith(this.pending);
       warnIfNothingCanVerify(this.committed.allRaw());
+      if (this.skillsInPayload > 0 && payloadId !== null) {
+        // Learnt, not configured: nothing below the seam is told which payload
+        // is which, so the payload that carried a skill put or revocation is
+        // the payload skills arrive on.
+        this.skillPayloadId = payloadId;
+      }
     }
     this.pending = null;
     this.intent = null;
+    this.intentPayloadId = null;
+    this.skillsInPayload = 0;
     const { changes } = this;
     this.changes = [];
     this.diagnostics.payloadsTransferred += 1;
@@ -710,20 +780,24 @@ export class ProtocolReader {
     };
   }
 
-  private error(data: unknown): TransferOutcome {
-    const reason = (data as { reason?: unknown } | null)?.reason;
-    // An error abandons the in-flight payload and keeps what is committed.
+  /** Drops the in-flight payload and keeps what is committed. */
+  private abandonInFlight(): void {
     this.pending = null;
     this.intent = null;
+    this.intentPayloadId = null;
+    this.skillsInPayload = 0;
     this.changes = [];
+  }
+
+  private error(data: unknown): TransferOutcome {
+    const reason = (data as { reason?: unknown } | null)?.reason;
+    this.abandonInFlight();
     return { disconnect: `server sent error: ${String(reason)}` };
   }
 
   private goodbye(data: unknown): TransferOutcome {
     const parsed = (data ?? {}) as { reason?: unknown; silent?: unknown; catastrophe?: unknown };
-    this.pending = null;
-    this.intent = null;
-    this.changes = [];
+    this.abandonInFlight();
     if (parsed.silent !== true) {
       warn(`FDv2 connection closing: ${String(parsed.reason)}`);
     }
@@ -731,6 +805,50 @@ export class ProtocolReader {
       return { fatal: `server sent a catastrophic goodbye: ${String(parsed.reason)}` };
     }
     return { disconnect: `server said goodbye: ${String(parsed.reason)}` };
+  }
+
+  // -- payload identity ----------------------------------------------------
+
+  /**
+   * Whether a transfer completes a payload other than the one skills arrive on.
+   *
+   * `false` unless both payloads are known, so one-payload delivery and the
+   * first transfer of a connection behave exactly as they did before this check
+   * existed.
+   */
+  private isForeignPayload(payloadId: string | null): boolean {
+    return this.skillPayloadId !== null && payloadId !== null && payloadId !== this.skillPayloadId;
+  }
+
+  /**
+   * One warning per reader for an intent describing more than one payload.
+   *
+   * Not an error: reading only the first is what the protocol asks for. But it
+   * means the first payload is no longer *guaranteed* to be the skill payload,
+   * and an intent for another payload arriving before any skill has been seen is
+   * the one case `isForeignPayload` cannot catch.
+   */
+  private warnMultiplePayloads(payloads: unknown[]): void {
+    if (this.warnedMultiplePayloads) return;
+    this.warnedMultiplePayloads = true;
+    warn(
+      `An FDv2 server-intent described ${payloads.length} payloads (${payloads
+        .map((p) => String(payloadIdOf(p)))
+        .join(', ')}). Only the first is read, as the protocol requires, and it is taken to be the payload skills ` +
+        'arrive on. If skills stop resolving from this point, that is the assumption that broke; contact ' +
+        'LaunchDarkly support.',
+    );
+  }
+
+  /** One warning per reader for a transfer this layer declined to apply. */
+  private warnForeignPayload(payloadId: string | null): void {
+    if (this.warnedForeignPayload) return;
+    this.warnedForeignPayload = true;
+    warn(
+      `An FDv2 transfer of payload ${String(payloadId)} was not applied to the skills held, which arrive on ` +
+        `payload ${String(this.skillPayloadId)}. Applying it would have replaced them with whatever that payload ` +
+        'carried — nothing, in the case of a flag payload. The skills held are unchanged.',
+    );
   }
 }
 
