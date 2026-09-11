@@ -110,8 +110,8 @@ function putSegment(key = 'beta-users', version = 4) {
   return { key, kind: 'segment', version, object: { key, version, included: [] } };
 }
 
-function serverIntent(code = 'xfer-full') {
-  return { payloads: [{ id: 'agent-skill', target: 1, intentCode: code, reason: 'test' }] };
+function serverIntent(code = 'xfer-full', payloadId = 'agent-skill') {
+  return { payloads: [{ id: payloadId, target: 1, intentCode: code, reason: 'test' }] };
 }
 
 const transferred = (state = 'basis-1', version = 42) => ({ state, version });
@@ -693,6 +693,195 @@ describe('protocol reader', () => {
     const reader = new ProtocolReader(held);
     drive(reader, events(['put-object', putSkill()], ['payload-transferred', transferred('basis-1')]));
     expect(held.size).toBe(1);
+  });
+});
+
+// ─── Which payload a transfer completed ──────────────────────────────────────
+
+const payloadWarnings = (fragment: string): string[] =>
+  logged(warnSpy)
+    .split('\n')
+    .filter((line) => line.includes(fragment));
+
+/** One payload's events, with the payload it belongs to named explicitly. */
+function skillPayload(
+  objectEvents: Array<[string, unknown]>,
+  { payloadId = 'agent-skill', code = 'xfer-full', state = 'basis-1' } = {},
+): WireEvent[] {
+  return events(['server-intent', serverIntent(code, payloadId)], ...objectEvents, [
+    'payload-transferred',
+    transferred(state),
+  ]);
+}
+
+describe('payload identity', () => {
+  // Delivery provides one payload per credential and the protocol requires a
+  // client to read only the first payload intent, so today the payload read is
+  // the payload skills arrive on. These assert the behaviour that survives if
+  // the first of those stops holding: another payload's `xfer-full` must not
+  // publish an empty skill set, because with pruning on that deletes a
+  // customer's materialized files.
+
+  it('reads only the first payload intent', () => {
+    // Reading only the first is what the protocol asks for, however many
+    // arrive — the point of the rest of this suite is to make that safe.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(
+      reader,
+      events(
+        [
+          'server-intent',
+          {
+            payloads: [
+              { id: 'agent-skill', target: 1, intentCode: 'xfer-full' },
+              { id: 'env-flags', target: 2, intentCode: 'none' },
+            ],
+          },
+        ],
+        ['put-object', putSkill()],
+        ['payload-transferred', transferred()],
+      ),
+    );
+    expect(held.size).toBe(1);
+  });
+
+  it('warns once about more than one payload intent', () => {
+    const reader = new ProtocolReader(new SkillObjectSet());
+    const intent = {
+      payloads: [
+        { id: 'env-flags', target: 1, intentCode: 'xfer-changes' },
+        { id: 'agent-skill', target: 2, intentCode: 'xfer-changes' },
+      ],
+    };
+    reader.handle('server-intent', intent);
+    reader.handle('server-intent', intent);
+    expect(payloadWarnings('described 2 payloads')).toHaveLength(1);
+  });
+
+  it('warns about nothing for one payload intent', () => {
+    drive(new ProtocolReader(new SkillObjectSet()), skillPayload([['put-object', putSkill()]]));
+    expect(payloadWarnings('payload')).toEqual([]);
+  });
+
+  it("does not let another payload's full transfer empty the skills held", () => {
+    // The case this guard exists for. A flag payload's `xfer-full` starts an
+    // empty pending set; applying it at `payload-transferred` would publish
+    // every skill as revoked, which a reconcile with pruning on reads as
+    // "delete these files".
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, skillPayload([['put-object', putSkill()]]));
+    const outcomes = drive(
+      reader,
+      skillPayload([['put-object', putFlag()]], { payloadId: 'env-flags', state: 'basis-2' }),
+    );
+    expect(held.get('pdf-extraction', null)).not.toBeNull();
+    expect(reader.diagnostics.payloadsIgnored).toBe(1);
+    expect(payloadWarnings('was not applied')).toHaveLength(1);
+    // Nothing changed, so no listener is woken to reconcile against it.
+    expect(outcomes.at(-1)?.changes).toEqual([]);
+  });
+
+  it('warns once about a declined transfer however often it repeats', () => {
+    // A polling connection sees the other payload on every poll.
+    const reader = new ProtocolReader(new SkillObjectSet());
+    drive(reader, skillPayload([['put-object', putSkill()]]));
+    const foreign = skillPayload([['put-object', putFlag()]], { payloadId: 'env-flags' });
+    drive(reader, foreign);
+    drive(reader, foreign);
+    expect(payloadWarnings('was not applied')).toHaveLength(1);
+    expect(reader.diagnostics.payloadsIgnored).toBe(2);
+  });
+
+  it('still empties the skills on a full transfer of the skill payload', () => {
+    // Every skill deleted is a real state, and the guard must not mask it.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, skillPayload([['put-object', putSkill()]]));
+    drive(reader, skillPayload([], { state: 'basis-2' }));
+    expect(held.size).toBe(0);
+    expect(reader.diagnostics.payloadsIgnored).toBe(0);
+  });
+
+  it('identifies the payload as the skill payload from a revocation', () => {
+    // A payload that only revokes is still a payload skills arrive on.
+    const reader = new ProtocolReader(new SkillObjectSet());
+    drive(reader, skillPayload([['delete-object', deleteSkill()]], { code: 'xfer-changes' }));
+    drive(reader, skillPayload([['put-object', putSkill()]], { payloadId: 'env-flags' }));
+    expect(reader.diagnostics.payloadsIgnored).toBe(1);
+  });
+
+  it('identifies the payload from the selector when no id is named', () => {
+    // `payload-transferred`'s selector is the only other place a completed
+    // transfer names its payload.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    const unnamed = { payloads: [{ target: 1, intentCode: 'xfer-full' }] };
+    drive(
+      reader,
+      events(
+        ['server-intent', unnamed],
+        ['put-object', putSkill()],
+        ['payload-transferred', transferred('(p:agent-skill:53)')],
+      ),
+    );
+    drive(
+      reader,
+      events(
+        ['server-intent', unnamed],
+        ['put-object', putFlag()],
+        ['payload-transferred', transferred('(p:env-flags:12)')],
+      ),
+    );
+    expect(held.get('pdf-extraction', null)).not.toBeNull();
+    expect(reader.diagnostics.payloadsIgnored).toBe(1);
+  });
+
+  it('applies an unidentifiable payload rather than withholding it', () => {
+    // A transfer naming no payload at all is the store's own, since delivery
+    // sends it one payload. Withholding it would break the common case to
+    // defend against a hypothetical one.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, skillPayload([['put-object', putSkill()]]));
+    drive(
+      reader,
+      events(
+        ['server-intent', { payloads: [{ intentCode: 'xfer-full' }] }],
+        ['put-object', putSkill('pdf-extraction', { objectVersion: 4 })],
+        ['payload-transferred', { version: 44 }],
+      ),
+    );
+    expect(held.get('pdf-extraction', null)?.version).toBe(4);
+    expect(reader.diagnostics.payloadsIgnored).toBe(0);
+  });
+
+  it('leaves the first transfer of a connection as the residual', () => {
+    // Before a skill has arrived there is nothing to compare a payload
+    // against, so another payload's `xfer-full` arriving first cannot be told
+    // apart. The multiple-payload warning is the only signal there is, which
+    // is why it exists.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(
+      reader,
+      events(
+        [
+          'server-intent',
+          {
+            payloads: [
+              { id: 'env-flags', intentCode: 'xfer-full' },
+              { id: 'agent-skill', intentCode: 'xfer-full' },
+            ],
+          },
+        ],
+        ['put-object', putFlag()],
+        ['payload-transferred', transferred()],
+      ),
+    );
+    expect(held.size).toBe(0);
+    expect(payloadWarnings('described 2 payloads')).toHaveLength(1);
   });
 });
 
