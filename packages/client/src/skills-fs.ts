@@ -504,13 +504,8 @@ function resolveAll(deadline: number, onUnavailable: OnUnavailable): { requests:
   // Deliberately not via allSkills(), which reports a throwing store as an empty
   // result — that would look like "every skill was revoked" and let prune delete
   // the lot.
-  let objects: Record<string, unknown>;
-  try {
-    objects = allRawObjects(store);
-  } catch (error) {
-    const name = error instanceof Error ? error.constructor.name : 'unknown error';
-    return unavailableRun(unavailable(`the skill store threw ${name}: ${messageOf(error)}`), onUnavailable);
-  }
+  const { objects, error } = allRawObjects(store);
+  if (error !== null) return unavailableRun(unavailable(error), onUnavailable);
 
   return {
     requests: Object.entries(objects).map(([key, raw]) => pendingForRaw(key, raw)),
