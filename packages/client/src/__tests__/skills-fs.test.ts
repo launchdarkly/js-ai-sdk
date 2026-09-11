@@ -718,6 +718,87 @@ describe('writeSkills resilience', () => {
     );
   });
 
+  it('never prunes on a non-object listing', async () => {
+    // A store that cannot list is not a store holding nothing. A listing
+    // collapsed to "no skills" is indistinguishable from every skill having
+    // been revoked, and prune would then delete every managed file and report a
+    // clean run. The listing failure has to reach the prune gate as an
+    // incomplete run.
+    const noListing: SkillStore = {
+      getObject() {
+        return null;
+      },
+      allObjects() {
+        return null as unknown as Record<string, RawSkillObject>;
+      },
+    };
+    const existing = await placeManaged(root, 'pdf-extraction', SKILL_BODY);
+    _setStore(noListing);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(false);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+    expect(report.actions.map((a) => a.action)).toEqual(['error']);
+    expect(errorMessages(report).some((m) => m.includes('rather than an object'))).toBe(true);
+    // The entry survives, so the next reconcile picks it up.
+    expect(Object.keys((await readManifest(root)).entries as Record<string, unknown>)).toContain(
+      `pdf-extraction/${SKILL_MD}`,
+    );
+  });
+
+  it('writes nothing for an answer served under another key', async () => {
+    // The file is named after the key the object carries, so a store answering
+    // under a different key would write one path and prune another. Left
+    // unchecked, the run wrote the aliased key, then deleted it in the same
+    // pass because prune keys off the request — and reported ok. The requested
+    // key has to be the one the outcome is reported against.
+    const aliasing: SkillStore = {
+      getObject() {
+        return rawSkill('other-key');
+      },
+      allObjects() {
+        return {};
+      },
+    };
+    _setStore(aliasing);
+
+    const report = await writeSkills(['requested-key'], root);
+
+    expect(report.ok).toBe(false);
+    expect(report.actions.map((a) => a.action)).toEqual(['error']);
+    // Reported against the key that was asked for, not the one served.
+    expect(actionsByKey(report)['requested-key'].action).toBe('error');
+    expect(await exists(path.join(root, 'other-key'))).toBe(false);
+    expect((await readManifest(root)).entries).toEqual({});
+  });
+
+  it('an answer served under another key never reaches that key’s file', async () => {
+    // Both keys are requested here, so nothing is prunable and the write itself
+    // is what is under test: unchecked, the object served under the alias is
+    // written to the *other* key's path, clobbering the content that key's own
+    // lookup resolved — and the run still reports ok.
+    const aliased = 'aliased\n';
+    const aliasing: SkillStore = {
+      getObject(_kind, key) {
+        return key === 'other-key' ? rawSkill('other-key') : rawSkill('other-key', 2, aliased);
+      },
+      allObjects() {
+        return {};
+      },
+    };
+    const existing = await placeManaged(root, 'other-key', SKILL_BODY);
+    _setStore(aliasing);
+
+    // The alias is resolved last, so an unchecked write would land on top.
+    const report = await writeSkills(['other-key', 'requested-key'], root);
+
+    expect(report.ok).toBe(false);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+    expect(actionsByKey(report)['requested-key'].action).toBe('error');
+    expect(actionsByKey(report)['other-key'].action).toBe('skipped_current');
+  });
+
   it('never corrupts the manifest on an unavailable run', async () => {
     await placeManaged(root, 'a', SKILL_BODY);
     const before = await readManifest(root);
