@@ -1482,8 +1482,24 @@ export class FDv2SkillStore implements SkillStore {
     else this.listeners.set(kind, [fn]);
   }
 
+  /**
+   * Unregisters `fn` from `kind`. Safe to call from inside a listener: a removal
+   * during one commit takes effect from the next.
+   *
+   * Removes one occurrence; removing a callable that is not registered is a
+   * no-op, so `SkillWatcher.close` can detach unconditionally.
+   */
+  removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void {
+    const listeners = this.listeners.get(kind);
+    if (!listeners) return;
+    const index = listeners.indexOf(fn);
+    if (index !== -1) listeners.splice(index, 1);
+  }
+
   private notify(changes: RawSkillObject[]): void {
-    const listeners = this.listeners.get(SKILL_OBJECT_KIND) ?? [];
+    // A copy, so a listener removed mid-commit does not shift its neighbours
+    // out from under the iteration.
+    const listeners = [...(this.listeners.get(SKILL_OBJECT_KIND) ?? [])];
     for (const raw of changes) {
       for (const listener of listeners) {
         try {

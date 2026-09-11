@@ -1806,6 +1806,70 @@ describe('watchSkills', () => {
       await watcher.close();
     }
   });
+
+  it('detaches from the store on close, so a closed watcher is no longer notified', async () => {
+    const store = new InMemorySkillStore();
+    store.put({ key: 'a', version: 1, content: 'first', contentHash: hash('first') });
+    _setStore(store);
+    const listeners = (): unknown[] =>
+      (store as unknown as { listeners: Map<string, unknown[]> }).listeners.get(SKILL_OBJECT_KIND) ?? [];
+
+    const root = path.join(await scratchRoot(), 'skills');
+    const { watcher } = await watchSkills('*', root, { debounceMs: 20 });
+    expect(listeners()).toContain(watcher.notify);
+
+    await watcher.close();
+
+    expect(listeners()).not.toContain(watcher.notify);
+    store.put({ key: 'a', version: 4, content: 'second', contentHash: hash('second') });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(await readFile(path.join(root, 'a', 'SKILL.md'), 'utf8')).toBe('first');
+    expect(watcher.reconciles).toBe(0);
+  });
+
+  it('leaves no listeners behind across repeated watchers', async () => {
+    const store = new InMemorySkillStore();
+    _setStore(store);
+    const listeners = (): unknown[] =>
+      (store as unknown as { listeners: Map<string, unknown[]> }).listeners.get(SKILL_OBJECT_KIND) ?? [];
+    const root = path.join(await scratchRoot(), 'skills');
+    for (let i = 0; i < 5; i += 1) {
+      const { watcher } = await watchSkills('*', root, { debounceMs: 20 });
+      expect(listeners()).toHaveLength(1);
+      await watcher.close();
+    }
+    expect(listeners()).toEqual([]);
+  });
+
+  it('still closes against a store with no removeListener', async () => {
+    // `removeListener` is optional: an older store keeps working, at the cost
+    // of the listener staying registered.
+    const registered: unknown[] = [];
+    _setStore({
+      getObject: () => null,
+      allObjects: () => ({}),
+      addListener: (_kind, fn) => {
+        registered.push(fn);
+      },
+    });
+    const { watcher } = await watchSkills('*', path.join(await scratchRoot(), 'skills'), { debounceMs: 20 });
+    expect(registered).toEqual([watcher.notify]);
+    await watcher.close();
+    await watcher.close();
+    expect(registered).toEqual([watcher.notify]);
+  });
+
+  it('treats removing an unregistered listener from the FDv2 store as a no-op', () => {
+    const store = pollStore();
+    const fn = (): void => {};
+    store.removeListener(SKILL_OBJECT_KIND, fn);
+    store.addListener(SKILL_OBJECT_KIND, fn);
+    store.removeListener('flag', fn);
+    store.removeListener(SKILL_OBJECT_KIND, fn);
+    store.removeListener(SKILL_OBJECT_KIND, fn);
+    const listeners = (store as unknown as { listeners: Map<string, unknown[]> }).listeners;
+    expect(listeners.get(SKILL_OBJECT_KIND)).toEqual([]);
+  });
 });
 
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
