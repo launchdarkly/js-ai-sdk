@@ -26,7 +26,7 @@
 
 import { getStore, SKILL_OBJECT_KIND } from './skills-core.js';
 import { type WriteSkillsOptions, writeSkills } from './skills-fs.js';
-import type { ReconcileReport, Skill, SkillReference } from './types.js';
+import type { ReconcileReport, Skill, SkillReference, SkillStore } from './types.js';
 
 /**
  * How long a change waits for its neighbours before a reconcile runs.
@@ -70,6 +70,7 @@ export class SkillWatcher {
   private completed = 0;
 
   constructor(
+    private readonly store: SkillStore,
     private readonly request: ReadonlyArray<Skill | SkillReference | string> | '*',
     private readonly root: string,
     private readonly options: WriteSkillsOptions,
@@ -151,14 +152,27 @@ export class SkillWatcher {
    * interrupted between its content writes and its manifest rewrite is the one
    * case the manifest format has to recover from — worth avoiding when we control
    * the timing.
+   *
+   * Detaches `notify` from the store first, so no further change reaches a
+   * watcher that is shutting down and the store no longer holds a reference to
+   * it. A store without the optional `removeListener` is left as it is rather
+   * than failing the close.
    */
   async close(): Promise<void> {
+    this.detach();
     this.closed = true;
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
     }
     await this.running;
+  }
+
+  private detach(): void {
+    if (this.closed) return;
+    if (typeof this.store.removeListener === 'function') {
+      this.store.removeListener(SKILL_OBJECT_KIND, this.notify);
+    }
   }
 }
 
@@ -187,7 +201,9 @@ export class SkillWatcher {
  * Throws when no store is configured, and when the configured store has no
  * `addListener` — the second case failing loudly rather than degrading to a
  * one-shot reconcile, because a watcher that silently never fires looks exactly
- * like a watcher whose skills never changed.
+ * like a watcher whose skills never changed. The optional `removeListener` lets
+ * `SkillWatcher.close` detach; a store without it keeps working, at the cost of
+ * a listener that lives as long as the store does.
  */
 export async function watchSkills(
   skills: ReadonlyArray<Skill | SkillReference | string> | '*',
@@ -215,7 +231,7 @@ export async function watchSkills(
   // and a bad root throws out of `watchSkills` rather than into a log line.
   const report = await writeSkills(skills, root, writeOptions);
 
-  const watcher = new SkillWatcher(skills, root, writeOptions, debounceMs, onReconcile);
+  const watcher = new SkillWatcher(store, skills, root, writeOptions, debounceMs, onReconcile);
   store.addListener(SKILL_OBJECT_KIND, watcher.notify);
   return { report, watcher };
 }
