@@ -6,28 +6,35 @@
  * `skills-fs.ts` is the only caller today.
  *
  * The whole point is that a path check is only as good as the last path
- * resolution after it. **On this runtime that problem cannot be fully solved**,
- * and the limitation is a property of Node rather than of this code — see
- * {@link SUPPORTS_DIR_FD}. What is implemented here is a per-component `lstat`
- * check, hardened as far as Node allows: every directory is
- * opened with `O_NOFOLLOW`, every temp file is created exclusively in the
- * target's own directory, and the pinned directory's identity is re-checked
- * immediately before each destructive step.
+ * resolution after it. There are two implementations of that idea here, and which
+ * one runs is a platform property rather than a configuration choice:
  *
- * **Platform bound — the floor is what runs everywhere, deliberately.** The
- * Python SDK closes the swap window on POSIX with a descriptor walk; this module
- * cannot, on any platform, because Node exposes no `*at()` family at all (see
- * {@link SUPPORTS_DIR_FD}). So unlike Python, where the racy floor is the
- * Windows-only fallback, here it is the *only* implementation — Linux included.
+ * - **Linux — the swap window is closed.** Node exposes no `*at()` family (see
+ *   {@link SUPPORTS_DIR_FD}), but it does not need one: a directory is pinned to a
+ *   descriptor and its children are addressed as `/proc/self/fd/<fd>/<name>`,
+ *   which the kernel resolves from the pinned *inode* rather than from the name.
+ *   Renaming or symlinking the directory afterwards cannot redirect the
+ *   operation. Gated on {@link SUPPORTS_PROC_FD}.
+ * - **Everywhere else — the window is narrowed, not closed.** A per-component
+ *   `lstat` check, hardened as far as Node allows: every directory is opened with
+ *   `O_NOFOLLOW`, every temp file is created exclusively in the target's own
+ *   directory, and the pinned directory's identity is re-checked immediately
+ *   before each destructive step. That last check is the floor, and a floor is not
+ *   a fix — see {@link SUPPORTS_DIR_FD}.
+ *
  * Windows is additionally not a supported or tested platform for this release:
  * reparse-point checks (`GetFileAttributesW`, or opening with
  * `FILE_FLAG_OPEN_REPARSE_POINT`) are **not implemented, by decision rather than
  * oversight**, since neither SDK repository has a Windows CI runner and Node
- * gives this module no primitive that would make them meaningful.
+ * gives this module no primitive that would make them meaningful. That is also
+ * why a Linux-only fast path is an acceptable shape for the fix rather than a
+ * half-measure: the platforms it leaves on the floor are macOS, which is a
+ * development target, and Windows, which is out of scope.
  *
- * The consequence is a single sentence, and it belongs in every deployment
- * review: write permission on the managed root is *the* security boundary for
- * skills materialization, so the privilege-separated deployment the README
+ * The consequence for the platforms on the floor is a single sentence, and it
+ * belongs in every deployment review: write permission on the managed root **or
+ * on any of its ancestors** is *the* security boundary for skills
+ * materialization, so the privilege-separated deployment the README
  * documents — reconcile identity separate from agent identity — is not advice but
  * the mitigation. Relatedly, this bound retroactively lowers the priority of the
  * Windows reserved-device-name work in `skills-fs.ts`: that code stays, because
@@ -36,9 +43,10 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, statSync } from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import { type FileHandle, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 /**
@@ -85,6 +93,75 @@ export const SUPPORTS_DIR_FD: boolean = (() => {
   const exported: Record<string, unknown> = { ...fsPromises };
   return AT_FAMILY.every((name) => typeof exported[name] === 'function');
 })();
+
+/** procfs's per-process descriptor table, where each open fd appears as a magic symlink. */
+const PROC_SELF_FD = '/proc/self/fd';
+
+/**
+ * Whether children can be addressed relative to a held descriptor by *path*,
+ * through `/proc/self/fd/<fd>/<name>`.
+ *
+ * This is the way around {@link SUPPORTS_DIR_FD} on Linux. Node cannot pass a
+ * directory descriptor to `rename`, `unlink` or `open` — but it does not have to:
+ * the kernel resolves the `/proc/self/fd/<fd>` component to *the inode the
+ * descriptor holds*, not to the name it was opened under. So a path built on that
+ * prefix has the same property an `*at()` call would: renaming or symlinking the
+ * directory's name afterwards cannot redirect the operation, because the name is
+ * no longer part of the resolution. Every remaining component gets the usual
+ * `O_NOFOLLOW` treatment.
+ *
+ * `false` off Linux, where procfs does not exist — macOS has `/dev/fd/<fd>`, but
+ * it is not a directory-traversable prefix, so `/dev/fd/<fd>/<name>` does not
+ * resolve and there is nothing to gate on. Those platforms keep the per-component
+ * `lstat` floor described at {@link SUPPORTS_DIR_FD}, and for them write
+ * permission on the managed root *and its ancestors* remains the security
+ * boundary. Windows is not a supported platform for this release (see the module
+ * docblock), so a Linux-only fast path is the accepted design rather than a gap.
+ *
+ * A genuine probe rather than a platform string alone, for the same reason
+ * {@link SUPPORTS_DIR_FD} is: the swap-race tests are gated on this constant, so a
+ * wrong hardcoded answer would silently skip the tests that would have caught it.
+ * Linux without a mounted `/proc` — some minimal containers — answers `false` here
+ * and falls back correctly. The probe checks the property the fast path actually
+ * depends on: that the entry is procfs's magic symlink, and that resolving it
+ * reaches the very inode the descriptor is pinned to.
+ */
+export const SUPPORTS_PROC_FD: boolean = (() => {
+  if (process.platform !== 'linux') return false;
+  let fd: number | null = null;
+  try {
+    fd = openSync(tmpdir(), fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
+    if (!lstatSync(`${PROC_SELF_FD}/${fd}`).isSymbolicLink()) return false;
+    const pinned = fstatSync(fd, { bigint: true });
+    const resolved = statSync(`${PROC_SELF_FD}/${fd}`, { bigint: true });
+    return resolved.dev === pinned.dev && resolved.ino === pinned.ino;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+})();
+
+/**
+ * The prefix to build child paths on for a directory this process holds open.
+ *
+ * Returns the descriptor address on the fast path and `realPath` otherwise, so a
+ * caller writes `path.join(directoryAddress(handle, dir), name)` once and gets
+ * descriptor-relative addressing where the platform has it and the previous
+ * path-based behaviour where it does not.
+ *
+ * The returned string is for the *filesystem*, not for people: it is never what a
+ * report or an error message should show a caller. `skills-fs.ts` keeps the real
+ * path alongside it for that.
+ */
+export function directoryAddress(handle: FileHandle, realPath: string): string {
+  return SUPPORTS_PROC_FD ? `${PROC_SELF_FD}/${handle.fd}` : realPath;
+}
+
+/** Whether `directory` is a descriptor address rather than an ordinary path. */
+function isDescriptorAddressed(directory: string): boolean {
+  return directory === PROC_SELF_FD || directory.startsWith(`${PROC_SELF_FD}/`);
+}
 
 /**
  * The destructive filesystem operations, as a replaceable record.
@@ -167,13 +244,22 @@ export async function openOrCreateDirectory(directory: string): Promise<FileHand
 /**
  * Confirms `directory` still resolves to the inode `handle` was pinned to.
  *
- * This is the honest limit of what Node offers. It narrows the symlink-swap
- * window to the interval between this check and the path-based operation that follows;
- * it does not close it, because Node cannot address a rename or an unlink relative
- * to a descriptor. Narrowing is not a fix, which is why the exposure is
- * documented at {@link SUPPORTS_DIR_FD} rather than claimed away.
+ * The floor for platforms without {@link SUPPORTS_PROC_FD}. It narrows the
+ * symlink-swap window to the interval between this check and the path-based
+ * operation that follows; it does not close it, because Node cannot address a
+ * rename or an unlink relative to a descriptor. Narrowing is not a fix, which is
+ * why the exposure is documented at {@link SUPPORTS_DIR_FD} rather than claimed
+ * away.
+ *
+ * Skipped — not weakened — when the caller addressed `directory` through
+ * {@link directoryAddress} on the fast path. There the kernel resolved the path
+ * *from* the pinned inode, so there is no name left for a swap to have redirected
+ * and nothing for a second resolution to disagree with. Running the check anyway
+ * would also fail outright: `lstat` of `/proc/self/fd/<fd>` reports procfs's magic
+ * symlink, not a directory.
  */
 async function assertUnswapped(directory: string, handle: FileHandle): Promise<void> {
+  if (isDescriptorAddressed(directory)) return;
   const pinned = await identityOf(handle);
   const onDisk = await lstat(directory, { bigint: true });
   if (!onDisk.isDirectory() || Number(onDisk.dev) !== pinned.dev || onDisk.ino !== pinned.ino) {
@@ -262,30 +348,15 @@ export async function atomicWrite(
 }
 
 /**
- * `atomicWrite` against a directory this module does not already hold open.
- *
- * Used for the skills manifest, whose directory is the managed root. The handle is
- * taken with `O_NOFOLLOW`, so a root swapped for a symlink after the caller
- * validated it fails the write instead of redirecting it — the caller turns that
- * into a run-level `error` action.
- */
-export async function atomicWriteIn(directory: string, name: string, data: Uint8Array): Promise<void> {
-  const handle = await openDirectoryNoFollow(directory);
-  try {
-    await atomicWrite(directory, name, data, handle);
-  } finally {
-    await handle.close();
-  }
-}
-
-/**
  * Removes `<directory>/<name>` without following a trailing symlink.
  *
  * `unlink` never follows a *trailing* symlink, so a symlinked target would have
  * the link removed rather than its victim — but it does resolve the directory
  * above it, which is what makes a swapped `<root>/<key>` a delete primitive with
- * an attacker-chosen target. The identity re-check narrows that window as far as
- * Node permits; see {@link SUPPORTS_DIR_FD} for why it cannot be closed here.
+ * an attacker-chosen target. Pass a `directory` produced by
+ * {@link directoryAddress} and that resolution starts at the pinned inode, which
+ * closes the window; off {@link SUPPORTS_PROC_FD} the identity re-check narrows it
+ * as far as Node permits without closing it.
  *
  * `fsOps.unlink` is the one and only unlink call site for a managed file, so tests
  * can intercept it.
