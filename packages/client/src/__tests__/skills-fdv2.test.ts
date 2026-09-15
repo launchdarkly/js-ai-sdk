@@ -1402,8 +1402,22 @@ describe('failure handling', () => {
     endpoint.queuePoll([], { status: 401 });
     const store = pollStore();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    const started = Date.now();
+    // `false`, and promptly: a caller gating boot on the return value must not
+    // be told a payload arrived, nor be left to sit out the whole timeout.
+    expect(await store.waitForSkills(5000)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
     expect(store.failed).not.toBeNull();
+  });
+
+  it('resolves waitForSkills false immediately once delivery has given up', async () => {
+    endpoint.queuePoll([], { status: 401 });
+    const store = pollStore();
+    store.start();
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    const started = Date.now();
+    expect(await store.waitForSkills(5000)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 
   it('keeps last known good servable after a fatal failure', async () => {
