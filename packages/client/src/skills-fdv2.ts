@@ -227,8 +227,10 @@ export type StoreDiagnostics = {
   readonly hashlessObjects: number;
   /**
    * Recoverable transport failures in a row. Back to zero on any sign of a
-   * working server — a parsed `server-intent` or a committed payload — and
-   * never raised by a connection the server closes normally.
+   * working server — a parsed `server-intent` or a committed payload — and not
+   * raised by a connection the server closes normally after reaching that
+   * point, which is how a long-lived stream is recycled. A connection closed
+   * without ever getting there delivered nothing, and does raise it.
    */
   readonly connectionFailures: number;
   /** The most recent transport error, if any. Human-readable; do not parse. */
@@ -581,8 +583,9 @@ export type TransferOutcome = {
   healthy?: boolean;
   /**
    * Set on a `disconnect` the server asked for while serving normally — a
-   * non-catastrophic `goodbye`. The connection still ends and is retried; it is
-   * not a failure.
+   * non-catastrophic `goodbye`. The connection still ends and is retried. The
+   * caller decides whether it counts as a failure, since only a connection that
+   * had reached a working server was being served normally at all.
    */
   expected?: boolean;
 };
@@ -903,14 +906,29 @@ export class RecoverableTransportError extends Error {
     message: string,
     readonly retryAfterMs: number | null = null,
     /**
-     * Whether the server closed a connection it was serving normally. Retried
-     * like any other, but not counted against `maxConsecutiveFailures`.
+     * Whether the server closed a connection it had been serving normally —
+     * a `goodbye` on a connection that reached a working server. Retried like
+     * any other, but neither logged as a failure nor counted against
+     * `maxConsecutiveFailures`. A `goodbye` on a connection that never got that
+     * far is not expected: it delivered nothing, so it counts.
      */
     readonly expected = false,
   ) {
     super(message);
   }
 }
+
+/**
+ * An HTTP 400 for a request carrying client state — the `basis` selector, or an
+ * `If-None-Match` etag. That state is the one part of the request that can go
+ * stale, so it is dropped and a full transfer requested once before the status
+ * is treated as fatal.
+ */
+export class StaleRequestStateError extends RecoverableTransportError {}
+
+const REQUEST_ADVICE =
+  'The request this adapter sent was not understood. It carries only the SDK key and, after the first payload, ' +
+  "a 'basis' selector, so check the base URI and that the endpoint speaks FDv2.";
 
 const FORBIDDEN_ADVICE =
   'The FDv2 protocol is opt-in per LaunchDarkly account and is served as HTTP 403 while it is off. Skill ' +
@@ -920,7 +938,11 @@ const FORBIDDEN_ADVICE =
 export function retryAfterMs(headers: Headers | null | undefined): number | null {
   const raw = headers?.get('Retry-After');
   if (raw === null || raw === undefined) return null;
-  const seconds = Number(raw.trim());
+  const value = raw.trim();
+  // A blank header is not a delay of zero. `Number('')` is 0 and finite, and a
+  // proxy that sends the header empty would otherwise collapse every backoff.
+  if (value === '') return null;
+  const seconds = Number(value);
   // The HTTP-date form is legal and rare; falling back to our own backoff is
   // better than parsing a date to honour it approximately.
   if (!Number.isFinite(seconds)) return null;
@@ -942,11 +964,13 @@ export function classifyStatus(status: number, headers?: Headers | null): Error 
         '/sdk/poll and /sdk/stream.',
     );
   }
-  if ([400, 405, 406, 414, 501].includes(status)) {
+  // A 400 is the one rejection the adapter can act on: the selector it sent may
+  // be one the server no longer accepts. Recoverable so the selector can be
+  // dropped and a full transfer requested; fatal once that has been tried.
+  if (status === 400) return new StaleRequestStateError(`LaunchDarkly returned HTTP 400. ${REQUEST_ADVICE}`);
+  if ([405, 406, 414, 501].includes(status)) {
     return new FatalTransportError(
-      `LaunchDarkly returned HTTP ${status}, which retrying will not fix. The request this adapter sent was not ` +
-        "understood. It carries only the SDK key and, after the first payload, a 'basis' selector, so check the " +
-        'base URI and that the endpoint speaks FDv2.',
+      `LaunchDarkly returned HTTP ${status}, which retrying will not fix. ${REQUEST_ADVICE}`,
     );
   }
   return new RecoverableTransportError(`LaunchDarkly returned HTTP ${status}`, retryAfterMs(headers));
@@ -1317,8 +1341,10 @@ export type FDv2SkillStoreOptions = {
    * Bounds the retry loop. On exceeding it the transport stops, logs an error,
    * and the store keeps serving last known good rather than pretending to be
    * live — `failed` reports it. Only failures in a row count: reaching a working
-   * server resets the count, and a connection the server closes normally never
-   * counts at all.
+   * server resets the count, and a connection the server closes normally after
+   * that is exempt, so a stream being recycled never approaches the bound. A
+   * connection closed before any of that is a failure like any other, which is
+   * what bounds a server that does nothing but close connections.
    */
   readonly maxConsecutiveFailures?: number;
   /** Replaces the built-in `fetch` transport. Intended for testing. */
@@ -1382,8 +1408,13 @@ export class FDv2SkillStore implements SkillStore {
   // Recoverable failures in a row, cleared by any sign of a working server: a
   // `server-intent` that parsed, or a payload that committed. Not cleared when a
   // connection returns, because a stream never returns normally — it only ends
-  // by being dropped, which is a failure, or by a goodbye, which is not.
+  // by being dropped, which is a failure, or by a goodbye, which is a failure
+  // only when the connection saying it never reached a working server.
   private failures = 0;
+  // Whether the connection now open has shown a sign of a working server. Reset
+  // per attempt: it is what tells a stream being recycled from one that says
+  // goodbye having delivered nothing, and only the former escapes the bound.
+  private reachedServer = false;
 
   constructor(sdkKey: string, options: FDv2SkillStoreOptions = {}) {
     const key = requireServerSideCredential(sdkKey);
@@ -1558,6 +1589,7 @@ export class FDv2SkillStore implements SkillStore {
   private async run(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
       try {
+        this.reachedServer = false;
         if (this.mode === 'stream') await this.streamOnce(signal);
         else await this.pollOnce(signal);
         // A poll that returned is a current answer even when it committed
@@ -1574,11 +1606,25 @@ export class FDv2SkillStore implements SkillStore {
           this.giveUp(`unexpected error in skill delivery: ${cause instanceof Error ? cause.message : String(cause)}`);
           return;
         }
-        // A goodbye from a server that was serving normally ends the connection
-        // without being a failure. It reconnects like one, but it neither counts
-        // against `maxConsecutiveFailures` nor shows up in the diagnostics:
-        // every recycle of an up-to-date stream arrives this way, so counting
-        // them would expire an environment whose skills never change.
+        if (cause instanceof StaleRequestStateError) {
+          // The selector and etag are the only client state in the request, so
+          // a rejection of a request carrying neither is the request itself
+          // being refused, and retrying cannot fix it. Carrying one, the state
+          // may be stale: drop it, ask for a full transfer, and let the next
+          // 400 be the fatal one.
+          if (this.basis === null && this.etag === null) {
+            this.giveUp(cause.message);
+            return;
+          }
+          this.basis = null;
+          this.etag = null;
+        }
+        // A connection the server closed while serving it normally ended
+        // without being a failure — see `dispatch` for which ones qualify. It
+        // reconnects like one, but it neither counts against
+        // `maxConsecutiveFailures` nor shows up in the diagnostics: every
+        // recycle of an up-to-date stream arrives this way, so counting them
+        // would expire an environment whose skills never change.
         if (!cause.expected) {
           this.failures += 1;
           this.reader.diagnostics.connectionFailures = this.failures;
@@ -1591,7 +1637,10 @@ export class FDv2SkillStore implements SkillStore {
         const requested = cause.retryAfterMs;
         const delay = Math.min(
           requested !== null && Number.isFinite(requested)
-            ? requested
+            ? // A server asking for no delay still gets one: honouring
+              // `Retry-After: 0` literally would reconnect in a loop and burn
+              // the whole retry bound in milliseconds.
+              Math.max(requested, this.initialBackoffMs)
             : backoffDelayMs(this.failures, this.initialBackoffMs, this.maxBackoffMs),
           // `Retry-After` is a request and `maxBackoffMs` is a promise.
           this.maxBackoffMs,
@@ -1630,6 +1679,7 @@ export class FDv2SkillStore implements SkillStore {
     // reconnect whose basis is already current is answered with the `none`
     // intent and commits nothing, so waiting for a commit would leave an
     // unchanging environment counting healthy connections against its bound.
+    if (outcome.healthy || outcome.committed) this.reachedServer = true;
     if (outcome.healthy) this.recordSuccess();
     if (outcome.committed) {
       if (outcome.basis) this.basis = outcome.basis;
@@ -1642,7 +1692,15 @@ export class FDv2SkillStore implements SkillStore {
 
   private dispatch(outcome: TransferOutcome): void {
     if (outcome.fatal) throw new FatalTransportError(outcome.fatal);
-    if (outcome.disconnect) throw new RecoverableTransportError(outcome.disconnect, null, outcome.expected === true);
+    if (outcome.disconnect) {
+      // A goodbye is only a normal end of service for a connection that got
+      // there: one that says goodbye without ever sending a `server-intent`
+      // delivered nothing, and is retried as the failure it is, under the bound.
+      // Exempting it would let a server that only ever says goodbye reconnect
+      // without limit and without any of it reaching `diagnostics` or `failed`.
+      const expected = outcome.expected === true && this.reachedServer;
+      throw new RecoverableTransportError(outcome.disconnect, null, expected);
+    }
   }
 
   private async pollOnce(signal: AbortSignal): Promise<void> {
