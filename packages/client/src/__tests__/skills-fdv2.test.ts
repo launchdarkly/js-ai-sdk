@@ -46,6 +46,7 @@ import {
   type Requester,
   retryAfterMs,
   SkillObjectSet,
+  StaleRequestStateError,
   seamObjectFromPut,
   splitWireKey,
   tombstoneFromDelete,
@@ -214,7 +215,9 @@ class FakeFDv2Endpoint {
     const queued = this.polls.shift() ?? { status: 304, events: [] };
     const headers: Record<string, string> = {};
     if (queued.etag) headers.ETag = queued.etag;
-    if (queued.retryAfter) headers['Retry-After'] = queued.retryAfter;
+    // Sent even when blank: a proxy that emits an empty `Retry-After` is a case
+    // the store has to survive, so the fake has to be able to produce one.
+    if (queued.retryAfter !== undefined) headers['Retry-After'] = queued.retryAfter;
     if (queued.status === 200) {
       const body = JSON.stringify({ events: queued.events });
       res.writeHead(200, { ...headers, 'Content-Type': 'application/json' });
@@ -1410,6 +1413,28 @@ class UnchangingRequester implements Requester {
   }
 }
 
+/**
+ * A server that says goodbye and nothing else: every connection is closed with
+ * a silent, non-catastrophic goodbye, without a `server-intent` ever arriving.
+ * Indistinguishable from a recycle at the event level, but nothing was ever
+ * served, so reconnecting cannot make progress.
+ */
+class GoodbyeOnlyRequester implements Requester {
+  connections = 0;
+
+  poll(): Promise<PollResult> {
+    throw new Error('not a polling double');
+  }
+
+  async stream(): Promise<AsyncIterable<[string, unknown]>> {
+    this.connections += 1;
+    const scripted = asPairs(events(['goodbye', { reason: 'recycling', silent: true }]));
+    return (async function* () {
+      yield* scripted;
+    })();
+  }
+}
+
 function scriptedStreamStore(requester: Requester, options: Record<string, unknown> = {}): FDv2SkillStore {
   const store = new FDv2SkillStore(SDK_KEY, {
     mode: 'stream',
@@ -1558,6 +1583,23 @@ describe('failure handling', () => {
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
 
+  it('bounds a server that only ever says goodbye', async () => {
+    // A goodbye is exempt from the retry bound because it is how a healthy
+    // stream is recycled — but a connection that says goodbye without ever
+    // sending a `server-intent` served nothing. Exempting that too would
+    // reconnect without limit, and without `failed` or the diagnostics ever
+    // saying so.
+    const requester = new GoodbyeOnlyRequester();
+    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 3 });
+    store.start();
+    expect(await waitUntil(() => store.failed !== null, 2000)).toBe(true);
+    expect(store.failed).toContain('gave up after 4 consecutive failures');
+    expect(store.failed).toContain('server said goodbye: recycling');
+    expect(requester.connections).toBe(4);
+    expect(store.diagnostics.connectionFailures).toBe(4);
+    expect(store.diagnostics.lastError).not.toBeNull();
+  });
+
   it('resets the failure count on a stream commit', async () => {
     const requester = new ScriptedRequester([
       new RecoverableTransportError('x'),
@@ -1587,12 +1629,96 @@ describe('failure handling', () => {
   });
 
   it('honours a Retry-After header off the wire', async () => {
-    endpoint.queuePoll([], { status: 429, retryAfter: '0' });
+    endpoint.queuePoll([], { status: 429, retryAfter: '1' });
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
-    // If Retry-After were ignored the 5s backoff would blow the timeout.
-    const store = pollStore({ initialBackoffMs: 5000 });
+    // A one-second request sitting between a 20ms backoff and a 5s cap, so the
+    // wait that follows can only have come from the header.
+    const store = pollStore({ initialBackoffMs: 20, maxBackoffMs: 5000 });
+    const started = Date.now();
+    store.start();
+    expect(await store.waitForSkills(4000)).toBe(true);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(900);
+  });
+
+  it('does not treat a blank Retry-After as no delay at all', async () => {
+    // `Number('')` is 0 and finite, so a header a proxy sent empty would win
+    // over the backoff and reconnect with no wait — burning every retry the
+    // bound allows in a few milliseconds and going permanently fatal.
+    for (let i = 0; i < 5; i += 1) endpoint.queuePoll([], { status: 503, retryAfter: '' });
+    const store = pollStore({ initialBackoffMs: 100, maxBackoffMs: 100, maxConsecutiveFailures: 3 });
+    const started = Date.now();
+    store.start();
+    expect(await waitUntil(() => store.failed !== null, 4000)).toBe(true);
+    // Three backoffs before the fourth failure gives up. Jitter can halve each,
+    // so 120ms is the floor; collapsed, the whole run lands in single digits.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(120);
+  });
+
+  it('floors an honoured Retry-After at initialBackoffMs', async () => {
+    // `Retry-After: 0` is legal and means "try again now". Taken literally it
+    // is a busy loop against the retry bound, so it is honoured as the shortest
+    // delay the store was configured to wait.
+    const requester = new ScriptedRequester([
+      new RecoverableTransportError('slow down', 0),
+      asPairs(fullPayload([['put-object', putSkill()]])),
+    ]);
+    const store = new FDv2SkillStore(SDK_KEY, {
+      mode: 'poll',
+      pollIntervalMs: 10_000,
+      initialBackoffMs: 200,
+      maxBackoffMs: 5_000,
+      requester,
+    });
+    openStores.push(store);
+    const started = Date.now();
     store.start();
     expect(await store.waitForSkills(3000)).toBe(true);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+  });
+
+  it('recovers from a 400 by dropping the basis and asking again', async () => {
+    // The request carries the SDK key, a `basis` selector and an etag. A
+    // selector the server has stopped accepting is rejected as a 400, and
+    // treating that as permanently fatal would stop delivery for the process
+    // lifetime over state the store could simply drop.
+    endpoint.queuePoll(fullPayload([['put-object', putSkill('first')]], 'basis-1'), { etag: 'etag-1' });
+    endpoint.queuePoll([], { status: 400 });
+    endpoint.queuePoll(fullPayload([['put-object', putSkill('second')]], 'basis-2'));
+    const store = pollStore();
+    store.start();
+    expect(await waitUntil(() => store.getObject(SKILL_OBJECT_KIND, 'second') !== null)).toBe(true);
+    expect(store.failed).toBeNull();
+    // The retry asks from scratch: no selector, and no etag that would let the
+    // server answer 304 for a basis it just rejected.
+    const retry = endpoint.requests[2];
+    expect(retry.query.basis).toBeUndefined();
+    expect(retry.ifNoneMatch).toBeUndefined();
+  });
+
+  it('stops on a 400 for a request that carried no basis', async () => {
+    // Nothing left to drop: the request was already the from-scratch one, so
+    // the endpoint is refusing the request itself.
+    endpoint.queuePoll([], { status: 400 });
+    const store = pollStore();
+    store.start();
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    expect(store.failed).toContain('400');
+    expect(store.failed).toContain('base URI');
+    expect(store.failed).toContain('FDv2');
+    expect(endpoint.requests).toHaveLength(1);
+  });
+
+  it('stops on a second 400 after the basis has been dropped', async () => {
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]], 'basis-1'));
+    endpoint.queuePoll([], { status: 400 });
+    endpoint.queuePoll([], { status: 400 });
+    const store = pollStore();
+    store.start();
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    expect(store.failed).toContain('400');
+    expect(endpoint.requests).toHaveLength(3);
+    // The content the first transfer delivered is still servable.
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
 
   it('neither dies on nor parks behind an unreasonable Retry-After', async () => {
@@ -1621,6 +1747,10 @@ describe('failure handling', () => {
     expect(retryAfterMs(new Headers({ 'Retry-After': '2' }))).toBe(2000);
     expect(retryAfterMs(new Headers({ 'Retry-After': 'Wed, 21 Oct 2026 07:28:00 GMT' }))).toBeNull();
     expect(retryAfterMs(new Headers())).toBeNull();
+    // A blank value is absent, not zero.
+    expect(retryAfterMs(new Headers({ 'Retry-After': '' }))).toBeNull();
+    expect(retryAfterMs(new Headers({ 'Retry-After': '   ' }))).toBeNull();
+    expect(retryAfterMs(new Headers({ 'Retry-After': '0' }))).toBe(0);
   });
 
   it('classifies statuses into recoverable and fatal', () => {
@@ -1629,7 +1759,12 @@ describe('failure handling', () => {
     expect(classifyStatus(401).constructor.name).toBe('FatalTransportError');
     expect(classifyStatus(403).constructor.name).toBe('FatalTransportError');
     expect(classifyStatus(404).constructor.name).toBe('FatalTransportError');
-    expect(classifyStatus(400).constructor.name).toBe('FatalTransportError');
+    expect(classifyStatus(405).constructor.name).toBe('FatalTransportError');
+    // A 400 may be the selector the request carried rather than the request
+    // itself, so it is retried once from scratch before it is fatal.
+    expect(classifyStatus(400)).toBeInstanceOf(StaleRequestStateError);
+    expect(classifyStatus(400)).toBeInstanceOf(RecoverableTransportError);
+    expect(classifyStatus(400).message).toContain('base URI');
   });
 
   it('makes backoff exponential and capped', () => {
