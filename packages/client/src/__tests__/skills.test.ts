@@ -412,10 +412,15 @@ describe('InMemorySkillStore', () => {
     expect(seen[0]).toBe(raw);
   });
 
-  it('records but never fires a listener registered for another kind', () => {
+  it('refuses a listener for a kind it cannot notify', () => {
+    const store = new InMemorySkillStore();
+    expect(() => store.addListener('flag', vi.fn())).toThrow(/never fire/);
+  });
+
+  it('keeps no listener it refused', () => {
     const store = new InMemorySkillStore();
     const other = vi.fn();
-    store.addListener('flag', other);
+    expect(() => store.addListener('flag', other)).toThrow();
     store.put(rawSkill({ key: 'a' }));
     expect(other).not.toHaveBeenCalled();
   });

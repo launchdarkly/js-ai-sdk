@@ -2437,6 +2437,31 @@ describe('watchSkills', () => {
     const listeners = (store as unknown as { listeners: Map<string, unknown[]> }).listeners;
     expect(listeners.get(SKILL_OBJECT_KIND)).toEqual([]);
   });
+
+  it('refuses a listener for a kind the FDv2 store cannot notify', () => {
+    const store = pollStore();
+    expect(() => store.addListener('flag', vi.fn())).toThrow(/never fire/);
+    expect(() => store.addListener('segment', vi.fn())).toThrow(/never fire/);
+  });
+
+  it('retains no listener it refused, so nothing is left to leak', () => {
+    const store = pollStore();
+    expect(() => store.addListener('flag', vi.fn())).toThrow();
+    const listeners = (store as unknown as { listeners: Map<string, unknown[]> }).listeners;
+    expect(listeners.has('flag')).toBe(false);
+  });
+
+  it('still lets a refused listener be detached unconditionally', async () => {
+    // `SkillWatcher.close` removes without knowing whether the add succeeded.
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+    const store = pollStore();
+    const fn = vi.fn();
+    expect(() => store.addListener('flag', fn)).toThrow();
+    expect(() => store.removeListener('flag', fn)).not.toThrow();
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(fn).not.toHaveBeenCalled();
+  });
 });
 
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
@@ -2474,6 +2499,93 @@ describe('lifecycle', () => {
     });
     openStores.push(store);
     expect(await store.waitForSkills(50)).toBe(false);
+  });
+
+  it('retains no waiter for a wait that timed out', async () => {
+    const store = new FDv2SkillStore(SDK_KEY, {
+      mode: 'poll',
+      pollIntervalMs: 60_000,
+      requester: new ScriptedRequester([new Promise(() => {})]),
+    });
+    openStores.push(store);
+    const waiters = (store as unknown as { firstPayloadWaiters: unknown[] }).firstPayloadWaiters;
+    for (let i = 0; i < 3; i += 1) expect(await store.waitForSkills(10)).toBe(false);
+    // Every timed-out wait left behind is retained for the store's lifetime.
+    expect(waiters).toHaveLength(0);
+  });
+
+  it('resolves waitForSkills false at once for a wait started after close', async () => {
+    // A connection that is open and has delivered nothing: the store is neither
+    // holding a payload nor has it given up, which is the state in which a wait
+    // used to run its timeout out in full.
+    endpoint.holdStreamOpen = true;
+    endpoint.queueStream([]);
+    const store = streamStore();
+    store.start();
+    expect(await waitUntil(() => endpoint.requests.length > 0)).toBe(true);
+    await store.close();
+    const started = Date.now();
+    expect(await store.waitForSkills(3_000)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('resolves waitForSkills false at once for a store closed before it started', async () => {
+    const store = pollStore();
+    await store.close();
+    const started = Date.now();
+    expect(await store.waitForSkills(3_000)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('does not report a clean close as a delivery failure', async () => {
+    endpoint.holdStreamOpen = true;
+    endpoint.queueStream([]);
+    const store = streamStore();
+    store.start();
+    expect(await waitUntil(() => endpoint.requests.length > 0)).toBe(true);
+    await store.close();
+    expect(await store.waitForSkills(50)).toBe(false);
+    expect(store.failed).toBeNull();
+  });
+
+  it('still answers waitForSkills true after close when a payload arrived', async () => {
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+    const store = pollStore();
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    await store.close();
+    expect(await store.waitForSkills(3_000)).toBe(true);
+  });
+
+  it('refuses to restart a closed store', async () => {
+    const store = pollStore();
+    store.start();
+    await store.close();
+    expect(() => store.start()).toThrow(/cannot be restarted/);
+  });
+
+  it('opens no second delivery loop once closed', async () => {
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+    const store = pollStore({ pollIntervalMs: 60_000 });
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    await store.close();
+    const requests = endpoint.requests.length;
+    // The refusal itself is asserted above; what matters here is that the store
+    // opened nothing, rather than throwing after starting a second loop.
+    try {
+      store.start();
+    } catch {
+      /* expected */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(endpoint.requests).toHaveLength(requests);
+  });
+
+  it('refuses to restart a store closed before it ever started', async () => {
+    const store = pollStore();
+    await store.close();
+    expect(() => store.start()).toThrow(/cannot be restarted/);
   });
 
   it('satisfies the seam before it starts', () => {
