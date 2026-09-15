@@ -39,6 +39,7 @@ import {
   FDv2SkillStore,
   FetchRequester,
   isSkillEvent,
+  iterSse,
   type PollResult,
   ProtocolReader,
   RecoverableTransportError,
@@ -1162,6 +1163,48 @@ describe('polling against the endpoint', () => {
     await store.waitForSkills(5000);
     expect(store.getObject('flag', 'pdf-extraction')).toBeNull();
     expect(store.allObjects('flag')).toEqual({});
+  });
+});
+
+describe('SSE framing', () => {
+  const sseBody = (text: string): ReadableStream<Uint8Array> =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(text));
+        controller.close();
+      },
+    });
+
+  const framed = async (text: string): Promise<Array<[string, unknown]>> => {
+    const seen: Array<[string, unknown]> = [];
+    for await (const event of iterSse(sseBody(text))) seen.push(event);
+    return seen;
+  };
+
+  it('drops a block with no event name without eating the next event', async () => {
+    expect(await framed('data: {"orphan":true}\n\nevent: heart-beat\ndata: {}\n\n')).toEqual([['heart-beat', {}]]);
+  });
+
+  it('keeps both named events around a nameless block', async () => {
+    expect(
+      await framed('event: heart-beat\ndata: {"n":1}\n\ndata: {"orphan":true}\n\nevent: heart-beat\ndata: {"n":2}\n\n'),
+    ).toEqual([
+      ['heart-beat', { n: 1 }],
+      ['heart-beat', { n: 2 }],
+    ]);
+  });
+
+  it('ignores a comment between events', async () => {
+    expect(
+      await framed('event: heart-beat\ndata: {"n":1}\n\n: keep-alive\n\nevent: heart-beat\ndata: {"n":2}\n\n'),
+    ).toEqual([
+      ['heart-beat', { n: 1 }],
+      ['heart-beat', { n: 2 }],
+    ]);
+  });
+
+  it('dispatches a named block with no data as a null payload', async () => {
+    expect(await framed('event: heart-beat\n\n')).toEqual([['heart-beat', null]]);
   });
 });
 

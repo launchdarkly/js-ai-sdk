@@ -1087,12 +1087,16 @@ export async function* iterSse(
   let name: string | null = null;
   let dataLines: string[] = [];
 
+  // Every block that ends clears the buffered fields, whether or not it turns
+  // into an event: a block with no `event:` field is the default `message`
+  // event, which this endpoint never sends, so dropping it is right — but its
+  // `data:` lines must not be left behind to corrupt the block that follows.
   const dispatch = (): [string, unknown] | null => {
-    if (name === null) return null;
-    const payload = dataLines.join('\n');
     const eventName = name;
+    const payload = dataLines.join('\n');
     name = null;
     dataLines = [];
+    if (eventName === null) return null;
     if (payload === '') return [eventName, null];
     try {
       return [eventName, JSON.parse(payload)];
