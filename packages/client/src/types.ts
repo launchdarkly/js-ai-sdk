@@ -270,6 +270,12 @@ export type RawSkillObject = {
  * should implement `removeListener` too; it removes one occurrence of `fn` under
  * `kind` and is a no-op when `fn` is not registered.
  *
+ * `addListener` should throw for a `kind` the store cannot notify rather than
+ * accept the listener and never call it — both shipped stores notify `'skill'`
+ * only, and do throw. A watcher that silently never fires is indistinguishable
+ * from one whose objects never changed. `removeListener` has no such constraint:
+ * a kind holding no listeners is simply nothing to remove.
+ *
  * Everything a store serves is untrusted input. The transport is not part of the
  * trust boundary — key, version, size, and content hash are revalidated at the
  * accessor boundary on every pass.

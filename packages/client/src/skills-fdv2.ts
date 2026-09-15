@@ -1481,6 +1481,11 @@ export class FDv2SkillStore implements SkillStore {
   private controller: AbortController | null = null;
   private loop: Promise<void> | null = null;
   private failedReason: string | null = null;
+  // Set by `close`, and deliberately not folded into `failedReason`: closing is
+  // the caller's own decision, not a delivery failure, so `failed` stays `null`.
+  // It is what lets `waitForSkills` answer a closed store immediately and
+  // `start` refuse to reopen one.
+  private closed = false;
   private firstPayload = false;
   private readonly firstPayloadWaiters: Array<() => void> = [];
   // Recoverable failures in a row, cleared by any sign of a working server: a
@@ -1521,8 +1526,19 @@ export class FDv2SkillStore implements SkillStore {
    * Starts delivery. Idempotent; returns `this` so it chains.
    *
    * Does not await: use `waitForSkills` when boot ordering matters.
+   *
+   * Throws once the store has been closed. `close` is final — a store is not a
+   * connection to be reopened — and restarting delivery on one would produce a
+   * store that looks live and is not, which is the failure this whole surface is
+   * built to refuse. Construct a new store instead.
    */
   start(): this {
+    if (this.closed) {
+      throw new Error(
+        'this FDv2SkillStore has been closed and cannot be restarted; construct a new FDv2SkillStore instead. ' +
+          'A closed store still answers from the content it received, so retrieval needs no restart.',
+      );
+    }
     if (this.loop !== null) return this;
     this.controller = new AbortController();
     this.loop = this.run(this.controller.signal);
@@ -1537,11 +1553,17 @@ export class FDv2SkillStore implements SkillStore {
    * failure or an empty reconcile mid-flight. `shutdown()` is what detaches the
    * store from the accessors.
    *
+   * Final, and one-way: `start` throws afterwards rather than opening a second
+   * delivery loop. `failed` stays `null` — closing is not a failure — and
+   * `waitForSkills` answers `false` at once rather than waiting out its timeout
+   * for a payload that cannot arrive.
+   *
    * Aborting the signal is what interrupts an open stream: the delivery task
    * spends its life awaiting a read, and a flag it never checks would leave a
    * healthy stream running until the process exited.
    */
   async close(): Promise<void> {
+    this.closed = true;
     this.controller?.abort();
     const loop = this.loop;
     this.loop = null;
@@ -1559,20 +1581,36 @@ export class FDv2SkillStore implements SkillStore {
    * was closed, or delivery stopped for good and no payload will arrive; see
    * `failed` to tell the last case from the others. Boot ordering is all this
    * answers; `diagnostics` answers the rest.
+   *
+   * Neither a closed store nor one whose delivery has stopped for good waits:
+   * both answer immediately, whether the wait was already pending when it
+   * happened or started afterwards. A store that did receive a payload still
+   * answers `true` after close, matching what it will still serve.
    */
   waitForSkills(timeoutMs = 10_000): Promise<boolean> {
     if (this.firstPayload) return Promise.resolve(true);
-    // Delivery that has already stopped for good has no payload left to wait
-    // for, so answer now rather than after the timeout.
-    if (this.failedReason !== null) return Promise.resolve(false);
+    // A closed store, and delivery that has already stopped for good, both have
+    // no payload left to wait for: answer now rather than after the timeout.
+    if (this.closed || this.failedReason !== null) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(this.firstPayload), timeoutMs);
-      (timer as unknown as { unref?: () => void }).unref?.();
-      this.firstPayloadWaiters.push(() => {
+      const waiter = (): void => {
         clearTimeout(timer);
         resolve(this.firstPayload);
-      });
+      };
+      const timer = setTimeout(() => {
+        // The timed-out waiter takes itself out of the list. Left in, every
+        // expired wait would be retained for the lifetime of the store.
+        this.dropWaiter(waiter);
+        resolve(this.firstPayload);
+      }, timeoutMs);
+      (timer as unknown as { unref?: () => void }).unref?.();
+      this.firstPayloadWaiters.push(waiter);
     });
+  }
+
+  private dropWaiter(waiter: () => void): void {
+    const index = this.firstPayloadWaiters.indexOf(waiter);
+    if (index !== -1) this.firstPayloadWaiters.splice(index, 1);
   }
 
   private releaseWaiters(): void {
@@ -1622,8 +1660,20 @@ export class FDv2SkillStore implements SkillStore {
    * `fn` runs inline on the delivery task. Keep it cheap and non-blocking: work
    * done there delays the next event. An exception it throws is logged and
    * swallowed, because a broken listener must not be able to kill delivery.
+   *
+   * Throws for any `kind` but `'skill'`. This store notifies skill changes and
+   * nothing else — flag and segment objects on the same connection are skipped,
+   * never dispatched — so accepting a listener on another kind would hand back a
+   * watcher that silently never fires, which is indistinguishable from one whose
+   * objects never changed.
    */
   addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void {
+    if (kind !== SKILL_OBJECT_KIND) {
+      throw new Error(
+        `FDv2SkillStore notifies only '${SKILL_OBJECT_KIND}' changes, so a listener on ${JSON.stringify(kind)} ` +
+          `would never fire. Register it on '${SKILL_OBJECT_KIND}'.`,
+      );
+    }
     const existing = this.listeners.get(kind);
     if (existing) existing.push(fn);
     else this.listeners.set(kind, [fn]);
@@ -1634,7 +1684,10 @@ export class FDv2SkillStore implements SkillStore {
    * during one commit takes effect from the next.
    *
    * Removes one occurrence; removing a callable that is not registered is a
-   * no-op, so `SkillWatcher.close` can detach unconditionally.
+   * no-op, so `SkillWatcher.close` can detach unconditionally. Unlike
+   * `addListener` this tolerates any `kind` — a kind that holds no listeners is
+   * simply nothing to remove — so detaching never has to know which kind it
+   * attached under.
    */
   removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void {
     const listeners = this.listeners.get(kind);
