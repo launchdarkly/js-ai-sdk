@@ -4,6 +4,8 @@
     { "path": "packages/client" },
     { "path": "packages/ai-node" },
     { "path": "packages/ai-otel" },
+    { "path": "packages/bedrock-agents" },
+    { "path": "packages/bedrock-messages" },
     { "path": "packages/claude-agents" },
     { "path": "packages/claude-messages" },
     { "path": "packages/openai-agents" },
