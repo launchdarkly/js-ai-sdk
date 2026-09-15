@@ -2,22 +2,13 @@
  * Agent Skills — re-reconcile on delivery, so revocation does not wait for a restart.
  *
  * `writeSkills` is a one-shot reconcile: it materializes what the store holds
- * now. That was the whole story while the only transport was a hand-populated
- * store, and the design accordingly deferred an eager re-reconcile — revocation
- * would take effect at the next process restart, which the security review filed
- * as AV-1.
+ * now. This module re-runs it whenever the store reports a change, so a
+ * `delete-object` that reaches a live connection takes a skill's `SKILL.md` off
+ * disk within a debounce interval rather than at the next process restart.
  *
- * A streaming FDv2 connection changes the premise. A `delete-object` reaches a
- * live connection in **seconds**, and the store already publishes a change
- * listener, so the gap between "LaunchDarkly revoked this skill" and "its
- * `SKILL.md` is off the agent's disk" collapses from a process lifetime to a
- * debounce interval. That is the single largest resilience improvement available
- * at this layer, which is why it is here rather than in a later phase.
- *
- * `onUnavailable: 'keep'` stays the default, deliberately and per the review: an
- * outage must not read as "everything was revoked". A watcher that pruned on a
- * failed retrieval would convert every transport blip into deletion of a
- * customer's skill files.
+ * `onUnavailable: 'keep'` stays the default: an outage must not read as
+ * "everything was revoked". A watcher that pruned on a failed retrieval would
+ * convert every transport blip into deletion of a customer's skill files.
  *
  * Layering: this module sits *above* `skills-fs.ts` and calls `writeSkills`
  * without modifying it. Nothing in the reconcile, the accessors, or verification

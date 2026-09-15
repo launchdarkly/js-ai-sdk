@@ -1,13 +1,10 @@
 /**
  * Agent Skills — the FDv2 delivery transport.
  *
- * The store implementation that actually talks to LaunchDarkly. It sits *below*
- * the `SkillStore` seam, not above it: it produces raw wire objects in the shape
- * `skills-core.ts` documents, and everything above — the accessors, integrity
- * verification, the `Skill` type, materialization — is unchanged and unaware of
- * it. That is the whole point of the seam, and the fact that replacing the
- * transport design wholesale cost nothing above this line is the evidence it was
- * drawn in the right place.
+ * The store implementation that talks to LaunchDarkly. It sits *below* the
+ * `SkillStore` seam: it produces raw wire objects in the shape `skills-core.ts`
+ * documents, and everything above — the accessors, integrity verification, the
+ * `Skill` type, materialization — is unaware of it.
  *
  * Layering:
  *
@@ -15,7 +12,7 @@
  * @launchdarkly/ai-server
  *   └─ SkillStore (types.ts)              ── structurally typed accessor surface
  *         └─ FDv2SkillStore (this file)   ── deserialize, hold, serve
- *               └─ the SDK-facing FDv2 channel on FDCore
+ *               └─ the SDK-facing FDv2 channel
  *                  GET /sdk/poll, GET /sdk/stream, authenticated with the
  *                  environment's server-side SDK key
  * ```
@@ -25,19 +22,6 @@
  * do not import it. It uses only platform globals — `fetch`, `AbortController`,
  * `TextDecoder` — so the content path adds no dependency.
  *
- * **There is no bespoke private route here, deliberately.** An earlier design had
- * this adapter poll `/private/flagdlv/payloads/{id}/latest/obj/skill/{key}`.
- * Those are gonfalon private endpoints authenticated by Cognito machine-token
- * OAuth scopes with no per-tenant authorization; the security review ruled out
- * both relaxing that auth and shipping a machine credential to a customer host.
- * This transport uses the genuinely SDK-facing channel instead, which is also the
- * channel payload signing will eventually cover. Do not reintroduce the private
- * route.
- *
- * This is a port of the Python SDK's `skills_fdv2.py` and is deliberately
- * mechanical: same protocol boundary, same constants, same wire semantics, same
- * diagnostics vocabulary. A change to one belongs in both.
- *
  * What this module does *not* do, on purpose:
  *
  * - **It does not verify content.** Verification lives at the accessor boundary
@@ -45,8 +29,8 @@
  *   `InMemorySkillStore` and a customer's own.
  * - **It does not skip verification when the wire envelope has no
  *   `contentHash`.** A hashless object is stored verbatim and *withheld* by
- *   verification with `missing_content_hash`; this module's job is to make that
- *   outcome loud rather than to paper over it.
+ *   verification with `missing_content_hash`; this module makes that outcome
+ *   loud rather than papering over it.
  * - **It does not evaluate anything.** No flags, no segments, no targeting.
  */
 
@@ -161,13 +145,10 @@ function error(message: string): void {
 /**
  * Refuses a mobile key or a client-side environment ID.
  *
- * Skills are for server-side agent runtimes. The payload assignment that carries
- * them is shared by every auth type, so the skill payload ID is appended for
- * mobile and environment-ID auth too — which means a client-side credential may
- * well *succeed* against these endpoints and deliver customer-confidential skill
- * content to a client-side process. Throwing here is the SDK-side half of that
- * boundary; excluding skills at assignment time is the platform-side half, and is
- * an open ask on FDN.
+ * Skills are for server-side agent runtimes and skill content is
+ * customer-confidential. A client-side credential may succeed against these
+ * endpoints, so the SDK refuses one up front rather than deliver skill content
+ * to a client-side process.
  *
  * Throws rather than warning, because there is no degraded mode that is correct:
  * a store built on the wrong credential should not exist.
@@ -252,10 +233,9 @@ export type StoreDiagnostics = {
 
 const HASHLESS_ADVICE =
   "The delivered skill object carries no 'contentHash', so integrity verification withholds it with reason_code " +
-  "'missing_content_hash' and its content will never resolve. This is not a fault in this store and not something " +
-  'the SDK can work around: verification hashes the verbatim bytes and compares, and there is nothing to compare ' +
-  'against. The field is specified as an additive sha256-over-verbatim-UTF-8 value on the skill envelope ' +
-  '(LaunchDarkly AIC-2905) and has not shipped yet. Until it does, expect an empty result from every skill accessor.';
+  "'missing_content_hash' and its content will not resolve. The SDK cannot work around this: verification hashes " +
+  'the verbatim bytes and compares, and there is nothing to compare against. Skill accessors return an empty ' +
+  'result for this skill until LaunchDarkly delivers it with a contentHash.';
 
 /**
  * `(key, version)` pairs already reported hashless.
@@ -270,7 +250,7 @@ export const _warnedHashless = new Set<string>();
  *
  * At error level rather than warn, and per object rather than once per process,
  * because this is the difference between a broken deployment and an
- * empty-by-design one — the exact confusion the blocking gap produces.
+ * empty-by-design one.
  */
 function warnHashless(raw: RawSkillObject): void {
   const identity = `${String(raw.key)}:${String(raw.version)}`;
@@ -313,8 +293,7 @@ export type Tombstone = { readonly key: string; readonly objectVersion: number |
  *
  * The kind alone decides it. Every other kind is **ignored, not rejected**,
  * because flag and segment objects share the connection and erroring on them
- * would turn a normal payload into a reconnect loop — exactly the unknown-kind
- * failure this feature must not reproduce.
+ * would turn a normal payload into a reconnect loop.
  */
 export function isSkillEvent(data: unknown): boolean {
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return false;
@@ -465,16 +444,9 @@ export function tombstoneFromDelete(data: Record<string, unknown>): Tombstone | 
  * its key alone, so verification withholds it with a signal rather than the
  * transport dropping it into indistinguishable absence.
  *
- * **`snapshot` collapses to one object per key at its newest version, and that is
- * load-bearing here in a way it is not in Python.** `<root>/<key>/SKILL.md` is a
- * single path, so a whole-store consumer must see one object per key or a `'*'`
- * reconcile writes the same path twice in one run and `allSkills` returns a list
- * holding two versions of one skill. The Python SDK collapses in
- * `newest_by_key`, above the seam; that helper has not been ported to this SDK
- * yet, so the collapse happens here instead. The observable end-to-end behaviour
- * is identical, and `getObject` still resolves a pinned version out of the full
- * set — which is the case the collapse must not break. When `newestByKey` lands
- * in `skills-core.ts`, move it and delete this note.
+ * `snapshot` collapses to one object per key at its newest version, because
+ * `<root>/<key>/SKILL.md` is a single path and `allSkills` should return one
+ * entry per skill. `get` still resolves a pinned version out of the full set.
  */
 export class SkillObjectSet {
   private versions = new Map<string, Map<number, RawSkillObject>>();
@@ -541,14 +513,10 @@ export class SkillObjectSet {
   /**
    * One entry per skill key, at its newest version, keyed by the bare skill key.
    *
-   * The key is the *skill* key, never the wire key: `writeSkills('*')` derives its
-   * prune keep-set from these keys, and a key it cannot parse as a skill key
-   * drops out of the keep-set and takes the copy already on disk with it. A
-   * `key:version` spelling here therefore turns every unverifiable object into a
-   * deletion — precisely the outcome withholding exists to prevent. Matching a
-   * held object back to the event that carried it is what `allRaw` is for.
-   *
-   * See the class docstring for why the collapse to one object per key lives here.
+   * The key must be the skill key, never the wire `key:version`: `writeSkills('*')`
+   * derives its prune keep-set from these keys, and a key it cannot parse as a
+   * skill key drops out of the keep-set and takes the copy already on disk with
+   * it. Use `allRaw` to see every held `(key, version)`.
    */
   snapshot(): Record<string, RawSkillObject> {
     const out: Record<string, RawSkillObject> = {};
@@ -652,25 +620,18 @@ function freshDiagnostics(): MutableDiagnostics {
  * `skills-fdv2.test.ts` drives this directly, and the HTTP layer above it only has
  * to turn bytes into `[event name, data]` pairs.
  *
- * **Changes are buffered and committed at `payload-transferred`**, matching how
- * the base SDK's FDv2 data source applies a change set. A payload version is the
- * unit of consistency: applying half of one would publish a state the server
- * never described, and on a full transfer it would briefly empty the store —
- * which, with pruning on, is the difference between a reconcile and deleting a
- * customer's skill files. Listeners therefore fire once per commit, not once per
- * object, which is also exactly the granularity the re-reconcile wants.
+ * **Changes are buffered and committed at `payload-transferred`.** A payload
+ * version is the unit of consistency: applying half of one would publish a state
+ * the server never described, and on a full transfer it would briefly empty the
+ * store — which, with pruning on, is the difference between a reconcile and
+ * deleting a customer's skill files. Listeners therefore fire once per commit.
  *
- * **The first payload intent is read, and is assumed to be the skill payload.**
- * Delivery provides one payload per credential and the protocol requires a client
- * to ignore all but the first payload intent, so `payloads[0]` is both what
- * arrives and what the protocol says to read. If that ever widens, an `xfer-full`
- * for somebody else's payload would empty the skill set and the next
- * `payload-transferred` would publish it empty — with pruning on, the difference
- * between a reconcile and deleting a customer's files. This layer therefore learns
- * which payload skills arrive on and declines to apply a transfer of any other,
- * once at warning level and counted. The residual is the first transfer of a
- * connection: before a skill has arrived there is nothing to compare a payload
- * against.
+ * **The first payload intent is read, and is assumed to be the skill payload**,
+ * as the protocol requires. Because an `xfer-full` for a different payload would
+ * otherwise empty the skill set, this layer learns which payload skills arrive
+ * on and declines to apply a transfer of any other, once at warning level and
+ * counted. The first transfer of a connection is always applied: before a skill
+ * has arrived there is nothing to compare a payload against.
  */
 export class ProtocolReader {
   readonly diagnostics = freshDiagnostics();
@@ -678,8 +639,8 @@ export class ProtocolReader {
   private pending: SkillObjectSet | null = null;
   private changes: RawSkillObject[] = [];
   // The payload the current intent describes, and the payload skills have
-  // actually arrived on. One payload per connection makes these the same
-  // payload; the class docstring says why they are kept apart regardless.
+  // actually arrived on. Kept apart so a transfer of some other payload can be
+  // recognised and declined.
   private intentPayloadId: string | null = null;
   private skillPayloadId: string | null = null;
   private skillsInPayload = 0;
@@ -806,9 +767,6 @@ export class ProtocolReader {
       // A full transfer revokes by omission: whatever it did not carry is gone,
       // and no `delete-object` ever says so. Diffed before the swap, so those
       // departures reach listeners as tombstones like any other revocation.
-      // Without this, a full transfer that drops every skill commits an empty
-      // store with an empty change list and notifies nobody — and `watchSkills`
-      // would leave the revoked files on disk until the process restarted.
       if (this.intent === INTENT_TRANSFER_FULL) {
         const revoked = revocationsBetween(this.committed, this.pending);
         this.changes.push(...revoked);
@@ -874,8 +832,7 @@ export class ProtocolReader {
    * Whether a transfer completes a payload other than the one skills arrive on.
    *
    * `false` unless both payloads are known, so one-payload delivery and the
-   * first transfer of a connection behave exactly as they did before this check
-   * existed.
+   * first transfer of a connection are always applied.
    */
   private isForeignPayload(payloadId: string | null): boolean {
     return this.skillPayloadId !== null && payloadId !== null && payloadId !== this.skillPayloadId;
@@ -1171,11 +1128,8 @@ export type Requester = {
 };
 
 /**
- * The only place this module opens a connection.
- *
- * Platform globals only, on purpose: this package's runtime dependencies are
- * `@opentelemetry/api` and `dotenv`, and its LaunchDarkly base-SDK dependency is
- * an optional peer, so the content path must not smuggle in an HTTP client.
+ * The only place this module opens a connection. Uses platform globals only, so
+ * the content path adds no HTTP client dependency.
  *
  * `readTimeoutMs` is applied to every request through a {@link ReadDeadline}:
  * connecting, waiting for headers and each body read are all bounded by the
@@ -1309,10 +1263,8 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export type FDv2SkillStoreOptions = {
   /**
    * `'stream'` by default. Prefer it: a `delete-object` reaches a live stream in
-   * seconds, which is what makes revocation seconds-latent instead of
-   * restart-latent, and is why the change-listener re-reconcile is worth wiring
-   * at all. `'poll'` exists for environments that cannot hold a long-lived
-   * connection, and revocation there is one `pollIntervalMs` late.
+   * seconds. `'poll'` exists for environments that cannot hold a long-lived
+   * connection, and a revocation there arrives within one `pollIntervalMs`.
    */
   readonly mode?: FDv2Mode;
   readonly baseUri?: string;
@@ -1363,12 +1315,10 @@ export type FDv2SkillStoreOptions = {
  * content is customer-confidential. A mobile key or a client-side environment ID
  * throws from the constructor.
  *
- * **Delivery is in the background; retrieval is not.** `SkillStore` is a
- * synchronous seam, so a background task owns the connection and fills memory,
- * and `getObject` only ever reads what has already arrived. Nothing here blocks a
- * retrieval on the network. The corollary is that a process which calls
- * `getSkill` immediately after `start()` may see an empty store; `waitForSkills`
- * is how you order boot against the first payload.
+ * **Delivery is in the background; retrieval is not.** A background task owns
+ * the connection and fills memory, and `getObject` only ever reads what has
+ * already arrived. A process that calls `getSkill` immediately after `start()`
+ * may see an empty store; `waitForSkills` orders boot against the first payload.
  *
  * **Last known good survives an outage.** A transport failure never empties the
  * store and never makes `getObject` throw: it keeps serving what it last
@@ -1514,8 +1464,7 @@ export class FDv2SkillStore implements SkillStore {
    * Registers `fn` to be called once per committed change.
    *
    * Fires **once per changed object at payload-transferred**, not as objects
-   * stream in: a payload version is the unit of consistency, and a listener that
-   * reacted to a half-applied full transfer would see the store briefly empty.
+   * stream in, so a listener never observes a half-applied transfer.
    * `watchSkills` is the intended consumer.
    *
    * A put notifies with the raw skill object. A revocation notifies with a
