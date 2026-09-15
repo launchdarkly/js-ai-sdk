@@ -209,7 +209,16 @@ export type StoreDiagnostics = {
    * mixed payload is visibly mixed.
    */
   readonly objectsIgnored: number;
-  /** `delete-object` events applied to skills. */
+  /**
+   * Skill revocations applied: every `delete-object` event, plus every skill key
+   * a full transfer dropped altogether.
+   *
+   * A key whose version merely moved does not count. A full transfer states the
+   * whole payload, so a version bump arrives as a put for the new version and an
+   * absence where the old one was; both halves still reach listeners, because a
+   * listener that reads versions needs them, but a key that survives under a new
+   * version was never revoked.
+   */
   readonly objectsRevoked: number;
   /**
    * Transfers not applied because they completed a payload other than the one
@@ -242,12 +251,35 @@ const HASHLESS_ADVICE =
   "'missing_content_hash' and its content will not resolve. Contact LaunchDarkly support.";
 
 /**
- * `(key, version)` pairs already reported hashless.
+ * What has already been reported hashless: one entry per `(key, version)`, plus
+ * one describing the store-wide summary last spoken.
  *
- * Module-scoped so the error is one per object per process rather than one per
- * re-delivered payload.
+ * Module-scoped so each error is one per object per process rather than one per
+ * re-delivered payload, which matters most in polling mode — the same payload
+ * arrives on every interval.
  */
 export const _warnedHashless = new Set<string>();
+
+/**
+ * Ceiling on remembered reports, so a process whose skills are versioned often
+ * cannot accumulate an entry per version indefinitely. Oldest out first; an
+ * evicted object can be reported a second time, which is the cheaper of the two
+ * failure modes.
+ */
+const HASHLESS_MEMORY_LIMIT = 512;
+
+/** Distinguishes the store-wide summary's entry from a per-object one. */
+const SUMMARY_MARKER = '\u0000summary\u0000';
+
+function rememberHashless(entry: string): void {
+  // Insertion-ordered iteration makes the first entry the oldest.
+  while (_warnedHashless.size >= HASHLESS_MEMORY_LIMIT) {
+    const oldest = _warnedHashless.values().next().value;
+    if (oldest === undefined) break;
+    _warnedHashless.delete(oldest);
+  }
+  _warnedHashless.add(entry);
+}
 
 /**
  * One error per `(key, version)` whose envelope had no `contentHash`.
@@ -259,26 +291,55 @@ export const _warnedHashless = new Set<string>();
 function warnHashless(raw: RawSkillObject): void {
   const identity = `${String(raw.key)}:${String(raw.version)}`;
   if (_warnedHashless.has(identity)) return;
-  _warnedHashless.add(identity);
+  rememberHashless(identity);
   error(
     `Skill '${String(raw.key)}' version ${String(raw.version)} arrived without a contentHash and will be ` +
       `withheld. ${HASHLESS_ADVICE}`,
   );
 }
 
+/** Forgets the summary, so a relapse after a recovery is reported afresh. */
+function forgetHashlessSummary(): void {
+  for (const entry of _warnedHashless) {
+    if (entry.startsWith(SUMMARY_MARKER)) _warnedHashless.delete(entry);
+  }
+}
+
 /**
- * One error per committed payload in which *nothing* the store now holds can
- * possibly verify.
+ * One error per *distinct* committed store in which nothing held can possibly
+ * verify.
  *
  * Fires at delivery time, so the condition is visible in a process that boots,
  * materializes nothing, and exits — which is the shape a skills deployment fails
  * in. The accessor boundary's own withholding summary only speaks once a caller
  * asks.
+ *
+ * Spoken when the condition becomes true and whenever the hashless objects
+ * change, and not again for a store that has not moved: an unchanging payload
+ * re-delivered on every poll describes one problem, not one per interval. A
+ * store that recovers and relapses is reported again.
  */
 function warnIfNothingCanVerify(held: RawSkillObject[]): void {
-  if (held.length === 0) return;
   const hashless = held.filter((raw) => typeof raw.contentHash !== 'string');
-  if (hashless.length !== held.length) return;
+  if (hashless.length === 0) {
+    // Everything held verifies, so there is nothing outstanding to remember.
+    _warnedHashless.clear();
+    return;
+  }
+  if (hashless.length !== held.length) {
+    forgetHashlessSummary();
+    return;
+  }
+
+  const summary =
+    SUMMARY_MARKER +
+    hashless
+      .map((raw) => `${String(raw.key)}:${String(raw.version)}`)
+      .sort()
+      .join('\u0000');
+  if (_warnedHashless.has(summary)) return;
+  forgetHashlessSummary();
+  rememberHashless(summary);
   error(
     `All ${held.length} skill object(s) in the delivered payload arrived without a contentHash. No skill content ` +
       `will resolve from this store. ${HASHLESS_ADVICE}`,
@@ -615,6 +676,22 @@ function revocationsBetween(current: SkillObjectSet, next: SkillObjectSet): RawS
     .map((raw) => ({ key: raw.key, version: isValidSkillVersion(raw.version) ? raw.version : null }));
 }
 
+/**
+ * How many of `revoked` are true revocations rather than version moves.
+ *
+ * Counted per key, not per tombstone: a key `next` still holds under some other
+ * version has moved, and only a key that left the payload entirely is gone. This
+ * is what `objectsRevoked` counts; `changes` carries every tombstone regardless.
+ */
+function keysFullyRevoked(revoked: RawSkillObject[], next: SkillObjectSet): number {
+  const departed = new Set<string>();
+  for (const raw of revoked) {
+    const key = String(raw.key);
+    if (next.get(key, null) === null) departed.add(key);
+  }
+  return departed.size;
+}
+
 type MutableDiagnostics = { -readonly [K in keyof StoreDiagnostics]: StoreDiagnostics[K] };
 
 function freshDiagnostics(): MutableDiagnostics {
@@ -788,7 +865,8 @@ export class ProtocolReader {
       if (this.intent === INTENT_TRANSFER_FULL) {
         const revoked = revocationsBetween(this.committed, this.pending);
         this.changes.push(...revoked);
-        this.diagnostics.objectsRevoked += revoked.length;
+        // Every departure is reported; only a key that left counts as revoked.
+        this.diagnostics.objectsRevoked += keysFullyRevoked(revoked, this.pending);
       }
       this.committed.replaceWith(this.pending);
       warnIfNothingCanVerify(this.committed.allRaw());

@@ -865,6 +865,58 @@ describe('payload identity', () => {
     expect(changes.slice(1).every((raw) => !('content' in raw))).toBe(true);
   });
 
+  it('does not count a version bump as a revocation', () => {
+    // `objectsRevoked` is the kind of counter an operator alerts on, so a
+    // routine version move must not raise it. The departed version is still
+    // reported, because a listener that reads versions needs both halves.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, skillPayload([['put-object', putSkill('pdf-extraction', { objectVersion: 1 })]]));
+    const outcomes = drive(
+      reader,
+      skillPayload([['put-object', putSkill('pdf-extraction', { objectVersion: 2 })]], { state: 'basis-2' }),
+    );
+    expect(reader.diagnostics.objectsRevoked).toBe(0);
+    expect((outcomes.at(-1)?.changes ?? []).map((raw) => ({ key: raw.key, version: raw.version }))).toEqual([
+      { key: 'pdf-extraction', version: 2 },
+      { key: 'pdf-extraction', version: 1 },
+    ]);
+  });
+
+  it('counts only the keys a full transfer dropped altogether', () => {
+    // One key moves and one leaves: exactly one revocation, both tombstones.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(
+      reader,
+      skillPayload([
+        ['put-object', putSkill('a', { objectVersion: 1 })],
+        ['put-object', putSkill('b', { objectVersion: 1 })],
+      ]),
+    );
+    const outcomes = drive(
+      reader,
+      skillPayload([['put-object', putSkill('a', { objectVersion: 2 })]], { state: 'basis-2' }),
+    );
+    expect(reader.diagnostics.objectsRevoked).toBe(1);
+    expect((outcomes.at(-1)?.changes ?? []).map((raw) => raw.key)).toEqual(['a', 'a', 'b']);
+  });
+
+  it('counts a key that leaves once however many versions it held', () => {
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(
+      reader,
+      skillPayload([
+        ['put-object', putSkill('a', { objectVersion: 1 })],
+        ['put-object', putSkill('a', { objectVersion: 2 })],
+      ]),
+    );
+    drive(reader, skillPayload([['put-object', putSkill('b', { objectVersion: 1 })]], { state: 'basis-2' }));
+    expect(reader.diagnostics.objectsRevoked).toBe(1);
+    expect(held.get('a', null)).toBeNull();
+  });
+
   it('does not adopt the selector of a payload it declined', () => {
     // Ignoring a foreign payload's contents while adopting its resume point
     // would ask the next poll or stream to resume from someone else's payload:
@@ -1819,6 +1871,11 @@ describe('the missing contentHash', () => {
   // computed from the content it was handed would certify the content against
   // itself and verify nothing.
 
+  const hashlessSummaries = (): string[] =>
+    consoleErrors()
+      .split('\n')
+      .filter((line) => line.includes('No skill content will resolve'));
+
   it('withholds a hashless skill with the right reason', async () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill('pdf-extraction', { omitHash: true })]]));
     const store = pollStore();
@@ -1917,11 +1974,81 @@ describe('the missing contentHash', () => {
     const store = pollStore();
     store.start();
     await store.waitForSkills(5000);
-    const summaries = consoleErrors()
-      .split('\n')
-      .filter((line) => line.includes('No skill content will resolve'));
+    const summaries = hashlessSummaries();
     expect(summaries).toHaveLength(1);
     expect(summaries[0]).toContain('All 2 skill object(s)');
+  });
+
+  it('does not repeat the summary for a store that has not moved', () => {
+    // `contentHash` is not on the wire yet, so a server answering `xfer-changes`
+    // rather than `xfer-none` re-delivers the same hashless payload on every
+    // poll. One problem is one paragraph, not one per interval.
+    const reader = new ProtocolReader(new SkillObjectSet());
+    const payload = fullPayload([
+      ['put-object', putSkill('a', { omitHash: true })],
+      ['put-object', putSkill('b', { omitHash: true })],
+    ]);
+    drive(reader, payload);
+    drive(reader, payload);
+    drive(reader, payload);
+    expect(hashlessSummaries()).toHaveLength(1);
+  });
+
+  it('speaks again when the hashless objects change', () => {
+    // A different set of withheld skills is a different problem.
+    const reader = new ProtocolReader(new SkillObjectSet());
+    drive(reader, fullPayload([['put-object', putSkill('a', { omitHash: true })]]));
+    drive(reader, fullPayload([['put-object', putSkill('b', { omitHash: true })]], 'basis-2'));
+    expect(hashlessSummaries()).toHaveLength(2);
+  });
+
+  it('speaks again about a relapse after a recovery', () => {
+    const reader = new ProtocolReader(new SkillObjectSet());
+    const broken = fullPayload([['put-object', putSkill('a', { omitHash: true })]]);
+    drive(reader, broken);
+    drive(reader, fullPayload([['put-object', putSkill('a')]], 'basis-2'));
+    drive(reader, broken);
+    expect(hashlessSummaries()).toHaveLength(2);
+  });
+
+  it('bounds what it remembers about hashless objects', () => {
+    // One entry per `(key, version)` for the life of the process would leak
+    // slowly in an agent whose skills are versioned often.
+    const reader = new ProtocolReader(new SkillObjectSet());
+    for (let version = 1; version <= 600; version += 1) {
+      drive(
+        reader,
+        fullPayload(
+          [['put-object', putSkill('pdf-extraction', { objectVersion: version, omitHash: true })]],
+          'basis-1',
+        ),
+      );
+    }
+    expect(_warnedHashless.size).toBeLessThan(600);
+  });
+
+  it('forgets what it remembers once everything held verifies', () => {
+    const reader = new ProtocolReader(new SkillObjectSet());
+    drive(reader, fullPayload([['put-object', putSkill('a', { omitHash: true })]]));
+    expect(_warnedHashless.size).toBeGreaterThan(0);
+    drive(reader, fullPayload([['put-object', putSkill('a')]], 'basis-2'));
+    expect(_warnedHashless.size).toBe(0);
+  });
+
+  it('still reports each hashless object in a payload separately', () => {
+    // The per-object dedupe the bound and the summary must not disturb.
+    const reader = new ProtocolReader(new SkillObjectSet());
+    drive(
+      reader,
+      fullPayload([
+        ['put-object', putSkill('a', { omitHash: true })],
+        ['put-object', putSkill('b', { omitHash: true })],
+      ]),
+    );
+    const perObject = consoleErrors()
+      .split('\n')
+      .filter((line) => line.includes('arrived without a contentHash and will be withheld'));
+    expect(perObject).toHaveLength(2);
   });
 
   it('does not claim total failure for a partly hashed payload', async () => {
