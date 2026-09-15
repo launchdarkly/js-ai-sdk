@@ -17,7 +17,7 @@
 
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { lstat, mkdir, open, readdir, readFile, realpath, rmdir, stat } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, realpath, rmdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
   atomicWrite,
@@ -591,7 +591,13 @@ async function loadManifest(root: string): Promise<{ manifest: Record<string, un
 
   let text: string;
   try {
-    text = await readFile(path.join(root, MANIFEST_FILENAME), 'utf-8');
+    // `readRegularFile` rather than a plain `readFile` for the same reason the
+    // skill files use it: the manifest lives in the skills root, so anyone able
+    // to swap a managed file for a FIFO can do it here too, and an open that
+    // blocks forever would hang the reconcile before the deadline is ever
+    // consulted. A non-regular file becomes the corrupt-manifest refusal below,
+    // which is the fail-closed outcome an unreadable manifest already had.
+    text = (await readRegularFile(path.join(root, MANIFEST_FILENAME))).toString('utf-8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { manifest: fresh, error: null };
     return {
@@ -834,13 +840,21 @@ async function writeOne(root: string, skill: Skill, entries: Record<string, unkn
  * Reads `target`, refusing anything that is not a regular file.
  *
  * A plain `readFile(target)` opens by name, and **opening a FIFO with no writer
- * blocks forever** — so anyone able to swap the managed file for one (the same
- * capability the symlink checks defend against) could hang the reconcile, and the
- * event loop with it. `O_NONBLOCK` makes that open return immediately and is a
- * no-op for a regular file; `O_NOFOLLOW` refuses a trailing symlink; and the
- * `stat` is taken on the **handle** rather than the path, so the type check
- * cannot be invalidated by a swap after it. A device node is neither a symlink
- * nor a directory, so `unsafePathReason` does not cover any of this.
+ * blocks forever** — so anyone able to swap a managed file for one (the same
+ * capability the symlink checks defend against) could hang the reconcile. Not by
+ * blocking the event loop: the open sits on one of libuv's four default
+ * threadpool threads, the await never settles, and the pending request keeps the
+ * process from exiting at all. `timeout` is no defense either, being checked
+ * between steps rather than interrupting one in progress.
+ *
+ * `O_NONBLOCK` makes that open return immediately and is a no-op for a regular
+ * file; `O_NOFOLLOW` refuses a trailing symlink; and the `stat` is taken on the
+ * **handle** rather than the path, so the type check cannot be invalidated by a
+ * swap after it. A device node is neither a symlink nor a directory, so
+ * `unsafePathReason` does not cover any of this.
+ *
+ * Every read under the managed root goes through here — the skill files and the
+ * manifest alike, since both sit in a directory outside the SDK's control.
  *
  * There is no `O_BINARY` here, unlike the Python twin: Node performs no CRLF
  * translation on a descriptor, so the bytes read back are already verbatim.
