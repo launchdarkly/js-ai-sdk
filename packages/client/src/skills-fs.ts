@@ -573,12 +573,10 @@ function pendingForRaw(objectKey: string, raw: unknown): PendingWrite {
   const skill = verifyRawSkill(raw);
   if (skill) return { key: skill.key, skill };
 
-  // The map key a store chooses is its own business — the seam never promised it
-  // spells a skill key, and a store that holds several versions of one key has
-  // reason to spell it `key:version`. So the object's own `key` is the first
-  // answer and the map key only the fallback: getting this order wrong drops an
-  // unverifiable object out of the requested set, and prune reads that as a
-  // revocation and deletes the last known-good copy.
+  // The seam never promised a store's map key spells a skill key — a store
+  // holding several versions of one key has reason to spell it `key:version`.
+  // So the object's own `key` is the first answer and the map key the fallback,
+  // which keeps an unverifiable object inside the requested set.
   const candidate = typeof raw === 'object' && raw !== null ? (raw as RawSkillObject).key : undefined;
   const key = isValidSkillKey(candidate) ? candidate : objectKey;
   if (!isValidSkillKey(key)) {
