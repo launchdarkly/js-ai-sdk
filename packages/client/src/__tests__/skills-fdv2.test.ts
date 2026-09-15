@@ -31,8 +31,10 @@ import {
   _warnedHashless,
   backoffDelayMs,
   classifyStatus,
+  DEFAULT_BASE_URI,
   DEFAULT_POLL_TIMEOUT_MS,
   DEFAULT_STREAM_READ_TIMEOUT_MS,
+  DEFAULT_STREAM_URI,
   decodePollBody,
   FDV2_KEY_DELIMITER,
   FDV2_OBJECT_KIND,
@@ -2707,5 +2709,71 @@ describe('timeouts', () => {
 
   it.each([0, -1, Number.POSITIVE_INFINITY, Number.NaN])('rejects a non-positive readTimeoutMs (%s)', (value) => {
     expect(() => new FDv2SkillStore(SDK_KEY, { readTimeoutMs: value })).toThrow(/readTimeoutMs/);
+  });
+});
+
+// ─── Endpoints ───────────────────────────────────────────────────────────────
+
+describe('endpoints', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Runs one poll and one stream connect through a stubbed `fetch`; returns the URLs requested. */
+  async function requestedUrls(requester: FetchRequester): Promise<{ poll: string; stream: string }> {
+    const urls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      urls.push(String(input));
+      return new Response(null, { status: 304 });
+    });
+    await requester.poll(null, null, new AbortController().signal);
+    await expect(requester.stream(null, new AbortController().signal)).rejects.toThrow();
+    return { poll: urls[0], stream: urls[1] };
+  }
+
+  it('polls sdk.launchdarkly.com and streams from stream.launchdarkly.com by default', async () => {
+    expect(DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
+    expect(DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
+    const requester = requesterOf(new FDv2SkillStore(SDK_KEY));
+    expect(requester.baseUri).toBe(DEFAULT_BASE_URI);
+    expect(requester.streamUri).toBe(DEFAULT_STREAM_URI);
+    const { poll, stream } = await requestedUrls(requester);
+    expect(poll).toBe('https://sdk.launchdarkly.com/sdk/poll');
+    expect(stream).toBe('https://stream.launchdarkly.com/sdk/stream');
+  });
+
+  it('sends both endpoints to a custom baseUri when no streamUri is given', async () => {
+    const requester = requesterOf(new FDv2SkillStore(SDK_KEY, { baseUri: 'https://relay.example.com/' }));
+    const { poll, stream } = await requestedUrls(requester);
+    expect(poll).toBe('https://relay.example.com/sdk/poll');
+    expect(stream).toBe('https://relay.example.com/sdk/stream');
+  });
+
+  it('lets streamUri differ from baseUri', async () => {
+    const requester = requesterOf(
+      new FDv2SkillStore(SDK_KEY, { baseUri: 'https://sdk.example.com', streamUri: 'https://stream.example.com/' }),
+    );
+    const { poll, stream } = await requestedUrls(requester);
+    expect(poll).toBe('https://sdk.example.com/sdk/poll');
+    expect(stream).toBe('https://stream.example.com/sdk/stream');
+  });
+
+  it('keeps the default poll host when only streamUri is given', () => {
+    const requester = requesterOf(new FDv2SkillStore(SDK_KEY, { streamUri: 'https://stream.example.com' }));
+    expect(requester.baseUri).toBe(DEFAULT_BASE_URI);
+    expect(requester.streamUri).toBe('https://stream.example.com');
+  });
+
+  it('carries the basis to whichever host the request goes to', async () => {
+    const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1000, 'https://stream.example.com');
+    const urls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      urls.push(String(input));
+      return new Response(null, { status: 304 });
+    });
+    await requester.poll('(p:a:1)', null, new AbortController().signal);
+    await expect(requester.stream('(p:a:1)', new AbortController().signal)).rejects.toThrow();
+    expect(urls[0]).toBe('https://sdk.example.com/sdk/poll?basis=%28p%3Aa%3A1%29');
+    expect(urls[1]).toBe('https://stream.example.com/sdk/stream?basis=%28p%3Aa%3A1%29');
   });
 });

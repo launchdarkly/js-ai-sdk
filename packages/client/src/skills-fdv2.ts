@@ -66,10 +66,16 @@ export const FDV2_OBJECT_KIND = 'skill';
 export const FDV2_KEY_DELIMITER = ':';
 
 /**
- * Where the SDK-facing FDv2 endpoints live. Overridable for Federal instances,
- * private instances, and the fake endpoint the tests run against.
+ * Where `GET /sdk/poll` is served. Overridable for Federal instances, private
+ * instances, and relay deployments.
  */
 export const DEFAULT_BASE_URI = 'https://sdk.launchdarkly.com';
+
+/**
+ * Where `GET /sdk/stream` is served. LaunchDarkly serves streaming from a
+ * different host than polling, matching the base server-side SDK's defaults.
+ */
+export const DEFAULT_STREAM_URI = 'https://stream.launchdarkly.com';
 
 export const POLL_PATH = '/sdk/poll';
 export const STREAM_PATH = '/sdk/stream';
@@ -1267,14 +1273,19 @@ export type Requester = {
  * same value, and there is deliberately no separate connect timeout.
  */
 export class FetchRequester implements Requester {
-  private readonly baseUri: string;
+  /** Origin `GET /sdk/poll` is sent to. */
+  readonly baseUri: string;
+  /** Origin `GET /sdk/stream` is sent to. Defaults to `baseUri`. */
+  readonly streamUri: string;
 
   constructor(
     private readonly sdkKey: string,
     baseUri: string,
     readonly readTimeoutMs: number,
+    streamUri: string = baseUri,
   ) {
     this.baseUri = baseUri.replace(/\/+$/, '');
+    this.streamUri = streamUri.replace(/\/+$/, '');
   }
 
   /**
@@ -1285,9 +1296,9 @@ export class FetchRequester implements Requester {
    * agent-skill payload is generic, is served regardless of it, and has no model
    * version of its own to ask for.
    */
-  private url(path: string, basis: string | null): string {
-    if (!basis) return `${this.baseUri}${path}`;
-    return `${this.baseUri}${path}?${new URLSearchParams({ basis }).toString()}`;
+  private url(origin: string, path: string, basis: string | null): string {
+    if (!basis) return `${origin}${path}`;
+    return `${origin}${path}?${new URLSearchParams({ basis }).toString()}`;
   }
 
   /**
@@ -1302,7 +1313,7 @@ export class FetchRequester implements Requester {
     // headers and body together.
     const deadline = readDeadline(signal, this.readTimeoutMs);
     try {
-      const response = await fetch(this.url(POLL_PATH, basis), { headers, signal: deadline.signal });
+      const response = await fetch(this.url(this.baseUri, POLL_PATH, basis), { headers, signal: deadline.signal });
       if (response.status === 304) return { notModified: true, events: [], etag };
       if (!response.ok) throw classifyStatus(response.status, response.headers);
       return {
@@ -1331,7 +1342,7 @@ export class FetchRequester implements Requester {
     const deadline = readDeadline(signal, this.readTimeoutMs);
     let response: Response;
     try {
-      response = await fetch(this.url(STREAM_PATH, basis), { headers, signal: deadline.signal });
+      response = await fetch(this.url(this.streamUri, STREAM_PATH, basis), { headers, signal: deadline.signal });
     } catch (cause) {
       deadline.clear();
       throw readFailure(cause, 'streaming request', deadline);
@@ -1398,7 +1409,18 @@ export type FDv2SkillStoreOptions = {
    * connection, and a revocation there arrives within one `pollIntervalMs`.
    */
   readonly mode?: FDv2Mode;
+  /**
+   * Origin for `GET /sdk/poll`. Default {@link DEFAULT_BASE_URI}. When given
+   * without `streamUri`, it is used for streaming too, which is what a relay or
+   * private instance serving both endpoints from one host needs.
+   */
   readonly baseUri?: string;
+  /**
+   * Origin for `GET /sdk/stream`. Default {@link DEFAULT_STREAM_URI}, or
+   * `baseUri` when that is given, since LaunchDarkly serves streaming from a
+   * separate host but a relay or private instance usually does not.
+   */
+  readonly streamUri?: string;
   readonly pollIntervalMs?: number;
   /**
    * The only network timeout, in milliseconds. Its meaning and default follow
@@ -1517,7 +1539,11 @@ export class FDv2SkillStore implements SkillStore {
     this.initialBackoffMs = options.initialBackoffMs ?? 1_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
     this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? 10;
-    this.requester = options.requester ?? new FetchRequester(key, options.baseUri ?? DEFAULT_BASE_URI, readTimeoutMs);
+    const baseUri = options.baseUri ?? DEFAULT_BASE_URI;
+    // A custom `baseUri` alone means one host serves both endpoints; only the
+    // LaunchDarkly defaults split them.
+    const streamUri = options.streamUri ?? (options.baseUri === undefined ? DEFAULT_STREAM_URI : baseUri);
+    this.requester = options.requester ?? new FetchRequester(key, baseUri, readTimeoutMs, streamUri);
   }
 
   // -- lifecycle ---------------------------------------------------------

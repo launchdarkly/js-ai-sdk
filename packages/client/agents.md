@@ -97,7 +97,7 @@ export { parseUsage, normalizeMode, parseAiConfig } from './tracking.js';
 export { skillRefs, getSkill, getSkillResult, getSkills, allSkills, InMemorySkillStore } from './skills.js';
 export { SKILL_OBJECT_KIND, MAX_SKILL_CONTENT_BYTES } from './skills-core.js';
 export { writeSkills, SKILL_FILENAME, MANIFEST_FILENAME, MANIFEST_VERSION } from './skills-fs.js';
-export { FDv2SkillStore, DEFAULT_BASE_URI } from './skills-fdv2.js';
+export { FDv2SkillStore, DEFAULT_BASE_URI, DEFAULT_STREAM_URI } from './skills-fdv2.js';
 export { watchSkills, SkillWatcher, DEFAULT_DEBOUNCE_MS } from './skills-watch.js';
 export type { WriteSkillsOptions } from './skills-fs.js';
 export { createSkill, createSkillOutcome, createSkillReference } from './types.js';
