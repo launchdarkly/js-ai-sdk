@@ -225,7 +225,11 @@ export type StoreDiagnostics = {
    * caller can read rather than an empty store they have to explain.
    */
   readonly hashlessObjects: number;
-  /** Recoverable transport failures since the last successful transfer. */
+  /**
+   * Recoverable transport failures in a row. Back to zero on any sign of a
+   * working server — a parsed `server-intent` or a committed payload — and
+   * never raised by a connection the server closes normally.
+   */
   readonly connectionFailures: number;
   /** The most recent transport error, if any. Human-readable; do not parse. */
   readonly lastError: string | null;
@@ -569,6 +573,18 @@ export type TransferOutcome = {
   basis?: string | null;
   fatal?: string | null;
   disconnect?: string | null;
+  /**
+   * Set by an event that proves the connection reached a working server: a
+   * `server-intent` that parsed. True even for the `none` intent, which commits
+   * nothing.
+   */
+  healthy?: boolean;
+  /**
+   * Set on a `disconnect` the server asked for while serving normally — a
+   * non-catastrophic `goodbye`. The connection still ends and is retried; it is
+   * not a failure.
+   */
+  expected?: boolean;
 };
 
 /**
@@ -696,7 +712,9 @@ export class ProtocolReader {
       // reason an unknown kind is: guessing could empty the store.
       this.pending = null;
     }
-    return {};
+    // An intent that parsed means the connection reached a working server, even
+    // when the intent is `none` and no payload will follow.
+    return { healthy: true };
   }
 
   private target(): SkillObjectSet | null {
@@ -820,7 +838,9 @@ export class ProtocolReader {
     if (parsed.catastrophe === true) {
       return { fatal: `server sent a catastrophic goodbye: ${String(parsed.reason)}` };
     }
-    return { disconnect: `server said goodbye: ${String(parsed.reason)}` };
+    // Expected: the server is closing a connection it was serving, which is how
+    // a long-lived stream gets recycled.
+    return { disconnect: `server said goodbye: ${String(parsed.reason)}`, expected: true };
   }
 
   // -- payload identity ----------------------------------------------------
@@ -874,11 +894,19 @@ export class ProtocolReader {
 /** A failure retrying cannot fix: bad credential, forbidden, wrong URI. */
 export class FatalTransportError extends Error {}
 
-/** A failure worth retrying. Carries a server-requested delay when given one. */
+/**
+ * A connection that ended and is worth retrying. Carries a server-requested
+ * delay when given one.
+ */
 export class RecoverableTransportError extends Error {
   constructor(
     message: string,
     readonly retryAfterMs: number | null = null,
+    /**
+     * Whether the server closed a connection it was serving normally. Retried
+     * like any other, but not counted against `maxConsecutiveFailures`.
+     */
+    readonly expected = false,
   ) {
     super(message);
   }
@@ -1284,8 +1312,9 @@ export type FDv2SkillStoreOptions = {
   /**
    * Bounds the retry loop. On exceeding it the transport stops, logs an error,
    * and the store keeps serving last known good rather than pretending to be
-   * live — `failed` reports it. Only failures in a row count: a committed
-   * payload resets the count.
+   * live — `failed` reports it. Only failures in a row count: reaching a working
+   * server resets the count, and a connection the server closes normally never
+   * counts at all.
    */
   readonly maxConsecutiveFailures?: number;
   /** Replaces the built-in `fetch` transport. Intended for testing. */
@@ -1346,10 +1375,10 @@ export class FDv2SkillStore implements SkillStore {
   private failedReason: string | null = null;
   private firstPayload = false;
   private readonly firstPayloadWaiters: Array<() => void> = [];
-  // Recoverable failures since the last committed payload. Reset at the commit
-  // rather than when a connection returns: a stream only ever ends by being
-  // dropped, so resetting on return would count every healthy, server-recycled
-  // connection as a failure.
+  // Recoverable failures in a row, cleared by any sign of a working server: a
+  // `server-intent` that parsed, or a payload that committed. Not cleared when a
+  // connection returns, because a stream never returns normally — it only ends
+  // by being dropped, which is a failure, or by a goodbye, which is not.
   private failures = 0;
 
   constructor(sdkKey: string, options: FDv2SkillStoreOptions = {}) {
@@ -1522,7 +1551,7 @@ export class FDv2SkillStore implements SkillStore {
         else await this.pollOnce(signal);
         // A poll that returned is a current answer even when it committed
         // nothing (HTTP 304). A stream never returns normally; its successes
-        // are counted at each commit in `apply`.
+        // are counted in `apply`, at each intent and each commit.
         this.recordSuccess();
       } catch (cause) {
         if (signal.aborted) return;
@@ -1534,23 +1563,31 @@ export class FDv2SkillStore implements SkillStore {
           this.giveUp(`unexpected error in skill delivery: ${cause instanceof Error ? cause.message : String(cause)}`);
           return;
         }
-        this.failures += 1;
-        const failures = this.failures;
-        this.reader.diagnostics.connectionFailures = failures;
-        this.reader.diagnostics.lastError = cause.message;
-        if (failures > this.maxConsecutiveFailures) {
-          this.giveUp(`gave up after ${failures} consecutive failures; last error: ${cause.message}`);
-          return;
+        // A goodbye from a server that was serving normally ends the connection
+        // without being a failure. It reconnects like one, but it neither counts
+        // against `maxConsecutiveFailures` nor shows up in the diagnostics:
+        // every recycle of an up-to-date stream arrives this way, so counting
+        // them would expire an environment whose skills never change.
+        if (!cause.expected) {
+          this.failures += 1;
+          this.reader.diagnostics.connectionFailures = this.failures;
+          this.reader.diagnostics.lastError = cause.message;
+          if (this.failures > this.maxConsecutiveFailures) {
+            this.giveUp(`gave up after ${this.failures} consecutive failures; last error: ${cause.message}`);
+            return;
+          }
         }
         const requested = cause.retryAfterMs;
         const delay = Math.min(
           requested !== null && Number.isFinite(requested)
             ? requested
-            : backoffDelayMs(failures, this.initialBackoffMs, this.maxBackoffMs),
+            : backoffDelayMs(this.failures, this.initialBackoffMs, this.maxBackoffMs),
           // `Retry-After` is a request and `maxBackoffMs` is a promise.
           this.maxBackoffMs,
         );
-        warn(`Skill delivery failed (${cause.message}); retrying in ${Math.round(delay)}ms`);
+        if (!cause.expected) {
+          warn(`Skill delivery failed (${cause.message}); retrying in ${Math.round(delay)}ms`);
+        }
         await sleep(delay, signal);
         continue;
       }
@@ -1578,9 +1615,13 @@ export class FDv2SkillStore implements SkillStore {
 
   private apply(name: string, data: unknown): TransferOutcome {
     const outcome = this.reader.handle(name, data);
+    // Any sign of a working server breaks the row of consecutive failures. A
+    // reconnect whose basis is already current is answered with the `none`
+    // intent and commits nothing, so waiting for a commit would leave an
+    // unchanging environment counting healthy connections against its bound.
+    if (outcome.healthy) this.recordSuccess();
     if (outcome.committed) {
       if (outcome.basis) this.basis = outcome.basis;
-      // A commit breaks the row of consecutive failures.
       this.recordSuccess();
       this.markFirstPayload();
       if (outcome.changes && outcome.changes.length > 0) this.notify(outcome.changes);
@@ -1590,7 +1631,7 @@ export class FDv2SkillStore implements SkillStore {
 
   private dispatch(outcome: TransferOutcome): void {
     if (outcome.fatal) throw new FatalTransportError(outcome.fatal);
-    if (outcome.disconnect) throw new RecoverableTransportError(outcome.disconnect);
+    if (outcome.disconnect) throw new RecoverableTransportError(outcome.disconnect, null, outcome.expected === true);
   }
 
   private async pollOnce(signal: AbortSignal): Promise<void> {

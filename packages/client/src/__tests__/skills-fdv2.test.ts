@@ -688,6 +688,8 @@ describe('protocol reader', () => {
     });
     expect(outcome.disconnect).toBeTruthy();
     expect(outcome.fatal).toBeFalsy();
+    // Expected, so the reconnect it asks for is not counted as a failure.
+    expect(outcome.expected).toBe(true);
   });
 
   it('treats a catastrophic goodbye as fatal', () => {
@@ -1333,6 +1335,38 @@ class RecyclingRequester implements Requester {
   }
 }
 
+/**
+ * A healthy server with nothing to send: every connection is answered with the
+ * `none` intent — what we hold is already current — and then closed with a
+ * goodbye, which is how a long-lived stream is recycled. Nothing commits,
+ * because there is nothing to commit; given a first transfer, it delivers that
+ * on the first connection and nothing on any connection after.
+ */
+class UnchangingRequester implements Requester {
+  connections = 0;
+
+  constructor(private readonly firstTransfer: WireEvent[] = []) {}
+
+  poll(): Promise<PollResult> {
+    throw new Error('not a polling double');
+  }
+
+  async stream(): Promise<AsyncIterable<[string, unknown]>> {
+    this.connections += 1;
+    const transfer =
+      this.connections === 1 && this.firstTransfer.length > 0
+        ? this.firstTransfer
+        : events(['server-intent', serverIntent('none')]);
+    const scripted = asPairs([
+      ...transfer,
+      ...events(['goodbye', { reason: 'server recycle', silent: true, catastrophe: false }]),
+    ]);
+    return (async function* () {
+      yield* scripted;
+    })();
+  }
+}
+
 function scriptedStreamStore(requester: Requester, options: Record<string, unknown> = {}): FDv2SkillStore {
   const store = new FDv2SkillStore(SDK_KEY, {
     mode: 'stream',
@@ -1433,6 +1467,37 @@ describe('failure handling', () => {
     // A drop is a failure until the next commit clears it, so the count may
     // read 1 mid-reconnect. What it must never do is climb.
     expect(store.diagnostics.connectionFailures).toBeLessThanOrEqual(1);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+  });
+
+  it('does not count an up-to-date connection against the retry bound', async () => {
+    // An environment whose skills never change is answered with the `none`
+    // intent and then recycled, so nothing ever commits. Clearing the failure
+    // row only at a commit would give up on this healthy server after
+    // maxConsecutiveFailures + 1 recycles, and no later revocation would ever
+    // be delivered.
+    const requester = new UnchangingRequester();
+    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 3 });
+    store.start();
+    // A bound well inside the test timeout, so a loop that gave up fails here
+    // rather than by running out of time: each recycle costs a 1ms backoff.
+    expect(await waitUntil(() => requester.connections >= 8, 2000)).toBe(true);
+    expect(store.failed).toBeNull();
+    expect(store.diagnostics.connectionFailures).toBe(0);
+    expect(store.diagnostics.lastError).toBeNull();
+  });
+
+  it('keeps delivering after more recycles than the retry bound tolerates', async () => {
+    // The same server, but with a payload transferred first: the content it
+    // delivered has to survive the recycles, and delivery has to still be live
+    // afterwards rather than quietly given up on.
+    const requester = new UnchangingRequester(fullPayload([['put-object', putSkill()]], 'basis-1'));
+    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 3 });
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await waitUntil(() => requester.connections >= 6, 2000)).toBe(true);
+    expect(store.failed).toBeNull();
+    expect(store.diagnostics.connectionFailures).toBe(0);
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
 
