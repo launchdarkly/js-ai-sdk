@@ -868,4 +868,51 @@ describe('writeSkills corrupt manifest', () => {
     expect(report.ok).toBe(false);
     expect(await exists(path.join(root, 'a', SKILL_MD))).toBe(true);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a FIFO standing in for the manifest instead of blocking on the open',
+    async () => {
+      // The manifest lives in the skills root, so it is reachable by the same
+      // swap the managed-path FIFO test covers. `loadManifest` also runs before
+      // the first deadline check, so a blocking open here would hang the
+      // reconcile with the `timeout` budget never consulted — and a pending
+      // `readFile` on a FIFO keeps the process from exiting at all. The
+      // explicit test timeout is the assertion: a regression has to fail here
+      // rather than stall CI.
+      await placeManaged(root, 'a', DIVERGENT_CONTENT);
+      await rm(manifestPath(root));
+      execFileSync('mkfifo', [manifestPath(root)]);
+
+      const report = await writeSkills([], root);
+
+      expect(report.ok).toBe(false);
+      expect(errorMessages(report).some((e) => e.toLowerCase().includes('manifest'))).toBe(true);
+      // Fail closed exactly as any unreadable manifest does: nothing pruned,
+      // and the FIFO left where it stands rather than rewritten.
+      expect(await readFile(path.join(root, 'a', SKILL_MD), 'utf-8')).toBe(DIVERGENT_CONTENT);
+      expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+      expect((await lstat(manifestPath(root))).isFIFO()).toBe(true);
+    },
+    5_000,
+  );
+
+  it.skipIf(process.platform === 'win32')('treats a symlinked manifest as corrupt', async () => {
+    // `readRegularFile` passes `O_NOFOLLOW`, so the manifest is read only from
+    // where the SDK itself put it. Deliberate rather than incidental: the atomic
+    // rewrite replaces a symlink at this path with a real file, so following one
+    // on read would mean trusting bytes from a location the next write silently
+    // orphans — and the root is writable by whoever can plant the link.
+    await placeManaged(root, 'a', DIVERGENT_CONTENT);
+    const elsewhere = path.join(scratch, 'manifest-elsewhere.json');
+    await writeFile(elsewhere, await readFile(manifestPath(root), 'utf-8'), 'utf-8');
+    await rm(manifestPath(root));
+    await symlink(elsewhere, manifestPath(root));
+
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(false);
+    expect(errorMessages(report).some((e) => e.toLowerCase().includes('manifest'))).toBe(true);
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect((await lstat(manifestPath(root))).isSymbolicLink()).toBe(true);
+  });
 });
