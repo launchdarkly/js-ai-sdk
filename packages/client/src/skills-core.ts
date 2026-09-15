@@ -91,11 +91,11 @@ export type IntegrityReasonCode =
   | 'not_utf8'
   | 'over_size_cap';
 
+/** What the accessors report when no store is configured. */
 export const NO_STORE_MESSAGE =
   'No skill store is configured, so skill content cannot be retrieved. Configure one with ' +
-  'initClient({ skillStore: store }) — InMemorySkillStore is available for local development ' +
-  'and testing. Retrieving LaunchDarkly-delivered skill content additionally requires the ' +
-  'delivery transport, which ships in a follow-up release.';
+  'initClient({ skillStore: store }) — FDv2SkillStore receives content from LaunchDarkly, and ' +
+  'InMemorySkillStore is available for local development and testing.';
 
 // ---------------------------------------------------------------------------
 // Telemetry seam
