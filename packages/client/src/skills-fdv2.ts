@@ -233,15 +233,13 @@ export type StoreDiagnostics = {
 
 const HASHLESS_ADVICE =
   "The delivered skill object carries no 'contentHash', so integrity verification withholds it with reason_code " +
-  "'missing_content_hash' and its content will not resolve. The SDK cannot work around this: verification hashes " +
-  'the verbatim bytes and compares, and there is nothing to compare against. Skill accessors return an empty ' +
-  'result for this skill until LaunchDarkly delivers it with a contentHash.';
+  "'missing_content_hash' and its content will not resolve. Contact LaunchDarkly support.";
 
 /**
  * `(key, version)` pairs already reported hashless.
  *
  * Module-scoped so the error is one per object per process rather than one per
- * re-delivered payload; exported for the tests, which need to clear it.
+ * re-delivered payload.
  */
 export const _warnedHashless = new Set<string>();
 
@@ -616,9 +614,8 @@ function freshDiagnostics(): MutableDiagnostics {
 /**
  * Applies FDv2 events to an object set. Pure — no sockets, no timers, no clock.
  *
- * Split out so the protocol is testable without a server: every wire case in
- * `skills-fdv2.test.ts` drives this directly, and the HTTP layer above it only has
- * to turn bytes into `[event name, data]` pairs.
+ * Split out so the protocol can be driven without a server: the HTTP layer above
+ * it only has to turn bytes into `[event name, data]` pairs.
  *
  * **Changes are buffered and committed at `payload-transferred`.** A payload
  * version is the unit of consistency: applying half of one would publish a state
@@ -1291,7 +1288,7 @@ export type FDv2SkillStoreOptions = {
    * payload resets the count.
    */
   readonly maxConsecutiveFailures?: number;
-  /** Test seam: a transport double in place of `FetchRequester`. */
+  /** Replaces the built-in `fetch` transport. Intended for testing. */
   readonly requester?: Requester;
 };
 

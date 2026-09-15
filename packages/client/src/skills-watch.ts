@@ -106,12 +106,10 @@ export class SkillWatcher {
   /**
    * Runs the first reconcile inside the watcher's own chain, and returns its report.
    *
-   * Exists so {@link watchSkills} can register the change listener *before* the
-   * initial reconcile: a payload that commits while the reconcile is doing its
-   * filesystem I/O would otherwise reach nobody, and the on-disk set would stay
-   * stale until some later change happened along. A notify that lands during
-   * this run therefore queues behind it rather than interleaving a second
-   * reconcile on one root, which is the case that loses manifest entries.
+   * Sharing the chain lets {@link watchSkills} register the change listener
+   * *before* this runs: a payload that commits during the reconcile's filesystem
+   * I/O still reaches the watcher, and queues behind this run rather than
+   * reconciling the same root concurrently.
    *
    * Unlike {@link reconcileOnce} the failure propagates — a bad root or a corrupt
    * manifest is `watchSkills`'s to throw — and does not count toward
@@ -245,19 +243,13 @@ export async function watchSkills(
 
   const watcher = new SkillWatcher(store, skills, root, writeOptions, debounceMs, onReconcile);
 
-  // The listener goes on before the first reconcile, not after. A payload that
-  // commits during that reconcile — filesystem I/O and an fsync per file, so not
-  // a narrow window — would otherwise be delivered to nobody, and a revocation
-  // or version bump that landed at boot would sit on disk until the next change
-  // happened along. `runInitial` shares the watcher's reconcile chain, so a
-  // notify arriving mid-run queues behind it instead of reconciling the same
-  // root twice at once.
+  // The listener goes on before the first reconcile, so a payload committing
+  // during that reconcile's filesystem I/O still reaches the watcher.
   store.addListener(SKILL_OBJECT_KIND, watcher.notify);
 
-  // The initial reconcile is still awaited here, so its report is the caller's to
-  // inspect and a bad root throws out of `watchSkills` rather than into a log
-  // line. Nothing should be left watching a root that never reconciled, hence
-  // the close on the way out.
+  // The initial reconcile is awaited, so its report is the caller's to inspect
+  // and a bad root throws out of `watchSkills`. Nothing is left watching a root
+  // that never reconciled, hence the close on the way out.
   let report: ReconcileReport;
   try {
     report = await watcher.runInitial();
