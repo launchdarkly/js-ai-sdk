@@ -253,18 +253,8 @@ export async function getSkills(refs: ReadonlyArray<SkillReference | string>): P
  * configured.
  */
 export async function allSkills(): Promise<Skill[]> {
-  const store = requireStore();
-
-  let objects: Record<string, RawSkillObject>;
-  try {
-    objects = allRawObjects(store);
-  } catch (error) {
-    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a failing store must be visible
-    console.error(
-      `[LaunchDarkly] Skill store threw while listing skills: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return [];
-  }
+  const { objects, error } = allRawObjects(requireStore());
+  if (error !== null) return [];
 
   const skills: Skill[] = [];
   for (const raw of Object.values(objects)) {
