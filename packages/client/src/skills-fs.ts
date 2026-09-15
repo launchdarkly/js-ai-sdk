@@ -49,6 +49,7 @@ import {
 } from './skills-core.js';
 import type {
   OnUnavailable,
+  RawSkillObject,
   ReconcileAction,
   ReconcileActionKind,
   ReconcileReport,
@@ -571,12 +572,21 @@ function unavailableRun(
 function pendingForRaw(objectKey: string, raw: unknown): PendingWrite {
   const skill = verifyRawSkill(raw);
   if (skill) return { key: skill.key, skill };
-  if (!isValidSkillKey(objectKey)) {
+
+  // The map key a store chooses is its own business — the seam never promised it
+  // spells a skill key, and a store that holds several versions of one key has
+  // reason to spell it `key:version`. So the object's own `key` is the first
+  // answer and the map key only the fallback: getting this order wrong drops an
+  // unverifiable object out of the requested set, and prune reads that as a
+  // revocation and deletes the last known-good copy.
+  const candidate = typeof raw === 'object' && raw !== null ? (raw as RawSkillObject).key : undefined;
+  const key = isValidSkillKey(candidate) ? candidate : objectKey;
+  if (!isValidSkillKey(key)) {
     return { key: '', error: 'the skill store served an object under an invalid key; it was withheld' };
   }
   return {
-    key: objectKey,
-    error: `skill '${objectKey}' failed integrity verification and was withheld; the copy already on disk was left alone`,
+    key,
+    error: `skill '${key}' failed integrity verification and was withheld; the copy already on disk was left alone`,
   };
 }
 
