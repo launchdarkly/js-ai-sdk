@@ -538,14 +538,25 @@ export class SkillObjectSet {
     return this.loose.get(key) ?? null;
   }
 
-  /** One entry per skill key, at its newest version. See the class docstring. */
+  /**
+   * One entry per skill key, at its newest version, keyed by the bare skill key.
+   *
+   * The key is the *skill* key, never the wire key: `writeSkills('*')` derives its
+   * prune keep-set from these keys, and a key it cannot parse as a skill key
+   * drops out of the keep-set and takes the copy already on disk with it. A
+   * `key:version` spelling here therefore turns every unverifiable object into a
+   * deletion — precisely the outcome withholding exists to prevent. Matching a
+   * held object back to the event that carried it is what `allRaw` is for.
+   *
+   * See the class docstring for why the collapse to one object per key lives here.
+   */
   snapshot(): Record<string, RawSkillObject> {
     const out: Record<string, RawSkillObject> = {};
     for (const [key, held] of this.versions) {
       if (held.size === 0) continue;
       const newest = Math.max(...held.keys());
       const raw = held.get(newest);
-      if (raw) out[`${key}:${newest}`] = raw;
+      if (raw) out[key] = raw;
     }
     for (const [key, raw] of this.loose) {
       if (!this.versions.has(key)) out[key] = raw;
@@ -593,6 +604,31 @@ export type TransferOutcome = {
   fatal?: string | null;
   disconnect?: string | null;
 };
+
+/**
+ * `(key, version)` as one comparable string. Objects with no usable version
+ * compare alike, which is what holding them under their key alone already means.
+ */
+function identityOf(raw: RawSkillObject): string {
+  return `${String(raw.key)}\u0000${isValidSkillVersion(raw.version) ? raw.version : ''}`;
+}
+
+/**
+ * Tombstones for every object `next` no longer holds.
+ *
+ * A full transfer states the whole payload, so its revocations arrive as an
+ * absence rather than as an event; this recovers them. At `(key, version)`
+ * granularity to match `delete-object`, so a key whose version moved yields both
+ * a put for the arrival and a tombstone for the departure — what a listener that
+ * reads versions needs, and harmless to one that only needs "something changed".
+ */
+function revocationsBetween(current: SkillObjectSet, next: SkillObjectSet): RawSkillObject[] {
+  const surviving = new Set(next.allRaw().map(identityOf));
+  return current
+    .allRaw()
+    .filter((raw) => !surviving.has(identityOf(raw)))
+    .map((raw) => ({ key: raw.key, version: isValidSkillVersion(raw.version) ? raw.version : null }));
+}
 
 type MutableDiagnostics = { -readonly [K in keyof StoreDiagnostics]: StoreDiagnostics[K] };
 
@@ -761,11 +797,23 @@ export class ProtocolReader {
   private payloadTransferred(data: unknown): TransferOutcome {
     const state = (data as { state?: unknown } | null)?.state;
     const payloadId = this.intentPayloadId ?? payloadIdFromSelector(state);
-    if (this.pending !== null && this.isForeignPayload(payloadId)) {
+    const foreign = this.pending !== null && this.isForeignPayload(payloadId);
+    if (foreign) {
       this.warnForeignPayload(payloadId);
       this.diagnostics.payloadsIgnored += 1;
       this.changes = [];
     } else if (this.pending !== null) {
+      // A full transfer revokes by omission: whatever it did not carry is gone,
+      // and no `delete-object` ever says so. Diffed before the swap, so those
+      // departures reach listeners as tombstones like any other revocation.
+      // Without this, a full transfer that drops every skill commits an empty
+      // store with an empty change list and notifies nobody — and `watchSkills`
+      // would leave the revoked files on disk until the process restarted.
+      if (this.intent === INTENT_TRANSFER_FULL) {
+        const revoked = revocationsBetween(this.committed, this.pending);
+        this.changes.push(...revoked);
+        this.diagnostics.objectsRevoked += revoked.length;
+      }
       this.committed.replaceWith(this.pending);
       warnIfNothingCanVerify(this.committed.allRaw());
       if (this.skillsInPayload > 0 && payloadId !== null) {
@@ -785,7 +833,11 @@ export class ProtocolReader {
     return {
       committed: true,
       changes,
-      basis: typeof state === 'string' && state !== '' ? state : null,
+      // A declined payload must not move the resume point. Adopting the selector
+      // of a transfer whose contents this layer just threw away would ask the
+      // next poll or stream to resume from someone else's payload, and skill
+      // updates could stop arriving while every diagnostic still read healthy.
+      basis: foreign || typeof state !== 'string' || state === '' ? null : state,
     };
   }
 

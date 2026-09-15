@@ -49,6 +49,7 @@ import {
   splitWireKey,
   tombstoneFromDelete,
 } from '../skills-fdv2.js';
+import { writeSkills } from '../skills-fs.js';
 import { watchSkills } from '../skills-watch.js';
 import type { RawSkillObject } from '../types.js';
 
@@ -469,13 +470,17 @@ describe('version translation', () => {
     expect(splitWireKey(3)).toBeNull();
   });
 
-  it('round-trips the stored identity to the wire key', () => {
-    // `SkillObjectSet.snapshot` spells its opaque keys the way the wire does, so
-    // a held object can be matched back to the event that carried it.
+  it('keys the snapshot by the skill key, not the wire key', () => {
+    // `writeSkills('*')` builds its prune keep-set from these keys, so a
+    // `key:version` spelling here would make every unverifiable object fall out
+    // of the keep-set and take the copy already on disk with it. `allRaw` is
+    // what matches a held object back to the event that carried it.
     const held = new SkillObjectSet();
     const wire = putSkill('pdf-extraction', { objectVersion: 3 });
     held.put(seamObjectFromPut(wire) as RawSkillObject);
-    expect(Object.keys(held.snapshot())).toEqual([wire.key]);
+    expect(wire.key).toBe('pdf-extraction:3');
+    expect(Object.keys(held.snapshot())).toEqual(['pdf-extraction']);
+    expect(held.allRaw()).toEqual([{ ...seamObjectFromPut(wire) }]);
   });
 
   it('copies the envelope verbatim', () => {
@@ -813,9 +818,61 @@ describe('payload identity', () => {
     const held = new SkillObjectSet();
     const reader = new ProtocolReader(held);
     drive(reader, skillPayload([['put-object', putSkill()]]));
-    drive(reader, skillPayload([], { state: 'basis-2' }));
+    const outcomes = drive(reader, skillPayload([], { state: 'basis-2' }));
     expect(held.size).toBe(0);
     expect(reader.diagnostics.payloadsIgnored).toBe(0);
+    // And it reports the revocation, which is what wakes a listener. A full
+    // transfer revokes by omission — no `delete-object` says the skill is gone —
+    // so an empty change list here would commit an empty store silently and
+    // leave the revoked files on disk until the process restarted.
+    expect(outcomes.at(-1)?.changes).toEqual([{ key: 'pdf-extraction', version: 3 }]);
+    expect(reader.diagnostics.objectsRevoked).toBe(1);
+  });
+
+  it('reports the departures when a full transfer replaces the set', () => {
+    // The general form of the same thing: what the payload did not carry is
+    // gone, and a listener that reads versions needs both halves of a version
+    // move — the put for the arrival, the tombstone for the departure.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(
+      reader,
+      skillPayload([
+        ['put-object', putSkill('a')],
+        ['put-object', putSkill('b')],
+      ]),
+    );
+    const outcomes = drive(
+      reader,
+      skillPayload([['put-object', putSkill('a', { objectVersion: 4 })]], { state: 'basis-2' }),
+    );
+    expect(held.size).toBe(1);
+    // The arrival carries content, as a put's change always has; the departures
+    // are tombstones, spelled exactly as `delete-object`'s are.
+    const changes = outcomes.at(-1)?.changes ?? [];
+    expect(changes.map((raw) => ({ key: raw.key, version: raw.version }))).toEqual([
+      { key: 'a', version: 4 },
+      { key: 'a', version: 3 },
+      { key: 'b', version: 3 },
+    ]);
+    expect(changes[0].content).toBe(SKILL_BODY);
+    expect(changes.slice(1).every((raw) => !('content' in raw))).toBe(true);
+  });
+
+  it('does not adopt the selector of a payload it declined', () => {
+    // Ignoring a foreign payload's contents while adopting its resume point
+    // would ask the next poll or stream to resume from someone else's payload:
+    // skill updates could stop arriving while every diagnostic read healthy.
+    const reader = new ProtocolReader(new SkillObjectSet());
+    const ours = drive(reader, skillPayload([['put-object', putSkill()]], { state: 'skills-basis' }));
+    expect(ours.at(-1)?.basis).toBe('skills-basis');
+
+    const outcomes = drive(
+      reader,
+      skillPayload([['put-object', putFlag()]], { payloadId: 'env-flags', state: 'flag-basis' }),
+    );
+    expect(outcomes.at(-1)?.basis).toBeNull();
+    expect(reader.diagnostics.payloadsIgnored).toBe(1);
   });
 
   it('identifies the payload as the skill payload from a revocation', () => {
@@ -1004,6 +1061,28 @@ describe('polling against the endpoint', () => {
     store.start();
     expect(await waitUntil(() => endpoint.requests.length >= 3)).toBe(true);
     expect(endpoint.requests.slice(0, 3).map((r) => r.query.basis)).toEqual([undefined, 'basis-1', 'basis-2']);
+  });
+
+  it('keeps asking from the skill basis when another payload transfers', async () => {
+    // The wire half of the declined-payload case: the store must resume from the
+    // payload skills arrive on, not from the one it just threw away.
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]], 'skills-basis'));
+    endpoint.queuePoll(
+      events(
+        ['server-intent', serverIntent('xfer-full', 'env-flags')],
+        ['put-object', putFlag()],
+        ['payload-transferred', transferred('flag-basis')],
+      ),
+    );
+    endpoint.queuePoll([], { status: 304 });
+    const store = pollStore();
+    store.start();
+    expect(await waitUntil(() => endpoint.requests.length >= 3)).toBe(true);
+    expect(endpoint.requests.slice(0, 3).map((r) => r.query.basis)).toEqual([
+      undefined,
+      'skills-basis',
+      'skills-basis',
+    ]);
   });
 
   it('returns an ETag as If-None-Match', async () => {
@@ -1513,6 +1592,39 @@ describe('the missing contentHash', () => {
     expect((await getSkillResult('pdf-extraction')).reason).not.toBe('absent');
   });
 
+  it('leaves the copy on disk alone when a hashless payload replaces a good one', async () => {
+    // The whole point of withholding, asserted through the reconcile rather than
+    // through the accessors — and the case the hash gap makes universal, since
+    // today *every* object arrives hashless. `writeSkills('*')` derives its prune
+    // keep-set from the keys `allObjects` is keyed by, so a key it cannot parse
+    // as a skill key drops out of the keep-set and prune deletes the last
+    // known-good copy. Which is the outcome this transport was written to avoid.
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+    endpoint.queuePoll(
+      fullPayload([['put-object', putSkill('pdf-extraction', { objectVersion: 4, omitHash: true })]], 'basis-2'),
+    );
+    endpoint.queuePoll([], { status: 304 });
+
+    const store = pollStore({ pollIntervalMs: 20 });
+    store.start();
+    await store.waitForSkills(5000);
+    _setStore(store);
+
+    const root = path.join(await scratchRoot(), 'skills');
+    const written = path.join(root, 'pdf-extraction', 'SKILL.md');
+    await writeSkills('*', root);
+    expect(readFileSync(written, 'utf8')).toBe(SKILL_BODY);
+
+    expect(await waitUntil(() => store.diagnostics.hashlessObjects > 0, 5000)).toBe(true);
+    const report = await writeSkills('*', root);
+
+    expect(existsSync(written)).toBe(true);
+    expect(readFileSync(written, 'utf8')).toBe(SKILL_BODY);
+    expect(report.actions.some((action) => action.action === 'removed')).toBe(false);
+    // Reported against the skill's own key, so the failure names the skill.
+    expect(report.actions.some((action) => action.action === 'error' && action.key === 'pdf-extraction')).toBe(true);
+  });
+
   it('counts hashless objects', async () => {
     endpoint.queuePoll(
       fullPayload([
@@ -1770,6 +1882,79 @@ describe('watchSkills', () => {
       expect(await waitUntil(() => store.diagnostics.lastError !== null, 10_000)).toBe(true);
       await new Promise((resolve) => setTimeout(resolve, 200));
       expect(await readFile(written, 'utf8')).toBe(SKILL_BODY);
+    } finally {
+      await watcher.close();
+    }
+  });
+
+  it('prunes when a full transfer drops every skill', async () => {
+    // A full transfer revokes by omission, so this payload carries no
+    // `delete-object` at all. The commit still has to wake the watcher, or the
+    // revoked file sits on disk until the process restarts.
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+    endpoint.queuePoll(
+      events(['server-intent', serverIntent('xfer-full')], ['payload-transferred', transferred('basis-2')]),
+    );
+    endpoint.queuePoll([], { status: 304 });
+
+    const store = pollStore({ pollIntervalMs: 100 });
+    store.start();
+    await store.waitForSkills(5000);
+    _setStore(store);
+
+    const root = path.join(await scratchRoot(), 'skills');
+    const { watcher } = await watchSkills('*', root, { debounceMs: 20 });
+    try {
+      const written = path.join(root, 'pdf-extraction', 'SKILL.md');
+      expect(readFileSync(written, 'utf8')).toBe(SKILL_BODY);
+      expect(await waitUntil(() => !existsSync(written), 10_000)).toBe(true);
+    } finally {
+      await watcher.close();
+    }
+  });
+
+  it('reconciles again for a change that commits during the initial write', async () => {
+    // The listener is registered before the initial reconcile, so a payload that
+    // commits while that reconcile is doing its filesystem I/O is not lost. The
+    // fake store fires its listener from inside `allObjects` — that is, from
+    // inside the initial reconcile — and answers with the set as it was, so the
+    // second version only reaches disk if the watcher heard about it.
+    const verified = (content: string): RawSkillObject => ({
+      key: 'a',
+      version: 1,
+      content,
+      contentHash: hash(content),
+    });
+
+    let fire: (() => void) | null = null;
+    let objects: Record<string, RawSkillObject> = { a: verified('first') };
+    let fired = false;
+    _setStore({
+      getObject: (_kind: string, key: string) => objects[key] ?? null,
+      allObjects: () => {
+        const current = objects;
+        if (!fired && fire) {
+          fired = true;
+          objects = { a: verified('second') };
+          fire();
+        }
+        return current;
+      },
+      addListener: (_kind: string, fn: () => void) => {
+        fire = fn;
+      },
+      removeListener: () => {
+        fire = null;
+      },
+    });
+
+    const root = path.join(await scratchRoot(), 'skills');
+    const { report, watcher } = await watchSkills('*', root, { debounceMs: 10 });
+    try {
+      expect(fired).toBe(true);
+      expect(report.actions.some((action) => action.action === 'written')).toBe(true);
+      const written = path.join(root, 'a', 'SKILL.md');
+      expect(await waitUntil(() => readFileSync(written, 'utf8') === 'second', 5000)).toBe(true);
     } finally {
       await watcher.close();
     }
