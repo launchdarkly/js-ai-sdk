@@ -368,6 +368,8 @@ try {
 }
 ```
 
+**`waitForSkills` orders boot against the first payload.** It resolves `true` once a payload has been committed, or once a `304` confirms the payload already held is the current one. It resolves `false` if the wait times out, the store is closed, or delivery stops for good — a fatal error such as an unauthorized key resolves it right away rather than at the timeout, so a boot gated on the return value does not proceed on a dead store. Read `failed` to tell that case from a timeout.
+
 **Nothing above the store changes.** The accessors, integrity verification, and `writeSkills` are transport-agnostic: they see raw objects through the `SkillStore` seam and cannot tell which store produced them. Everything documented above about verification and reconcile semantics applies unchanged.
 
 **Server-side only.** Skills are for server-side agent runtimes and skill content is customer-confidential. A mobile key (`mob-…`) or a client-side environment ID throws from the constructor.

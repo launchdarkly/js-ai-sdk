@@ -1437,14 +1437,21 @@ export class FDv2SkillStore implements SkillStore {
   }
 
   /**
-   * Resolves once the first payload has been committed, or after `timeoutMs`.
+   * Resolves once the first payload has been committed, or sooner if delivery
+   * stops for good, or after `timeoutMs`.
    *
-   * `true` means a payload arrived — not that any skill in it verified, and not
-   * that the environment has any skills. Boot ordering is all this answers;
-   * `diagnostics` answers the rest.
+   * `true` means a payload committed, or a 304 confirmed the payload already
+   * held is the current one — not that any skill in it verified, and not that
+   * the environment has any skills. `false` means the wait timed out, the store
+   * was closed, or delivery stopped for good and no payload will arrive; see
+   * `failed` to tell the last case from the others. Boot ordering is all this
+   * answers; `diagnostics` answers the rest.
    */
   waitForSkills(timeoutMs = 10_000): Promise<boolean> {
     if (this.firstPayload) return Promise.resolve(true);
+    // Delivery that has already stopped for good has no payload left to wait
+    // for, so answer now rather than after the timeout.
+    if (this.failedReason !== null) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => resolve(this.firstPayload), timeoutMs);
       (timer as unknown as { unref?: () => void }).unref?.();
@@ -1609,8 +1616,8 @@ export class FDv2SkillStore implements SkillStore {
         'received; skills will not update until the process restarts with a working connection.',
     );
     // Release anyone waiting on a first payload that is never coming, rather than
-    // making them eat the full timeout.
-    this.markFirstPayload();
+    // making them eat the full timeout. They resolve `false`: nothing arrived.
+    this.releaseWaiters();
   }
 
   private apply(name: string, data: unknown): TransferOutcome {
