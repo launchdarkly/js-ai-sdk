@@ -258,20 +258,17 @@ export type RawSkillObject = {
  * Structural interface every source of skill content satisfies.
  *
  * Structurally typed on purpose, mirroring how {@link LDClientInterface} works in
- * this package: pass any object carrying these methods. `FDv2SkillStore` — which
- * streams or polls LaunchDarkly's SDK-facing FDv2 channel — drops in behind this
- * interface without touching the public API, and did.
+ * this package: pass any object carrying these methods. `FDv2SkillStore`, which
+ * streams or polls LaunchDarkly's FDv2 channel, is one implementation;
+ * `InMemorySkillStore` is another.
  *
  * `addListener` and `removeListener` are part of the seam but **optional**: a
- * store without them must still be accepted. Nothing in the accessors calls
- * either — they exist for the delivery transport to push updates through, and
- * for a consumer such as `watchSkills` to stop receiving them. `watchSkills` is
- * the one consumer: it refuses loudly rather than degrading when a configured
- * store lacks `addListener`, and probes for `removeListener` on close, so a
- * store without it keeps working at the cost of a listener that lives as long
- * as the store does. A store that implements `addListener` should implement
- * `removeListener` too; it removes one occurrence of `fn` under `kind` and is a
- * no-op when `fn` is not registered.
+ * store without them must still be accepted. The accessors call neither; they
+ * exist so a consumer such as `watchSkills` can observe delivery changes.
+ * `watchSkills` throws when the configured store lacks `addListener`, and uses
+ * `removeListener` on close when present. A store that implements `addListener`
+ * should implement `removeListener` too; it removes one occurrence of `fn` under
+ * `kind` and is a no-op when `fn` is not registered.
  *
  * Everything a store serves is untrusted input. The transport is not part of the
  * trust boundary — key, version, size, and content hash are revalidated at the

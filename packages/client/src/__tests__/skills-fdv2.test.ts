@@ -1,7 +1,7 @@
 /**
  * The FDv2 skill delivery transport.
  *
- * Two layers, deliberately, mirroring the Python suite:
+ * Two layers, deliberately:
  *
  * - **A real fake endpoint.** `FakeFDv2Endpoint` is an in-process
  *   `node:http` server implementing the wire contract — the `basis` query
@@ -990,8 +990,7 @@ describe('the held object set', () => {
 
   it('collapses the snapshot to one object per key at its newest version', () => {
     // `<root>/<key>/SKILL.md` is a single path, so a whole-store consumer must
-    // see one object per key. See the class docstring for why the collapse lives
-    // here in this SDK and in `newest_by_key` in Python.
+    // see one object per key.
     const snapshot = filled().snapshot();
     const forA = Object.values(snapshot).filter((raw) => raw.key === 'a');
     expect(forA).toHaveLength(1);
@@ -1781,9 +1780,8 @@ describe('server-side only', () => {
 
 describe('watchSkills', () => {
   it('prunes a revoked skill without a restart', async () => {
-    // AV-1, closed at this layer. The store's change listener drives the
-    // reconcile, so the file goes away seconds after the delete-object rather
-    // than at the next process start.
+    // The store's change listener drives the reconcile, so the file goes away
+    // seconds after the delete-object rather than at the next process start.
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     endpoint.queuePoll(
       events(
