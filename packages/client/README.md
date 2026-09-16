@@ -331,11 +331,20 @@ example above, materializes only what the resolved variation actually asked for.
 | `StoreDiagnostics` | What the transport has seen: `payloadsTransferred`, `skillObjectsReceived`, `objectsIgnored`, `objectsRevoked` (each `delete-object`, plus each key a full transfer dropped altogether — a version bump is a move, not a revocation), `payloadsIgnored`, `hashlessObjects`, `connectionFailures`, `lastError`. |
 | `createSkill(init)` / `createSkillReference(init)` | Build frozen `Skill` / `SkillReference` values. Use `createSkill` to hand `writeSkills` content you already have. |
 | `createSkillOutcome(init)` | Build a frozen `SkillOutcome`. Exported for tests and for wrapping your own retrieval in the same shape. |
-| `SKILL_OBJECT_KIND` | `'skill'` — the delivery object kind. |
 | `SKILL_FILENAME` | `'SKILL.md'`. |
 | `MANIFEST_FILENAME` | `'.launchdarkly-skills.json'` — add this to your `.gitignore` if you do not commit materialized skills. |
 | `MANIFEST_VERSION` | `1`. |
-| `MAX_SKILL_CONTENT_BYTES` | `10485760` (10 MiB) — the hard cap. Content above it is withheld. A backstop against absurd input, set well above the platform's own limit, which is enforced before delivery; do not read it as that limit. |
+
+Two further constants exist and are deliberately **not** exported. `MAX_SKILL_CONTENT_BYTES`
+(`10485760`, 10 MiB) is the hard cap above which content is withheld — a local backstop against
+absurd input, set well above the platform's own limit, which is enforced before delivery.
+Exporting it would semver-lock a number this side does not own, and pre-flighting "will my skill
+fit?" against it would read the backstop rather than the real limit; the `over_size_cap` reason
+string reports the bound when it is what withheld content, which is the supported way to learn it.
+`SKILL_OBJECT_KIND` (`'skill'`) is the string this SDK hands a store, and a store adapter maps
+whatever its transport calls a skill onto it — publishing it would advertise an SDK-side seam as
+the wire contract. Both live in this package's `skills-core` module and stay internal to it — the
+package publishes a single entry point, so neither is reachable by a supported import.
 
 `ReconcileReport` exposes `actions`, `ok` (true iff no action is an `error`), and `errors` (the error actions, in order), so callers never re-derive the filter. Each `ReconcileAction` carries `key`, `action` (`written` | `updated` | `skipped_current` | `removed` | `error`), and nullable `version` / `path` / `error`. A failure belonging to the whole run rather than one skill — a corrupt manifest, for instance — carries the **empty string** in `key`.
 
@@ -429,7 +438,7 @@ Optional fields are **omitted, never null** — the absence of `observed_hash` m
 | `missing_content` | `content` is absent or not a string. |
 | `missing_content_hash` | `contentHash` is absent or not a string. |
 | `not_utf8` | The content has no UTF-8 encoding (a lone surrogate), so there are no bytes LaunchDarkly could have hashed. |
-| `over_size_cap` | The content exceeds `MAX_SKILL_CONTENT_BYTES`, so it is inauthentic whatever it hashes to. |
+| `over_size_cap` | The content exceeds the internal `MAX_SKILL_CONTENT_BYTES` cap, so it is inauthentic whatever it hashes to. The reason string names the bound. |
 | `hash_mismatch` | The content does not hash to the `contentHash` delivered alongside it. |
 
 These eight tokens are the whole vocabulary, and the Python SDK emits the same eight for the same conditions — including identical JSON key order — so one parser and one alert rule cover a polyglot fleet.
@@ -447,8 +456,9 @@ switch (outcome.reason) {
   case 'ok':
     return outcome.skill; // non-null exactly here
   case 'integrity_failure':
-    // Content and its declared digest disagreed. Do not proceed on a fallback:
-    // the safe interpretation is that skill delivery is being tampered with.
+    // Content and its declared digest disagreed, or the store answered under a
+    // different key than the one requested. Do not proceed on a fallback: the
+    // safe interpretation is that skill delivery is being tampered with.
     console.error(`refusing to start: ${outcome.detail}`);
     process.exit(1);
   case 'absent':
@@ -468,8 +478,8 @@ switch (outcome.reason) {
 |---|---|---|
 | `ok` | the skill | Retrieved and verified. |
 | `absent` | `null` | The store holds nothing under that key. Not configured, not yet delivered, or revoked. |
-| `integrity_failure` | `null` | Content failed verification and was withheld. The `ld.skills.integrity_failure` record above was written for the same failure. |
-| `wrong_version` | `null` | A version was pinned and the store answered with a different one. |
+| `integrity_failure` | `null` | Content was delivered and its identity did not verify, so it was withheld. Two cases reach this token: content that failed hash/size/shape verification, for which the `ld.skills.integrity_failure` record above was also written; and a store that answered under a **different key** than the one requested, which is reported here but records no signal and writes no log record (the check runs after verification has already passed). This is the outcome to fail closed on. |
+| `wrong_version` | `null` | A version was pinned and the store answered with a different one. Only a version mismatch — a key mismatch is `integrity_failure`, and there is deliberately no `wrong_key`. |
 | `store_unavailable` | `null` | The store threw. Nothing was retrieved, so nothing is known either way. |
 
 `detail` carries the human-readable reason for every non-`ok` outcome and is `null` for `ok`. It is safe to log or surface: it names the key, the requested and held versions, and the failure category, and never skill content or a filesystem path.

@@ -1162,7 +1162,10 @@ async function pruneOne(
 
   delete entries[relative];
 
-  if (removedFromDisk) recordRevoked(key, isValidSkillVersion(version) ? version : null);
+  // The raw manifest values go through untouched: `recordRevoked` shape-checks
+  // and redacts both of them itself, so the signal omits a malformed version
+  // rather than recording the `null` a pre-check here would hand it.
+  if (removedFromDisk) recordRevoked(key, version);
 
   return createReconcileAction({
     key,

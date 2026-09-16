@@ -105,7 +105,6 @@ export { parseUsage, normalizeMode, parseAiConfig } from './tracking.js';
 
 // Agent Skills
 export { skillRefs, getSkill, getSkillResult, getSkills, allSkills, InMemorySkillStore } from './skills.js';
-export { SKILL_OBJECT_KIND, MAX_SKILL_CONTENT_BYTES } from './skills-core.js';
 export { writeSkills, SKILL_FILENAME, MANIFEST_FILENAME, MANIFEST_VERSION } from './skills-fs.js';
 export { FDv2SkillStore, DEFAULT_BASE_URI, DEFAULT_STREAM_URI } from './skills-fdv2.js';
 export { watchSkills, SkillWatcher, DEFAULT_DEBOUNCE_MS } from './skills-watch.js';
@@ -118,6 +117,15 @@ export type {
 ```
 
 When adding a new export, add it here. Handler packages must never import from sub-paths (e.g. `@launchdarkly/ai-server/dist/client`).
+
+`MAX_SKILL_CONTENT_BYTES` and `SKILL_OBJECT_KIND` are deliberately **not** among them, and that
+absence is a contract with an absence assertion behind it — do not re-export either from
+`index.ts`. The cap is a local enforcement bound on content the platform produces, not a value this
+SDK defines, so exporting it would semver-lock a number this side does not own; the `over_size_cap`
+reason string already reports the bound when it is what withheld content. The kind is the string
+this SDK hands a `SkillStore`, and an adapter maps whatever its transport calls a skill onto it, so
+publishing it would advertise an SDK-side seam as the wire format — a claim this side cannot make
+and could not walk back once a caller depended on it. Both stay internal to `skills-core.ts`.
 
 ---
 
@@ -347,11 +355,14 @@ Two decisions here look like unfinished work and are not. Neither should be reve
   | `resolveFromStore` — the store threw (also sets `unavailable`) | `store_unavailable` |
   | `resolveFromStore` — `raw` is not an object (null, an array, a scalar) | `absent` |
   | `resolveFromStore` — `verifyRawSkill` returned `null` | `integrity_failure` |
+  | `resolveFromStore` — `skill.key !== key` (the store answered under another key) | `integrity_failure` |
   | `resolveFromStore` — `skill.version !== wantedVersion` | `wrong_version` |
   | `resolveFromStore` — success | `ok` |
   | `skills-fs.ts` `resolveReference` — deadline exhausted, or no store configured (both set `unavailable`) | `store_unavailable` |
 
-  Adding a seventh row means answering "which of the five does a caller see?" before writing the code. `unavailable` stays a separate field rather than folding into `reason`: it is narrower, it is what suppresses pruning, and the two bottom rows above never reach an accessor at all.
+  The two `integrity_failure` rows are **not** interchangeable, and the difference is the easy thing to get wrong. The `verifyRawSkill` row fires *inside* verification, so it records the `AgentControl Skill Integrity Failure` signal and writes the `ld.skills.integrity_failure` log record with one of the eight `IntegrityReasonCode` tokens. The key-mismatch row fires *after* verification has already passed, so it does neither — it is an outcome reason and nothing else, with no signal, no log record, and no `reason_code`. Do not "fix" that by adding an emission at the key check: the eight-token vocabulary does not cover it, so it would need a ninth token (`key_mismatch`) and a matching change in the Python SDK. A test asserts the silence in both directions.
+
+  Adding an eighth row means answering "which of the five does a caller see?" before writing the code. `unavailable` stays a separate field rather than folding into `reason`: it is narrower, it is what suppresses pruning, and the two bottom rows above never reach an accessor at all.
 - `wantedVersion` is passed **into** `SkillStore.getObject(kind, key, version)`, and the post-hoc `skill.version !== wantedVersion` check is kept anyway. The parameter is there because a store may hold several versions of one key and only the store can pick between them; the equality check is a **defense**, not the selection mechanism, because the store is untrusted. Removing either one is wrong: without the parameter a satisfiable pin gets reported as `wrong_version`, and without the check a lying store gets its answer through. `InMemorySkillStore` holds one object per key and so ignores the parameter by design — it answers with what it has rather than with `null`, so a pin it cannot satisfy reports `wrong_version` rather than `absent`. Giving it real multi-version semantics is a separate change that pulls in `allObjects` and `allSkills`.
 - `getSkill`'s contract — "resolves to `null`, never rejects; throws only when no store is configured" — is **frozen**. It is documented in its JSDoc and in the README, and every existing caller treats that `null` as "no skill", so a reason must be added *alongside* it (as `getSkillResult` was) and never by changing what `getSkill` returns. `getSkillResult` is a projection of the same `Resolution` and shares the single throw; it records no telemetry and writes no log record of its own, because the integrity record already fired inside verification before the resolution returned and reporting it again would double-count one failure. `getSkills` and `allSkills` deliberately have no reporting equivalents yet.
 - This package has no logger abstraction — every `console.*` call site carries a `biome-ignore` saying so. Introducing a `logger` option is a package-wide API decision affecting unrelated call sites, not a skills change; until one exists, the integrity record has to be self-describing in the string it logs, which is why the event name appears both in the prefix and in the JSON.
