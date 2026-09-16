@@ -229,11 +229,30 @@ export class InMemorySkillStore implements SkillStore {
 // ---------------------------------------------------------------------------
 
 /**
+ * Warns that one `skills` entry was left out of the projection.
+ *
+ * A dropped entry cannot be silent. The projection's output is what a caller
+ * hands `writeSkills`, and a shortened list is indistinguishable there from "that
+ * skill is no longer requested" — so with `prune: true` (the default) a silently
+ * dropped entry *deletes the skill's files*. Naming the position is what lets an
+ * operator find the offending entry in a hand-built config.
+ */
+function warnDropped(index: number, why: string): void {
+  // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a dropped skill reference must be visible
+  console.warn(`[LaunchDarkly] skills[${index}]${why}; it was dropped from the projection`);
+}
+
+/**
  * Projects a resolved AI Config's `skills` array into typed references.
  *
  * A pure projection — no network, no client, no store, no telemetry. Returns `[]`
  * when the config carries no skills. Compose it with the accessors for
  * per-context resolution: `await getSkills(skillRefs(config))`.
+ *
+ * A config that came through `parseAiConfig` never carries an invalid entry —
+ * parsing fails closed on one. A hand-built object can, and this re-validates
+ * rather than trusting that it did not, so every entry it cannot use is dropped
+ * and **logged**; see {@link warnDropped} for why the silence would matter.
  */
 export function skillRefs(config: AiConfigRep | null | undefined): SkillReference[] {
   if (typeof config !== 'object' || config === null) return [];
@@ -242,10 +261,17 @@ export function skillRefs(config: AiConfigRep | null | undefined): SkillReferenc
   if (!Array.isArray(raw)) return [];
 
   const refs: SkillReference[] = [];
-  for (const entry of raw) {
-    if (typeof entry !== 'object' || entry === null) continue;
+  for (const [index, entry] of raw.entries()) {
+    if (typeof entry !== 'object' || entry === null) {
+      warnDropped(index, ' is not a { key, version } object');
+      continue;
+    }
     const { key, version } = entry as { key?: unknown; version?: unknown };
-    if (isValidSkillKey(key) && isValidSkillVersion(version)) {
+    if (!isValidSkillKey(key)) {
+      warnDropped(index, '.key must be 1–256 characters matching /^[a-z0-9][a-z0-9-]*$/');
+    } else if (!isValidSkillVersion(version)) {
+      warnDropped(index, '.version must be an integer >= 1');
+    } else {
       refs.push(createSkillReference({ key, version }));
     }
   }

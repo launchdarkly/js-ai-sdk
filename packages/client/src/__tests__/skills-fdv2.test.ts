@@ -18,14 +18,22 @@
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createServer as createTcpServer, type Socket, type Server as TcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { _clearState, _setStore, allSkills, getSkill, getSkillResult, InMemorySkillStore } from '../skills.js';
+import {
+  _clearState,
+  _setEmitterForTesting,
+  _setStore,
+  allSkills,
+  getSkill,
+  getSkillResult,
+  InMemorySkillStore,
+} from '../skills.js';
 import { SKILL_OBJECT_KIND } from '../skills-core.js';
 import {
   _warnedHashless,
@@ -54,8 +62,8 @@ import {
   tombstoneFromDelete,
 } from '../skills-fdv2.js';
 import { writeSkills } from '../skills-fs.js';
-import { watchSkills } from '../skills-watch.js';
-import type { RawSkillObject } from '../types.js';
+import { SkillWatcher, watchSkills } from '../skills-watch.js';
+import type { RawSkillObject, ReconcileReport } from '../types.js';
 
 const SDK_KEY = 'sdk-00000000-0000-4000-8000-000000000000';
 const SKILL_BODY = '---\nname: PDF Extraction\n---\nExtract text from PDFs.\n';
@@ -326,6 +334,14 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<bo
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   return predicate();
+}
+
+/** A telemetry emitter that records instead of emitting (§3.24). */
+class RecordingEmitter {
+  records: Array<[string, Record<string, unknown>]> = [];
+  record(signal: string, properties: Record<string, unknown>): void {
+    this.records.push([signal, properties]);
+  }
 }
 
 const logged = (spy: ReturnType<typeof vi.spyOn>): string => spy.mock.calls.map((call) => String(call[0])).join('\n');
@@ -2224,23 +2240,78 @@ describe('watchSkills', () => {
     }
   });
 
-  it('coalesces a burst of changes into few reconciles', async () => {
-    endpoint.queuePoll(
-      fullPayload(Array.from({ length: 12 }, (_, i) => ['put-object', putSkill(`skill-${i}`)] as [string, unknown])),
-    );
-    endpoint.queuePoll([], { status: 304 });
-    const store = pollStore();
+  it('coalesces a burst of changes into exactly one reconcile', async () => {
+    // Three things make this test either evidence or theatre, and all three have
+    // to be right:
+    //
+    // 1. **The burst has to arrive after the watcher registers.** A payload
+    //    committed before `watchSkills` attaches its listener notifies nobody,
+    //    so the reconcile counter never leaves zero — and an upper bound
+    //    (`<= 2`) then passes against an implementation with the debouncing
+    //    deleted. So the seed payload is what boot waits for, and the burst is
+    //    queued only once the watcher is up.
+    // 2. **The assertion has to be an equality, and it has to see movement.**
+    //    Exactly one more reconcile than the initial one, and the counter has to
+    //    have advanced at all; a run in which it stays at zero is not testing
+    //    coalescing.
+    // 3. **The notifications have to be spread over time.** This one is not in
+    //    the spec and it is what actually makes the test discriminate, verified
+    //    by mutation: `SkillWatcher.schedule` also has a `pending` flag, so a
+    //    burst that arrives in *one synchronous run* of the listener collapses
+    //    to a single reconcile whether or not the debounce exists. Twelve
+    //    objects in one commit are therefore not enough. Three commits arriving
+    //    a poll apart are: each one lands after the previous reconcile would
+    //    already have started and cleared `pending`, so only the debounce window
+    //    can merge them.
+    endpoint.queuePoll(fullPayload([['put-object', putSkill('seed')]]));
+    const store = pollStore({ pollIntervalMs: 20 });
     store.start();
-    await store.waitForSkills(5000);
+    expect(await store.waitForSkills(5000)).toBe(true);
     _setStore(store);
 
     const root = path.join(await scratchRoot(), 'skills');
-    const { watcher } = await watchSkills('*', root, { debounceMs: 50 });
+    // Comfortably longer than the three commits take to arrive at a 20 ms poll
+    // interval — with enough margin that a loaded CI runner cannot push the
+    // third commit out of the window and turn a correct implementation red.
+    const { watcher } = await watchSkills('*', root, { debounceMs: 1000 });
     try {
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      // Twelve objects committed in one payload fire twelve listener calls;
-      // without coalescing that is twelve reconciles of one root.
-      expect(watcher.reconciles).toBeLessThanOrEqual(2);
+      // The initial reconcile is the caller's own result and is excluded from
+      // the counter, so this is the baseline the equality is measured against.
+      expect(watcher.reconciles).toBe(0);
+
+      // Twelve objects across three commits. Twelve, because a commit notifies
+      // once per *changed object* rather than once per commit (§3.25) — which is
+      // why the debounce exists at all rather than being a refinement of a
+      // per-commit notification.
+      for (let commit = 0; commit < 3; commit += 1) {
+        endpoint.queuePoll(
+          events(
+            ['server-intent', serverIntent('xfer-changes')],
+            ...Array.from(
+              { length: 4 },
+              (_, i) => ['put-object', putSkill(`skill-${commit}-${i}`)] as [string, unknown],
+            ),
+            ['payload-transferred', transferred(`basis-${commit + 2}`)],
+          ),
+        );
+      }
+
+      // The endpoint really served the changes rather than a steady 304 for the
+      // duration — the other way this test goes vacuous. Asserted on the store's
+      // own counters, so "nothing was delivered" cannot read as "delivery was
+      // coalesced".
+      expect(await waitUntil(() => store.diagnostics.skillObjectsReceived >= 13, 10_000)).toBe(true);
+      expect(store.diagnostics.payloadsTransferred).toBeGreaterThanOrEqual(4);
+
+      // The counter moved...
+      expect(await waitUntil(() => watcher.reconciles > 0, 10_000)).toBe(true);
+      // ...and then settled at exactly one. Waited out past a further whole
+      // window, so a second reconcile would have landed by now.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      expect(watcher.reconciles).toBe(1);
+      // And the one reconcile saw the settled state — the last commit's objects
+      // included — rather than a half-applied burst.
+      expect(await readFile(path.join(root, 'skill-2-3', 'SKILL.md'), 'utf8')).toBe(SKILL_BODY);
     } finally {
       await watcher.close();
     }
@@ -2342,6 +2413,190 @@ describe('watchSkills', () => {
     } finally {
       await watcher.close();
     }
+  });
+
+  it('returns a named object, not a tuple, and takes its debounce in milliseconds', async () => {
+    // A.12 fixes both, and both are places a port from Python goes wrong
+    // silently: destructuring `[report, watcher]` off an object yields
+    // `undefined`s, and passing Python's seconds value to `debounceMs` sets a
+    // 0.5 ms window that looks like a timing bug rather than a unit bug.
+    const store = new InMemorySkillStore();
+    store.put({ key: 'a', version: 1, content: 'body', contentHash: hash('body') });
+    _setStore(store);
+
+    const result = await watchSkills('*', path.join(await scratchRoot(), 'skills'), {
+      // Milliseconds. A whole second here, so the assertion below cannot be
+      // satisfied by a window that has already elapsed.
+      debounceMs: 1000,
+    });
+    try {
+      expect(Object.keys(result).sort()).toEqual(['report', 'watcher']);
+      expect(Array.isArray(result)).toBe(false);
+      expect(result.report.actions.some((action) => action.action === 'written')).toBe(true);
+      expect(result.watcher).toBeInstanceOf(SkillWatcher);
+
+      // The unit, observably: a change notified now has not reconciled a
+      // quarter of a second later, because the window is 1000 ms and not 1.
+      store.put({ key: 'a', version: 2, content: 'new body', contentHash: hash('new body') });
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(result.watcher.reconciles).toBe(0);
+    } finally {
+      await result.watcher.close();
+    }
+  });
+
+  it('rejects a negative debounce and a non-finite one', async () => {
+    // `NaN` is the case a `< 0` guard misses — `NaN < 0` is false — and it is
+    // not benign: `setTimeout(fn, NaN)` fires at 1 ms, collapsing the window so
+    // that every delivered object reconciles and nothing coalesces at all. So
+    // the guard has to reject it the way `writeSkills` already rejects a
+    // non-numeric `timeout`.
+    const store = new InMemorySkillStore();
+    _setStore(store);
+    const root = path.join(await scratchRoot(), 'skills');
+    const listeners = (): unknown[] =>
+      (store as unknown as { listeners: Map<string, unknown[]> }).listeners.get(SKILL_OBJECT_KIND) ?? [];
+
+    for (const debounceMs of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(watchSkills('*', root, { debounceMs })).rejects.toThrow(/debounceMs/);
+    }
+    // Refused before anything was registered or written: the validation runs
+    // ahead of the listener and ahead of the initial reconcile.
+    expect(listeners()).toEqual([]);
+    expect(existsSync(root)).toBe(false);
+  });
+
+  it('calls onReconcile for a delivery-triggered reconcile and not for the initial one', async () => {
+    // The initial report is returned directly, so delivering it through the
+    // callback as well would make a caller handle the same reconcile twice.
+    const store = new InMemorySkillStore();
+    store.put({ key: 'a', version: 1, content: 'first', contentHash: hash('first') });
+    _setStore(store);
+
+    const seen: ReconcileReport[] = [];
+    const root = path.join(await scratchRoot(), 'skills');
+    const { report, watcher } = await watchSkills('*', root, {
+      debounceMs: 20,
+      onReconcile: (each) => {
+        seen.push(each);
+      },
+    });
+    try {
+      // The initial reconcile did happen — it wrote the file — and it did not
+      // reach the callback.
+      expect(report.actions.some((action) => action.action === 'written')).toBe(true);
+      expect(await readFile(path.join(root, 'a', 'SKILL.md'), 'utf8')).toBe('first');
+      expect(seen).toEqual([]);
+
+      store.put({ key: 'a', version: 2, content: 'second', contentHash: hash('second') });
+
+      expect(await waitUntil(() => seen.length > 0, 10_000)).toBe(true);
+      expect(seen).toHaveLength(1);
+      // A real report for the re-reconcile, not the initial one handed over a
+      // second time.
+      expect(seen[0]).not.toBe(report);
+      expect(seen[0].actions.map((action) => [action.key, action.action])).toContainEqual(['a', 'updated']);
+      expect(seen[0].ok).toBe(true);
+    } finally {
+      await watcher.close();
+    }
+  });
+
+  it('survives a reconcile that throws — the next notification still reconciles', async () => {
+    // A watcher that died on one bad run would silently stop pruning, which is
+    // strictly worse than a noisy one: revocations would keep arriving and
+    // nothing would act on them, and the process would look healthy.
+    //
+    // `onUnavailable: 'raise'` against a store that throws is the shortest real
+    // path to a *throwing* reconcile — every ordinary failure is reported as an
+    // `error` action instead.
+    const body = (content: string): RawSkillObject => ({
+      key: 'a',
+      version: 1,
+      content,
+      contentHash: hash(content),
+    });
+    let explode = false;
+    let notify: (() => void) | null = null;
+    _setStore({
+      getObject: () => {
+        if (explode) throw new Error('transport failure');
+        return body('first');
+      },
+      allObjects: () => ({ 'a:1': body('first') }),
+      addListener: (_kind: string, fn: () => void) => {
+        notify = fn;
+      },
+      removeListener: () => {
+        notify = null;
+      },
+    });
+
+    const root = path.join(await scratchRoot(), 'skills');
+    const { watcher } = await watchSkills([{ key: 'a', version: 1 }], root, {
+      debounceMs: 10,
+      onUnavailable: 'raise',
+    });
+    try {
+      expect(await readFile(path.join(root, 'a', 'SKILL.md'), 'utf8')).toBe('first');
+      expect(notify).not.toBeNull();
+
+      explode = true;
+      (notify as unknown as () => void)();
+
+      // The failure is visible rather than swallowed, and the watcher says so.
+      expect(await waitUntil(() => /the watcher continues/.test(consoleErrors()), 10_000)).toBe(true);
+      // The throwing run does not count as a completed reconcile.
+      expect(watcher.reconciles).toBe(0);
+
+      explode = false;
+      (notify as unknown as () => void)();
+
+      expect(await waitUntil(() => watcher.reconciles > 0, 10_000)).toBe(true);
+    } finally {
+      await watcher.close();
+    }
+  });
+
+  it('raises an invalid root out of watchSkills rather than inside a worker', async () => {
+    // The initial reconcile runs on the caller's thread precisely so this is a
+    // rejected promise the caller can catch, exactly as `writeSkills` would give
+    // them — not a line in a background task's log that a caller cannot see and
+    // cannot react to.
+    const store = new InMemorySkillStore();
+    _setStore(store);
+    const scratch = await scratchRoot();
+
+    // A root whose parent does not exist: never created recursively (§3.22).
+    await expect(watchSkills('*', path.join(scratch, 'a', 'b', 'c'))).rejects.toThrow();
+    // And a root that is a file rather than a directory.
+    const file = path.join(scratch, 'file');
+    await writeFile(file, '', 'utf8');
+    await expect(watchSkills('*', file)).rejects.toThrow();
+
+    // Nothing was logged instead of thrown — the failure travelled one way only.
+    expect(consoleErrors()).toBe('');
+  });
+
+  it('leaves no listener behind when the initial reconcile fails', async () => {
+    // The listener is registered *before* the initial reconcile so a payload
+    // committing during its filesystem I/O is not lost — which means a reconcile
+    // that throws has to detach on the way out. The caller is handed an
+    // exception, not a watcher to close, so nothing else can.
+    const store = new InMemorySkillStore();
+    _setStore(store);
+    const listeners = (): unknown[] =>
+      (store as unknown as { listeners: Map<string, unknown[]> }).listeners.get(SKILL_OBJECT_KIND) ?? [];
+    const notADirectory = path.join(await scratchRoot(), 'file');
+    await writeFile(notADirectory, '', 'utf8');
+
+    await expect(watchSkills('*', notADirectory)).rejects.toThrow();
+
+    expect(listeners()).toEqual([]);
+    // And the store holding no reference to it is the observable that matters: a
+    // later change must not reach a watcher nobody can close.
+    store.put({ key: 'a', version: 1, content: 'body', contentHash: hash('body') });
+    expect(listeners()).toEqual([]);
   });
 
   it('refuses a store with no addListener, loudly', async () => {
@@ -2775,5 +3030,95 @@ describe('endpoints', () => {
     await expect(requester.stream('(p:a:1)', new AbortController().signal)).rejects.toThrow();
     expect(urls[0]).toBe('https://sdk.example.com/sdk/poll?basis=%28p%3Aa%3A1%29');
     expect(urls[1]).toBe('https://stream.example.com/sdk/stream?basis=%28p%3Aa%3A1%29');
+  });
+});
+
+// ─── Layering, and the absence of telemetry ──────────────────────────────────
+
+describe('layering', () => {
+  /** `skills-fdv2.ts`'s own source text — the only way to assert a leaf. */
+  const source = readFileSync(new URL('../skills-fdv2.ts', import.meta.url), 'utf8');
+
+  /** Every `from '...'` specifier in a source file, in order. */
+  function importsOf(text: string): string[] {
+    return [...text.matchAll(/^\s*(?:import|export)\b[^;]*?from\s+'([^']+)'/gm)].map(([, specifier]) => specifier);
+  }
+
+  it('adds no dependency beyond the standard library', () => {
+    // The package's sole runtime dependency is the OpenTelemetry API, and the
+    // transport is not allowed to add a second one. A `package.json` assertion
+    // would not catch it — a transitive dependency of another package resolves
+    // perfectly well from here.
+    const external = importsOf(source).filter((specifier) => !specifier.startsWith('.'));
+    expect(external.filter((specifier) => !specifier.startsWith('node:'))).toEqual([]);
+  });
+
+  it('imports the shared internals for the seam kind and nothing else from the feature', () => {
+    // The transport sits *below* the `SkillStore` interface: it produces raw
+    // wire objects and knows nothing about verification, the `Skill` type, or
+    // materialization. The seam kind is the one thing it legitimately needs from
+    // above, so that import is spelled out and the rest are named as forbidden.
+    const relative = [...new Set(importsOf(source).filter((specifier) => specifier.startsWith('.')))];
+    // `types.js` is the package's value-type module, not a layer of the feature:
+    // the wire objects it produces have to be typed somehow. `skills-core.js` is
+    // the only feature module, and `skills.js` / `skills-fs.js` /
+    // `skills-watch.js` are absent by construction rather than by coincidence.
+    expect(relative.sort()).toEqual(['./skills-core.js', './types.js']);
+
+    // And only the seam kind comes out of the shared internals — not the
+    // verification helpers, not the store state.
+    const fromCore = source.match(/import\s*\{([^}]*)\}\s*from\s*'\.\/skills-core\.js'/);
+    expect(fromCore).not.toBeNull();
+    expect((fromCore as RegExpMatchArray)[1].split(',').map((name) => name.trim())).toEqual(['SKILL_OBJECT_KIND']);
+  });
+
+  it('is imported by nothing in the feature, so the layering cannot invert', () => {
+    // The package index re-exports it, which is the publication point rather
+    // than a layer — but no *module* of the feature may reach for it, or the
+    // accessors would start depending on one particular transport.
+    for (const module of ['skills.ts', 'skills-core.ts', 'skills-fs.ts', 'skills-watch.ts']) {
+      const text = readFileSync(new URL(`../${module}`, import.meta.url), 'utf8');
+      expect(importsOf(text), module).not.toContain('./skills-fdv2.js');
+    }
+  });
+});
+
+describe('telemetry', () => {
+  it('records no signal of its own across a full delivery cycle', async () => {
+    // The three signals in the allowlist belong to verification and to
+    // materialization. The transport holds what arrived and counts what it
+    // ignored; it does not judge content, so it has nothing to report — in
+    // particular not for the hashless object below, which is verification's to
+    // withhold and not the transport's to flag.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+
+    endpoint.queuePoll(
+      fullPayload([
+        ['put-object', putSkill('pdf-extraction')],
+        ['put-object', putSkill('hashless', { omitHash: true })],
+        ['put-object', putSkill('tampered', { contentHash: hash('something else') })],
+        ['put-object', putFlag()],
+      ]),
+    );
+    endpoint.queuePoll(
+      events(
+        ['server-intent', serverIntent('xfer-changes')],
+        ['delete-object', deleteSkill('pdf-extraction')],
+        ['payload-transferred', transferred('basis-2')],
+      ),
+    );
+
+    const store = pollStore({ pollIntervalMs: 20 });
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await waitUntil(() => store.diagnostics.objectsRevoked > 0, 10_000)).toBe(true);
+    // Serving is part of the cycle too, and it is the surface a naive
+    // implementation would verify on.
+    store.allObjects(SKILL_OBJECT_KIND);
+    store.getObject(SKILL_OBJECT_KIND, 'tampered');
+    await store.close();
+
+    expect(emitter.records).toEqual([]);
   });
 });

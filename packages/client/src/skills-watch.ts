@@ -238,8 +238,18 @@ export async function watchSkills(
     );
   }
 
+  // `NaN` is the case a `< 0` guard misses — `NaN < 0` is false — and it is not a
+  // harmless one: `setTimeout(fn, NaN)` fires at 1 ms, which collapses the
+  // coalescing window to nothing and reconciles once per *delivered object*. A
+  // twelve-skill payload would then run twelve reconciles of one root. Guarded
+  // the way `writeSkills` already guards its own `timeout`.
   const { debounceMs = DEFAULT_DEBOUNCE_MS, onReconcile, ...writeOptions } = options;
-  if (debounceMs < 0) throw new Error(`debounceMs must not be negative, got ${JSON.stringify(debounceMs)}`);
+  if (typeof debounceMs !== 'number' || !Number.isFinite(debounceMs) || debounceMs < 0) {
+    // `String` rather than `JSON.stringify` for the number case: the latter
+    // serializes `NaN` as `null`, which names the wrong mistake.
+    const shown = typeof debounceMs === 'number' ? String(debounceMs) : JSON.stringify(debounceMs);
+    throw new Error(`debounceMs must be a non-negative, finite number of milliseconds, got ${shown}`);
+  }
 
   const watcher = new SkillWatcher(store, skills, root, writeOptions, debounceMs, onReconcile);
 

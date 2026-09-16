@@ -24,10 +24,17 @@
  * root's ancestors.
  *
  * Every test states the contract rather than the mechanism: nothing lands outside
- * the root, no outside file is overwritten, no outside file is removed. The
- * trigger matches both the path-based and descriptor-based spellings of the child
- * path (see the hook below), so these same bodies fail against an unpinned root
- * and pass against a pinned one — which is the only thing that makes them
+ * the root, no outside file is overwritten, no outside file is removed — **and**,
+ * for the three races where the swap lands after the containment check, that the
+ * operation went through in the root that was pinned. That second half is not
+ * decoration. The negative assertions alone are all satisfied by an
+ * implementation that refuses every write once anything has been swapped, which
+ * is precisely the regression the Linux fast path could introduce, so guarding
+ * them on `report.ok` would invert the test.
+ *
+ * The trigger matches both the path-based and descriptor-based spellings of the
+ * child path (see the hook below), so these same bodies fail against an unpinned
+ * root and pass against a pinned one — which is the only thing that makes them
  * evidence.
  *
  * In its own file because the swap has to land *before* the per-skill directory
@@ -225,8 +232,16 @@ describe.skipIf(!SUPPORTS_PROC_FD)('writeSkills root swap races', () => {
 
     if (!race.fired) throw new Error(NEVER_FIRED);
     expect(await readdir(outside)).toEqual([]);
-    // Either the skill landed in the real root or the run says it did not.
-    if (report.ok) expect(await readFile(path.join(movedTo(), 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+    // Unconditionally, and that is the point: guarding this on `report.ok` would
+    // hand a pass to an implementation that refuses every write once anything
+    // has been swapped — which is exactly the regression the fast path could
+    // introduce, and which "the outside directory is empty" cannot distinguish
+    // from a write that landed correctly. The swap fires at the `mkdir`, after
+    // `unsafePathReason` has already run, so the containment check is not what
+    // is under test here: the descriptor addressing is, and it must deliver the
+    // file into the root that was validated.
+    expect(report.ok).toBe(true);
+    expect(await readFile(path.join(movedTo(), 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
   });
 
   it('a root swapped at the skill directory open cannot clobber an outside file', async () => {
@@ -245,7 +260,11 @@ describe.skipIf(!SUPPORTS_PROC_FD)('writeSkills root swap races', () => {
 
     if (!race.fired) throw new Error(NEVER_FIRED);
     expect(await readFile(victim, 'utf-8')).toBe('precious\n');
-    if (report.ok) expect(await readFile(path.join(movedTo(), 'a', SKILL_MD), 'utf-8')).toBe('served update\n');
+    // Unconditional for the reason given above: "the victim is unchanged" holds
+    // for an implementation that wrote nothing at all, so the landing has to be
+    // asserted too.
+    expect(report.ok).toBe(true);
+    expect(await readFile(path.join(movedTo(), 'a', SKILL_MD), 'utf-8')).toBe('served update\n');
   });
 
   it('a root swapped at the prune cannot redirect the unlink', async () => {
@@ -266,7 +285,13 @@ describe.skipIf(!SUPPORTS_PROC_FD)('writeSkills root swap races', () => {
     if (!race.fired) throw new Error(NEVER_FIRED);
     expect(await exists(victim)).toBe(true);
     expect(await readFile(victim, 'utf-8')).toBe('precious\n');
-    if (report.ok) expect(await exists(path.join(movedTo(), 'a', SKILL_MD))).toBe(false);
+    // Unconditional, and on the destructive side it matters most: an
+    // implementation that pruned nothing satisfies "the outside file survives"
+    // perfectly. The managed file — the one this SDK owns — is the one that had
+    // to go, and the report has to say so.
+    expect(report.ok).toBe(true);
+    expect(report.actions.map((action) => [action.key, action.action])).toContainEqual(['a', 'removed']);
+    expect(await exists(path.join(movedTo(), 'a', SKILL_MD))).toBe(false);
   });
 
   /**

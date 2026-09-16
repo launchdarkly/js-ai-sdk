@@ -774,6 +774,101 @@ describe('writeSkills resilience', () => {
     expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
   });
 
+  it('does not prune when one of two references resolved and the other failed', async () => {
+    // The spec-mandated shape for the second suppression condition, and the one
+    // the whole-store-outage case above cannot stand in for: here the run *did*
+    // retrieve something, so an implementation that gated pruning on "did we get
+    // anything at all" passes that test and fails this one. One reference
+    // resolves, one does not, and a third manifest-listed skill that nobody
+    // asked for this run has to survive — because "revoked" and "did not arrive
+    // this time" are indistinguishable from here, and guessing is data loss.
+    const stale = path.join(root, 'stale', SKILL_MD);
+    await mkdir(path.dirname(stale), { recursive: true });
+    await writeFile(stale, SKILL_BODY, 'utf-8');
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: { [`stale/${SKILL_MD}`]: manifestEntry('stale', 3, SKILL_BODY) },
+    });
+
+    _setStore({
+      getObject(_kind: string, key: string) {
+        if (key === 'resolves') return rawSkill('resolves');
+        throw new Error('transport failure');
+      },
+      allObjects() {
+        return { resolves: rawSkill('resolves') };
+      },
+    });
+
+    const report = await writeSkills(
+      [
+        { key: 'resolves', version: 1 },
+        { key: 'fails', version: 1 },
+      ],
+      root,
+    );
+
+    const byKey = actionsByKey(report);
+    // The run genuinely half-succeeded: one skill is on disk, the other is an
+    // error. That is what makes this shape different from a total outage.
+    expect(byKey.resolves.action).toBe('written');
+    expect(await readFile(path.join(root, 'resolves', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+    expect(byKey.fails.action).toBe('error');
+
+    // And the unrequested third skill was left alone, entry and all.
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(byKey.stale).toBeUndefined();
+    expect(await readFile(stale, 'utf-8')).toBe(SKILL_BODY);
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(entries[`stale/${SKILL_MD}`]).toMatchObject({ key: 'stale', version: 3 });
+  });
+
+  it('does not prune when the deadline expired partway through the writes', async () => {
+    // The third shape of the same rule: retrieval was fine and the manifest was
+    // fine, but the budget ran out before every requested skill was written — so
+    // the run still does not know what is current. A caller must not read "no
+    // `removed` actions" as "nothing is stale".
+    const stale = path.join(root, 'stale', SKILL_MD);
+    await mkdir(path.dirname(stale), { recursive: true });
+    await writeFile(stale, SKILL_BODY, 'utf-8');
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: { [`stale/${SKILL_MD}`]: manifestEntry('stale', 3, SKILL_BODY) },
+    });
+
+    // A fake monotonic clock the first rename pushes past the deadline, so the
+    // second skill's write is on the wrong side of it.
+    let nowMs = performance.now();
+    vi.spyOn(performance, 'now').mockImplementation(() => nowMs);
+    const real = fsOps.rename.bind(fsOps);
+    vi.spyOn(fsOps, 'rename').mockImplementation(async (src: string, dst: string) => {
+      const result = await real(src, dst);
+      if (dst.endsWith(SKILL_MD)) nowMs += 5_000;
+      return result;
+    });
+
+    const report = await writeSkills([skill('first'), skill('second')], root, { timeout: 1 });
+
+    const byKey = actionsByKey(report);
+    expect(byKey.first.action).toBe('written');
+    // The injected expiry is what stopped the second write, rather than some
+    // unrelated refusal.
+    expect(byKey.second.action).toBe('error');
+    expect(byKey.second.error).toMatch(/timeout was exhausted/);
+
+    // So nothing was pruned, and the stale entry survives for the next run.
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    // Not *reached*, rather than reached and refused: the prune phase was
+    // suppressed outright, so `stale` carries no action at all. This is the
+    // assertion that separates the suppression gate from the per-entry deadline
+    // check inside the prune loop (§3.22 resilience), which would have reported
+    // a timeout error for the same entry and left the same file on disk.
+    expect(byKey.stale).toBeUndefined();
+    expect(await readFile(stale, 'utf-8')).toBe(SKILL_BODY);
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(entries[`stale/${SKILL_MD}`]).toMatchObject({ key: 'stale', version: 3 });
+  });
+
   it('an exhausted timeout behaves as unavailable', async () => {
     const store = new InMemorySkillStore();
     store.put(rawSkill('a'));
@@ -1287,6 +1382,38 @@ describe('writeSkills clobber protection', () => {
     expect(await readFile(target, 'utf-8')).toBe('user authored\n');
   });
 
+  it('distinguishes the adoption carve-out from an unmanaged file it must refuse', async () => {
+    // Adoption (§3.22) is the one carve-out in this row, and it does not weaken
+    // it: the only file ever claimed is one whose bytes *already are* the
+    // LaunchDarkly-resolved content. So the two have to be asserted against the
+    // same setup — the same root, the same absent manifest, the same
+    // `writeSkills` call — because byte equality is the entry condition, and an
+    // implementation that simply ignored the missing manifest entry would adopt
+    // both. This is the assertion that says the check is the bytes and not the
+    // absence.
+    const identical = path.join(root, 'same', SKILL_MD);
+    const divergent = path.join(root, 'differs', SKILL_MD);
+    await mkdir(path.dirname(identical), { recursive: true });
+    await mkdir(path.dirname(divergent), { recursive: true });
+    await writeFile(identical, SKILL_BODY, 'utf-8');
+    // One byte longer, and otherwise the resolved content exactly.
+    await writeFile(divergent, `${SKILL_BODY} `, 'utf-8');
+    expect(await exists(manifestPath(root))).toBe(false);
+
+    const report = await writeSkills([skill('same'), skill('differs')], root);
+
+    const byKey = actionsByKey(report);
+    // Identical bytes: adopted, and recorded as managed from now on.
+    expect(byKey.same.action).toBe('skipped_current');
+    expect(await readFile(identical, 'utf-8')).toBe(SKILL_BODY);
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(entries[`same/${SKILL_MD}`]).toMatchObject({ key: 'same' });
+    // One byte different: still refused, still untouched, still unclaimed.
+    expect(byKey.differs.action).toBe('error');
+    expect(await readFile(divergent, 'utf-8')).toBe(`${SKILL_BODY} `);
+    expect(entries[`differs/${SKILL_MD}`]).toBeUndefined();
+  });
+
   it('a manifest entry with a mismatched key does not authorize destruction', async () => {
     const target = path.join(root, 'a', SKILL_MD);
     await mkdir(path.dirname(target));
@@ -1376,6 +1503,27 @@ describe('writeSkills crash-mid-reconcile recovery', () => {
     expect(await readFile(target, 'utf-8')).toBe(divergent);
     // Refused means refused all the way: no entry is created for it either, so
     // the next run cannot mistake the file for one this SDK manages.
+    expect(await readManifest(root)).toMatchObject({ entries: {} });
+  });
+
+  it('an adopted file is prunable afterwards', async () => {
+    // Adoption is a full claim, not a one-run exemption — and this is the test
+    // that says so. Without it, "adopted" is indistinguishable from "tolerated
+    // once": an implementation that reported `skipped_current` without ever
+    // writing the manifest entry would pass every other case in this block, and
+    // then leave the file behind forever on the run that revoked it.
+    const target = await placeOrphaned('a', SKILL_BODY);
+    const first = await writeSkills([skill('a')], root);
+    expect(actionsByKey(first).a.action).toBe('skipped_current');
+
+    const second = await writeSkills([], root);
+
+    // Removed exactly as a file this SDK wrote would have been: the action, the
+    // file, the now-empty directory, and the manifest entry.
+    expect(second.ok).toBe(true);
+    expect(actionsByKey(second).a.action).toBe('removed');
+    expect(await exists(target)).toBe(false);
+    expect(await entryNames(root)).toEqual([MANIFEST_NAME]);
     expect(await readManifest(root)).toMatchObject({ entries: {} });
   });
 
