@@ -272,10 +272,13 @@ const buildGraph = async (
     for (const edge of outgoing) {
       const target = nodes.get(edge.targetKey);
       const toolName = `__handoff_${sanitizeName(edge.targetKey)}`;
-      const description =
-        (edge.handoff?.description as string | undefined) ??
-        target?.config.instructions?.slice(0, 120) ??
-        `Transfer control to ${edge.targetKey}`;
+      // The prefix is unconditional: without it, a description sourced from the target's own
+      // instructions reads as a tool that does the target's work, and the model calls it
+      // instead of the node's real tools.
+      const detail = (edge.handoff?.description as string | undefined) ?? target?.config.instructions?.slice(0, 120);
+      const description = detail
+        ? `Transfer control to ${edge.targetKey}. ${detail}`
+        : `Transfer control to ${edge.targetKey}.`;
 
       handoffTools[toolName] = {
         name: toolName,
@@ -285,13 +288,16 @@ const buildGraph = async (
       };
       handoffHandlers[toolName] = () => {
         if (!chosen) chosen = edge.targetKey;
-        return `Transferring to ${edge.targetKey}`;
+        // Selecting an edge does not end the turn; execution continues until the model
+        // produces its final text. A "transferring now" reply reads as though control has
+        // already left, and the model stops short of its own work.
+        return `Handoff to ${edge.targetKey} recorded. Finish your own work and provide your final response.`;
       };
     }
 
     const routedConfig: AiConfigRep = {
       ...node.config,
-      instructions: `${node.config.instructions ?? ''}\n\nSelect exactly one transfer tool to route to the next agent.`,
+      instructions: `${node.config.instructions ?? ''}\n\nComplete your task using your available tools first. Only once you have your final answer, call exactly one transfer tool to route to the next agent.`,
       tools: { ...(node.config.tools ?? {}), ...handoffTools },
     };
 
