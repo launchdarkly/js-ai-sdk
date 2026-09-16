@@ -1966,6 +1966,139 @@ describe('writeSkills hostile manifest prune', () => {
   });
 });
 
+// ─── The prune deadline ────────────────────────────────────────────────
+
+/**
+ * The `timeout` bounds the whole call, and the prune loop is inside it.
+ *
+ * Checking the deadline once before pruning begins satisfies that in the letter
+ * only: a manifest with many entries is an unbounded number of `unlink` and
+ * `rmdir` calls after that check, each of which can block on a slow or hostile
+ * filesystem, so the call overruns the budget it promised by an amount the caller
+ * cannot predict. The check therefore belongs inside the loop, once per entry.
+ *
+ * Stopping partway is safe by construction rather than by luck, and the second
+ * test is what proves it: the manifest is rewritten from what actually happened,
+ * so an entry this run never reached stays listed and the next reconcile prunes
+ * it. That is also why an exhausted entry is reported and the loop *continues* —
+ * the report names every skill left in place, not just the first.
+ *
+ * `performance.now` is stubbed rather than slept through: the contract is about
+ * which side of the deadline each entry falls on, and a test that raced a real
+ * clock would assert that flakily instead of exactly.
+ */
+describe('writeSkills prune deadline', () => {
+  /** A fake monotonic clock, in the same units `performance.now` reports. */
+  let nowMs: number;
+
+  /** Installs the clock and hands back a knob to push it past the deadline. */
+  function stubClock(): (byMs: number) => void {
+    nowMs = performance.now();
+    vi.spyOn(performance, 'now').mockImplementation(() => nowMs);
+    return (byMs: number) => {
+      nowMs += byMs;
+    };
+  }
+
+  /** Four managed skills in one manifest, all files present on disk. */
+  async function placeFour(): Promise<string[]> {
+    const keys = ['a', 'b', 'c', 'd'];
+    const entries: Record<string, unknown> = {};
+    for (const key of keys) {
+      const target = path.join(root, key, SKILL_MD);
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, SKILL_BODY, 'utf-8');
+      entries[`${key}/${SKILL_MD}`] = manifestEntry(key, 1, SKILL_BODY);
+    }
+    await writeManifest(root, { manifestVersion: 1, entries });
+    return keys;
+  }
+
+  it('stops pruning when the deadline expires partway and reports what it left', async () => {
+    const keys = await placeFour();
+    const advance = stubClock();
+    // The first unlink burns the whole budget. Every entry after it is on the
+    // wrong side of the deadline.
+    const real = fsOps.unlink.bind(fsOps);
+    vi.spyOn(fsOps, 'unlink').mockImplementation(async (target: string) => {
+      await real(target);
+      advance(5_000);
+    });
+
+    const report = await writeSkills([], root, { timeout: 1 });
+
+    // Exactly one entry was pruned — the one whose check ran before the budget
+    // was gone — and the rest are reported rather than silently skipped.
+    const removed = report.actions.filter((a) => a.action === 'removed');
+    expect(removed).toHaveLength(1);
+    const timedOut = report.errors.filter((a) => /timeout was exhausted/.test(a.error ?? ''));
+    expect(timedOut).toHaveLength(keys.length - 1);
+    // Every key is accounted for: the loop continued instead of breaking, so the
+    // report names all three it left in place.
+    expect(new Set([...removed, ...timedOut].map((a) => a.key))).toEqual(new Set(keys));
+    expect(report.ok).toBe(false);
+
+    // The unreached files are still there...
+    const survivors = keys.filter((key) => key !== removed[0].key);
+    for (const key of survivors) {
+      expect(await readFile(path.join(root, key, SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+    }
+    // ...and so are their manifest entries, which is what makes stopping safe:
+    // the rewrite records what happened, so the next run picks these up.
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(Object.keys(entries).sort()).toEqual(survivors.map((key) => `${key}/${SKILL_MD}`).sort());
+  });
+
+  it('the next reconcile prunes what the expired one left behind', async () => {
+    // The other half of "stopping mid-prune is safe": the entries that survived
+    // are still entries, so a run with a budget finishes the job. Without this,
+    // the test above would also pass against an implementation that stopped and
+    // lost track.
+    await placeFour();
+    const advance = stubClock();
+    const real = fsOps.unlink.bind(fsOps);
+    const spy = vi.spyOn(fsOps, 'unlink').mockImplementation(async (target: string) => {
+      await real(target);
+      advance(5_000);
+    });
+
+    const first = await writeSkills([], root, { timeout: 1 });
+    expect(first.actions.filter((a) => a.action === 'removed')).toHaveLength(1);
+
+    // A fresh budget, and no more clock sabotage.
+    spy.mockRestore();
+    nowMs = performance.now();
+    vi.spyOn(performance, 'now').mockImplementation(() => nowMs);
+
+    const second = await writeSkills([], root, { timeout: 10 });
+
+    expect(second.ok).toBe(true);
+    expect(second.actions.filter((a) => a.action === 'removed')).toHaveLength(3);
+    expect(await readManifest(root)).toMatchObject({ entries: {} });
+    expect(await entryNames(root)).toEqual([MANIFEST_NAME]);
+  });
+
+  it('an already-expired deadline prunes nothing at all', async () => {
+    // The boundary case, and the one that says the check is not merely
+    // *somewhere* in the loop: with the budget gone before the first entry, the
+    // first entry is refused too.
+    const keys = await placeFour();
+    const unlinked = recordUnlinks();
+
+    const report = await writeSkills([], root, { timeout: 0 });
+
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(report.errors.filter((a) => /timeout was exhausted/.test(a.error ?? ''))).toHaveLength(keys.length);
+    // Not attempted, rather than attempted and failed.
+    expect(unlinked).toEqual([]);
+    for (const key of keys) {
+      expect(await readFile(path.join(root, key, SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+    }
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(Object.keys(entries).sort()).toEqual(keys.map((key) => `${key}/${SKILL_MD}`).sort());
+  });
+});
+
 // ─── Telemetry seam (write half) ───────────────────────────────────────
 
 describe('writeSkills telemetry', () => {

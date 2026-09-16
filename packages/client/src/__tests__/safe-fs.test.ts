@@ -36,7 +36,14 @@ vi.mock('node:fs/promises', async () => {
   };
 });
 
-const { atomicWrite, openDirectoryNoFollow, openOrCreateDirectory, unlinkNoFollow } = await import('../safe-fs.js');
+const {
+  atomicWrite,
+  directoryAddress,
+  openDirectoryNoFollow,
+  openOrCreateDirectory,
+  SUPPORTS_PROC_FD,
+  unlinkNoFollow,
+} = await import('../safe-fs.js');
 
 let scratch: string;
 
@@ -231,6 +238,92 @@ describe('pinned-directory identity re-check', () => {
       expect(await readFile(victim, 'utf-8')).toBe('victim content\n');
       // The managed file is untouched too: refused, not redirected.
       expect(await readFile(path.join(movedTo, 'SKILL.md'), 'utf-8')).toBe('managed\n');
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+/**
+ * The Linux fast path's own positive control.
+ *
+ * The block above tests the *floor* — deliberately, by passing a plain path, so it
+ * exercises the identity re-check on every platform. That leaves the fast path
+ * itself unproven by anything: on Linux the defense lives in how the call is
+ * *addressed* rather than in a check a test can observe failing, and the §3.23.2
+ * swap races in `skills-fs.test.ts` and `skills-fs-root-swap.test.ts` go through
+ * the materialization layer, where the shared path check and the primitive's own
+ * `O_NOFOLLOW` both stand in the way — so they pass when either layer alone works
+ * and prove the pair rather than either member.
+ *
+ * So assert the property directly and at this layer: nothing else establishes that
+ * `directoryAddress()` resolves from the inode the handle is pinned to rather than
+ * from whatever the directory's *name* resolves to when the call is made. This is
+ * the positive mirror of the floor tests — there the contract is a refusal, here it
+ * is that the write lands in the right place despite the swap.
+ *
+ * Gated on `SUPPORTS_PROC_FD` because it tests that capability, not the floor;
+ * that makes it **Linux-only**, and a green macOS run is no evidence about it.
+ */
+describe.skipIf(!SUPPORTS_PROC_FD)('descriptor addressing on the /proc/self/fd fast path', () => {
+  it('atomicWrite lands in the pinned inode after the directory is swapped for a symlink', async () => {
+    const dir = path.join(scratch, 'skill');
+    const outside = path.join(scratch, 'outside');
+    await mkdir(dir);
+    await mkdir(outside);
+
+    const handle = await openDirectoryNoFollow(dir);
+    try {
+      // Built *before* the swap, which is the point: the address holds the
+      // descriptor, so it keeps naming this inode no matter what happens to the
+      // name `dir`.
+      const address = directoryAddress(handle, dir);
+      expect(address).not.toBe(dir);
+
+      const movedTo = `${dir}.real`;
+      await rename(dir, movedTo);
+      await symlink(outside, dir, 'dir');
+      // The swap really is in place: `dir` now resolves outside.
+      expect((await lstat(dir)).isSymbolicLink()).toBe(true);
+
+      await atomicWrite(address, 'SKILL.md', Buffer.from('body\n', 'utf-8'), handle);
+
+      // Landed in the directory that was pinned, which is now `movedTo`.
+      expect(await readFile(path.join(movedTo, 'SKILL.md'), 'utf-8')).toBe('body\n');
+      // And nothing at all reached the attacker's directory — not even a temp
+      // file, unlike the floor, where the temp is created through the link before
+      // the check fires.
+      expect(await readdir(outside)).toEqual([]);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('unlinkNoFollow removes from the pinned inode after the directory is swapped for a symlink', async () => {
+    // The destructive half. `unlink` never follows a trailing symlink, but it does
+    // resolve the directory above it — so a path-addressed unlink through a
+    // swapped directory removes the outside file. The victim is a real file with
+    // the managed name, so only the addressing can be what saves it.
+    const dir = path.join(scratch, 'skill');
+    const outside = path.join(scratch, 'outside');
+    await mkdir(dir);
+    await mkdir(outside);
+    await writeFile(path.join(dir, 'SKILL.md'), 'managed\n', 'utf-8');
+    const victim = path.join(outside, 'SKILL.md');
+    await writeFile(victim, 'victim content\n', 'utf-8');
+
+    const handle = await openDirectoryNoFollow(dir);
+    try {
+      const address = directoryAddress(handle, dir);
+      const movedTo = `${dir}.real`;
+      await rename(dir, movedTo);
+      await symlink(outside, dir, 'dir');
+
+      await unlinkNoFollow(address, 'SKILL.md', handle);
+
+      // The managed file — the one that was pinned — is the one that went.
+      expect(await readdir(movedTo)).toEqual([]);
+      expect(await readFile(victim, 'utf-8')).toBe('victim content\n');
     } finally {
       await handle.close();
     }
