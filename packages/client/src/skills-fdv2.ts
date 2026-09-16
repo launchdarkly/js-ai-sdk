@@ -232,12 +232,18 @@ export type StoreDiagnostics = {
    */
   readonly payloadsIgnored: number;
   /**
-   * Skill objects whose envelope carried no `contentHash`.
+   * Skill objects whose envelope carried no `contentHash`, across all payloads.
    *
-   * **Nonzero means skills are being withheld.** Verification withholds a
-   * hashless object with `missing_content_hash`, so every one of these is a skill
-   * that will never resolve. The field exists so that outcome is a number a
-   * caller can read rather than an empty store they have to explain.
+   * Verification withholds a hashless object with `missing_content_hash`, so a
+   * nonzero count means such objects have arrived and the skills they carry will
+   * not resolve. The field exists so that outcome is a number a caller can read
+   * rather than an empty store they have to explain.
+   *
+   * Like the rest of this type it is **cumulative and never decreases.** Objects
+   * are counted as their events are read, so the count includes objects from a
+   * payload that never committed, and in polling mode it rises again every time
+   * an unchanged payload is re-delivered. Read it as "this has happened", not as
+   * the size of the currently withheld set.
    */
   readonly hashlessObjects: number;
   /**
@@ -716,8 +722,9 @@ function freshDiagnostics(): MutableDiagnostics {
 /**
  * Applies FDv2 events to an object set. Pure — no sockets, no timers, no clock.
  *
- * Split out so the protocol can be driven without a server: the HTTP layer above
- * it only has to turn bytes into `[event name, data]` pairs.
+ * Kept free of transport concerns so the protocol can be driven without a
+ * server: the HTTP layer above it only has to turn bytes into
+ * `[event name, data]` pairs.
  *
  * **Changes are buffered and committed at `payload-transferred`.** A payload
  * version is the unit of consistency: applying half of one would publish a state
