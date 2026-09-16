@@ -109,7 +109,7 @@ type RenameCall = { src: string; dst: string };
  * The implementation performs the
  * final rename through the single `fsOps.rename` call site, so spying on that
  * property observes it. Destinations other than `SKILL.md` — the manifest's own
- * atomic write — pass straight through, the same filter the Python SDK's tests apply.
+ * atomic write — pass straight through.
  *
  * Used two ways: to prove an injected failure is what produced an `error` action
  * (atomicity), and to prove no write was *attempted* for a rejected key

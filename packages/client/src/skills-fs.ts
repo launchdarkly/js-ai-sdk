@@ -2,11 +2,11 @@
  * Agent Skills — filesystem materialization.
  *
  * The highest-blast-radius layer of the feature: this is the part that writes to a
- * customer's disk. Split out of `skills.ts` on that boundary — everything here
- * takes already-verified content and reconciles it against a managed root, while
- * `skills.ts` owns retrieval and verification and knows nothing about the
- * filesystem. The dependency runs one way only, and the symlink-refusing
- * primitives every destructive step goes through live in `safe-fs.ts`.
+ * customer's disk. Everything here takes already-verified content and reconciles
+ * it against a managed root, while `skills.ts` owns retrieval and verification
+ * and knows nothing about the filesystem. The dependency runs one way only, and
+ * the symlink-refusing primitives every destructive step goes through live in
+ * `safe-fs.ts`.
  *
  * The reconcile is manifest-driven and fails closed: destructive operations only
  * ever touch paths `<root>/.launchdarkly-skills.json` records under a matching
@@ -160,7 +160,7 @@ type PendingWrite = {
  * `prune` removes formerly-managed skills that are no longer in the requested set
  * — which is also how revocation takes effect. `timeout` bounds the whole call,
  * including content retrieval, and is measured in **seconds** to match the
- * cross-language contract. `onUnavailable` chooses between reporting a failed
+ * cross-SDK contract. `onUnavailable` chooses between reporting a failed
  * retrieval (`'keep'`, leaving existing managed files alone) and throwing.
  *
  * Resolves to a `ReconcileReport` in which every outcome is visible; throws for a
@@ -299,11 +299,11 @@ async function writeAll(
 /**
  * Rebuilds `value` with object keys in sorted order.
  *
- * `JSON.stringify` emits insertion order, and the Python SDK writes this file
- * with `sort_keys=True`. Both parse either form, so this is not a correctness
- * requirement — but a repo where both SDKs run would otherwise see the manifest's
- * key order flip on every reconcile depending on which language wrote last. The
- * cheapest fix is to agree.
+ * `JSON.stringify` emits insertion order, and every other language
+ * implementation writes this file with its keys sorted. Both parse either form,
+ * so this is not a correctness requirement — but a root that more than one SDK
+ * reconciles would otherwise see the manifest's key order flip on every run
+ * depending on which wrote last. The cheapest fix is to agree on sorted.
  */
 function sortedForSerialization(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortedForSerialization);
@@ -315,22 +315,25 @@ function sortedForSerialization(value: unknown): unknown {
 }
 
 /**
- * Every character `JSON.stringify` leaves as a raw UTF-8 byte but Python's
- * `json.dumps` escapes. Matched on UTF-16 code units, so an astral character is
- * escaped as its surrogate pair — which is exactly what CPython emits.
+ * Every character `JSON.stringify` leaves as a raw UTF-8 byte but an
+ * ASCII-escaping serializer writes as `\uXXXX`. Matched on UTF-16 code units, so
+ * an astral character is escaped as its surrogate pair, which is what the other
+ * implementations emit.
  */
 const NON_ASCII = /[\u0080-\uffff]/g;
 
 /**
- * Serializes the manifest the way the Python SDK does, byte for byte.
+ * Serializes the manifest to the shared on-disk form, byte for byte: two-space
+ * indent, sorted keys, every non-ASCII character escaped as `\uXXXX`, and no
+ * trailing newline.
  *
- * `json.dumps(..., indent=2, sort_keys=True)` defaults to `ensure_ascii=True`,
- * so Python escapes every non-ASCII character as `\uXXXX` while
- * `JSON.stringify` emits raw UTF-8. Only reachable through preserved
- * unknown fields — every field this SDK writes is ASCII by construction — but
- * that path is live, and without the escape two SDKs reconciling one root would
- * rewrite the file with different bytes on alternating runs. That is the same
- * churn `sortedForSerialization` exists to prevent, so the two belong together.
+ * The escape is the part that is easy to miss, because `JSON.stringify` emits raw
+ * UTF-8 where the other implementations escape. It is only reachable through
+ * preserved unknown fields, since every field this SDK writes is ASCII by
+ * construction — but that path is live, and without the escape two SDKs
+ * reconciling one root would rewrite the file with different bytes on alternating
+ * runs. That is the same churn `sortedForSerialization` exists to prevent, so the
+ * two belong together.
  */
 function serializeManifest(manifest: Record<string, unknown>): Buffer {
   const json = JSON.stringify(sortedForSerialization(manifest), null, 2);
@@ -352,9 +355,8 @@ async function rewriteManifest(
     // round-tripped, so a deeply nested or circular planted field can throw here
     // — after every skill file is already on disk.
     //
-    // Two-space indent, sorted keys, non-ASCII escaped, and no trailing newline:
-    // byte-for-byte what the Python SDK's
-    // json.dumps(..., indent=2, sort_keys=True) produces.
+    // Two-space indent, sorted keys, non-ASCII escaped, and no trailing newline —
+    // byte-for-byte the shared on-disk form; see `serializeManifest`.
     const serialized = serializeManifest(updated);
     await atomicWriteIn(root, MANIFEST_FILENAME, serialized);
   } catch (error) {
@@ -856,8 +858,8 @@ async function writeOne(root: string, skill: Skill, entries: Record<string, unkn
  * Every read under the managed root goes through here — the skill files and the
  * manifest alike, since both sit in a directory outside the SDK's control.
  *
- * There is no `O_BINARY` here, unlike the Python twin: Node performs no CRLF
- * translation on a descriptor, so the bytes read back are already verbatim.
+ * There is deliberately no `O_BINARY`: Node performs no CRLF translation on a
+ * descriptor, so the bytes read back are already verbatim.
  *
  * Throws for anything the caller must turn into a refusal.
  */
@@ -875,10 +877,10 @@ async function readRegularFile(target: string): Promise<Buffer> {
 /**
  * Performs the write itself. Returns a failure reason, or `null` on success.
  *
- * Split out of `writeOne` because everything above it decides *whether* to write
- * and this decides nothing: the directory is pinned to a handle and its identity
- * is re-checked immediately before the rename, which is as much of the
- * symlink-swap defense as Node permits (see `safe-fs.ts`).
+ * Decides nothing — `writeOne` above it has already decided *whether* to write.
+ * The directory is pinned to a handle and its identity is re-checked immediately
+ * before the rename, which is as much of the symlink-swap defense as Node permits
+ * (see `safe-fs.ts`).
  */
 async function writeThroughPinnedDirectory(
   skillDir: string,
