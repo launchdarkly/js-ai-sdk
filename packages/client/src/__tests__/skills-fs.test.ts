@@ -301,12 +301,11 @@ describe('writeSkills manifest', () => {
     expect(typeof entry.writtenAt).toBe('string');
   });
 
-  it('serializes exactly the way the Python SDK does', async () => {
-    // Not a correctness requirement — both languages parse either form — but a
-    // repo where both SDKs run would otherwise see the key order flip on every
-    // reconcile depending on which wrote last. Python writes
-    // json.dumps(..., indent=2, sort_keys=True): two-space indent, sorted keys,
-    // no trailing newline.
+  it('serializes to the shared on-disk form', async () => {
+    // Not a correctness requirement — every implementation parses either form —
+    // but a root that more than one SDK reconciles would otherwise see the key
+    // order flip on every run depending on which wrote last. The agreed form is
+    // a two-space indent, sorted keys, and no trailing newline.
     await writeManifest(root, { zeta: 'unknown field', manifestVersion: 1, entries: {}, alpha: 1 });
     await writeSkills([skill('b')], root);
     await writeSkills([skill('b'), skill('a')], root);
@@ -321,12 +320,12 @@ describe('writeSkills manifest', () => {
     expect(entryPaths).toEqual([...entryPaths].sort());
   });
 
-  it('escapes non-ASCII exactly as Python does', async () => {
-    // The manifest's bytes are a cross-language contract, and
-    // Python writes it with json.dumps(..., indent=2, sort_keys=True), which
-    // defaults to ensure_ascii=True. JSON.stringify emits raw UTF-8, so the two
-    // SDKs would rewrite the same file with different bytes on alternating
-    // reconciles — the churn the sorted-key rule already exists to prevent.
+  it('escapes non-ASCII to the shared on-disk form', async () => {
+    // The manifest's bytes are a cross-SDK contract, and the agreed form escapes
+    // every non-ASCII character as \uXXXX. JSON.stringify emits raw UTF-8
+    // instead, so without the escape two SDKs would rewrite the same file with
+    // different bytes on alternating reconciles — the churn the sorted-key rule
+    // already exists to prevent.
     //
     // Every field the SDK writes is ASCII by construction, so this is only
     // reachable through the preserved-unknown-field path — which is why
@@ -341,7 +340,7 @@ describe('writeSkills manifest', () => {
 
     const raw = await readFile(manifestPath(root), 'utf-8');
     // Escaped form, astral characters as a surrogate pair — byte-for-byte what
-    // Python emits for the same value.
+    // the other implementations emit for the same value.
     expect(raw).toContain('"note": "caf\\u00e9 \\u2615 \\ud83d\\ude00"');
     expect(raw).not.toContain('café');
     // Still parses back to the original string, so preservation is unaffected.
