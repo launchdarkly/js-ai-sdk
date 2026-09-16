@@ -1,18 +1,13 @@
 /**
- * Symlink-refusing filesystem primitives.
+ * Symlink-refusing filesystem primitives: writing a file under a directory an
+ * attacker may be racing you for.
  *
- * Split out because none of this knows what a skill is: it is the "write a file
- * under a directory an attacker may be racing you for" problem, solved once.
- * `skills-fs.ts` is the only caller today.
- *
- * The whole point is that a path check is only as good as the last path
- * resolution after it. **On this runtime that problem cannot be fully solved**,
- * and the limitation is a property of Node rather than of this code — see
- * {@link SUPPORTS_DIR_FD}. What is implemented here is a per-component `lstat`
- * check, hardened as far as Node allows: every directory is
- * opened with `O_NOFOLLOW`, every temp file is created exclusively in the
- * target's own directory, and the pinned directory's identity is re-checked
- * immediately before each destructive step.
+ * A path check is only as good as the last path resolution after it, and on Node
+ * that gap cannot be fully closed — see {@link SUPPORTS_DIR_FD}. What is here is a
+ * per-component `lstat` check hardened as far as Node allows: every directory is
+ * opened with `O_NOFOLLOW`, every temp file is created exclusively in the target's
+ * own directory, and the pinned directory's identity is re-checked immediately
+ * before each destructive step.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -27,8 +22,12 @@ import path from 'node:path';
  */
 const FILE_MODE = 0o644;
 
-/** Attempts before giving up on finding an unused temp name. */
-const TEMP_NAME_ATTEMPTS = 128;
+/**
+ * Bound on the `O_EXCL` retry loop. Temp names carry 64 bits of randomness, so a
+ * collision is not something that happens — this only keeps the loop finite if
+ * the directory is behaving pathologically.
+ */
+const TEMP_NAME_ATTEMPTS = 5;
 
 /** The `*at()` members a descriptor-relative implementation would need. */
 const AT_FAMILY = ['renameat', 'unlinkat', 'openat'] as const;
@@ -37,31 +36,27 @@ const AT_FAMILY = ['renameat', 'unlinkat', 'openat'] as const;
  * Whether this runtime offers a descriptor-relative rename, unlink, and open — the
  * `*at()` syscall family.
  *
- * The Python SDK uses it to close the symlink-swap window rather than merely
- * narrow it: a descriptor refers to the inode that was checked,
- * so replacing `<root>/<key>` with a symlink after the check cannot redirect a
- * write or an unlink out of the root.
+ * The family closes the symlink-swap window rather than merely narrowing it: a
+ * descriptor refers to the inode that was checked, so replacing `<root>/<key>`
+ * with a symlink after the check cannot redirect a write or an unlink out of the
+ * root.
  *
  * **Node exposes none of it.** `fs` and `fs/promises` have no `renameat`,
  * `unlinkat`, or `openat`, and `FileHandle` has no `rename` or `unlink` — a
  * descriptor can be held, but nothing destructive can be addressed relative to
  * it. So this is `false` on every Node release to date, and a residual exposure
- * follows: an attacker with write
- * permission on the managed root can still swap a validated directory for a
- * symlink between the identity check below and the path-based operation.
+ * follows: an attacker with write permission on the managed root can still swap a
+ * validated directory for a symlink between the identity check below and the
+ * path-based operation.
  *
- * A genuine feature probe rather than a hardcoded `false`, for two reasons: the
- * swap-race tests are skipped off this same constant, so a hardcoded
- * answer would let a wrong one silently skip the tests that would have caught it;
- * and if Node ever ships the family, this flips and the descriptor-relative path
- * can be added behind it without touching the public API.
+ * Probed rather than hardcoded so the descriptor-relative path can be added behind
+ * it if Node ever ships the family.
  */
 export const SUPPORTS_DIR_FD: boolean = (() => {
-  // Spread into a plain object rather than indexing the namespace directly:
-  // reading an *absent* export off a module namespace is exactly the access
-  // pattern that bundlers and test-time module proxies reject, and a probe that
-  // throws on the answer "no" is worse than useless. A spread enumerates only
-  // the exports that exist, so a missing one reads back as `undefined`.
+  // Spread rather than indexing the namespace directly: reading an *absent* export
+  // off a module namespace is the access pattern bundlers and module proxies
+  // reject. A spread enumerates only the exports that exist, so a missing one
+  // reads back as `undefined`.
   const exported: Record<string, unknown> = { ...fsPromises };
   return AT_FAMILY.every((name) => typeof exported[name] === 'function');
 })();
@@ -69,13 +64,9 @@ export const SUPPORTS_DIR_FD: boolean = (() => {
 /**
  * The destructive filesystem operations, as a replaceable record.
  *
- * The final rename and the prune unlink must each be a single interceptable call
- * site, so tests can prove that an injected failure is what produced an error, that no
- * operation was attempted for a rejected key, and that a directory swapped at the
- * instant of the operation cannot redirect it. `vi.spyOn` cannot replace a direct
- * call to a module-local function under Vite's ESM transform, so the calls are
- * made as properties of this object — which *is* the hook. Not exported from the
- * package index.
+ * The rename and the unlink each need a single interceptable call site. `vi.spyOn`
+ * cannot replace a direct call to a module-local function under Vite's ESM
+ * transform, so they are invoked as properties of this object instead.
  */
 export const fsOps = {
   rename(src: string, dst: string): Promise<void> {
@@ -102,8 +93,7 @@ async function identityOf(handle: FileHandle): Promise<DirectoryIdentity> {
  * target is a directory wherever the platform defines it; the explicit `isDirectory`
  * check covers the platforms that do not.
  *
- * Throws when the path will not open as a real directory — the caller reports that
- * as a refusal rather than letting it escape.
+ * Throws when the path will not open as a real directory.
  */
 export async function openDirectoryNoFollow(directory: string): Promise<FileHandle> {
   const flags = fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | (fsConstants.O_NOFOLLOW ?? 0);
@@ -147,11 +137,9 @@ export async function openOrCreateDirectory(directory: string): Promise<FileHand
 /**
  * Confirms `directory` still resolves to the inode `handle` was pinned to.
  *
- * This is the honest limit of what Node offers. It narrows the symlink-swap
- * window to the interval between this check and the path-based operation that follows;
- * it does not close it, because Node cannot address a rename or an unlink relative
- * to a descriptor. Narrowing is not a fix, which is why the exposure is
- * documented at {@link SUPPORTS_DIR_FD} rather than claimed away.
+ * Narrows the symlink-swap window to the interval between this check and the
+ * path-based operation that follows. It does not close it: Node cannot address a
+ * rename or an unlink relative to a descriptor. See {@link SUPPORTS_DIR_FD}.
  */
 async function assertUnswapped(directory: string, handle: FileHandle): Promise<void> {
   const pinned = await identityOf(handle);
@@ -175,8 +163,6 @@ function tempName(target: string): string {
  * rename itself survives a crash. Mode is set on the *handle* rather than the
  * path, so it cannot be redirected by anything swapping the temp path underneath
  * us, and it is independent of the process umask.
- *
- * `fsOps.rename` is the one and only rename call site, so tests can intercept it.
  */
 export async function atomicWrite(
   directory: string,
@@ -196,8 +182,7 @@ export async function atomicWrite(
       temp = candidate;
       break;
     } catch (error) {
-      // O_EXCL: an existing temp path is never reused, and a planted one is
-      // never written through.
+      // O_EXCL: an existing temp path is never reused, nor written through.
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
   }
@@ -224,10 +209,8 @@ export async function atomicWrite(
 /**
  * `atomicWrite` against a directory this module does not already hold open.
  *
- * Used for the skills manifest, whose directory is the managed root. The handle is
- * taken with `O_NOFOLLOW`, so a root swapped for a symlink after the caller
- * validated it fails the write instead of redirecting it — the caller turns that
- * into a run-level `error` action.
+ * The handle is taken with `O_NOFOLLOW`, so a directory swapped for a symlink
+ * after the caller validated it fails the write instead of redirecting it.
  */
 export async function atomicWriteIn(directory: string, name: string, data: Uint8Array): Promise<void> {
   const handle = await openDirectoryNoFollow(directory);
@@ -246,9 +229,6 @@ export async function atomicWriteIn(directory: string, name: string, data: Uint8
  * above it, which is what makes a swapped `<root>/<key>` a delete primitive with
  * an attacker-chosen target. The identity re-check narrows that window as far as
  * Node permits; see {@link SUPPORTS_DIR_FD} for why it cannot be closed here.
- *
- * `fsOps.unlink` is the one and only unlink call site for a managed file, so tests
- * can intercept it.
  */
 export async function unlinkNoFollow(directory: string, name: string, pinned: FileHandle): Promise<void> {
   const target = path.join(directory, name);

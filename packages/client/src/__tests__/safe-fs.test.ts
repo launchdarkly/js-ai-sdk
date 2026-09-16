@@ -1,14 +1,9 @@
 /**
- * The filesystem primitives `writeSkills` is built on, tested directly:
- * atomicity, exclusive temp creation, `0644`, and symlink refusal.
+ * The filesystem primitives, tested directly: atomicity, exclusive temp creation,
+ * `0644`, and symlink refusal.
  *
- * Its own file for two reasons. It needs `vi.mock('node:fs/promises')` to observe
- * the flags a file is *opened* with, which has to be hoisted above the module
- * under test. And the checks here are deliberately redundant with the ones in
- * `skills-fs.ts` — a symlinked skill directory is refused by both layers — so
- * mutating either one alone leaves every symlink-attack test in `skills-fs.test.ts`
- * passing. Exercising each layer on its own is what keeps the redundancy from
- * rotting into a single point of failure.
+ * Needs `vi.mock('node:fs/promises')` to observe the flags a file is *opened*
+ * with, which has to be hoisted above the module under test.
  */
 
 import { constants as fsConstants } from 'node:fs';
@@ -28,8 +23,8 @@ vi.mock('node:fs/promises', async () => {
     ...real,
     async open(target: string, flags: number, mode?: number) {
       openCalls.push({ target: String(target), flags });
-      // Simulate another process having just taken the temp name, so the
-      // O_EXCL retry loop is what has to recover.
+      // Simulate another process having just taken the temp name, so the O_EXCL
+      // retry loop is what has to recover.
       if (String(target).endsWith('.tmp') && collide.remainingTempFailures > 0) {
         collide.remainingTempFailures -= 1;
         const error = new Error('EEXIST: file already exists') as NodeJS.ErrnoException;
@@ -73,9 +68,8 @@ describe('openOrCreateDirectory', () => {
   });
 
   it('refuses an existing symlink-to-directory', async () => {
-    // `mkdir(..., { recursive: true })` would treat this as "already there",
-    // re-opening the very hole the caller's check just closed. The plain mkdir
-    // plus an lstat on the EEXIST path is what refuses it.
+    // `mkdir(..., { recursive: true })` would treat this as "already there". The
+    // plain mkdir plus an lstat on the EEXIST path is what refuses it.
     const outside = path.join(scratch, 'outside');
     await mkdir(outside);
     const link = path.join(scratch, 'link');
@@ -114,9 +108,8 @@ describe('openDirectoryNoFollow', () => {
 
 describe('atomicWrite', () => {
   it('creates the temp file exclusively, in the target directory, without following links', async () => {
-    // O_EXCL is what makes "an existing temp path is never
-    // reused" true. Asserting only that two successive writes pick different
-    // names would be satisfied by the randomness alone, so assert the flag.
+    // Asserting only that two successive writes pick different names would be
+    // satisfied by the randomness alone, so assert the flag itself.
     const dir = path.join(scratch, 'skill');
     const handle = await openOrCreateDirectory(dir);
     try {
@@ -137,8 +130,8 @@ describe('atomicWrite', () => {
   });
 
   it('retries with a fresh name when the temp path is already taken', async () => {
-    // The other half of exclusive creation: losing the race must produce a new
-    // name rather than writing through whatever is already there.
+    // Losing the race must produce a new name rather than writing through
+    // whatever is already there.
     const dir = path.join(scratch, 'skill');
     collide.remainingTempFailures = 3;
 
@@ -178,19 +171,13 @@ describe('atomicWrite', () => {
 });
 
 /**
- * The pinned-directory identity re-check needs a test of its own.
+ * On Node the identity re-check is the *whole* defense against a directory swapped
+ * between validation and the destructive call: there is no `*at()` family, so the
+ * rename and the unlink resolve their directory by path.
  *
- * On this runtime it is the *whole* defense against a directory swapped between
- * validation and the destructive call: Node exposes no `*at()` family, so the
- * rename and the unlink resolve their directory by path. The two
- * swap-race cases in `skills-fs.test.ts` cannot reach it — they fire the swap from the rename/unlink
- * hook, which by construction runs *after* the check, and they are skipped off
- * `SUPPORTS_DIR_FD` anyway. Verified by mutation: with the check neutered, the
- * entire suite stays green.
- *
- * So the swap is staged here instead: pin the handle, then replace the directory,
- * then invoke the primitive. Both primitives re-check independently, so both
- * halves are required.
+ * The swap is staged directly: pin the handle, replace the directory, then invoke
+ * the primitive. Both primitives re-check independently, so both halves are
+ * required.
  */
 describe('pinned-directory identity re-check', () => {
   /** Moves `dir` aside and leaves a symlink to `outside` in its place. */
@@ -212,11 +199,10 @@ describe('pinned-directory identity re-check', () => {
       await swapForSymlink(dir, outside);
 
       await expect(atomicWrite(dir, 'SKILL.md', Buffer.from('body\n', 'utf-8'), handle)).rejects.toThrow(/replaced/i);
-      // Nothing durable lands outside the root. Note the honest limit: the temp
-      // file *is* created through the swapped link before the check fires (only
-      // the final component gets O_NOFOLLOW), so what this proves is that the
-      // rename is refused and the temp is cleaned up — not that the operation
-      // never touched the outside directory at all.
+      // The temp file *is* created through the swapped link before the check fires
+      // (only the final component gets O_NOFOLLOW), so this proves the rename is
+      // refused and the temp cleaned up — not that the outside directory was never
+      // touched at all.
       expect(await readdir(outside)).toEqual([]);
     } finally {
       await handle.close();
@@ -224,11 +210,11 @@ describe('pinned-directory identity re-check', () => {
   });
 
   it('unlinkNoFollow refuses when the pinned directory was swapped for a symlink', async () => {
-    // The prune side is the dangerous one: unlink never follows a *trailing*
-    // symlink, but it does resolve the directory above it, so an unguarded prune
-    // through a swapped directory is a delete primitive with an attacker-chosen
-    // target. The victim is a real file named SKILL.md, so the trailing-symlink
-    // check passes and only the identity re-check can stop this.
+    // unlink never follows a *trailing* symlink, but it does resolve the directory
+    // above it, so an unguarded delete through a swapped directory is a delete
+    // primitive with an attacker-chosen target. The victim is a real file named
+    // SKILL.md, so the trailing-symlink check passes and only the identity
+    // re-check can stop this.
     const dir = path.join(scratch, 'skill');
     const outside = path.join(scratch, 'outside');
     await mkdir(dir);
@@ -243,7 +229,7 @@ describe('pinned-directory identity re-check', () => {
 
       await expect(unlinkNoFollow(dir, 'SKILL.md', handle)).rejects.toThrow(/replaced/i);
       expect(await readFile(victim, 'utf-8')).toBe('victim content\n');
-      // The managed file is untouched too — the operation was refused, not redirected.
+      // The managed file is untouched too: refused, not redirected.
       expect(await readFile(path.join(movedTo, 'SKILL.md'), 'utf-8')).toBe('managed\n');
     } finally {
       await handle.close();
@@ -267,9 +253,9 @@ describe('unlinkNoFollow', () => {
   });
 
   it('refuses a symlinked target, leaving the link in place', async () => {
-    // Unlinking a symlink never touches its victim, so "the victim survived"
-    // proves nothing. The observable contract is the refusal — and that the link
-    // itself is still there afterwards.
+    // Unlinking a symlink never touches its victim, so "the victim survived" proves
+    // nothing. The observable contract is the refusal, and that the link is still
+    // there afterwards.
     const victim = path.join(scratch, 'victim.md');
     await writeFile(victim, 'victim content\n', 'utf-8');
     const dir = path.join(scratch, 'skill');
