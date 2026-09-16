@@ -761,11 +761,11 @@ describe('integrity verification', () => {
   });
 
   it('withholds content that has no UTF-8 encoding, even when its hash matches', async () => {
-    // An unpaired surrogate has
-    // no UTF-8 encoding. Python's str.encode raises; Node's Buffer.from
-    // *silently substitutes* U+FFFD, so only an explicit round-trip check
-    // catches it — and without that check a store can supply the hash of the
-    // substituted bytes and have fabricated content pass verification.
+    // An unpaired surrogate has no UTF-8 encoding, and Node's Buffer.from
+    // *silently substitutes* U+FFFD rather than raising, so only an explicit
+    // round-trip check catches it — without that check a store can supply the
+    // hash of the substituted bytes and have fabricated content pass
+    // verification.
     //
     // contentHash is deliberately the hash of the lossy encoding, so the hash
     // comparison is NOT what rejects this. If the round-trip guard is removed,
@@ -780,6 +780,21 @@ describe('integrity verification', () => {
     _setStore(store);
 
     expect(await getSkill('a')).toBeNull();
+  });
+
+  it('verifies content that begins with a byte-order mark', async () => {
+    // The counterpart to the surrogate case above, and the reason the round-trip
+    // guard decodes with `ignoreBOM: true`. A default TextDecoder consumes a
+    // leading U+FEFF, which would make authentic BOM-prefixed content round-trip
+    // to a shorter string and be withheld as not_utf8 despite hashing correctly.
+    const content = '\ufeff---\nname: bom\n---\nbody\n';
+    const encoded = new TextEncoder().encode(content);
+    const store = new DictStore({
+      a: { key: 'a', version: 1, content, contentHash: createHash('sha256').update(encoded).digest('hex') },
+    });
+    _setStore(store);
+
+    expect((await getSkill('a'))?.content).toEqual(encoded);
   });
 
   it('records the integrity signal for unencodable content', async () => {
@@ -1038,7 +1053,8 @@ describe('integrity-failure log record', () => {
 
   it('covers the whole reason_code vocabulary and nothing else', () => {
     // The eight tokens are one per call site of `recordIntegrityFailure`, and
-    // the Python SDK emits the same eight. A ninth on one side only is the
+    // every language implementation emits the same eight. A ninth in one SDK
+    // only is the
     // regression this test exists to catch.
     expect(cases.map(([code]) => code).sort()).toEqual([
       'hash_mismatch',
@@ -1060,9 +1076,9 @@ describe('integrity-failure log record', () => {
     expect(line).toBe(`[LaunchDarkly] ${EVENT} ${JSON.stringify(record)}`);
   });
 
-  it('orders keys alphabetically, so the JSON mirrors the Python SDK byte for byte', async () => {
-    // Python emits json.dumps(record, sort_keys=True). Insertion order here is
-    // what makes the two outputs comparable with one parser and one alert rule.
+  it('orders keys alphabetically, so the JSON is byte-identical across SDKs', async () => {
+    // Every SDK emits these keys sorted. Insertion order here is what makes the
+    // outputs comparable with one parser and one alert rule.
     _setStore(new DictStore({ a: rawSkill({ key: 'a', version: 7, contentHash: 'd'.repeat(64) }) }));
     const [{ record }] = await logged(() => getSkill('a'));
     const keys = Object.keys(record);
@@ -1513,9 +1529,9 @@ describe('getSkillResult package exports', () => {
   });
 
   it('the SkillOutcomeReason union admits exactly the five reason tokens', () => {
-    // The five tokens are API — customers branch on them, and the Python SDK
+    // The five tokens are API — customers branch on them, and every SDK
     // publishes the same five for the same conditions. Adding a sixth here
-    // should force a matching change on the Python side, not just a green test.
+    // should force a matching change in the other SDKs, not just a green test.
     const exhaustive: Record<SkillOutcomeReason, true> = {
       absent: true,
       integrity_failure: true,
