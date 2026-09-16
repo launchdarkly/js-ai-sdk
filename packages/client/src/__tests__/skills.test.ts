@@ -435,11 +435,130 @@ describe('InMemorySkillStore', () => {
     expect(store.getObject('skill', 'a')).toEqual(raw);
   });
 
-  it('allObjects returns everything held, keyed by skill key', () => {
+  it("allObjects returns everything held, identified by each object's own key", () => {
     const store = new InMemorySkillStore();
     store.put(rawSkill({ key: 'a' }));
     store.put(rawSkill({ key: 'b' }));
-    expect(Object.keys(store.allObjects('skill')).sort()).toEqual(['a', 'b']);
+
+    const held = Object.values(store.allObjects('skill'));
+
+    // Deliberately not `Object.keys`: the record's keys are opaque
+    // store-internal identifiers, and `SkillStore` says identity is read off
+    // each object's own `key` and `version`. A test that asserted the spelling
+    // would be pinning an implementation detail the interface disclaims.
+    expect(held).toHaveLength(2);
+    expect(held.map((raw) => raw.key).sort()).toEqual(['a', 'b']);
+  });
+
+  it('allObjects returns one entry per (key, version), not per key', () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 2 }));
+    store.put(rawSkill({ key: 'a', version: 5 }));
+
+    const held = Object.values(store.allObjects('skill'));
+
+    expect(held).toHaveLength(2);
+    expect(held.map((raw) => raw.version).sort()).toEqual([2, 5]);
+  });
+
+  it('replaces an object put twice under the same (key, version)', () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 2, content: 'first' }));
+    store.put(rawSkill({ key: 'a', version: 2, content: 'second' }));
+
+    const held = Object.values(store.allObjects('skill'));
+
+    expect(held).toHaveLength(1);
+    expect(held[0].content).toBe('second');
+  });
+
+  it('getObject with no version answers with the newest version held', () => {
+    const store = new InMemorySkillStore();
+    // Put the newer one first, so insertion order cannot pass for ordering.
+    store.put(rawSkill({ key: 'a', version: 5 }));
+    store.put(rawSkill({ key: 'a', version: 2 }));
+
+    expect(store.getObject('skill', 'a')?.version).toBe(5);
+    expect(store.getObject('skill', 'a', null)?.version).toBe(5);
+  });
+
+  it('getObject with a version answers with exactly that version', () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 2 }));
+    store.put(rawSkill({ key: 'a', version: 5 }));
+
+    expect(store.getObject('skill', 'a', 2)?.version).toBe(2);
+    expect(store.getObject('skill', 'a', 5)?.version).toBe(5);
+  });
+
+  it('getObject returns null for a pin that misses while well-formed versions exist', () => {
+    // A plain miss. Answering it with some other version the store happens to
+    // hold would record an integrity failure for a skill whose integrity is not
+    // in question.
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 2 }));
+    store.put(rawSkill({ key: 'a', version: 5 }));
+
+    expect(store.getObject('skill', 'a', 3)).toBeNull();
+  });
+
+  it('serves a malformed object for a pinned request when nothing well-formed is held', () => {
+    // An object too malformed to carry a usable version is still served, so
+    // verification is what withholds it — with a signal. Reading it as simply
+    // absent would let a tampered object look like a deleted one, and would let
+    // a prune delete the last known-good copy on disk.
+    const store = new InMemorySkillStore();
+    const malformed = rawSkill({ key: 'a', version: 'not-a-version' as unknown as number });
+    store.put(malformed);
+
+    expect(store.getObject('skill', 'a', 4)).toBe(malformed);
+    expect(store.getObject('skill', 'a')).toBe(malformed);
+    expect(Object.values(store.allObjects('skill'))).toEqual([malformed]);
+  });
+
+  it('cannot be reached through the prototype', () => {
+    // `constructor` satisfies the skill-key pattern, so it arrives as an
+    // ordinary lookup. Backed by a plain object, an empty store would answer it
+    // with the `Object` function. Asserted on the store's own answer rather than
+    // an accessor's: verification already refuses a function as a non-object, so
+    // this is about the store's semantics being right, not a content-integrity
+    // hole.
+    const empty = new InMemorySkillStore();
+    expect(empty.getObject('skill', 'constructor')).toBeNull();
+    expect(empty.getObject('skill', '__proto__')).toBeNull();
+    expect(empty.getObject('skill', 'toString')).toBeNull();
+    expect(Object.values(empty.allObjects('skill'))).toEqual([]);
+  });
+
+  it('cannot be corrupted by a put of an inherited name', () => {
+    // Backed by a plain object, this `put` writes the *prototype*, and every
+    // later lookup whose key happens to name a field of the planted object —
+    // `name` and `description` both satisfy the skill-key pattern — answers with
+    // that field's value instead of null.
+    const store = new InMemorySkillStore();
+    const planted = rawSkill({ key: '__proto__', version: 1 });
+    store.put(planted);
+
+    expect(store.getObject('skill', 'name')).toBeNull();
+    expect(store.getObject('skill', 'description')).toBeNull();
+    expect(store.getObject('skill', 'content')).toBeNull();
+
+    store.put(rawSkill({ key: 'a', version: 1 }));
+    expect(store.getObject('skill', 'a')?.key).toBe('a');
+
+    // And the planted object is held under its own key rather than lost, so the
+    // listing does not silently shrink.
+    expect(store.getObject('skill', '__proto__')).toBe(planted);
+    expect(Object.values(store.allObjects('skill'))).toHaveLength(2);
+  });
+
+  it('cannot be corrupted by an inherited name in the constructor map', () => {
+    const planted = rawSkill({ key: '__proto__', version: 1 });
+    const store = new InMemorySkillStore({ ['__proto__']: planted });
+
+    expect(store.getObject('skill', 'name')).toBeNull();
+    expect(store.getObject('skill', 'description')).toBeNull();
+    expect(store.getObject('skill', '__proto__')).toBe(planted);
   });
 
   it('returns nothing for a kind other than skill', () => {
@@ -687,7 +806,11 @@ describe('getSkill', () => {
   });
 
   it('an omitted version means the newest available', async () => {
+    // Two versions, newer one seeded first: a store holding one version cannot
+    // distinguish "newest" from "the only one", and insertion order must not
+    // pass for ordering.
     store.put(rawSkill({ key: 'a', version: 7 }));
+    store.put(rawSkill({ key: 'a', version: 4 }));
     expect((await getSkill('a'))?.version).toBe(7);
   });
 
@@ -835,6 +958,42 @@ describe('allSkills', () => {
     store.put(rawSkill({ key: 'bad', contentHash: '0'.repeat(64) }));
     _setStore(store);
     expect((await allSkills()).map((s) => s.key)).toEqual(['good']);
+  });
+
+  it('returns the newest version per key', async () => {
+    // A list carrying two versions of one key is not a set of skills, and
+    // downstream `<root>/<key>/SKILL.md` is a single path. The store holds both,
+    // so the collapse has to happen here. Newer seeded first, so insertion order
+    // cannot pass for ordering.
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 5 }));
+    store.put(rawSkill({ key: 'a', version: 2 }));
+    store.put(rawSkill({ key: 'b', version: 1 }));
+    _setStore(store);
+
+    const found = await allSkills();
+
+    expect(found.filter((s) => s.key === 'a')).toHaveLength(1);
+    expect(found.find((s) => s.key === 'a')?.version).toBe(5);
+    expect(found.map((s) => s.key).sort()).toEqual(['a', 'b']);
+  });
+
+  it('keeps an unusable object in the set so verification withholds it with a signal', async () => {
+    // Filtering it here instead would silently shrink the resolved set, which on
+    // the materialization path is indistinguishable from a revocation and would
+    // let prune delete a live skill's last good copy. The recorded signal is
+    // what proves the object reached verification rather than being dropped.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'good', version: 1 }));
+    store.put(rawSkill({ key: 'unusable', version: 'nope' as unknown as number }));
+    _setStore(store);
+
+    const found = await allSkills();
+
+    expect(found.map((s) => s.key)).toEqual(['good']);
+    expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
   });
 
   it('returns an empty list for an empty store', async () => {
@@ -1471,6 +1630,27 @@ describe('getSkillResult', () => {
   }
 
   /**
+   * A store that answers a pinned lookup with some other version.
+   *
+   * `wrong_version` is not reachable through `InMemorySkillStore`, which honours
+   * the pin and answers a miss with `null` — that is `absent`, correctly, because
+   * the store said it holds nothing for that pin. The reason exists for a store
+   * that *does* answer and answers with the wrong thing, so the test needs one:
+   * `resolveFromStore`'s equality check is a defense against an untrusted store,
+   * not the selection mechanism.
+   */
+  function wrongVersionStore(answeredVersion = 99): SkillStore {
+    return {
+      getObject(_kind: string, key: string) {
+        return rawSkill({ key, version: answeredVersion });
+      },
+      allObjects() {
+        return {};
+      },
+    };
+  }
+
+  /**
    * One store per reason token. The stores are shaped so each reaches a
    * different construction site in `resolveFromStore`, which is what makes the
    * mapping — not just the union — the thing under test.
@@ -1484,11 +1664,7 @@ describe('getSkillResult', () => {
       () => getSkillResult('a'),
     ],
     ['store_unavailable', throwingStore, () => getSkillResult('a')],
-    [
-      'wrong_version',
-      () => storeHolding(rawSkill({ key: 'a', version: 3 })),
-      () => getSkillResult('a', { version: 2 }),
-    ],
+    ['wrong_version', () => wrongVersionStore(3), () => getSkillResult('a', { version: 2 })],
   ];
 
   it.each(cases)('reports reason %s', async (reason, makeStore, run) => {
@@ -1732,8 +1908,22 @@ describe('getSkillResult', () => {
     }
   });
 
+  it('reports absent, not wrong_version, for a pin a multi-version store does not hold', async () => {
+    // The store honours the pin and answers `null`: it has told us it holds
+    // nothing at that version, which is an absence. `wrong_version` is for a
+    // store that answers *and answers wrongly* — the two are not the same
+    // report, and a caller tolerating `absent` should not be handed a
+    // tampering-shaped token for a version nobody published.
+    _setStore(storeHolding(rawSkill({ key: 'a', version: 2 }), rawSkill({ key: 'a', version: 5 })));
+
+    const outcome = await getSkillResult('a', { version: 3 });
+
+    expect(outcome.reason).toBe('absent');
+    expect(outcome.skill).toBeNull();
+  });
+
   it('detail names the key and both versions on a mismatch, and no path', async () => {
-    _setStore(storeHolding(rawSkill({ key: 'pdf-extraction', version: 3 })));
+    _setStore(wrongVersionStore(3));
 
     const { detail } = await getSkillResult('pdf-extraction', { version: 2 });
 

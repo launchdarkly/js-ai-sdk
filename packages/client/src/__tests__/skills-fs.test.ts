@@ -291,6 +291,29 @@ describe('writeSkills basic writes', () => {
     expect(report.actions.filter((a) => a.action !== 'error')).toHaveLength(3);
   });
 
+  it('"*" collapses several versions of one key to the newest', async () => {
+    // <root>/<key>/SKILL.md is a single path, so two versions of one key is not
+    // a duplicate report but a write race against itself, resolved by whichever
+    // version iteration happened to reach last. A store holding one version per
+    // key cannot distinguish this from "write everything", so the two-version
+    // seed is the whole test. Newer seeded first, so insertion order cannot pass
+    // for ordering.
+    const newer = 'newer body\n';
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a', 5, newer));
+    store.put(rawSkill('a', 2, 'older body\n'));
+    _setStore(store);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    const written = report.actions.filter((a) => a.action !== 'error');
+    expect(written).toHaveLength(1);
+    expect(written[0].key).toBe('a');
+    expect(written[0].version).toBe(5);
+    expect(await readFile(path.join(root, 'a', SKILL_MD), 'utf-8')).toBe(newer);
+  });
+
   it('reports one action per requested skill — no silent skips', async () => {
     const report = await writeSkills([skill('a'), skill('b')], root);
     expect(report.actions.map((a) => a.key).sort()).toEqual(['a', 'b']);

@@ -479,6 +479,50 @@ export function allRawObjects(store: SkillStore): RawListing {
   return { objects: objects as Record<string, RawSkillObject>, error: null };
 }
 
+/** One raw object, paired with the store key it was served under. */
+export type ServedObject = {
+  /** The store's own map key — opaque, and only a fallback identity. */
+  readonly objectKey: string;
+  readonly raw: RawSkillObject;
+};
+
+/**
+ * One raw object per skill key — the highest version of each, paired with the
+ * store key it was served under.
+ *
+ * `allObjects` may hold several versions of one key, and both callers that
+ * consume the whole store want one skill per key: `allSkills` because a list
+ * holding two versions of one key is not a set of skills, and the `'*'`
+ * reconcile because `<root>/<key>/SKILL.md` is a single path and writing it twice
+ * in one run is a bug rather than a policy.
+ *
+ * The store key is carried through rather than discarded because the reconcile
+ * attributes a failure to it when the object's own key is unusable.
+ *
+ * Objects too malformed to carry a usable key and version are **kept**, not
+ * dropped, so verification is what withholds them: a silently dropped object
+ * falls out of the requested set, and prune would then delete the last
+ * known-good copy already on disk.
+ */
+export function newestByKey(objects: Record<string, RawSkillObject>): ServedObject[] {
+  // The winning version is carried beside the object rather than re-read off it:
+  // `RawSkillObject.version` is `unknown`, and narrowing it once at the point it
+  // was validated is what keeps the comparison from needing a cast.
+  const best = new Map<string, { served: ServedObject; version: number }>();
+  const unusable: ServedObject[] = [];
+  for (const [objectKey, raw] of Object.entries(objects)) {
+    const key = typeof raw === 'object' && raw !== null ? raw.key : undefined;
+    const version = typeof raw === 'object' && raw !== null ? raw.version : undefined;
+    if (!isValidSkillKey(key) || !isValidSkillVersion(version)) {
+      unusable.push({ objectKey, raw });
+      continue;
+    }
+    const held = best.get(key);
+    if (held === undefined || version > held.version) best.set(key, { served: { objectKey, raw }, version });
+  }
+  return [...[...best.values()].map(({ served }) => served), ...unusable];
+}
+
 // ---------------------------------------------------------------------------
 // Resolution internals — shared with the materialization path
 // ---------------------------------------------------------------------------
