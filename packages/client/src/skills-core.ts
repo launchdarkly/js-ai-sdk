@@ -76,10 +76,10 @@ const EVENT_INTEGRITY_FAILURE = 'ld.skills.integrity_failure';
  * Why a skill was withheld: a closed vocabulary with exactly one token per call
  * site of `recordIntegrityFailure`.
  *
- * Customers alert on these tokens, and the Python SDK emits the same eight for
- * the same conditions, so a polyglot fleet writes one detection rule rather than
- * two. A ninth token is a cross-language change — add it on both sides, or not at
- * all.
+ * Customers alert on these tokens, and every language implementation emits the
+ * same eight for the same conditions, so a polyglot fleet writes one detection
+ * rule rather than two. A ninth token is a cross-SDK change — add it everywhere,
+ * or not at all.
  */
 export type IntegrityReasonCode =
   | 'hash_mismatch'
@@ -203,14 +203,14 @@ function emit(signal: string, properties: Record<string, unknown>): void {
  * exist at all where no telemetry destination is reachable. Its field set is a
  * documented contract — see the README's observability subsection and `agents.md`
  * — so renaming a key, dropping a field, or emitting a null is a breaking change
- * to a security control, and a new `reason_code` token is a cross-language one.
+ * to a security control, and a new `reason_code` token is a cross-SDK one.
  *
  * Two rules hold across both halves. Neither the skill body nor any filesystem
  * path ever appears: hashes, byte counts, the redacted key, and the fixed reason
  * vocabulary only. And the record's keys are inserted in **alphabetical order**
- * deliberately, so `JSON.stringify` here is byte-identical to the Python SDK's
- * `json.dumps(record, sort_keys=True, separators=(",", ":"))` for the same
- * failure, modulo `language`. Do not reorder.
+ * deliberately, so the emitted JSON is byte-identical across SDKs for the same
+ * failure, modulo `language`: sorted keys, and no whitespace around the
+ * separators. Do not reorder.
  */
 export function recordIntegrityFailure(
   skillKey: unknown,
@@ -350,7 +350,12 @@ export function verifiedBytes(
   // bytes the server could have hashed, so this is not authentic content — and
   // the substituted bytes must never be allowed to satisfy the hash comparison.
   // Only a wire string can carry a lone surrogate; bytes are already just bytes.
-  if (typeof content === 'string' && new TextDecoder().decode(encoded) !== content) {
+  //
+  // `ignoreBOM: true` is load-bearing: a default decoder consumes a leading
+  // U+FEFF, so authentic content that starts with a BOM would round-trip to a
+  // shorter string and be withheld as `not_utf8` even though its bytes hash
+  // correctly. It does not weaken the surrogate check, which is what this is for.
+  if (typeof content === 'string' && new TextDecoder('utf-8', { ignoreBOM: true }).decode(encoded) !== content) {
     const reason = 'content is not encodable as UTF-8';
     recordIntegrityFailure(key, 'not_utf8', reason, { version, expectedHash });
     return { reason };
