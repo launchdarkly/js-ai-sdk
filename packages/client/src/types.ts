@@ -167,9 +167,9 @@ export type Skill = {
  * Why an accessor returned the skill it did — or returned none.
  *
  * A closed five-token vocabulary with exactly one token per outcome the store
- * resolution can reach, and the Python SDK publishes the same five for the same
- * conditions, so a polyglot fleet writes one handler rather than two. A sixth
- * token is a cross-language change — add it on both sides, or not at all.
+ * resolution can reach. Every language implementation publishes the same five for
+ * the same conditions, so a polyglot fleet writes one handler rather than two. A
+ * sixth token is a cross-SDK change — add it everywhere, or not at all.
  *
  * `integrity_failure` is the token worth acting on: content and its declared
  * digest disagreed, which is the shape of active tampering with skill delivery,

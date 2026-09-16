@@ -208,7 +208,7 @@ describe('parseAiConfig', () => {
       ['version non-integer', { version: 2.5 }],
       ['version as string', { version: '2' }],
       // A boolean is not an acceptable integer even in languages where it is
-      // integer-like — the rule is identical across both implementations.
+      // integer-like — the rule is identical across language implementations.
       ['version as boolean', { version: true }],
       ['version null', { version: null }],
       ['version NaN', { version: Number.NaN }],
