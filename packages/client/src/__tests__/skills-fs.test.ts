@@ -8,7 +8,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, realpathSync } from 'node:fs';
 import {
   chmod,
   lstat,
@@ -26,7 +26,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { fsOps, SUPPORTS_DIR_FD } from '../safe-fs.js';
+import { fsOps, SUPPORTS_DIR_FD, SUPPORTS_PROC_FD } from '../safe-fs.js';
 import { _clearState, _setEmitterForTesting, _setStore, InMemorySkillStore, skillRefs } from '../skills.js';
 import { MAX_SKILL_CONTENT_BYTES } from '../skills-core.js';
 import { writeSkills } from '../skills-fs.js';
@@ -142,6 +142,24 @@ class RecordingEmitter {
 type RenameCall = { src: string; dst: string };
 
 /**
+ * A descriptor-addressed path, resolved back to the real one.
+ *
+ * On Linux the implementation issues its operations against
+ * `/proc/self/fd/<fd>/<name>`, so the kernel resolves them from a pinned inode
+ * rather than from a name — see `SUPPORTS_PROC_FD` in `safe-fs.ts`. These tests
+ * assert on *where* an operation landed, which means undoing that addressing, and
+ * it can only be undone while the descriptor is still open. Hence inside the
+ * interception rather than in the assertion.
+ *
+ * Only the parent is resolved: the final component of a rename destination does
+ * not exist yet. Off the fast path this is the identity function.
+ */
+function realize(target: string): string {
+  if (!target.startsWith('/proc/self/fd/')) return target;
+  return path.join(realpathSync(path.dirname(target)), path.basename(target));
+}
+
+/**
  * Records — and optionally fails — every atomic rename of a `SKILL.md`.
  *
  * The implementation performs the
@@ -159,7 +177,7 @@ function interceptRename(options: { fail?: boolean } = {}): RenameCall[] {
   const real = fsOps.rename.bind(fsOps);
   vi.spyOn(fsOps, 'rename').mockImplementation(async (src: string, dst: string) => {
     if (dst.endsWith(SKILL_MD)) {
-      calls.push({ src, dst });
+      calls.push({ src: realize(src), dst: realize(dst) });
       if (options.fail) throw new Error(INJECTED);
     }
     return real(src, dst);
@@ -173,7 +191,7 @@ function interceptUnlink(options: { fail?: boolean } = {}): string[] {
   const real = fsOps.unlink.bind(fsOps);
   vi.spyOn(fsOps, 'unlink').mockImplementation(async (target: string) => {
     if (target.endsWith(SKILL_MD)) {
-      calls.push(target);
+      calls.push(realize(target));
       if (options.fail) throw new Error(INJECTED);
     }
     return real(target);
@@ -718,6 +736,87 @@ describe('writeSkills resilience', () => {
     );
   });
 
+  it('never prunes on a non-object listing', async () => {
+    // A store that cannot list is not a store holding nothing. A listing
+    // collapsed to "no skills" is indistinguishable from every skill having
+    // been revoked, and prune would then delete every managed file and report a
+    // clean run. The listing failure has to reach the prune gate as an
+    // incomplete run.
+    const noListing: SkillStore = {
+      getObject() {
+        return null;
+      },
+      allObjects() {
+        return null as unknown as Record<string, RawSkillObject>;
+      },
+    };
+    const existing = await placeManaged(root, 'pdf-extraction', SKILL_BODY);
+    _setStore(noListing);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(false);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+    expect(report.actions.map((a) => a.action)).toEqual(['error']);
+    expect(errorMessages(report).some((m) => m.includes('rather than an object'))).toBe(true);
+    // The entry survives, so the next reconcile picks it up.
+    expect(Object.keys((await readManifest(root)).entries as Record<string, unknown>)).toContain(
+      `pdf-extraction/${SKILL_MD}`,
+    );
+  });
+
+  it('writes nothing for an answer served under another key', async () => {
+    // The file is named after the key the object carries, so a store answering
+    // under a different key would write one path and prune another. Left
+    // unchecked, the run wrote the aliased key, then deleted it in the same
+    // pass because prune keys off the request — and reported ok. The requested
+    // key has to be the one the outcome is reported against.
+    const aliasing: SkillStore = {
+      getObject() {
+        return rawSkill('other-key');
+      },
+      allObjects() {
+        return {};
+      },
+    };
+    _setStore(aliasing);
+
+    const report = await writeSkills(['requested-key'], root);
+
+    expect(report.ok).toBe(false);
+    expect(report.actions.map((a) => a.action)).toEqual(['error']);
+    // Reported against the key that was asked for, not the one served.
+    expect(actionsByKey(report)['requested-key'].action).toBe('error');
+    expect(await exists(path.join(root, 'other-key'))).toBe(false);
+    expect((await readManifest(root)).entries).toEqual({});
+  });
+
+  it('an answer served under another key never reaches that key’s file', async () => {
+    // Both keys are requested here, so nothing is prunable and the write itself
+    // is what is under test: unchecked, the object served under the alias is
+    // written to the *other* key's path, clobbering the content that key's own
+    // lookup resolved — and the run still reports ok.
+    const aliased = 'aliased\n';
+    const aliasing: SkillStore = {
+      getObject(_kind, key) {
+        return key === 'other-key' ? rawSkill('other-key') : rawSkill('other-key', 2, aliased);
+      },
+      allObjects() {
+        return {};
+      },
+    };
+    const existing = await placeManaged(root, 'other-key', SKILL_BODY);
+    _setStore(aliasing);
+
+    // The alias is resolved last, so an unchecked write would land on top.
+    const report = await writeSkills(['other-key', 'requested-key'], root);
+
+    expect(report.ok).toBe(false);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+    expect(actionsByKey(report)['requested-key'].action).toBe('error');
+    expect(actionsByKey(report)['other-key'].action).toBe('skipped_current');
+  });
+
   it('never corrupts the manifest on an unavailable run', async () => {
     await placeManaged(root, 'a', SKILL_BODY);
     const before = await readManifest(root);
@@ -982,20 +1081,22 @@ describe('writeSkills symlink attacks', () => {
 /**
  * The two symlink swap-race cases.
  *
- * They are defensible only where the platform provides the `*at()` syscall
- * family, so they are skipped off `SUPPORTS_DIR_FD` — the **same** capability
- * probe the implementation gates on, never off a platform string, so a probe
- * that silently reported "unsupported" could not also silently skip the tests
- * that would have caught it.
+ * Defensible only where a destructive operation can be addressed relative to a
+ * pinned directory, which is true two ways: an `*at()` family
+ * (`SUPPORTS_DIR_FD`, false on every Node release to date) or descriptor
+ * addressing through procfs (`SUPPORTS_PROC_FD`, true on Linux). Gated on the
+ * **same** capability probes the implementation gates on, never on a platform
+ * string, so a probe that silently reported "unsupported" could not also silently
+ * skip the tests that would have caught it.
  *
- * On Node that probe is false: `fs`/`fs.promises` expose no `renameat` or
- * `unlinkat`, and `FileHandle` has no `rename`/`unlink`, so a destructive
- * operation cannot be addressed relative to a pinned descriptor at all. These
- * cases are therefore a documented residual exposure on this runtime — see
- * `SUPPORTS_DIR_FD` in `safe-fs.ts`. They are written out
- * in full so they become live the moment the probe flips.
+ * So these run on Linux, where `safe-fs.ts` addresses `<root>/<key>`'s children
+ * through `/proc/self/fd/<fd>` and the swap cannot redirect the write or the
+ * unlink. They are skipped on macOS and Windows, where the per-component `lstat`
+ * floor narrows the window without closing it and the exposure is documented
+ * instead — see `SUPPORTS_DIR_FD` in `safe-fs.ts`. They stay written out in full
+ * so they become live the moment either probe flips.
  */
-describe.skipIf(!SUPPORTS_DIR_FD)('writeSkills TOCTOU swap races', () => {
+describe.skipIf(!SUPPORTS_DIR_FD && !SUPPORTS_PROC_FD)('writeSkills TOCTOU swap races', () => {
   /**
    * Fires the swap at the exact instant of an operation: renames
    * `<root>/<key>` aside and leaves a symlink to `outside` in its place, then
@@ -1063,6 +1164,30 @@ describe.skipIf(!SUPPORTS_DIR_FD)('writeSkills TOCTOU swap races', () => {
 });
 
 describe('filesystem capability probe', () => {
+  it('reports descriptor addressing only where procfs actually provides it', async () => {
+    // The Linux fast path is gated on this, and a hardcoded `true` would make
+    // the swap-race cases above pass vacuously on a platform that cannot
+    // support them. So assert the two halves of the real property: never true
+    // off Linux, and on Linux only when `/proc/self/fd/<fd>` resolves back to
+    // the inode the descriptor holds.
+    if (process.platform !== 'linux') {
+      expect(SUPPORTS_PROC_FD).toBe(false);
+      return;
+    }
+    const { open, lstat, stat } = await import('node:fs/promises');
+    const handle = await open(tmpdir(), fsConstants.O_RDONLY | fsConstants.O_DIRECTORY);
+    try {
+      const address = `/proc/self/fd/${handle.fd}`;
+      const pinned = await handle.stat({ bigint: true });
+      const resolved = await stat(address, { bigint: true });
+      const usable =
+        (await lstat(address)).isSymbolicLink() && resolved.dev === pinned.dev && resolved.ino === pinned.ino;
+      expect(SUPPORTS_PROC_FD).toBe(usable);
+    } finally {
+      await handle.close();
+    }
+  });
+
   it('is a real feature test rather than a hardcoded answer', async () => {
     // Node exposes no `*at()` family, so TypeScript
     // runs a per-component lstat check instead and the two
@@ -1670,6 +1795,113 @@ describe('writeSkills corrupt manifest', () => {
     expect(errorMessages(report).some((e) => e.toLowerCase().includes('manifest'))).toBe(true);
     expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
     expect((await lstat(manifestPath(root))).isSymbolicLink()).toBe(true);
+  });
+});
+
+// ─── A well-formed manifest naming a path the SDK could not have written ─────
+
+/**
+ * The three literal cases that matter for the prune path.
+ *
+ * The distinction from the corrupt-manifest block above is the whole point: a
+ * corrupt manifest suppresses every destructive action wholesale, so those tests
+ * say nothing about these. Each manifest here is *well-formed* — parseable, a
+ * `manifestVersion` this release understands, a real `entries` map, and an entry
+ * whose `key` is a perfectly valid skill key genuinely absent from the requested
+ * set. The implementation has every input it needs to prune, and must refuse
+ * anyway, because the recorded *path* is not one this SDK could have written.
+ *
+ * The manifest is untrusted input: a plain file on the customer's disk that
+ * anything with write access to the managed root can edit, and `prune` is the
+ * one code path in the SDK that deletes. So a recorded path never authorizes its
+ * own removal — it must match `<key>/SKILL.md` for a re-validated key, and the
+ * target is recomputed from the *current* managed root rather than read back out
+ * of the entry.
+ */
+const HOSTILE_RECORDED_PATHS: string[] = [
+  // Absolute: the classic. A recorded path read back and unlinked as-is is a
+  // delete of an attacker-chosen file with the reconcile's own privileges.
+  '/etc/passwd',
+  // Traversing: the same attack against an implementation that rejects a
+  // leading slash and then joins the rest onto the managed root.
+  '../../../etc/passwd',
+];
+
+/**
+ * Records every prune unlink without performing it.
+ *
+ * Asserting only that `/etc/passwd` still exists proves nothing: the test
+ * process cannot delete it anyway, so that assertion passes against an
+ * implementation with no path check at all — permissions would be doing the
+ * work. What has teeth is that the removal is never *attempted*: the refusal
+ * happens above the syscall, on a path the SDK recomputes rather than trusts.
+ * `fsOps.unlink` is the single call site the prune deletes through.
+ */
+function recordUnlinks(): string[] {
+  const targets: string[] = [];
+  vi.spyOn(fsOps, 'unlink').mockImplementation(async (target: string) => {
+    targets.push(target);
+  });
+  return targets;
+}
+
+describe('writeSkills hostile manifest prune', () => {
+  it.each(HOSTILE_RECORDED_PATHS)('refuses a recorded path outside the root: %s', async (recorded) => {
+    const unlinked = recordUnlinks();
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: { [recorded]: manifestEntry('a', 1, SKILL_BODY) },
+    });
+
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(false);
+    const action = actionsByKey(report).a;
+    expect(action.action).toBe('error');
+    // The refusal is about ownership of the path, not about the file's state.
+    expect(action.error).toContain('could own');
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    // Nothing was even attempted, let alone completed.
+    expect(unlinked).toEqual([]);
+    expect(await exists('/etc/passwd')).toBe(true);
+    // Left in place rather than tidied away: dropping the entry would let a
+    // single hostile edit erase the SDK's own record of what it manages.
+    expect(await readManifest(root)).toHaveProperty(['entries', recorded]);
+  });
+
+  it('refuses an entry under a parent that has since become a symlink', async () => {
+    // The recorded path is the SDK's own, and is still not enough. The entry is
+    // exactly what a legitimate reconcile writes — `a/SKILL.md` under key `a` —
+    // so the shape check that catches the two cases above passes here. What
+    // changed is the disk underneath it. This is the case a validate-then-act
+    // implementation fails: the manifest and the entry are both entirely
+    // legitimate, and only the current state of the parent is not.
+    const elsewhere = path.join(scratch, 'elsewhere');
+    await mkdir(elsewhere);
+    const victim = path.join(elsewhere, SKILL_MD);
+    await writeFile(victim, 'victim content\n', 'utf-8');
+
+    // Managed legitimately first, so the manifest entry is one this SDK really
+    // did write...
+    const managed = await placeManaged(root, 'a', SKILL_BODY);
+    // ...then the parent directory is swapped for a link out of the root.
+    await rm(managed);
+    await rm(path.join(root, 'a'), { recursive: true });
+    await symlink(elsewhere, path.join(root, 'a'), 'dir');
+
+    const unlinked = recordUnlinks();
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(false);
+    const action = actionsByKey(report).a;
+    expect(action.action).toBe('error');
+    expect(action.error).toContain('symlink');
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(unlinked).toEqual([]);
+    // The file the symlink pointed at is untouched, and so is the link.
+    expect(await readFile(victim, 'utf-8')).toBe('victim content\n');
+    expect((await lstat(path.join(root, 'a'))).isSymbolicLink()).toBe(true);
+    expect(await readManifest(root)).toHaveProperty(['entries', `a/${SKILL_MD}`]);
   });
 });
 
