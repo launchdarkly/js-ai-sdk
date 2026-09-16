@@ -46,8 +46,8 @@ import {
   InMemorySkillStore,
   skillRefs,
 } from '../skills.js';
-import { allRawObjects, MAX_SKILL_CONTENT_BYTES, requireStore } from '../skills-core.js';
-import type { RawSkillObject, Skill, SkillOutcomeReason, SkillStore } from '../types.js';
+import { allRawObjects, MAX_SKILL_CONTENT_BYTES, requireStore, SKILL_OBJECT_KIND } from '../skills-core.js';
+import type { RawSkillObject, Skill, SkillStore } from '../types.js';
 import {
   createReconcileAction,
   createReconcileReport,
@@ -263,14 +263,34 @@ describe('ReconcileReport ok and errors', () => {
 // ─── Package exports ───────────────────────────────────────────────────
 
 describe('package exports', () => {
-  it('exports the five fixed values from the package root with exact values', () => {
-    // These are API, not implementation detail: a caller needs MANIFEST_FILENAME
-    // to gitignore the manifest and MAX_SKILL_CONTENT_BYTES to pre-check content.
-    expect(packageIndex.SKILL_OBJECT_KIND).toBe('skill');
+  it('exports the three fixed values from the package root with exact values', () => {
+    // These three are API, not implementation detail: a caller needs
+    // MANIFEST_FILENAME to gitignore the manifest, and all three describe an
+    // on-disk layout this SDK defines and a caller may have to agree with.
     expect(packageIndex.SKILL_FILENAME).toBe('SKILL.md');
     expect(packageIndex.MANIFEST_FILENAME).toBe('.launchdarkly-skills.json');
     expect(packageIndex.MANIFEST_VERSION).toBe(1);
-    expect(packageIndex.MAX_SKILL_CONTENT_BYTES).toBe(10 * 1024 * 1024);
+  });
+
+  it('does not export the object kind or the content cap from the package root', () => {
+    // The absence is itself the contract, so it gets an assertion — an
+    // accidental re-export from index.ts is caught here rather than shipping.
+    //
+    // SKILL_OBJECT_KIND is an SDK-side seam string rather than the wire format:
+    // it is what the accessors hand SkillStore.getObject, and an adapter is free
+    // to map it onto whatever its transport actually uses. MAX_SKILL_CONTENT_BYTES
+    // is a local enforcement bound on content the platform produces, set well
+    // above the platform's own limit precisely so that limit can move without
+    // this constant following — a caller pre-flighting "will my skill fit?"
+    // against it would be reading the backstop, not the real bound.
+    expect('SKILL_OBJECT_KIND' in packageIndex).toBe(false);
+    expect('MAX_SKILL_CONTENT_BYTES' in packageIndex).toBe(false);
+
+    // Still reachable through the implementation module, for the store
+    // implementer who has to agree with them. Asserted here rather than left
+    // implicit so the absence above reads as "not published" rather than "gone".
+    expect(SKILL_OBJECT_KIND).toBe('skill');
+    expect(MAX_SKILL_CONTENT_BYTES).toBe(10 * 1024 * 1024);
   });
 
   it('exports the skills functions and the in-memory store from the package root', () => {
@@ -301,6 +321,35 @@ describe('package exports', () => {
   it('the OnUnavailable union admits exactly keep and raise', () => {
     const exhaustive: Record<packageIndex.OnUnavailable, true> = { keep: true, raise: true };
     expect(Object.keys(exhaustive).sort()).toEqual(['keep', 'raise']);
+  });
+
+  it('exports getSkillResult and the outcome factory from the package root', () => {
+    expect(typeof packageIndex.getSkillResult).toBe('function');
+    expect(typeof packageIndex.createSkillOutcome).toBe('function');
+  });
+
+  it('the SkillOutcomeReason union admits exactly the five reason tokens', () => {
+    // The five tokens are API — customers branch on them, and every SDK
+    // publishes the same five for the same conditions. Adding a sixth here
+    // should force a matching change in the other SDKs, not just a green test.
+    //
+    // Named through the package index rather than through types.js: it is the
+    // *root* export that is fixed, and a union reachable only from the
+    // implementation module is not reachable by a supported import.
+    const exhaustive: Record<packageIndex.SkillOutcomeReason, true> = {
+      absent: true,
+      integrity_failure: true,
+      ok: true,
+      store_unavailable: true,
+      wrong_version: true,
+    };
+    expect(Object.keys(exhaustive).sort()).toEqual([
+      'absent',
+      'integrity_failure',
+      'ok',
+      'store_unavailable',
+      'wrong_version',
+    ]);
   });
 });
 
@@ -627,6 +676,10 @@ describe('getSkill', () => {
     expect(found).not.toBeNull();
     expect(found?.key).toBe('pdf-extraction');
     expect(found?.version).toBe(2);
+    // The declared type, asserted before the value: `content` is an opaque byte
+    // buffer and never a string, and `toEqual` alone passes for any
+    // structurally-equal value — including a plain array of the same numbers.
+    expect(found?.content).toBeInstanceOf(Uint8Array);
     expect(found?.content).toEqual(SKILL_BODY_BYTES);
     expect(found?.contentHash).toBe(hash(SKILL_BODY));
     expect(found?.name).toBe('Test Skill');
@@ -653,11 +706,25 @@ describe('getSkill', () => {
     expect(await getSkill('nope')).toBeNull();
   });
 
-  it('withholds a store answering under a different key', async () => {
+  it('withholds a store answering under a different key as integrity_failure, silently', async () => {
     // The key needs the same post-fetch defense the version already has.
     // Identity is read off the object itself, and the store is untrusted. An
     // answer served under a different key would otherwise be handed back under
     // the key the caller asked for while carrying its own.
+    //
+    // The token is `integrity_failure`, not `wrong_version`: content was
+    // delivered and its identity did not verify, which is the one outcome a
+    // caller is expected to fail closed on. `wrong_version` names a version
+    // mismatch specifically and there is deliberately no `wrong_key`, so a
+    // substituting store filed under it would be invisible to a caller
+    // branching on the token. Pinned here because the choice is not recoverable
+    // from the message.
+    //
+    // The silence is the other half, and it is asserted in both directions: the
+    // check runs *after* verifyRawSkill has already passed, so neither §3.24
+    // detection surface fires. A recorded signal or a logged record here would
+    // mean the check had migrated into verification — a real change, not a
+    // cosmetic one, since it would need a ninth reason_code to go with it.
     const aliasing: SkillStore = {
       getObject() {
         return rawSkill({ key: 'other-key' });
@@ -668,12 +735,34 @@ describe('getSkill', () => {
     };
     _setStore(aliasing);
 
-    expect(await getSkill('asked-for')).toBeNull();
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
 
-    const outcome = await getSkillResult('asked-for');
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let errorCalls: unknown[][] = [];
+    let collapsed: Skill | null;
+    let outcome: Awaited<ReturnType<typeof getSkillResult>>;
+    try {
+      collapsed = await getSkill('asked-for');
+      outcome = await getSkillResult('asked-for');
+    } finally {
+      // Read the calls out before restoring: `mockRestore` also resets the
+      // recorded history, so a read afterwards sees nothing.
+      errorCalls = [...spy.mock.calls];
+      spy.mockRestore();
+    }
+
+    expect(collapsed).toBeNull();
     expect(outcome.skill).toBeNull();
-    expect(outcome.reason).toBe('wrong_version');
-    expect(outcome.detail).toBe("skill 'asked-for' is not available: the store answered under key 'other-key'");
+    expect(outcome.reason).toBe('integrity_failure');
+    // Branch on the token, not on the message: `detail` is for a human. Assert
+    // only that it is present and carries no skill body.
+    expect(outcome.detail).toBeTruthy();
+    expect(outcome.detail).not.toContain('Do the thing.');
+
+    expect(emitter.records).toEqual([]);
+    const lines = errorCalls.map(([first]) => String(first));
+    expect(lines.filter((line) => line.includes('ld.skills.integrity_failure'))).toEqual([]);
   });
 });
 
@@ -1386,7 +1475,7 @@ describe('getSkillResult', () => {
    * different construction site in `resolveFromStore`, which is what makes the
    * mapping — not just the union — the thing under test.
    */
-  const cases: Array<[SkillOutcomeReason, () => SkillStore, () => Promise<unknown>]> = [
+  const cases: Array<[packageIndex.SkillOutcomeReason, () => SkillStore, () => Promise<unknown>]> = [
     ['ok', () => storeHolding(rawSkill({ key: 'a' })), () => getSkillResult('a')],
     ['absent', () => new InMemorySkillStore(), () => getSkillResult('a')],
     [
@@ -1680,37 +1769,5 @@ describe('createSkillOutcome', () => {
 
     expect(outcome.skill).toBe(built);
     expect(outcome.reason).toBe('ok');
-  });
-});
-
-// ─── Package exports ───────────────────────────────────────────────────
-
-describe('getSkillResult package exports', () => {
-  it('exports the accessor and the outcome factory from the package root', async () => {
-    // Imported here rather than at the top of the file so this stays a
-    // self-contained check of the barrel.
-    const pkg = await import('../index.js');
-    expect(typeof pkg.getSkillResult).toBe('function');
-    expect(typeof pkg.createSkillOutcome).toBe('function');
-  });
-
-  it('the SkillOutcomeReason union admits exactly the five reason tokens', () => {
-    // The five tokens are API — customers branch on them, and every SDK
-    // publishes the same five for the same conditions. Adding a sixth here
-    // should force a matching change in the other SDKs, not just a green test.
-    const exhaustive: Record<SkillOutcomeReason, true> = {
-      absent: true,
-      integrity_failure: true,
-      ok: true,
-      store_unavailable: true,
-      wrong_version: true,
-    };
-    expect(Object.keys(exhaustive).sort()).toEqual([
-      'absent',
-      'integrity_failure',
-      'ok',
-      'store_unavailable',
-      'wrong_version',
-    ]);
   });
 });

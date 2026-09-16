@@ -282,13 +282,23 @@ export function recordMaterialized(
  * allowlist is maintained in one place: every signal this SDK can emit is visible
  * in this section of this module, and nothing outside it touches `emit`.
  */
-export function recordRevoked(skillKey: string, version: number | null): void {
-  emit(SIGNAL_REVOKED, {
-    skill_key: skillKey,
-    version,
+export function recordRevoked(skillKey: unknown, version: unknown): void {
+  // Both fields come off the manifest, which is a file on disk anything with
+  // write access to the root can author — exactly as attacker-controlled as a
+  // wire object. Same rule as `recordIntegrityFailure`: shape-check, then
+  // redact, so a hand-edited manifest cannot plant an arbitrary string in a
+  // signal that is otherwise body-free.
+  const safeKey = isValidSkillKey(skillKey) ? skillKey : '<invalid-key>';
+  const properties: Record<string, unknown> = {
+    skill_key: safeKey,
     removed_from_disk: true,
     language: LANGUAGE,
-  });
+  };
+  // Omitted rather than emitted as null: a consumer reads "the manifest entry
+  // recorded no usable version" off the key's absence, and the signal never
+  // carries a null for a field that was not known.
+  if (isValidSkillVersion(version)) properties.version = version;
+  emit(SIGNAL_REVOKED, properties);
 }
 
 // ---------------------------------------------------------------------------
@@ -538,9 +548,19 @@ export function resolveFromStore(store: SkillStore, key: string, wantedVersion: 
     return { error: `skill '${key}' failed integrity verification and was withheld`, reason: 'integrity_failure' };
   }
   if (skill.key !== key) {
+    // `integrity_failure` rather than `absent`: content was delivered and its
+    // identity did not verify, which is the one token a caller is expected to
+    // fail closed on. Reporting `absent` would file a store that substitutes one
+    // skill for another in the bucket the same caller is invited to tolerate. It
+    // is not `wrong_version` either — that token names a version mismatch
+    // specifically, and there is deliberately no `wrong_key` to parallel it.
+    //
+    // This path reports the outcome reason only: `verifyRawSkill` has already
+    // passed, so no integrity signal is recorded and no `ld.skills.integrity_failure`
+    // record is logged. That asymmetry is deliberate and pinned by a test.
     return {
       error: `skill '${key}' is not available: the store answered under key '${skill.key}'`,
-      reason: 'wrong_version',
+      reason: 'integrity_failure',
     };
   }
   if (wantedVersion !== null && skill.version !== wantedVersion) {

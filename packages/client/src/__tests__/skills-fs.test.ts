@@ -28,7 +28,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { fsOps, SUPPORTS_DIR_FD, SUPPORTS_PROC_FD } from '../safe-fs.js';
 import { _clearState, _setEmitterForTesting, _setStore, InMemorySkillStore, skillRefs } from '../skills.js';
-import { MAX_SKILL_CONTENT_BYTES } from '../skills-core.js';
+import { MAX_SKILL_CONTENT_BYTES, recordRevoked } from '../skills-core.js';
 import { writeSkills } from '../skills-fs.js';
 import type { RawSkillObject, ReconcileAction, ReconcileReport, Skill, SkillStore } from '../types.js';
 import { createSkill, isValidSkillKey, parseAiConfig } from '../types.js';
@@ -1994,6 +1994,97 @@ describe('writeSkills telemetry', () => {
     expect(props.version).toBe(3);
     expect(props.removed_from_disk).toBe(true);
     expect(props.language).toBe('typescript');
+  });
+
+  it('omits version from the Revoked signal when the manifest entry is malformed', async () => {
+    // The absent half of the bullet above, and the one that needs asserting:
+    // `version` is *omitted*, not recorded as null. The manifest is a file on
+    // disk, so the value in hand here is whatever was written there — a caller
+    // reads "no usable version was recorded" off the key's absence rather than
+    // off a null, and the signal never carries a null for a field that was not
+    // known. `toHaveProperty` is the assertion that distinguishes the two;
+    // reading `props.version` and comparing to undefined would pass either way.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    await mkdir(path.join(root, 'gone'), { recursive: true });
+    await writeFile(path.join(root, 'gone', SKILL_MD), SKILL_BODY, 'utf-8');
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: {
+        [`gone/${SKILL_MD}`]: {
+          key: 'gone',
+          version: 'seven',
+          sha256: hash(SKILL_BODY),
+          writtenAt: '2026-08-14T19:00:00Z',
+        },
+      },
+    });
+
+    await writeSkills([], root);
+
+    const [props] = emitter.signals(REVOKED_SIGNAL);
+    expect(props).toBeDefined();
+    expect(props.skill_key).toBe('gone');
+    expect(props.removed_from_disk).toBe(true);
+    expect(props).not.toHaveProperty('version');
+    expect(Object.keys(props).sort()).toEqual(['language', 'removed_from_disk', 'skill_key']);
+  });
+
+  it('publishes no skill body when a manifest entry carries the body as its key', async () => {
+    // The manifest is as attacker-controlled as a wire object — anything with
+    // write access to the root can author it — so the key it carries gets the
+    // same shape check the wire key does before it reaches a signal.
+    //
+    // Note where this is actually stopped today: `pruneEntries` rejects an entry
+    // whose key fails validation before `pruneOne` runs, so the run reports a
+    // prune `error` and no Revoked signal is emitted at all. Either way the body
+    // stays out of telemetry, which is what this asserts. The redaction inside
+    // `recordRevoked` is the second line of defense behind that guard, and it is
+    // pinned directly below — an end-to-end test cannot reach it.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const hostileKey = SKILL_BODY;
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: {
+        [`${hostileKey}/${SKILL_MD}`]: {
+          key: hostileKey,
+          version: 1,
+          sha256: hash(SKILL_BODY),
+          writtenAt: '2026-08-14T19:00:00Z',
+        },
+      },
+    });
+
+    const report = await writeSkills([], root);
+
+    for (const [, props] of emitter.records) {
+      for (const value of Object.values(props)) {
+        expect(String(value)).not.toContain('Do the thing.');
+      }
+    }
+    // The entry is reported rather than silently ignored: a manifest path this
+    // SDK could not have written is left in place and surfaced as an error.
+    expect(report.ok).toBe(false);
+    expect(emitter.signals(REVOKED_SIGNAL)).toEqual([]);
+  });
+
+  it('redacts a manifest-supplied key that is not a valid skill key', async () => {
+    // Called directly because the prune path's own key validation refuses the
+    // entry first (see the test above), so this branch is unreachable end to
+    // end. It is still the parity requirement and the defense that holds if that
+    // guard is ever relaxed — and it asserts the placeholder's *effect*, the
+    // body being absent, rather than its exact spelling, which no spec fixes.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+
+    recordRevoked(SKILL_BODY, 3);
+
+    const [props] = emitter.signals(REVOKED_SIGNAL);
+    expect(props.skill_key).not.toContain('Do the thing.');
+    expect(isValidSkillKey(props.skill_key)).toBe(false);
+    expect(props.version).toBe(3);
+    expect(props.removed_from_disk).toBe(true);
   });
 
   it('records no Revoked signal when pruning is disabled', async () => {
