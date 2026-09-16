@@ -2,7 +2,7 @@
  * `writeSkills` — the swap one level up: the managed *root* replaced by a
  * symlink, not `<root>/<key>`.
  *
- * The defect these were written against (SEC-8985 row 2): `resolveRoot`
+ * The defect these were written against: `resolveRoot`
  * validated the root once and returned a path, and nothing held it open. Each
  * write and each prune then opened `<root>/<key>` *by path* with
  * `O_NOFOLLOW | O_DIRECTORY` and pinned that. `O_NOFOLLOW` guards only the final
@@ -25,9 +25,10 @@
  *
  * Every test states the contract rather than the mechanism: nothing lands outside
  * the root, no outside file is overwritten, no outside file is removed. The
- * trigger matches both the pre-fix and post-fix spellings of the child path (see
- * the hook below), so these same bodies failed against the unfixed code and pass
- * against the fixed one — which is the only thing that makes them evidence.
+ * trigger matches both the path-based and descriptor-based spellings of the child
+ * path (see the hook below), so these same bodies fail against an unpinned root
+ * and pass against a pinned one — which is the only thing that makes them
+ * evidence.
  *
  * In its own file because the swap has to land *before* the per-skill directory
  * is opened, which means intercepting `mkdir` and `open` from `node:fs/promises`

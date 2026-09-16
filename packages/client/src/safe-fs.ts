@@ -2,12 +2,8 @@
  * Symlink-refusing filesystem primitives: writing a file under a directory an
  * attacker may be racing you for.
  *
- * Split out because none of this knows what a skill is: it is the "write a file
- * under a directory an attacker may be racing you for" problem, solved once.
- * `skills-fs.ts` is the only caller today.
- *
- * The whole point is that a path check is only as good as the last path
- * resolution after it. There are two implementations of that idea here, and which
+ * A path check is only as good as the last path resolution after it. There are
+ * two implementations of that idea here, and which
  * one runs is a platform property rather than a configuration choice:
  *
  * - **Linux — the swap window is closed.** Node exposes no `*at()` family (see
@@ -26,8 +22,8 @@
  * Windows is additionally not a supported or tested platform for this release:
  * reparse-point checks (`GetFileAttributesW`, or opening with
  * `FILE_FLAG_OPEN_REPARSE_POINT`) are **not implemented, by decision rather than
- * oversight**, since neither SDK repository has a Windows CI runner and Node
- * gives this module no primitive that would make them meaningful. That is also
+ * oversight**, since there is no Windows CI runner and Node gives this module no
+ * primitive that would make them meaningful. That is also
  * why a Linux-only fast path is an acceptable shape for the fix rather than a
  * half-measure: the platforms it leaves on the floor are macOS, which is a
  * development target, and Windows, which is out of scope.
@@ -37,10 +33,10 @@
  * on any of its ancestors** is *the* security boundary for skills
  * materialization, so the privilege-separated deployment the README
  * documents — reconcile identity separate from agent identity — is not advice but
- * the mitigation. Relatedly, this bound retroactively lowers the priority of the
- * Windows reserved-device-name work in `skills-fs.ts`: that code stays, because
- * it keeps a managed root written on Linux usable when read from Windows, but it
- * is not evidence that Windows is a hardened target. It is not.
+ * the mitigation. The Windows reserved-device-name handling in `skills-fs.ts`
+ * stays for a narrower reason than it may appear to serve: it keeps a managed
+ * root written on Linux usable when read from Windows. It is not evidence that
+ * Windows is a hardened target.
  */
 
 import { randomBytes } from 'node:crypto';

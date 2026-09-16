@@ -1801,7 +1801,7 @@ describe('writeSkills corrupt manifest', () => {
 // ─── A well-formed manifest naming a path the SDK could not have written ─────
 
 /**
- * The three literal cases the security review names for the prune path.
+ * The three literal cases that matter for the prune path.
  *
  * The distinction from the corrupt-manifest block above is the whole point: a
  * corrupt manifest suppresses every destructive action wholesale, so those tests

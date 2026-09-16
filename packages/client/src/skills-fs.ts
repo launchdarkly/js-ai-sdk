@@ -986,9 +986,9 @@ async function readRegularFile(target: string): Promise<Buffer> {
 /**
  * Performs the write itself. Returns a failure reason, or `null` on success.
  *
- * Split out of `writeOne` because everything above it decides *whether* to write
- * and this decides nothing: the directory is pinned to a handle and the write is
- * then addressed relative to that handle (see `safe-fs.ts`).
+ * Decides nothing — `writeOne` above it has already decided *whether* to write.
+ * The directory is pinned to a handle and the write is then addressed relative to
+ * that handle (see `safe-fs.ts`).
  *
  * `skillDir` already resolves through the pinned *root*, so it cannot have been
  * redirected. The per-skill directory is pinned in turn and `SKILL.md` addressed
