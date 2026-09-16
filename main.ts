@@ -10,6 +10,7 @@ import * as judge from './examples/judge';
 import * as langchain from './examples/langchain';
 import * as langchainAgents from './examples/langchain-agents';
 import * as langchainMessages from './examples/langchain-messages';
+import * as langchainThinking from './examples/langchain-thinking';
 import * as nativeGraph from './examples/native-graph';
 import * as nativeGraphLangchain from './examples/native-graph-langchain';
 import * as openaiAgents from './examples/openai-agents';
@@ -28,6 +29,7 @@ type Example =
   | 'langchain'
   | 'langchain-agents'
   | 'langchain-messages'
+  | 'langchain-thinking'
   | 'native-graph'
   | 'native-graph-langchain'
   | 'openai-agents'
@@ -46,6 +48,7 @@ const EXAMPLES: Record<Example, { run: (key: string, userInput: string) => Promi
   langchain: langchain,
   'langchain-agents': langchainAgents,
   'langchain-messages': langchainMessages,
+  'langchain-thinking': langchainThinking,
   'native-graph': nativeGraph,
   'native-graph-langchain': nativeGraphLangchain,
   'openai-agents': openaiAgents,

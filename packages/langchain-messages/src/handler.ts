@@ -8,6 +8,7 @@ import {
   createRunUsage,
   endSpanOnce,
   type LDContext,
+  langChainContentText,
   langChainFinishReasons,
   langChainSpanMessages,
   langChainSpanUsage,
@@ -140,16 +141,33 @@ function normalizeOutputSchema(schema: Record<string, unknown>): Record<string, 
 }
 
 /**
+ * A pre-built chat model, or a function that builds one after the AI config is evaluated.
+ *
+ * Pass a function when the model must see `config.model.parameters` (temperature, thinking, …).
+ * A constructed instance cannot, because it is created before flag evaluation. Do not pass a
+ * constructor class — `typeof ChatAnthropic === 'function'` would call it with the config object.
+ */
+export type LangChainModelSource = BaseChatModel | ((config: AiConfigRep) => BaseChatModel | Promise<BaseChatModel>);
+
+function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record<string, unknown> {
+  const parameters =
+    config.model?.parameters && typeof config.model.parameters === 'object' ? config.model.parameters : {};
+  // Name from the config always wins over a colliding `model` key in the parameter bag.
+  return { ...parameters, model: config.model?.name || fallbackName };
+}
+
+/**
  * Resolves the LangChain chat model to use for a request.
- * If the caller supplied an explicit `llm`, it is used as-is.
+ * A function in `llm` is called with the evaluated config. An instance is used as-is.
  * Otherwise, the provider and model name from the AI config are used to
  * instantiate the appropriate model via a dynamic import, so that neither
- * @langchain/openai nor @langchain/anthropic is a hard dependency.
+ * @langchain/openai nor @langchain/anthropic is a hard dependency. Parameters are
+ * passed through unchanged.
  */
-async function resolveBaseModel(config: AiConfigRep, llm?: BaseChatModel): Promise<BaseChatModel> {
+async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource): Promise<BaseChatModel> {
+  if (typeof llm === 'function') return llm(config);
   if (llm) return llm;
   const providerName = (config.provider?.name ?? '').toLowerCase();
-  const modelName = config.model?.name;
   if (providerName === 'anthropic') {
     // biome-ignore lint/suspicious/noExplicitAny: @langchain/anthropic loaded via dynamic import with no static types
     let mod: any;
@@ -160,7 +178,7 @@ async function resolveBaseModel(config: AiConfigRep, llm?: BaseChatModel): Promi
         'Using Anthropic models requires @langchain/anthropic. Install it with: npm install @langchain/anthropic',
       );
     }
-    return new mod.ChatAnthropic({ model: modelName ?? 'claude-3-5-sonnet-20241022' });
+    return new mod.ChatAnthropic(modelConstructorArgs(config, 'claude-3-5-sonnet-20241022'));
   }
   // biome-ignore lint/suspicious/noExplicitAny: @langchain/openai loaded via dynamic import with no static types
   let mod: any;
@@ -169,7 +187,7 @@ async function resolveBaseModel(config: AiConfigRep, llm?: BaseChatModel): Promi
   } catch {
     throw new Error('Using OpenAI models requires @langchain/openai. Install it with: npm install @langchain/openai');
   }
-  return new mod.ChatOpenAI({ model: modelName ?? 'gpt-4o' });
+  return new mod.ChatOpenAI(modelConstructorArgs(config, 'gpt-4o'));
 }
 
 const buildTools = (
@@ -244,8 +262,9 @@ const toToolDefinitions = (tools: LangChainToolDef[]): ToolDefinitionInput[] =>
 const assistantOutput = (content: unknown, toolCalls: ReadonlyArray<unknown> | undefined) =>
   langChainSpanMessages([{ _getType: () => 'ai', content, tool_calls: toolCalls ?? [] }]).messages;
 
+/** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
 export function createLangChainHandler(
-  llm?: BaseChatModel,
+  llm?: LangChainModelSource,
   { captureContent = false }: ContentCaptureOptions = {},
 ): ProviderHandler {
   const MAX_STEPS = 10;
@@ -377,7 +396,7 @@ export function createLangChainHandler(
                 runUsage.add(langChainSpanUsage(rawUsage));
                 output = result.parsed;
               } else {
-                output = typeof response.content === 'string' ? response.content : '';
+                output = langChainContentText(response.content);
               }
               break;
             }
@@ -502,7 +521,7 @@ export function createLangChainHandler(
           try {
             const chunkStream = await toolModel.stream(conversationMessages);
             for await (const chunk of chunkStream) {
-              const text = typeof chunk.content === 'string' ? chunk.content : '';
+              const text = langChainContentText(chunk.content);
               if (text && !normalizedSchema) {
                 // Only stream text chunks when there is no structured output schema;
                 // structured output is delivered as a whole in the done event.

@@ -34,8 +34,9 @@ The handler is model-agnostic — it accepts any `BaseChatModel`. The default is
 ## Exports
 
 ```ts
-// Factory — accepts an optional BaseChatModel; defaults to new ChatOpenAI()
-export function createLangChainAgentsHandler(llm?: BaseChatModel): ProviderHandler
+// Factory — accepts a BaseChatModel or `(config) => model` so flag parameters can be applied
+// unchanged after evaluation. Defaults to ChatOpenAI / ChatAnthropic constructed from the config.
+export function createLangChainAgentsHandler(llm?: LangChainModelSource): ProviderHandler
 
 // Convenience wrapper — identical to config({ ...options, key: configKey, handler: createLangChainAgentsHandler() }).invoke(userInput, context)
 export const langchainAgents: (configKey: string, userInput: string, context: LDContext, options?: Omit<ConfigArgs, 'handler' | 'key'>) => Promise<ProviderResponse>

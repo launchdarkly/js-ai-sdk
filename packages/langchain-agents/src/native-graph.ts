@@ -141,7 +141,15 @@ export const toLangGraph = (
     }
 
     const toolHandlers = opts?.toolHandlers ?? {};
-    const modelFactory = opts?.modelFactory ?? ((node) => new ChatOpenAI({ model: node.config.model.name }));
+    const modelFactory =
+      opts?.modelFactory ??
+      ((node) =>
+        new ChatOpenAI({
+          ...(node.config.model.parameters && typeof node.config.model.parameters === 'object'
+            ? node.config.model.parameters
+            : {}),
+          model: node.config.model.name,
+        }));
     const ldContext = opts?.context;
 
     return trace.getTracer('@launchdarkly/ai-langchain-agents').startActiveSpan('ld.ai.graph', async (span) => {

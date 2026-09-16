@@ -62,15 +62,21 @@ vi.mock('@langchain/openai', () => ({
   ChatOpenAI: vi.fn().mockImplementation(() => ({})),
 }));
 
+vi.mock('@langchain/anthropic', () => ({
+  ChatAnthropic: vi.fn().mockImplementation(() => ({})),
+}));
+
+import { ChatAnthropic } from '@langchain/anthropic';
+import { ChatOpenAI } from '@langchain/openai';
 import { createLangChainHandler } from '../handler.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Creates a minimal mock LLM that returns a plain text AIMessage. */
-function makeMockLLM(content = 'response text', inputTokens = 10, outputTokens = 5) {
+/** Creates a minimal mock LLM that returns an AIMessage. */
+function makeMockLLM(content: unknown = 'response text', inputTokens = 10, outputTokens = 5) {
   const invoke = vi.fn().mockResolvedValue(
     new AIMessage({
-      content,
+      content: content as any,
       usage_metadata: {
         input_tokens: inputTokens,
         output_tokens: outputTokens,
@@ -115,6 +121,15 @@ describe('createLangChainHandler', () => {
   it('returns independent instances on multiple calls', () => {
     const llm = makeMockLLM() as any;
     expect(createLangChainHandler(llm)).not.toBe(createLangChainHandler(llm));
+  });
+
+  it('returns text from mixed thinking and text content blocks', async () => {
+    const content = [
+      { type: 'thinking', thinking: 'internal reasoning' },
+      { type: 'text', text: 'visible answer' },
+    ];
+    const result = await createLangChainHandler(makeMockLLM(content) as any)(baseConfig as any, 'q');
+    expect(result.output).toBe('visible answer');
   });
 
   // ── 1.2 Prompt construction ─────────────────────────────────────────────────
@@ -655,12 +670,12 @@ describe('createLangChainHandler', () => {
     return out;
   }
 
-  function makeStreamingLLM(chunks: string[], inputTokens = 5, outputTokens = 3) {
+  function makeStreamingLLM(chunks: unknown[], inputTokens = 5, outputTokens = 3) {
     const streamFn = vi.fn().mockReturnValue(
       (async function* () {
-        for (const text of chunks) {
+        for (const content of chunks) {
           yield new AIMessage({
-            content: text,
+            content: content as any,
             usage_metadata: {
               input_tokens: inputTokens / chunks.length,
               output_tokens: outputTokens / chunks.length,
@@ -691,6 +706,18 @@ describe('createLangChainHandler', () => {
     const events = await collectStream(handler.stream?.(baseConfig as any, 'q', {}, {}));
     const chunks = events.filter((e: any) => e.type === 'chunk').map((e: any) => e.text);
     expect(chunks).toEqual(['Hello', ' world']);
+  });
+
+  it('streams text while ignoring thinking content blocks', async () => {
+    const llm = makeStreamingLLM([
+      [
+        { type: 'thinking', thinking: 'internal reasoning' },
+        { type: 'text', text: 'visible answer' },
+      ],
+    ]);
+    const events = await collectStream(createLangChainHandler(llm as any).stream?.(baseConfig as any, 'q', {}, {}));
+    expect(events).toContainEqual({ type: 'chunk', text: 'visible answer' });
+    expect(events.at(-1)).toMatchObject({ type: 'done', output: 'visible answer' });
   });
 
   it('yields a done event as the last event', async () => {
@@ -1181,5 +1208,77 @@ describe('createLangChainHandler — MAX_STEPS cap (§1.10)', () => {
     await expect(
       collectStream(createLangChainHandler(llm as any).stream?.(cfg as any, 'q', { myTool: toolFn }, {})),
     ).rejects.toThrow(/maximum number of steps/);
+  });
+});
+
+describe('model source', () => {
+  const parameterized = {
+    ...baseConfig,
+    model: { name: 'gpt-4o', parameters: { temperature: 0.2, max_tokens: 512 } },
+  };
+
+  beforeEach(() => {
+    vi.mocked(ChatOpenAI).mockClear();
+    vi.mocked(ChatAnthropic).mockClear();
+  });
+
+  it('calls a factory with the evaluated config and uses the returned model', async () => {
+    const llm = makeMockLLM('from-factory');
+    const factory = vi.fn().mockReturnValue(llm);
+    const result = await createLangChainHandler(factory)(parameterized as any, 'q');
+    expect(factory).toHaveBeenCalledOnce();
+    expect(factory.mock.calls[0][0].model.parameters).toEqual({ temperature: 0.2, max_tokens: 512 });
+    expect(llm.invoke).toHaveBeenCalledOnce();
+    expect(result.output).toBe('from-factory');
+  });
+
+  it('uses a pre-built instance as-is', async () => {
+    const llm = makeMockLLM('from-instance');
+    const result = await createLangChainHandler(llm as any)(parameterized as any, 'q');
+    expect(llm.invoke).toHaveBeenCalledOnce();
+    expect(result.output).toBe('from-instance');
+  });
+
+  it('spreads model.parameters into the default OpenAI constructor', async () => {
+    vi.mocked(ChatOpenAI).mockImplementation(function MockChatOpenAI() {
+      return makeMockLLM('default-openai') as any;
+    });
+    await createLangChainHandler()(parameterized as any, 'q');
+    expect(ChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, max_tokens: 512, model: 'gpt-4o' });
+  });
+
+  it('spreads model.parameters into the default Anthropic constructor', async () => {
+    vi.mocked(ChatAnthropic).mockImplementation(function MockChatAnthropic() {
+      return makeMockLLM('default-anthropic') as any;
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'Anthropic' },
+      model: { name: 'claude-sonnet-4-5', parameters: { temperature: 0.1, thinking: { type: 'enabled' } } },
+    };
+    await createLangChainHandler()(cfg as any, 'q');
+    expect(ChatAnthropic).toHaveBeenCalledWith({
+      temperature: 0.1,
+      thinking: { type: 'enabled' },
+      model: 'claude-sonnet-4-5',
+    });
+  });
+
+  it('resolves a factory on the streaming path', async () => {
+    const llm = makeMockLLM('streamed');
+    (llm as any).stream = vi.fn().mockImplementation(async function* () {
+      yield new AIMessage({
+        content: 'streamed',
+        usage_metadata: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    });
+    const factory = vi.fn().mockReturnValue(llm);
+    const events: any[] = [];
+    for await (const event of createLangChainHandler(factory).stream?.(parameterized as any, 'q', {}, {}) ??
+      (async function* () {})()) {
+      events.push(event);
+    }
+    expect(factory).toHaveBeenCalledOnce();
+    expect(events.some((e) => e.type === 'chunk' && e.text === 'streamed')).toBe(true);
   });
 });
