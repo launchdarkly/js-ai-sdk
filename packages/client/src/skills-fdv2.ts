@@ -1529,10 +1529,11 @@ export type FDv2SkillStoreOptions = {
    * live — `failed` reports it. Only failures in a row count: a committed
    * payload or a `none` intent resets the count, and a connection the server
    * closes normally after that is exempt, so a stream being recycled never
-   * approaches the bound. A connection closed before either — including one
-   * that announced a transfer and dropped before committing it — is a failure
-   * like any other, which is what bounds a server that does nothing but close
-   * connections.
+   * approaches the bound, as is the one request built from nothing after a
+   * stale selector is refused. A connection closed before either — including
+   * one that announced a transfer and dropped before committing it — is a
+   * failure like any other, which is what bounds a server that does nothing
+   * but close connections.
    */
   readonly maxConsecutiveFailures?: number;
   /** Replaces the built-in `fetch` transport. Intended for testing. */
@@ -1888,6 +1889,7 @@ export class FDv2SkillStore implements SkillStore {
           this.giveUp(`unexpected error in skill delivery: ${cause instanceof Error ? cause.message : String(cause)}`);
           return;
         }
+        let repairingState = false;
         if (cause instanceof StaleRequestStateError) {
           // The selector and etag are the only client state in the request, so
           // a rejection of a request carrying neither is the request itself
@@ -1900,6 +1902,7 @@ export class FDv2SkillStore implements SkillStore {
           }
           this.basis = null;
           this.etag = null;
+          repairingState = true;
         }
         // A connection the server closed while serving it normally ended
         // without being a failure — see `dispatch` for which ones qualify. It
@@ -1911,7 +1914,13 @@ export class FDv2SkillStore implements SkillStore {
           this.failures += 1;
           this.reader.diagnostics.connectionFailures = this.failures;
           this.reader.diagnostics.lastError = cause.message;
-          if (this.failures > this.maxConsecutiveFailures) {
+          // The one request built from nothing after a stale selector is
+          // refused is exempt from the bound, so an outage that has already
+          // spent the budget cannot swallow the one repair available. It
+          // cannot unbound the loop either: the repaired request carries no
+          // state, so a second 400 is fatal on its own, and any other failure
+          // after it meets a budget still over the bound.
+          if (this.failures > this.maxConsecutiveFailures && !repairingState) {
             this.giveUp(`gave up after ${this.failures} consecutive failures; last error: ${cause.message}`);
             return;
           }

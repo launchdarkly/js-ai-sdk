@@ -1933,6 +1933,38 @@ describe('failure handling', () => {
     expect(retry.ifNoneMatch).toBeUndefined();
   });
 
+  it('asks from scratch after a 400 even on a budget an outage has spent', async () => {
+    // The one repair available does not compete with the retry bound. A 400
+    // arriving on a spent budget would otherwise give up while holding the one
+    // request known to fix it, and delivery would stop for the process lifetime
+    // over state the store was about to drop.
+    endpoint.queuePoll(fullPayload([['put-object', putSkill('first')]], 'basis-1'), { etag: 'etag-1' });
+    endpoint.queuePoll([], { status: 500 });
+    endpoint.queuePoll([], { status: 400 });
+    endpoint.queuePoll(fullPayload([['put-object', putSkill('second')]], 'basis-2'));
+    const store = pollStore({ maxConsecutiveFailures: 1 });
+    store.start();
+    expect(await waitUntil(() => store.getObject(SKILL_OBJECT_KIND, 'second') !== null)).toBe(true);
+    expect(store.failed).toBeNull();
+    // The repair went out from scratch rather than never going out at all.
+    const repair = endpoint.requests[3];
+    expect(repair.query.basis).toBeUndefined();
+    expect(repair.ifNoneMatch).toBeUndefined();
+  });
+
+  it('meets the spent budget on a non-400 after the repair', async () => {
+    // The exemption is for the repair, not for the run that follows it.
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]], 'basis-1'));
+    endpoint.queuePoll([], { status: 500 });
+    endpoint.queuePoll([], { status: 400 });
+    endpoint.queuePoll([], { status: 500 });
+    const store = pollStore({ maxConsecutiveFailures: 1 });
+    store.start();
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    expect(store.failed).toContain('gave up after 3 consecutive failures');
+    expect(endpoint.requests).toHaveLength(4);
+  });
+
   it('stops on a 400 for a request that carried no basis', async () => {
     // Nothing left to drop: the request was already the from-scratch one, so
     // the endpoint is refusing the request itself.
