@@ -93,7 +93,16 @@ function partToText(part: SpanMessagePart): string {
     case 'tool_call':
       return JSON.stringify({ name: part.name, arguments: part.arguments ?? null });
     default:
-      return typeof part.result === 'string' ? part.result : JSON.stringify(part.result ?? null);
+      // An absent result contributes nothing, so `partsToText` drops it and the flat carriers agree
+      // with the canonical one, which omits the key. Coercing it to `null` first rendered it as the
+      // literal text `null`, which reads in the trace view as a tool that returned a null value
+      // rather than one that returned nothing.
+      //
+      // An explicit `null` result still renders as `null`, because that is what the canonical
+      // carrier reports for it. The two cases differ, and only one of them is a claim about what
+      // the tool returned.
+      if (part.result === undefined) return '';
+      return typeof part.result === 'string' ? part.result : JSON.stringify(part.result);
   }
 }
 
