@@ -108,8 +108,6 @@ vi.mock('@opentelemetry/api', () => ({
   },
 }));
 
-vi.mock('dotenv/config', () => ({}));
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeMockClient() {
