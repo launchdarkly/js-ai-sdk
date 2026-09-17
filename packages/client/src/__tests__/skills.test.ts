@@ -1860,16 +1860,12 @@ describe('integrity-failure log record', () => {
 
     const keys = Object.keys(record);
     expect(keys).toEqual([...keys].sort());
-    expect(keys).toEqual([
-      'action',
-      'event',
-      'language',
-      'reason',
-      'reason_code',
-      'served_key',
-      'skill_key',
-      'version',
-    ]);
+    // No `version`, and that is deliberate rather than an omission: the served
+    // object's version verified fine and is not what disqualified the answer.
+    // Reporting it beside a `skill_key` that means the *requested* key would
+    // also mix the two frames in one record, and `served_key` already says what
+    // came back.
+    expect(keys).toEqual(['action', 'event', 'language', 'reason', 'reason_code', 'served_key', 'skill_key']);
   });
 
   it('redacts a hostile served_key', async () => {
