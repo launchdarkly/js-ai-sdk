@@ -207,6 +207,26 @@ function failSpan(span: Span, error: unknown, endedSpans?: Set<Span>): void {
 }
 
 /**
+ * The object an Agents tool call denotes, given the JSON string the SDK carries.
+ *
+ * `function_call.arguments` and `details.toolCall.arguments` arrive as an opaque JSON string, while
+ * every other handler puts a parsed object on a `tool_call` part. Passing the string through left the
+ * content carriers encoding it a second time, so a reader saw `"arguments": "{\\"q\\":1}"` where an
+ * Anthropic span said `"arguments": {"q": 1}`.
+ *
+ * A string that is not JSON is returned unchanged rather than dropped: a truncated stream is worth
+ * reporting verbatim, and reporting nothing would lose what the model asked for.
+ */
+function toolArguments(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * Converts one Agents-SDK item into canonical span message parts.
  *
  * The SDK's `AgentInputItem` / output item unions overlap with the Responses API shapes but are not
@@ -220,7 +240,7 @@ function itemParts(item: Record<string, unknown>): SpanMessagePart[] {
         type: 'tool_call',
         id: typeof item.callId === 'string' ? item.callId : undefined,
         name: String(item.name ?? ''),
-        arguments: item.arguments,
+        arguments: toolArguments(item.arguments),
       },
     ];
   }
@@ -406,7 +426,7 @@ function attachToolSpanHooks(
   // biome-ignore lint/suspicious/noExplicitAny: Agents SDK tool hook argument types are not exported
   agent.on('agent_tool_start', (_context: unknown, tool: any, details: any) => {
     const span = startToolSpan(tool?.name ?? 'tool', callId(details), parentContext);
-    setToolCallContentAttributes(span, captureContent, { arguments: details?.toolCall?.arguments });
+    setToolCallContentAttributes(span, captureContent, { arguments: toolArguments(details?.toolCall?.arguments) });
     toolSpans.set(callId(details), span);
   });
   // biome-ignore lint/suspicious/noExplicitAny: Agents SDK tool hook argument types are not exported
