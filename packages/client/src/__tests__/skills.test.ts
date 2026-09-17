@@ -908,7 +908,7 @@ describe('getSkill', () => {
     expect(await getSkill('nope')).toBeNull();
   });
 
-  it('withholds a store answering under a different key as integrity_failure, silently', async () => {
+  it('withholds a store answering under a different key as integrity_failure', async () => {
     // The key needs the same post-fetch defense the version already has.
     // Identity is read off the object itself, and the store is untrusted. An
     // answer served under a different key would otherwise be handed back under
@@ -921,15 +921,53 @@ describe('getSkill', () => {
     // substituting store filed under it would be invisible to a caller
     // branching on the token. Pinned here because the choice is not recoverable
     // from the message.
-    //
-    // The silence is the other half, and it is asserted in both directions: the
-    // check runs *after* verifyRawSkill has already passed, so neither §3.24
-    // detection surface fires. A recorded signal or a logged record here would
-    // mean the check had migrated into verification — a real change, not a
-    // cosmetic one, since it would need a ninth reason_code to go with it.
     const aliasing: SkillStore = {
       getObject() {
         return rawSkill({ key: 'other-key' });
+      },
+      allObjects() {
+        return {};
+      },
+    };
+    _setStore(aliasing);
+
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let collapsed: Skill | null;
+    let outcome: Awaited<ReturnType<typeof getSkillResult>>;
+    try {
+      collapsed = await getSkill('asked-for');
+      outcome = await getSkillResult('asked-for');
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(collapsed).toBeNull();
+    expect(outcome.skill).toBeNull();
+    expect(outcome.reason).toBe('integrity_failure');
+    // Branch on the token, not on the message: `detail` is for a human. Assert
+    // only that it is present and carries no skill body.
+    expect(outcome.detail).toBeTruthy();
+    expect(outcome.detail).not.toContain('Do the thing.');
+  });
+
+  it('records the key mismatch on the log surface but not the product signal', async () => {
+    // The asymmetry is the contract, and it is one-directional, so it is
+    // asserted in both directions here.
+    //
+    // The log record fires because a substituting store is a genuine tampering
+    // indicator and the record is the customer-owned detection path — the only
+    // one that works with telemetry off. Reusing the `ld.skills.integrity_failure`
+    // event identity is deliberate: a customer's existing SIEM rule catches this
+    // case without being rewritten, and `reason_code` is what distinguishes it.
+    //
+    // The product signal stays out of it because the overwhelmingly common cause
+    // of a key mismatch is not an attacker but a broken store adapter — a stale
+    // cache entry, a colliding key, a wrong index lookup — and LaunchDarkly's
+    // own counter must not fill up with customers' adapter bugs. That is the
+    // same false positive the pinned-non-object path refuses for the same reason.
+    const aliasing: SkillStore = {
+      getObject() {
+        return rawSkill({ key: 'served-key' });
       },
       allObjects() {
         return {};
@@ -942,11 +980,8 @@ describe('getSkill', () => {
 
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     let errorCalls: unknown[][] = [];
-    let collapsed: Skill | null;
-    let outcome: Awaited<ReturnType<typeof getSkillResult>>;
     try {
-      collapsed = await getSkill('asked-for');
-      outcome = await getSkillResult('asked-for');
+      await getSkill('asked-for');
     } finally {
       // Read the calls out before restoring: `mockRestore` also resets the
       // recorded history, so a read afterwards sees nothing.
@@ -954,17 +989,38 @@ describe('getSkill', () => {
       spy.mockRestore();
     }
 
-    expect(collapsed).toBeNull();
-    expect(outcome.skill).toBeNull();
-    expect(outcome.reason).toBe('integrity_failure');
-    // Branch on the token, not on the message: `detail` is for a human. Assert
-    // only that it is present and carries no skill body.
-    expect(outcome.detail).toBeTruthy();
-    expect(outcome.detail).not.toContain('Do the thing.');
-
+    // The signal surface saw nothing at all — not merely no integrity signal.
     expect(emitter.records).toEqual([]);
-    const lines = errorCalls.map(([first]) => String(first));
-    expect(lines.filter((line) => line.includes('ld.skills.integrity_failure'))).toEqual([]);
+
+    const lines = errorCalls.filter(([first]) => String(first).includes('ld.skills.integrity_failure'));
+    expect(lines).toHaveLength(1);
+    const [first, ...rest] = lines[0];
+    const line = String(first);
+    const record = JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown>;
+
+    expect(record.reason_code).toBe('key_mismatch');
+    expect(record.event).toBe('ld.skills.integrity_failure');
+    expect(record.action).toBe('withheld');
+    expect(record.language).toBe('typescript');
+    expect(typeof record.reason).toBe('string');
+
+    // Both keys are named, and `skill_key` keeps the meaning it has on every
+    // other record — the key the *caller asked for* — so a rule grouping by it
+    // still works. The key the store actually answered under is the datum that
+    // makes a broken adapter diagnosable, so it is a parseable field rather
+    // than prose buried in `reason`.
+    expect(record.skill_key).toBe('asked-for');
+    expect(record.served_key).toBe('served-key');
+
+    // Verification passed, so there is no hash disagreement to report and the
+    // two hash fields stay absent rather than being emitted as null.
+    expect('expected_hash' in record).toBe(false);
+    expect('observed_hash' in record).toBe(false);
+
+    // The structured attachment is required alongside the text, same as every
+    // other record.
+    expect(rest).toHaveLength(1);
+    expect(rest[0]).toEqual(record);
   });
 });
 
@@ -1055,6 +1111,38 @@ describe('allSkills', () => {
     expect(found.filter((s) => s.key === 'a')).toHaveLength(1);
     expect(found.find((s) => s.key === 'a')?.version).toBe(5);
     expect(found.map((s) => s.key).sort()).toEqual(['a', 'b']);
+  });
+
+  it('files a listed object under its own key, with no key_mismatch for a disagreeing map key', async () => {
+    // The counterpart to the pinned path's `key_mismatch`, and the asymmetry is
+    // deliberate rather than a gap. A listing carries no requested key, so there
+    // is nothing for the object's key to disagree *with*: identity comes off the
+    // object, and the store's map key is used for one thing only — attributing a
+    // failure when the object's own key is unusable.
+    //
+    // The seam never promised a map key spells a skill key, either: a store
+    // holding several versions of one key has reason to spell it `key:version`,
+    // which is exactly what FDv2SkillStore does. Pinned because the asymmetry
+    // with the pinned path is surprising enough to invite a "fix" that would
+    // break every multi-version store.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    _setStore(new DictStore({ 'filed-under-this': rawSkill({ key: 'its-own-key' }) }));
+
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let errorCalls: unknown[][] = [];
+    let found: Skill[];
+    try {
+      found = await allSkills();
+    } finally {
+      errorCalls = [...spy.mock.calls];
+      spy.mockRestore();
+    }
+
+    expect(found.map((s) => s.key)).toEqual(['its-own-key']);
+    // Neither surface fires: nothing failed.
+    expect(emitter.records).toEqual([]);
+    expect(errorCalls.filter(([first]) => String(first).includes('ld.skills.integrity_failure'))).toEqual([]);
   });
 
   it('keeps an unusable object in the set so verification withholds it with a signal', async () => {
@@ -1626,6 +1714,13 @@ describe('integrity-failure log record', () => {
     ['not_utf8', spoiled({ content: surrogate, contentHash: hash(Buffer.from(surrogate, 'utf-8')) }), GET],
     ['over_size_cap', spoiled({ content: OVERSIZE }), GET],
     ['hash_mismatch', spoiled({ contentHash: 'd'.repeat(64) }), GET],
+    // The ninth is the odd one out: it is not a verification failure, so it
+    // comes from `recordKeyMismatch` rather than from a call site inside
+    // `verifyRawSkill`. It is in the same vocabulary anyway, because a
+    // customer's detection rule cares that integrity failed and not about which
+    // layer noticed. A store that serves a perfectly valid object under the
+    // wrong key reaches it: everything `verifyRawSkill` checks passes.
+    ['key_mismatch', spoiled({ key: 'served-under-this' }), GET],
   ];
 
   it.each(cases)('logs one record carrying reason_code %s', async (code, makeStore, run) => {
@@ -1643,20 +1738,45 @@ describe('integrity-failure log record', () => {
   });
 
   it('covers the whole reason_code vocabulary and nothing else', () => {
-    // The eight tokens are one per call site of `recordIntegrityFailure`, and
-    // every language implementation emits the same eight. A ninth in one SDK
-    // only is the
-    // regression this test exists to catch.
+    // Eight of the nine are one per call site of `recordIntegrityFailure`; the
+    // ninth, `key_mismatch`, comes from `recordKeyMismatch` at the retrieval
+    // boundary. Every language implementation emits the same nine, so a tenth
+    // in one SDK only is the regression this test exists to catch.
     expect(cases.map(([code]) => code).sort()).toEqual([
       'hash_mismatch',
       'invalid_key',
       'invalid_version',
+      'key_mismatch',
       'missing_content',
       'missing_content_hash',
       'not_an_object',
       'not_utf8',
       'over_size_cap',
     ]);
+  });
+
+  it('fires the record without the signal for key_mismatch, and never the reverse', async () => {
+    // The one-directional exception to "the two surfaces agree". Swept across
+    // the whole vocabulary rather than asserted on the one case, because what
+    // makes it safe is that *only* this code is signal-free: an implementation
+    // that dropped the signal for some other code would satisfy a single-case
+    // assertion.
+    for (const [code, makeStore, run] of cases) {
+      _clearState();
+      _setStore(makeStore());
+      const emitter = new RecordingEmitter();
+      _setEmitterForTesting(emitter);
+
+      const records = await logged(run);
+      expect(records, code).toHaveLength(1);
+
+      const signals = emitter.signals(INTEGRITY_SIGNAL);
+      if (code === 'key_mismatch') {
+        expect(signals, code).toHaveLength(0);
+      } else {
+        expect(signals, code).toHaveLength(1);
+      }
+    }
   });
 
   it('logs the event name and nothing but the record, so a grep finds it', async () => {
@@ -1727,6 +1847,52 @@ describe('integrity-failure log record', () => {
       'skill_key',
       'version',
     ]);
+  });
+
+  it('sorts the key_mismatch record too, with served_key in its alphabetical place', async () => {
+    // `served_key` is the one record-only field beyond the four, and it is built
+    // on a separate path — so the sort that makes every other record
+    // byte-comparable across SDKs has to be asserted here independently rather
+    // than assumed from the case above.
+    _setStore(new DictStore({ a: rawSkill({ key: 'served-under-this' }) }));
+
+    const [{ record }] = await logged(() => getSkill('a'));
+
+    const keys = Object.keys(record);
+    expect(keys).toEqual([...keys].sort());
+    expect(keys).toEqual([
+      'action',
+      'event',
+      'language',
+      'reason',
+      'reason_code',
+      'served_key',
+      'skill_key',
+      'version',
+    ]);
+  });
+
+  it('redacts a hostile served_key', async () => {
+    // Unreachable today — verification accepts the served key before this path
+    // runs, so it is well-formed by construction. Asserted anyway, because that
+    // is a property of the current call order rather than of the recorder, and
+    // the guard is what keeps a future reordering from publishing a body here.
+    const body = 'UNIQUE-SERVED-BODY/../x';
+    const { recordKeyMismatch } = await import('../skills-core.js');
+
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let calls: unknown[][] = [];
+    try {
+      recordKeyMismatch('asked-for', body);
+    } finally {
+      calls = [...spy.mock.calls];
+      spy.mockRestore();
+    }
+
+    const line = String(calls[0][0]);
+    const record = JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown>;
+    expect(record.served_key).toBe('<invalid-key>');
+    expect(line).not.toContain(body);
   });
 
   it('redacts a hostile key, body and all', async () => {
