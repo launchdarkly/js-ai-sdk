@@ -339,7 +339,7 @@ export const toLangGraph = (
         getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
       }
 
-      return { response: finalOutput, usage: totalUsage };
+      return { response: finalOutput, usage: totalUsage, path };
     });
   };
 

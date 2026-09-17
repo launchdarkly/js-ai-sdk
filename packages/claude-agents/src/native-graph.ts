@@ -338,7 +338,7 @@ export const toClaudeAgents = (
       }
 
       span.end();
-      return { response: finalOutput, usage: totalUsage };
+      return { response: finalOutput, usage: totalUsage, path };
     });
   };
 
