@@ -79,6 +79,10 @@ export type VariationMeta = {
   variationKey?: string;
   version?: number;
   mode?: 'agent' | 'completion' | 'judge';
+  /** Stable key of the pinned model config, delivered in `_ldMeta`. Absent when no model config is pinned. */
+  modelKey?: string;
+  /** Pinned model config version, delivered in `_ldMeta`. */
+  modelVersion?: number;
 };
 
 export type Tool = {
@@ -445,6 +449,10 @@ export type TrackData = {
   version: number;
   modelName: string;
   providerName: string;
+  /** Stable key of the pinned model config (from `_ldMeta.modelKey`). Omitted when absent. */
+  modelKey?: string;
+  /** Pinned model config version (from `_ldMeta.modelVersion`). Omitted when absent. */
+  modelVersion?: number;
   graphKey?: string;
   toolKey?: string;
   judgeConfigKey?: string;

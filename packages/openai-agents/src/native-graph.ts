@@ -8,6 +8,7 @@ import {
   imageBlockToUrl,
   type Message,
   type MessageContent,
+  modelStampsFromMeta,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
@@ -88,6 +89,7 @@ const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: string): Tr
   version: node.meta.version ?? 1,
   modelName: node.config.model.name,
   providerName: node.config.provider.name,
+  ...modelStampsFromMeta(node.meta),
   graphKey,
 });
 

@@ -68,6 +68,22 @@ export const wrapToolHandlers = (
 };
 
 /**
+ * Copies the pinned model-config identity (`modelKey`, `modelVersion`) from a
+ * variation's `_ldMeta` into a shape that can be spread into `TrackData`.
+ * Keys are omitted (not set to `undefined`) when absent; an empty `modelKey`
+ * is treated as absent. Gonfalon's cost attribution reads these two fields
+ * from every `$ld:ai:*` event payload.
+ */
+export const modelStampsFromMeta = (
+  meta: VariationMeta | null | undefined,
+): Pick<TrackData, 'modelKey' | 'modelVersion'> => ({
+  ...(meta?.modelKey ? { modelKey: meta.modelKey } : {}),
+  ...(meta?.modelVersion !== undefined && meta?.modelVersion !== null
+    ? { modelVersion: Number(meta.modelVersion) }
+    : {}),
+});
+
+/**
  * Reads the LaunchDarkly environment MongoDB ObjectId from the SDK's internal
  * feature store init metadata. This mirrors what the official OTel hook does
  * when it emits `feature_flag` events; we need it to set `feature_flag.set.id`
@@ -116,6 +132,7 @@ export const executeAndTrack = async ({
     version: meta.version ?? 1,
     modelName: config.model.name ?? '',
     providerName: config.provider?.name ?? '',
+    ...modelStampsFromMeta(meta),
     ...(graphKey ? { graphKey } : {}),
     environmentId: tryGetEnvironmentId(),
   };
@@ -196,6 +213,7 @@ export async function* executeAndStream({
     version: meta.version ?? 1,
     modelName: config.model.name ?? '',
     providerName: config.provider?.name ?? '',
+    ...modelStampsFromMeta(meta),
     ...(graphKey ? { graphKey } : {}),
     environmentId: tryGetEnvironmentId(),
   };

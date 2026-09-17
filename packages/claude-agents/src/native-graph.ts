@@ -5,6 +5,7 @@ import {
   type GraphNode,
   getClient,
   type Message,
+  modelStampsFromMeta,
   NATIVE_TOOL_KEY,
   NativeTool,
   type ProviderGraphResponse,
@@ -31,6 +32,7 @@ const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: string): Tr
   version: node.meta.version ?? 1,
   modelName: node.config.model.name,
   providerName: node.config.provider.name,
+  ...modelStampsFromMeta(node.meta),
   graphKey,
 });
 

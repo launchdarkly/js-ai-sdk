@@ -167,6 +167,49 @@ describe('executeAndTrack', () => {
     expect(result.trackData.version).toBe(3);
   });
 
+  it('copies modelKey and modelVersion from meta onto trackData and every event payload', async () => {
+    const handler = makeHandler('ok');
+    const result = await executeAndTrack({
+      configKey: 'flag-x',
+      config: execConfig as any,
+      meta: { variationKey: 'vA', version: 3, modelKey: 'my-model', modelVersion: 4 },
+      userContext: execContext,
+      handler,
+    });
+    expect(result.trackData.modelKey).toBe('my-model');
+    expect(result.trackData.modelVersion).toBe(4);
+    expect(mockTrack).toHaveBeenCalled();
+    for (const call of mockTrack.mock.calls) {
+      expect(call[2]).toMatchObject({ modelKey: 'my-model', modelVersion: 4 });
+    }
+  });
+
+  it('omits modelKey and modelVersion keys when meta lacks them', async () => {
+    const handler = makeHandler('ok');
+    const result = await executeAndTrack({
+      configKey: 'flag-x',
+      config: execConfig as any,
+      meta: { variationKey: 'vA', version: 3 },
+      userContext: execContext,
+      handler,
+    });
+    expect('modelKey' in result.trackData).toBe(false);
+    expect('modelVersion' in result.trackData).toBe(false);
+  });
+
+  it('treats an empty-string modelKey as absent', async () => {
+    const handler = makeHandler('ok');
+    const result = await executeAndTrack({
+      configKey: 'flag-x',
+      config: execConfig as any,
+      meta: { variationKey: 'vA', version: 3, modelKey: '', modelVersion: 1 },
+      userContext: execContext,
+      handler,
+    });
+    expect('modelKey' in result.trackData).toBe(false);
+    expect(result.trackData.modelVersion).toBe(1);
+  });
+
   it('injects ldContext into variables passed to handler', async () => {
     const handler = makeHandler('ok');
     await executeAndTrack({
@@ -273,6 +316,41 @@ describe('executeAndStream', () => {
     fn.stream = streamFn;
     return fn;
   }
+
+  it('copies modelKey and modelVersion from meta onto every streamed event payload', async () => {
+    const handler = makeStreamingHandler(['Hi']);
+    await collectExecStream(
+      executeAndStream({
+        configKey: 'f',
+        config: execConfig as any,
+        meta: { variationKey: 'v1', version: 2, modelKey: 'my-model', modelVersion: 3 },
+        userContext: execContext,
+        handler,
+      }),
+    );
+    expect(mockTrack).toHaveBeenCalled();
+    for (const call of mockTrack.mock.calls) {
+      expect(call[2]).toMatchObject({ modelKey: 'my-model', modelVersion: 3 });
+    }
+  });
+
+  it('omits modelKey and modelVersion from streamed event payloads when meta lacks them', async () => {
+    const handler = makeStreamingHandler(['Hi']);
+    await collectExecStream(
+      executeAndStream({
+        configKey: 'f',
+        config: execConfig as any,
+        meta: execMeta,
+        userContext: execContext,
+        handler,
+      }),
+    );
+    expect(mockTrack).toHaveBeenCalled();
+    for (const call of mockTrack.mock.calls) {
+      expect('modelKey' in call[2]).toBe(false);
+      expect('modelVersion' in call[2]).toBe(false);
+    }
+  });
 
   it('yields chunk events from handler.stream', async () => {
     const handler = makeStreamingHandler(['Hello', ' world']);
