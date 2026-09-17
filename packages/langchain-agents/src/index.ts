@@ -7,5 +7,5 @@ import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 registerAiSdkPackage(LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
 
 export { langchainGraph } from './graph.js';
-export { createLangChainAgentsHandler, langchainAgents } from './handler.js';
+export { createLangChainAgentsHandler, type LangChainModelSource, langchainAgents } from './handler.js';
 export { toLangGraph } from './native-graph.js';
