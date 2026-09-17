@@ -193,6 +193,22 @@ function buildInputMessages(
 }
 
 /**
+ * A turn's content as span parts. An `input_image` part carries a full base64 data URL on the
+ * wire, so it is noted as `[image]` rather than stringified into the span — the payload can run to
+ * megabytes, and the agent handlers already record images this compactly.
+ */
+function inputContentParts(content: unknown): SpanMessagePart[] {
+  if (typeof content === 'string') return [{ type: 'text', content }];
+  if (!Array.isArray(content)) return [{ type: 'text', content: JSON.stringify(content) }];
+  return content.map((part): SpanMessagePart => {
+    const block = part as Record<string, unknown>;
+    if (block.type === 'input_image') return { type: 'text', content: '[image]' };
+    if (typeof block.text === 'string') return { type: 'text', content: block.text };
+    return { type: 'text', content: JSON.stringify(part) };
+  });
+}
+
+/**
  * Splits the Responses input list into system instructions and conversation turns.
  *
  * The system message is lifted out so it lands on `gen_ai.system_instructions` rather than being
@@ -240,7 +256,7 @@ function splitInputMessages(items: ReadonlyArray<unknown>): {
     }
     messages.push({
       role: typeof raw.role === 'string' ? raw.role : 'user',
-      parts: [{ type: 'text', content: typeof raw.content === 'string' ? raw.content : JSON.stringify(raw.content) }],
+      parts: inputContentParts(raw.content),
     });
   }
 

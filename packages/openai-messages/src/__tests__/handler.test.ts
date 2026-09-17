@@ -942,6 +942,52 @@ describe('createOpenAIHandler', () => {
     expect(serialized).toContain('abc123');
     expect(input.filter((m: { role: string }) => m.role === 'user')).toHaveLength(1);
   });
+
+  // An `input_image` part carries a full base64 data URL, which can run to megabytes. The span
+  // notes it instead, as the agent handlers do; the wire payload is untouched.
+
+  const base64ImageHistory = [
+    {
+      role: 'user' as const,
+      content: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'BASE64PAYLOAD' } },
+        { type: 'text' as const, text: 'What is in this image?' },
+      ],
+    },
+  ];
+
+  function capturedInputMessages() {
+    const written = mockSpan.setAttribute.mock.calls.find((c: unknown[]) => c[0] === 'gen_ai.input.messages')?.[1];
+    return JSON.parse(String(written)) as Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+  }
+
+  it('captures an image turn as a compact [image] part, not the base64 payload', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    await createOpenAIHandler({ captureContent: true })(baseConfig as any, '', {}, {}, base64ImageHistory);
+
+    const captured = capturedInputMessages();
+    const parts = captured.at(-1)?.parts ?? [];
+    expect(parts).toEqual([
+      { type: 'text', content: '[image]' },
+      { type: 'text', content: 'What is in this image?' },
+    ]);
+    expect(JSON.stringify(captured)).not.toContain('BASE64PAYLOAD');
+  });
+
+  it('still sends the image data URL to the provider when the span notes it', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    await createOpenAIHandler({ captureContent: true })(baseConfig as any, '', {}, {}, base64ImageHistory);
+
+    const { input } = mockResponsesCreate.mock.calls[0][0];
+    expect(JSON.stringify(input)).toContain('BASE64PAYLOAD');
+  });
+
+  it('captures a string turn as plain text, unchanged', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    await createOpenAIHandler({ captureContent: true })(baseConfig as any, 'just text', {}, {});
+
+    expect(capturedInputMessages().at(-1)?.parts).toEqual([{ type: 'text', content: 'just text' }]);
+  });
 });
 
 // ── §1.4 Token accumulation across multiple tool turns (blocking) ────────────

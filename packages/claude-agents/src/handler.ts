@@ -1065,10 +1065,13 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
       // With runtime history, the streamed `query()` prompt is the composed turns (multimodal-native)
       // rather than the flattened string; without history it stays the plain-string path.
       const queryPrompt = buildQueryPrompt(config, userInput, variables, history, prompt);
-      // One user message — see the blocking path for why the configured roles are not split out.
+      // The same turns `query()` is handed above: with history that is the composed sequence, so a
+      // streamed run reports its prior turns and images rather than only the latest `userInput`.
+      // Without history it is the one flattened user message — see the blocking path for why the
+      // configured roles are not split out.
       const opening = {
         systemInstructions: systemPrompt,
-        messages: [{ role: 'user', parts: [{ type: 'text' as const, content: prompt }] }],
+        messages: buildOpeningMessages(config, userInput, variables, history, prompt),
       };
       // Hoisted above the `try` for the same reason as the blocking path.
       const { nativeToolMap, userConfigTools, nativeToolNames, nativeToolAliases } = partitionTools(

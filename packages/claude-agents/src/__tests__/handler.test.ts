@@ -649,6 +649,11 @@ describe('createClaudeAgentsHandler', () => {
     return envelopes;
   }
 
+  function capturedInputMessages() {
+    const written = mockSpan.setAttribute.mock.calls.find((c: unknown[]) => c[0] === 'gen_ai.input.messages')?.[1];
+    return JSON.parse(String(written)) as Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+  }
+
   it('every envelope satisfies the CLI role contract', async () => {
     const envelopes = await streamedEnvelopes('', alternatingHistory);
     for (const envelope of envelopes) {
@@ -685,10 +690,42 @@ describe('createClaudeAgentsHandler', () => {
   it('records the real turn roles as captured input', async () => {
     mockQuery.mockImplementation(makeResultMessage());
     await createClaudeAgentsHandler({ captureContent: true })(baseConfig as any, '', {}, {}, alternatingHistory);
-    const inputMessages = mockSpan.setAttribute.mock.calls.find(
-      (c: unknown[]) => c[0] === 'gen_ai.input.messages',
-    )?.[1] as string;
-    expect(JSON.parse(inputMessages).map((m: { role: string }) => m.role)).toEqual(['user', 'assistant', 'user']);
+    expect(capturedInputMessages().map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+  });
+
+  // The streamed run is handed the same composed turns as the blocking one, so its captured input
+  // has to report them too — it used to record only the flattened latest `userInput`.
+
+  it('streaming records the composed history turns, not just the latest userInput', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await collectStream(
+      createClaudeAgentsHandler({ captureContent: true }).stream?.(baseConfig as any, '', {}, {}, alternatingHistory),
+    );
+
+    const captured = capturedInputMessages();
+    expect(captured.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+    expect(JSON.stringify(captured)).toContain('Sure — go ahead and share it.');
+  });
+
+  it('streaming notes a history image compactly rather than inlining its payload', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await collectStream(
+      createClaudeAgentsHandler({ captureContent: true }).stream?.(baseConfig as any, '', {}, {}, alternatingHistory),
+    );
+
+    const parts = capturedInputMessages().at(-1)?.parts ?? [];
+    expect(parts).toEqual([
+      { type: 'text', content: '[image]' },
+      { type: 'text', content: 'What colour is the square?' },
+    ]);
+    expect(JSON.stringify(capturedInputMessages())).not.toContain('redsquare');
+  });
+
+  it('streaming without history still records the one flattened user turn', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await collectStream(createClaudeAgentsHandler({ captureContent: true }).stream?.(baseConfig as any, 'q', {}, {}));
+
+    expect(capturedInputMessages()).toEqual([{ role: 'user', parts: [{ type: 'text', content: 'q' }] }]);
   });
 });
 
