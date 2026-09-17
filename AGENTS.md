@@ -222,6 +222,8 @@ LaunchDarkly metadata attached to a flag variation.
 | `variationKey` | string? | Identifier for the specific variation. |
 | `version` | number? | Variation version number. |
 | `mode` | `'agent' \| 'completion' \| 'judge'` | Execution mode, used alongside `provider.name` to select a handler. |
+| `modelKey` | string? | Stable key of the pinned model config, from `_ldMeta.modelKey`. Absent when the variation has no linked model config. Copied onto `TrackData`. |
+| `modelVersion` | number? | Pinned model config version, from `_ldMeta.modelVersion`. Copied onto `TrackData`. |
 
 #### `ProviderResponse`
 
