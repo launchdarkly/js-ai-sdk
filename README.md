@@ -26,7 +26,7 @@ That call is the whole integration. Everything it does is configured in LaunchDa
 - Run agents and multi-step graphs, where each step can use a different provider
 - Score output quality with judges, including scoring that stays off the request path
 - See cost, latency, token usage, errors, and full conversations with no instrumentation code
-- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, or your own handler
+- Keep the providers and frameworks you already run: OpenAI, Anthropic, Amazon Bedrock, LangChain, or your own handler
 
 - [What you get](#what-you-get)
 - [How It Works](#how-it-works)
@@ -87,6 +87,8 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-openai-agents](packages/openai-agents/README.md)`           | OpenAI    | `agent`    | OpenAI Agents SDK — fully managed agentic loop        |
 | `[@launchdarkly/ai-claude-messages](packages/claude-messages/README.md)`       | Anthropic | `messages` | Anthropic Messages API with manual tool-use loop      |
 | `[@launchdarkly/ai-claude-agents](packages/claude-agents/README.md)`           | Anthropic | `agent`    | Claude Agent SDK — agentic loop with MCP tool support |
+| `[@launchdarkly/ai-bedrock-messages](packages/bedrock-messages/README.md)`     | Bedrock   | `messages` | Bedrock Converse API with manual tool-use loop        |
+| `[@launchdarkly/ai-bedrock-agents](packages/bedrock-agents/README.md)`         | Bedrock   | `agent`    | Strands Agents SDK on Amazon Bedrock                  |
 | `[@launchdarkly/ai-langchain-messages](packages/langchain-messages/README.md)` | `*` (any) | `messages` | Any `BaseChatModel` via LangChain `bindTools` loop    |
 | `[@launchdarkly/ai-langchain-agents](packages/langchain-agents/README.md)`     | `*` (any) | `agent`    | LangGraph `createReactAgent` — managed ReAct loop     |
 
@@ -162,6 +164,8 @@ console.log(result.response);
 | `openaiAgents`      | `@launchdarkly/ai-openai-agents`      | `@openai/agents`                 | OpenAI Agents SDK            |
 | `claudeMessages`    | `@launchdarkly/ai-claude-messages`    | `@anthropic-ai/sdk`              | Anthropic Messages API       |
 | `claudeAgents`      | `@launchdarkly/ai-claude-agents`      | `@anthropic-ai/claude-agent-sdk` | Claude Agent SDK (MCP)       |
+| `bedrockMessages`   | `@launchdarkly/ai-bedrock-messages`   | `@aws-sdk/client-bedrock-runtime` | Bedrock Converse API        |
+| `bedrockAgents`     | `@launchdarkly/ai-bedrock-agents`     | `@strands-agents/sdk`            | Strands Agents SDK          |
 | `langchainMessages` | `@launchdarkly/ai-langchain-messages` | `@langchain/core`                | LangChain `bindTools` loop   |
 | `langchainAgents`   | `@launchdarkly/ai-langchain-agents`   | `@langchain/langgraph`           | LangGraph `createReactAgent` |
 

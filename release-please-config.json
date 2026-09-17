@@ -28,6 +28,22 @@
       "include-v-in-tag": false,
       "component": "@launchdarkly/ai-otel"
     },
+    "packages/bedrock-agents": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "include-v-in-tag": false,
+      "component": "@launchdarkly/ai-bedrock-agents"
+    },
+    "packages/bedrock-messages": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "include-v-in-tag": false,
+      "component": "@launchdarkly/ai-bedrock-messages"
+    },
     "packages/claude-agents": {
       "release-type": "node",
       "versioning": "default",

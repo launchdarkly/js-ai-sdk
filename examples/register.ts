@@ -1,3 +1,5 @@
+import { createBedrockAgentsHandler } from '@launchdarkly/ai-bedrock-agents';
+import { createBedrockMessagesHandler } from '@launchdarkly/ai-bedrock-messages';
 import { ClaudeWebSearch, createClaudeAgentsHandler } from '@launchdarkly/ai-claude-agents';
 import { createClaudeMessagesHandler } from '@launchdarkly/ai-claude-messages';
 import { createLangChainAgentsHandler } from '@launchdarkly/ai-langchain-agents';
@@ -13,6 +15,8 @@ globalRegistry.register({
     createOpenAIAgentHandler(),
     createClaudeAgentsHandler(),
     createClaudeMessagesHandler(),
+    createBedrockAgentsHandler(),
+    createBedrockMessagesHandler(),
     createLangChainHandler(),
     createLangChainAgentsHandler(),
   ],
