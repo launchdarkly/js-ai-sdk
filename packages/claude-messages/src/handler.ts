@@ -617,6 +617,7 @@ export function createClaudeMessagesHandler({ captureContent = false }: ContentC
         endSpanOnce(span, endedSpans, true);
       }
     },
+    captureContent,
   );
 }
 

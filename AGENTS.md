@@ -148,12 +148,13 @@ The client manages a singleton connection to LaunchDarkly and the associated tel
 
 | Export | Description |
 |---|---|
-| `initClient(options?)` | Auto-discovers and initializes `@launchdarkly/node-server-sdk` (optional peer dep, loaded via dynamic import). Optional — the first AI API call triggers lazy init when `LD_SDK_KEY` is set. Accepts optional overrides for SDK key, base URIs, service name, environment, and OTLP endpoint. Returns `Promise<LDClientInterface>`. |
-| `initClient(client)` | **BYOC overload** — accepts a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk`). Stores it directly without calling the node SDK. |
+| `initClient(options?)` | Auto-discovers and initializes `@launchdarkly/node-server-sdk` (optional peer dep, loaded via dynamic import). Optional — the first AI API call triggers lazy init when `LD_SDK_KEY` is set. Accepts optional overrides for SDK key, base URIs, service name, environment, and OTLP endpoint. Returns `Promise<LDClientInterface>`. On every successful path, including the already-initialized path, flushes `$ld:ai:sdk:info` for any LaunchDarkly AI packages that have not yet reported. |
+| `initClient(client)` | **BYOC overload** — accepts a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk`). Stores it directly without calling the node SDK. Flushes pending `$ld:ai:sdk:info` events. |
 | `getClient()` | Returns the initialized `LDClientInterface`. Throws if initialization has not completed. |
-| `shutdown()` | Flushes all pending events and telemetry, then closes the client. Must be called before the process exits. |
+| `shutdown()` | Flushes all pending events and telemetry, then closes the client. Must be called before the process exits. Clears sdk-info reporting so a later client reports again. |
 | `waitForTelemetry()` | Waits for the OTel provider to be ready. Useful when spans must not be dropped at startup. |
 | `shutdownTelemetry()` | Flushes and stops the OTel exporter independently of the LD client. |
+| `registerAiSdkPackage(name, version)` | Records a LaunchDarkly AI package identity. Handler and convenience packages call this at import time. |
 
 ### Core Data Types
 
@@ -269,7 +270,7 @@ Payload attached to every LaunchDarkly tracking event.
 | `modelName` | string | Model name from the config. |
 | `providerName` | string | Provider name from the config. |
 | `graphKey` | string? | Present when the event was produced inside an agent graph. |
-| `toolName` | string? | Present when the event is for a tool call. |
+| `toolKey` | string? | Present when the event is for a tool call. |
 | `judgeConfigKey` | string? | Present when the event is from a judge execution. |
 
 #### `NativeTool`
@@ -575,7 +576,24 @@ Span events are not a content carrier. OTEP 4430 deprecated the span-event
 recording API, and the `gen_ai.content.prompt` / `gen_ai.content.completion`
 events these handlers used to emit were read by nothing on the LaunchDarkly
 side. The only event a handler emits is `feature_flag`, on the root, for
-trace correlation.
+trace correlation. When `variables.ldContext` has a usable identity, that
+event also carries `feature_flag.context.id` and `feature_flag.contextKeys`,
+and the root span gets `context.contextKeys.<kind>`. Child spans must not.
+
+That rule is about handlers. The core client emits one more event, on judge
+`invoke_agent` spans only: `gen_ai.evaluation.result`, written by
+`withJudgeEvaluation` in `client/src/conversation.ts`. It carries
+`gen_ai.evaluation.name` and `gen_ai.evaluation.score.value` — a config key and
+a number, no conversation content — and the same two keys are mirrored as span
+attributes. It is defined by the GenAI semantic conventions and read by the
+conversation view's turn badges, so do not "fix" it by deleting it.
+
+The judge's reasoning is deliberately **not** on the span or the event.
+`gen_ai.evaluation.explanation` is model-generated prose about the user's
+conversation, which makes it a content attribute under the rule above, and
+`captureContent` is a handler-factory option the client core never receives.
+The reasoning still reaches the caller in `judgeResults`; only the telemetry
+copy is withheld. Adding it back needs its own opt-in, not a quiet write.
 
 **Span status:**
 - Set to OK on success.

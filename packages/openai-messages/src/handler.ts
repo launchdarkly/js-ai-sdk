@@ -600,6 +600,7 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
         endSpanOnce(span, endedSpans, true);
       }
     },
+    captureContent,
   );
 }
 

@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import type { JudgeRunResult, JudgeTask } from '@launchdarkly/ai-node';
 import { config, globalRegistry } from '@launchdarkly/ai-node';
-import { newContext, writeOutput } from './utils';
+import { newMultiContext, writeOutput } from './utils';
 
 function spawnJudgeWorker(task: JudgeTask, workerUrl: string): Promise<JudgeRunResult | null> {
   return new Promise((resolve, reject) => {
@@ -39,7 +39,8 @@ function spawnJudgeWorker(task: JudgeTask, workerUrl: string): Promise<JudgeRunR
 }
 
 export async function run(key: string, userInput: string): Promise<void> {
-  const ctx = newContext();
+  const ctx = newMultiContext();
+  process.stderr.write(`[context] ${JSON.stringify(ctx)}\n`);
 
   // Single config() call — the caller never touches a judge key.
   // skipJudges: true suppresses automatic inline evaluation so we control when

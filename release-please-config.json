@@ -8,6 +8,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
       "component": "@launchdarkly/ai-server"
     },
     "packages/ai-node": {
@@ -16,6 +17,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
       "component": "@launchdarkly/ai-node"
     },
     "packages/ai-otel": {
@@ -32,6 +34,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
       "component": "@launchdarkly/ai-claude-agents"
     },
     "packages/claude-messages": {
@@ -40,6 +43,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
       "component": "@launchdarkly/ai-claude-messages"
     },
     "packages/openai-agents": {
@@ -48,6 +52,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
       "component": "@launchdarkly/ai-openai-agents"
     },
     "packages/openai-messages": {
@@ -56,6 +61,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
       "component": "@launchdarkly/ai-openai-messages"
     },
     "packages/langchain-agents": {
@@ -64,6 +70,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
       "component": "@launchdarkly/ai-langchain-agents"
     },
     "packages/langchain-messages": {
@@ -72,6 +79,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
       "component": "@launchdarkly/ai-langchain-messages"
     }
   }

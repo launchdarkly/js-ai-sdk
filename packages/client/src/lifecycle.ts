@@ -1,5 +1,7 @@
 import 'dotenv/config';
 import { trace } from '@opentelemetry/api';
+import { ConversationIdSpanProcessor } from './conversation.js';
+import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
 import { parseAiConfig } from './types.js';
 
@@ -91,7 +93,7 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
 
   tracerProvider = new NodeTracerProvider({
     resource,
-    spanProcessors: [new BatchSpanProcessor(exporter)],
+    spanProcessors: [new ConversationIdSpanProcessor(), new BatchSpanProcessor(exporter)],
   });
   tracerProvider.register({
     contextManager: new AsyncLocalStorageContextManager(),
@@ -236,14 +238,19 @@ export async function initClient(
     await setupTelemetry({}, process.env.LD_SDK_KEY ?? '');
     singleton.client = optionsOrClient;
     singleton.initPromise = Promise.resolve(optionsOrClient);
+    flushAiSdkInfo(optionsOrClient);
     return optionsOrClient;
   }
 
-  if (singleton.client) return singleton.client;
+  if (singleton.client) {
+    flushAiSdkInfo(singleton.client);
+    return singleton.client;
+  }
   if (!singleton.initPromise) {
     singleton.initPromise = initBaseClient(optionsOrClient);
   }
   singleton.client = await singleton.initPromise;
+  flushAiSdkInfo(singleton.client);
   return singleton.client;
 }
 
@@ -261,6 +268,7 @@ export async function shutdown(): Promise<void> {
   const client = singleton.client;
   singleton.client = null;
   singleton.initPromise = null;
+  resetAiSdkInfo();
   await shutdownTelemetry();
   try {
     await client.flush();
@@ -292,7 +300,7 @@ export type InspectConfigResult = {
  * Unlike `config().invoke()`, this function:
  * - Never throws — returns `{ enabled: false, config: null, meta: null }` on
  *   any error (unreachable LD, bad key, unparseable config, etc.)
- * - Does not emit any LaunchDarkly telemetry events
+ * - Does not emit generation, duration, or token tracking events
  * - Does not call any AI provider
  *
  * Lazily initializes the LD client when `LD_SDK_KEY` is set.

@@ -1,4 +1,4 @@
-import { NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
+import { ConversationIdSpanProcessor, NATIVE_TOOL_KEY, NativeTool, withConversationId } from '@launchdarkly/ai-server';
 import { context, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
@@ -38,7 +38,9 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 import { createClaudeAgentsHandler } from '../handler.js';
 
 const exporter = new InMemorySpanExporter();
-const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
+const provider = new BasicTracerProvider({
+  spanProcessors: [new ConversationIdSpanProcessor(), new SimpleSpanProcessor(exporter)],
+});
 const contextManager = new AsyncLocalStorageContextManager();
 
 const baseConfig = {
@@ -508,6 +510,23 @@ describe('claude-agents span tree against a real tracer', () => {
     expect(root()?.attributes['gen_ai.conversation.id']).toBeUndefined();
   });
 
+  it('keeps a caller-supplied conversation id instead of the CLI session id', async () => {
+    mockQuery.mockImplementation(async function* ({ options }: any) {
+      yield initMessage('sess-abc');
+      yield assistantMessage();
+      await fireToolHooks(options.hooks, 'tool-1', 'mcp__tool-mcp__search');
+      yield resultMessage('done');
+    });
+
+    await withConversationId('thread-stable', () =>
+      createClaudeAgentsHandler()(toolConfig as never, 'q', { search: vi.fn().mockReturnValue('r') }),
+    );
+
+    expect(root()?.attributes['gen_ai.conversation.id']).toBe('thread-stable');
+    expect(named('chat')[0]?.attributes['gen_ai.conversation.id']).toBe('thread-stable');
+    expect(named('execute_tool ')[0]?.attributes['gen_ai.conversation.id']).toBe('thread-stable');
+  });
+
   // Each turn's content belongs to that turn's own `chat` span, and the root carries the final
   // answer — the same division the other five handlers use. The intermediate turn's tool calls
   // and reasoning blocks land on a span of their own rather than being folded into the root.
@@ -873,5 +892,36 @@ describe('claude-agents span tree against a real tracer', () => {
     expect(attrs['gen_ai.usage.output_tokens']).toBe(50);
     // And the same figure is what the caller is told it spent.
     expect(result.usage).toMatchObject({ input_tokens: 300, output_tokens: 50 });
+  });
+
+  it('puts context identity on the invoke_agent root and on no child span', async () => {
+    mockQuery.mockImplementation(async function* ({ options }: any) {
+      yield assistantMessage(10, 2, 'req_1');
+      await fireToolHooks(options.hooks, 'tool-1');
+      yield assistantMessage(12, 3, 'req_2');
+      yield resultMessage('done');
+    });
+
+    await createClaudeAgentsHandler()(
+      toolConfig as never,
+      'q',
+      { search: vi.fn().mockReturnValue('r') },
+      {
+        __ld: { configKey: 'cfg', variationKey: 'var', runId: 'run-1' },
+        ldContext: { kind: 'user', key: 'user-123' },
+      },
+    );
+
+    const featureFlag = root()?.events.find((event) => event.name === 'feature_flag');
+    expect(root()?.attributes['context.contextKeys.user']).toBe('user-123');
+    expect(featureFlag?.attributes?.['feature_flag.context.id']).toBe('user-123');
+    expect(featureFlag?.attributes?.['feature_flag.contextKeys']).toBe('{"user":"user-123"}');
+
+    expect(named('chat').length).toBeGreaterThan(0);
+    expect(named('execute_tool ').length).toBeGreaterThan(0);
+    for (const child of spans().filter((span) => span.name !== 'invoke_agent')) {
+      expect(child.attributes['context.contextKeys.user']).toBeUndefined();
+      expect(child.events.find((event) => event.name === 'feature_flag')).toBeUndefined();
+    }
   });
 });

@@ -1,3 +1,4 @@
+import { bindConversationId } from './conversation.js';
 import { buildJudgeTasks, runJudges } from './judges.js';
 import { extractVariation } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
@@ -127,7 +128,21 @@ export const config = ({ key, handler, toolHandlers, registry, skipJudges = fals
     };
   }
 
-  async function* stream(
+  /**
+   * Not an `async function*`: the body of a generator does not run until the first `next()`, by
+   * which point a `withConversationId` scope wrapped around this call has already exited. Binding
+   * here — at call time — is what lets a caller hand the generator off and iterate it later.
+   */
+  function stream(
+    userInput: string | undefined,
+    context: LDContext,
+    variables?: Record<string, unknown>,
+    history?: Message[],
+  ): AsyncGenerator<StreamEvent> {
+    return bindConversationId(streamEvents(userInput, context, variables, history));
+  }
+
+  async function* streamEvents(
     userInput: string | undefined,
     context: LDContext,
     variables?: Record<string, unknown>,

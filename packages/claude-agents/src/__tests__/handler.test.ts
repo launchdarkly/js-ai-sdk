@@ -54,7 +54,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
-import { NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
+import { type Message, NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
 import { buildPrompt, buildToolMCP, createClaudeAgentsHandler, partitionTools } from '../handler.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -619,6 +619,76 @@ describe('createClaudeAgentsHandler', () => {
     }
     const userTurns = chunks.filter((c) => c.message?.role === 'user' || (c as { type?: string }).type === 'user');
     expect(userTurns.length).toBe(1);
+  });
+
+  // The envelope `type` has to agree with the message role: the CLI takes an `assistant`
+  // envelope as a replayed turn and rejects every other envelope whose role is not `user`,
+  // exiting with `Expected message role 'user', got 'assistant'`. These mirror the Python
+  // SDK's envelope tests so both SDKs stream history the same way.
+
+  const alternatingHistory = [
+    { role: 'user' as const, content: 'I am going to share an image with you.' },
+    { role: 'assistant' as const, content: 'Sure — go ahead and share it.' },
+    {
+      role: 'user' as const,
+      content: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'redsquare' } },
+        { type: 'text' as const, text: 'What colour is the square?' },
+      ],
+    },
+  ];
+
+  async function streamedEnvelopes(userInput: string, history: Message[]) {
+    mockQuery.mockImplementation(makeResultMessage());
+    await createClaudeAgentsHandler()(baseConfig as any, userInput, {}, {}, history);
+    const { prompt } = mockQuery.mock.calls[0][0];
+    const envelopes: Array<{ type: string; message: { role: string; content: unknown } }> = [];
+    for await (const envelope of prompt as AsyncIterable<(typeof envelopes)[number]>) {
+      envelopes.push(envelope);
+    }
+    return envelopes;
+  }
+
+  it('every envelope satisfies the CLI role contract', async () => {
+    const envelopes = await streamedEnvelopes('', alternatingHistory);
+    for (const envelope of envelopes) {
+      const role = envelope.message.role;
+      expect(
+        envelope.type === 'assistant' || role === 'user',
+        `envelope type ${envelope.type} with role ${role} is rejected by the CLI`,
+      ).toBe(true);
+      expect(envelope.type).toBe(role);
+    }
+  });
+
+  it('replays an assistant turn as an assistant envelope', async () => {
+    const envelopes = await streamedEnvelopes('', [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'hello' },
+    ]);
+    expect(envelopes[1]).toEqual({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+      parent_tool_use_id: null,
+    });
+  });
+
+  it('keeps user content blocks so images still reach the model natively', async () => {
+    const envelopes = await streamedEnvelopes('', alternatingHistory);
+    expect(envelopes).toHaveLength(3);
+    expect(envelopes[2].message.content).toEqual([
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'redsquare' } },
+      { type: 'text', text: 'What colour is the square?' },
+    ]);
+  });
+
+  it('records the real turn roles as captured input', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await createClaudeAgentsHandler({ captureContent: true })(baseConfig as any, '', {}, {}, alternatingHistory);
+    const inputMessages = mockSpan.setAttribute.mock.calls.find(
+      (c: unknown[]) => c[0] === 'gen_ai.input.messages',
+    )?.[1] as string;
+    expect(JSON.parse(inputMessages).map((m: { role: string }) => m.role)).toEqual(['user', 'assistant', 'user']);
   });
 });
 

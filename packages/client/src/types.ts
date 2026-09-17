@@ -383,6 +383,12 @@ export type ProviderHandler = ((
 }>) & {
   providesFor?: [provider: string, type: 'agent' | 'messages'];
   /**
+   * Whether this handler was built with content capture on. Declared here so the client core can
+   * apply the same gate to content it writes on the handler's behalf — notably the judge's
+   * reasoning — without reaching into the handler's closure.
+   */
+  captureContent?: boolean;
+  /**
    * Optional streaming implementation. When present, `model().stream()` calls
    * this instead of the blocking handler and forwards `chunk` events to the
    * caller in real time. When absent, `model().stream()` falls back to calling
@@ -440,7 +446,7 @@ export type TrackData = {
   modelName: string;
   providerName: string;
   graphKey?: string;
-  toolName?: string;
+  toolKey?: string;
   judgeConfigKey?: string;
   /** LD environment MongoDB ObjectId — used to set feature_flag.set.id on OTel spans. */
   environmentId?: string;
