@@ -21,8 +21,8 @@ vi.mock('../lifecycle.js', () => ({
   shutdownTelemetry: vi.fn(),
 }));
 
-import { isFiniteScore, runJudges } from '../judges.js';
-import type { ProviderHandler } from '../types.js';
+import { isFiniteScore, runJudge, runJudges } from '../judges.js';
+import type { JudgeTask, ProviderHandler } from '../types.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -280,5 +280,79 @@ describe('judge score validation', () => {
     for (const ok of [0, 0.9, 1, -1]) {
       expect(isFiniteScore(ok)).toBe(true);
     }
+  });
+});
+
+// ─── runJudge result trackData ────────────────────────────────────────────────
+
+describe('runJudge result trackData', () => {
+  const makeTask = (parentTrackData: Record<string, unknown>): JudgeTask =>
+    ({
+      configKey: 'judge-key',
+      judgeConfig: mockJudgeConfig,
+      judgeMeta: mockJudgeMeta,
+      actualOutput: 'response',
+      userContext: mockContext,
+      judgeProvider: 'OpenAI',
+      judgeMode: 'messages',
+      collapseMessages: false,
+      parentTrackData,
+    }) as JudgeTask;
+
+  const parentTrackData = {
+    runId: 'parent-run',
+    configKey: 'main-flag',
+    variationKey: 'v1',
+    version: 1,
+    modelName: 'gpt-4o',
+    providerName: 'OpenAI',
+    modelKey: 'parent-model',
+    modelVersion: 7,
+    graphKey: 'g1',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('does not inherit the parent modelKey/modelVersion when the judge trackData has none', async () => {
+    mockExecuteAndTrack.mockResolvedValue({
+      usage: { input: 1, output: 1, total: 2 },
+      response: '{"score":0.9,"reasoning":"good"}',
+      trackData: {
+        runId: 'judge-run',
+        configKey: 'judge-key',
+        variationKey: 'j1',
+        version: 1,
+        modelName: 'claude',
+        providerName: 'Anthropic',
+      },
+    });
+    const result = await runJudge(makeTask(parentTrackData), [makeHandler()]);
+    expect(result).not.toBeNull();
+    expect('modelKey' in result!.trackData).toBe(false);
+    expect('modelVersion' in result!.trackData).toBe(false);
+    expect(result!.trackData.judgeConfigKey).toBe('judge-key');
+    expect(result!.trackData.graphKey).toBe('g1');
+  });
+
+  it('keeps the judge own modelKey/modelVersion over the parent values', async () => {
+    mockExecuteAndTrack.mockResolvedValue({
+      usage: { input: 1, output: 1, total: 2 },
+      response: '{"score":0.9,"reasoning":"good"}',
+      trackData: {
+        runId: 'judge-run',
+        configKey: 'judge-key',
+        variationKey: 'j1',
+        version: 1,
+        modelName: 'claude',
+        providerName: 'Anthropic',
+        modelKey: 'judge-model',
+        modelVersion: 2,
+      },
+    });
+    const result = await runJudge(makeTask(parentTrackData), [makeHandler()]);
+    expect(result!.trackData.modelKey).toBe('judge-model');
+    expect(result!.trackData.modelVersion).toBe(2);
   });
 });

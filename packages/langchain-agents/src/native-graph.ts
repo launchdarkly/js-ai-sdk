@@ -11,12 +11,11 @@ import {
   type GraphNode,
   getClient,
   type Message,
-  modelStampsFromMeta,
+  makeNodeTrackData,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
   type ToolHandlerFn,
-  type TrackData,
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
@@ -68,17 +67,6 @@ const buildNodeTools = (node: GraphNode, toolHandlers: Record<string, ToolHandle
     ),
   );
 };
-
-const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: string): TrackData => ({
-  runId,
-  configKey: node.key,
-  variationKey: node.meta.variationKey ?? '',
-  version: node.meta.version ?? 1,
-  modelName: node.config.model.name,
-  providerName: node.config.provider.name,
-  ...modelStampsFromMeta(node.meta),
-  graphKey,
-});
 
 const trackNode = (
   node: GraphNode,

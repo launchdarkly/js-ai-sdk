@@ -12,7 +12,12 @@ import type {
   ToolHandlerFn,
   TrackData,
 } from './types.js';
-import { collapseMessagesToInstructions, normalizeMode, parseJSONWithPossibleFences } from './utils.js';
+import {
+  collapseMessagesToInstructions,
+  normalizeMode,
+  omitModelStamps,
+  parseJSONWithPossibleFences,
+} from './utils.js';
 
 export const FORMATTING_INSTRUCTIONS = [
   'Your response MUST be in valid JSON format with the following structure:',
@@ -319,7 +324,9 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
       score,
       response: reasoning,
       usage,
-      trackData: { ...parentTrackData, ...trackData, judgeConfigKey: configKey },
+      // A judge without a pinned model config must not inherit the parent's
+      // modelKey / modelVersion; other parent-only keys (graphKey, ...) still carry over.
+      trackData: { ...omitModelStamps(parentTrackData), ...trackData, judgeConfigKey: configKey },
     };
   });
 };

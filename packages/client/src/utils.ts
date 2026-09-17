@@ -562,3 +562,15 @@ export function parseJSONWithPossibleFences<T>(rawText: string): T | null {
 
   return null;
 }
+
+/**
+ * Returns a copy of `trackData` without `modelKey` / `modelVersion`. Used when
+ * overlaying a judge's `trackData` on its parent's so a judge without a pinned
+ * model config does not inherit the parent's model identity.
+ */
+export const omitModelStamps = <T extends { modelKey?: string; modelVersion?: number }>(
+  trackData: T,
+): Omit<T, 'modelKey' | 'modelVersion'> => {
+  const { modelKey: _modelKey, modelVersion: _modelVersion, ...rest } = trackData;
+  return rest;
+};

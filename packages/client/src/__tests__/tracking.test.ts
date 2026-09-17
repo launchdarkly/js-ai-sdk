@@ -12,7 +12,13 @@ vi.mock('../lifecycle.js', () => ({
 }));
 
 import { getClient } from '../lifecycle.js';
-import { executeAndStream, executeAndTrack, wrapToolHandlers } from '../tracking.js';
+import {
+  executeAndStream,
+  executeAndTrack,
+  makeNodeTrackData,
+  modelStampsFromMeta,
+  wrapToolHandlers,
+} from '../tracking.js';
 
 const mockContext = { kind: 'user', key: 'test-user' } as const;
 const mockTrackData = {
@@ -453,5 +459,74 @@ describe('executeAndStream', () => {
     );
     const vars = handler.mock.calls[0][3];
     expect(vars).toMatchObject({ ldContext: execContext, extra: 'val' });
+  });
+});
+
+// ─── modelStampsFromMeta ─────────────────────────────────────────────────────
+
+describe('modelStampsFromMeta', () => {
+  it('copies an integer modelVersion and a non-empty modelKey', () => {
+    expect(modelStampsFromMeta({ modelKey: 'm', modelVersion: 3 })).toEqual({ modelKey: 'm', modelVersion: 3 });
+  });
+
+  it('coerces integral numeric strings and integral floats', () => {
+    expect(modelStampsFromMeta({ modelVersion: '3' as any })).toEqual({ modelVersion: 3 });
+    expect(modelStampsFromMeta({ modelVersion: 3.0 })).toEqual({ modelVersion: 3 });
+  });
+
+  it.each([
+    ['non-numeric string', 'abc'],
+    ['non-integral float', 1.5],
+    ['non-integral string', '1.5'],
+    ['object', {}],
+    ['null', null],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ])('omits modelVersion for a malformed value (%s) instead of emitting NaN', (_label, value) => {
+    const stamps = modelStampsFromMeta({ modelVersion: value as any });
+    expect('modelVersion' in stamps).toBe(false);
+  });
+
+  it('returns an empty object for null/undefined meta', () => {
+    expect(modelStampsFromMeta(null)).toEqual({});
+    expect(modelStampsFromMeta(undefined)).toEqual({});
+  });
+});
+
+// ─── makeNodeTrackData ───────────────────────────────────────────────────────
+
+describe('makeNodeTrackData', () => {
+  const node = (meta: Record<string, unknown>) =>
+    ({
+      key: 'node-a',
+      config: { model: { name: 'gpt-4o' }, provider: { name: 'OpenAI' }, instructions: 'x' },
+      meta,
+      edges: [],
+      isTerminal: () => true,
+    }) as any;
+
+  it('builds the standard node payload and copies model stamps from node.meta', () => {
+    const td = makeNodeTrackData(
+      node({ variationKey: 'v1', version: 2, modelKey: 'my-model', modelVersion: 3 }),
+      'graph-key',
+      'run-1',
+    );
+    expect(td).toEqual({
+      runId: 'run-1',
+      configKey: 'node-a',
+      variationKey: 'v1',
+      version: 2,
+      modelName: 'gpt-4o',
+      providerName: 'OpenAI',
+      modelKey: 'my-model',
+      modelVersion: 3,
+      graphKey: 'graph-key',
+    });
+  });
+
+  it('omits modelKey and modelVersion when node.meta lacks them', () => {
+    const td = makeNodeTrackData(node({ variationKey: 'v1', version: 1 }), 'graph-key', 'run-1');
+    expect('modelKey' in td).toBe(false);
+    expect('modelVersion' in td).toBe(false);
   });
 });
