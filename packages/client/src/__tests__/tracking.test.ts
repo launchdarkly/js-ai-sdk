@@ -482,9 +482,23 @@ describe('modelStampsFromMeta', () => {
     ['null', null],
     ['NaN', Number.NaN],
     ['Infinity', Number.POSITIVE_INFINITY],
-  ])('omits modelVersion for a malformed value (%s) instead of emitting NaN', (_label, value) => {
+    ['empty string', ''],
+    ['whitespace string', '   '],
+    ['boolean', true],
+  ])('omits modelVersion for a malformed value (%s) instead of emitting NaN or 0', (_label, value) => {
     const stamps = modelStampsFromMeta({ modelVersion: value as any });
     expect('modelVersion' in stamps).toBe(false);
+  });
+
+  it.each([
+    ['number', 123],
+    ['object', {}],
+    ['array', ['a']],
+    ['boolean', true],
+  ])('omits a non-string modelKey (%s)', (_label, value) => {
+    const stamps = modelStampsFromMeta({ modelKey: value as any, modelVersion: 1 });
+    expect('modelKey' in stamps).toBe(false);
+    expect(stamps.modelVersion).toBe(1);
   });
 
   it('returns an empty object for null/undefined meta', () => {

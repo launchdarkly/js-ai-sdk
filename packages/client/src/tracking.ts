@@ -84,9 +84,11 @@ export const modelStampsFromMeta = (
   meta: VariationMeta | null | undefined,
 ): Pick<TrackData, 'modelKey' | 'modelVersion'> => {
   const stamps: Pick<TrackData, 'modelKey' | 'modelVersion'> = {};
-  if (meta?.modelKey) stamps.modelKey = meta.modelKey;
+  const modelKey: unknown = meta?.modelKey;
+  if (typeof modelKey === 'string' && modelKey.length > 0) stamps.modelKey = modelKey;
   const raw: unknown = meta?.modelVersion;
-  if (raw !== undefined && raw !== null && (typeof raw === 'number' || typeof raw === 'string')) {
+  // `Number('')` and `Number('  ')` are 0, so blank strings must be rejected before coercion.
+  if (typeof raw === 'number' || (typeof raw === 'string' && raw.trim().length > 0)) {
     const version = Number(raw);
     if (Number.isInteger(version)) stamps.modelVersion = version;
   }
