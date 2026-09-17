@@ -162,6 +162,22 @@ describe('toOpenAIAgents', () => {
     expect(mockRunnerRun).toHaveBeenCalledWith(createdAgents[1], 'test input');
   });
 
+  it('forwards history to root Runner.run as structured input', async () => {
+    const history = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+        ],
+      },
+    ];
+    await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('describe', {}, history);
+    const input = mockRunnerRun.mock.calls[0][1];
+    expect(Array.isArray(input)).toBe(true);
+    expect(JSON.stringify(input)).toContain('input_image');
+    expect(JSON.stringify(input)).toContain('abc123');
+  });
+
   // ── Instructions forwarding ───────────────────────────────────────────────
 
   it('forwards node instructions to each Agent constructor', async () => {

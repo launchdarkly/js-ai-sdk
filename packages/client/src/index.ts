@@ -27,6 +27,15 @@ export {
   withConversationId,
 } from './conversation.js';
 export { graph, resolveGraph } from './graph.js';
+export type { CanonicalTurn, ConfigTurn } from './history.js';
+export {
+  anyMultimodal,
+  composeHistory,
+  contentToText,
+  hasMultimodalContent,
+  imageBlockToUrl,
+  isContentBlocks,
+} from './history.js';
 export { buildJudgeTasks, runJudge } from './judges.js';
 export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
@@ -34,6 +43,8 @@ export { compose, globalRegistry, Registry } from './registry.js';
 export { registerAiSdkPackage } from './sdk-info.js';
 export type {
   ConfigArgs,
+  ConfigMessage,
+  ContentBlock,
   GraphArgs,
   GraphDefinition,
   GraphEdge,
@@ -41,6 +52,7 @@ export type {
   GraphOptions,
   GraphTopology,
   HandlerStreamEvent,
+  ImageContentBlock,
   JudgeCallResult,
   JudgeRunResult,
   JudgeTask,
@@ -50,6 +62,7 @@ export type {
   LDSingleKindContext,
   LDUser,
   Message,
+  MessageContent,
   ProviderGraphResponse,
   ProviderHandler,
   ProviderResponse,
@@ -58,6 +71,7 @@ export type {
   RouteResult,
   RunNodeOptions,
   StreamEvent,
+  TextContentBlock,
   TokenUsage,
   Tool,
   ToolHandlerFn,
