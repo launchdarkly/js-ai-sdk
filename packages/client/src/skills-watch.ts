@@ -33,7 +33,12 @@ export const DEFAULT_DEBOUNCE_MS = 500;
 export type WatchSkillsOptions = WriteSkillsOptions & {
   /** Coalescing window, in **milliseconds**. Default {@link DEFAULT_DEBOUNCE_MS}. */
   debounceMs?: number;
-  /** Called with each re-reconcile's report. Exceptions are logged, not thrown. */
+  /**
+   * Called with each re-reconcile's report — the ones delivery triggers, not
+   * the initial reconcile, whose report `watchSkills` returns directly. May be
+   * `async`; a throw or a rejection is logged, not thrown, and does not stop
+   * the watcher.
+   */
   onReconcile?: (report: ReconcileReport) => unknown;
 };
 
@@ -142,7 +147,9 @@ export class SkillWatcher {
     this.completed += 1;
     if (this.onReconcile) {
       try {
-        this.onReconcile(report);
+        // Awaited inside the try, so an `async` callback that rejects is logged
+        // like a synchronous throw rather than left as an unhandled rejection.
+        await Promise.resolve(this.onReconcile(report));
       } catch (cause) {
         error(`A watchSkills callback threw: ${cause instanceof Error ? cause.message : String(cause)}`);
       }
@@ -167,25 +174,37 @@ export class SkillWatcher {
    * case the manifest format has to recover from — worth avoiding when we control
    * the timing.
    *
-   * Detaches `notify` from the store first, so no further change reaches a
-   * watcher that is shutting down and the store no longer holds a reference to
-   * it. A store without the optional `removeListener` is left as it is rather
-   * than failing the close.
+   * Marks the watcher closed and disarms the timer *before* detaching, so a
+   * `removeListener` that throws cannot leave a watcher that is half-closed with
+   * a reconcile still scheduled. Detaching is best effort: a failure is logged,
+   * not thrown, and a store without the optional `removeListener` is left as it
+   * is rather than failing the close. Either way no further change reaches a
+   * watcher that is shutting down, because `notify` checks `closed` first.
    */
   async close(): Promise<void> {
-    this.detach();
+    if (this.closed) {
+      await this.running;
+      return;
+    }
     this.closed = true;
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    this.detach();
     await this.running;
   }
 
   private detach(): void {
-    if (this.closed) return;
-    if (typeof this.store.removeListener === 'function') {
+    if (typeof this.store.removeListener !== 'function') return;
+    try {
       this.store.removeListener(SKILL_OBJECT_KIND, this.notify);
+    } catch (cause) {
+      error(
+        `The skill store's removeListener threw while a watcher was closing; the watcher is closed regardless: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      );
     }
   }
 }

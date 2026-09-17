@@ -180,6 +180,38 @@ export function requireStore(): SkillStore {
 }
 
 /**
+ * Whether `store` has received its initial data.
+ *
+ * `true` for a store that does not implement the optional `isInitialized`,
+ * since a hand-populated store is never waiting for anything. Probed rather
+ * than required on the seam for the reason `SkillStore` gives: a required
+ * member would reject every store without it.
+ *
+ * This is what keeps `writeSkills('*')` from reading a store that has not yet
+ * received a payload as an environment whose every skill was revoked. Retrieval
+ * through such a store is reported unavailable, which suppresses pruning — the
+ * same treatment a throwing store gets, and for the same reason: deleting a
+ * customer's files because content could not be retrieved would turn a slow
+ * boot into data loss.
+ *
+ * A probe that throws counts as not initialized. A store that cannot answer
+ * whether it is ready is not one to authorize deletions on.
+ */
+export function storeIsInitialized(store: SkillStore): boolean {
+  const probe = (store as { isInitialized?: unknown }).isInitialized;
+  if (typeof probe !== 'function') return true;
+  try {
+    return Boolean(probe.call(store));
+  } catch (error) {
+    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a failing store must be visible
+    console.warn(
+      `[LaunchDarkly] The skill store's isInitialized() threw; treating the store as not yet initialized: ${storeThrew(error)}`,
+    );
+    return false;
+  }
+}
+
+/**
  * Records one signal. Never throws into the calling operation — a broken emitter
  * must not be able to fail a retrieval or a reconcile.
  */

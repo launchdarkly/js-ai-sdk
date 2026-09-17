@@ -36,7 +36,6 @@ import {
 } from '../skills.js';
 import { SKILL_OBJECT_KIND } from '../skills-core.js';
 import {
-  _warnedHashless,
   backoffDelayMs,
   classifyStatus,
   DEFAULT_BASE_URI,
@@ -166,6 +165,9 @@ class FakeFDv2Endpoint {
   readonly requests: RecordedRequest[] = [];
   holdStreamOpen = false;
   dropStreams = false;
+  /** When set alongside `holdStreamOpen`, a `heart-beat` is sent on this interval. */
+  heartbeatMs: number | null = null;
+  private readonly heartbeats = new Set<ReturnType<typeof setInterval>>();
   private readonly polls: Array<{
     status: number;
     events: WireEvent[];
@@ -256,12 +258,22 @@ class FakeFDv2Endpoint {
       // Held so a test can assert on the store's state without racing the
       // reconnect path; released on `close`.
       this.held.add(res);
+      if (this.heartbeatMs !== null) {
+        const timer = setInterval(() => res.write('event: heart-beat\ndata: {}\n\n'), this.heartbeatMs);
+        this.heartbeats.add(timer);
+        res.on('close', () => {
+          clearInterval(timer);
+          this.heartbeats.delete(timer);
+        });
+      }
       return;
     }
     res.end();
   }
 
   async close(): Promise<void> {
+    for (const timer of this.heartbeats) clearInterval(timer);
+    this.heartbeats.clear();
     for (const res of this.held) res.end();
     this.held.clear();
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
@@ -282,8 +294,6 @@ beforeEach(async () => {
   openStores = [];
   tempRoots = [];
   _clearState();
-  // The hashless-object error is deduped per process; per test here.
-  _warnedHashless.clear();
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -538,6 +548,36 @@ describe('protocol reader', () => {
     expect(outcomes.at(-1)?.basis).toBe('basis-1');
   });
 
+  it('counts objects arriving under an unknown intent code as ignored, and warns once per intent', () => {
+    // A future intent code is neither a full nor a changes transfer, so its
+    // objects cannot be applied without guessing — and guessing could empty the
+    // store. They are dropped, but visibly: counted under `objectsIgnored`, with
+    // one warning per intent rather than one per object.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, fullPayload([['put-object', putSkill('kept')]]));
+    const before = warnSpy.mock.calls.length;
+    drive(
+      reader,
+      events(
+        ['server-intent', serverIntent('xfer-future')],
+        ['put-object', putSkill('a')],
+        ['put-object', putSkill('b')],
+        ['delete-object', deleteSkill('kept')],
+        ['payload-transferred', transferred('basis-2')],
+      ),
+    );
+    expect(reader.diagnostics.objectsIgnored).toBe(3);
+    expect(reader.diagnostics.skillObjectsReceived).toBe(1);
+    expect(warnSpy.mock.calls.length - before).toBe(1);
+    expect(logged(warnSpy)).toContain('xfer-future');
+    expect(held.get('kept', null)).not.toBeNull();
+    expect(held.size).toBe(1);
+    // A fresh intent announcement warns afresh.
+    drive(reader, events(['server-intent', serverIntent('xfer-future')], ['put-object', putSkill('c')]));
+    expect(warnSpy.mock.calls.length - before).toBe(2);
+  });
+
   it('shows nothing before payload-transferred', () => {
     // A payload version is the unit of consistency; half of one is not a state.
     const held = new SkillObjectSet();
@@ -601,6 +641,52 @@ describe('protocol reader', () => {
     );
     expect(held.get('pdf-extraction', null)).toBeNull();
     expect(reader.diagnostics.objectsRevoked).toBe(1);
+  });
+
+  it('reports but does not count a delete-object for a key it never held (§3.25)', () => {
+    // `objectsRevoked` is read precisely when somebody is working out whether a
+    // revocation landed, so a tombstone for nothing must not inflate it. The
+    // tombstone still reaches listeners through `changes`.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, fullPayload([['put-object', putSkill('kept')]]));
+    const outcomes = drive(
+      reader,
+      events(
+        ['server-intent', serverIntent('xfer-changes')],
+        ['delete-object', deleteSkill('never-held')],
+        ['payload-transferred', transferred('basis-2')],
+      ),
+    );
+    expect(reader.diagnostics.objectsRevoked).toBe(0);
+    expect((outcomes.at(-1)?.changes ?? []).map((raw) => ({ key: raw.key, version: raw.version }))).toEqual([
+      { key: 'never-held', version: 3 },
+    ]);
+    expect(held.size).toBe(1);
+  });
+
+  it('counts a delete-object that actually removed something — the other half', () => {
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(
+      reader,
+      fullPayload([
+        ['put-object', putSkill('a')],
+        ['put-object', putSkill('b')],
+      ]),
+    );
+    drive(
+      reader,
+      events(
+        ['server-intent', serverIntent('xfer-changes')],
+        ['delete-object', deleteSkill('a')],
+        ['delete-object', deleteSkill('a')],
+        ['payload-transferred', transferred('basis-2')],
+      ),
+    );
+    // The second delete of the same object removed nothing, so one, not two.
+    expect(reader.diagnostics.objectsRevoked).toBe(1);
+    expect(held.size).toBe(1);
   });
 
   it('notifies a delete with a tombstone carrying no content', () => {
@@ -933,6 +1019,23 @@ describe('payload identity', () => {
     drive(reader, skillPayload([['put-object', putSkill('b', { objectVersion: 1 })]], { state: 'basis-2' }));
     expect(reader.diagnostics.objectsRevoked).toBe(1);
     expect(held.get('a', null)).toBeNull();
+  });
+
+  it('does not adopt the basis of a foreign payload announced with the none intent (§3.25)', () => {
+    // A `none` intent builds no pending set, and the foreign check must not be
+    // gated on one: the transfer that follows still names a payload, and
+    // adopting its selector would resume the next connection from someone
+    // else's payload with every diagnostic reading healthy.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, fullPayload([['put-object', putSkill()]], 'basis-skills'));
+    const outcomes = drive(
+      reader,
+      events(['server-intent', serverIntent('none', 'env-flags')], ['payload-transferred', transferred('basis-flags')]),
+    );
+    expect(outcomes.at(-1)?.basis).toBeNull();
+    expect(reader.diagnostics.payloadsIgnored).toBe(1);
+    expect(held.get('pdf-extraction', null)).not.toBeNull();
   });
 
   it('does not adopt the selector of a payload it declined', () => {
@@ -1279,6 +1382,40 @@ describe('SSE framing', () => {
   it('dispatches a named block with no data as a null payload', async () => {
     expect(await framed('event: heart-beat\n\n')).toEqual([['heart-beat', null]]);
   });
+
+  it('bounds an unterminated line and fails recoverably rather than buffering it without limit', async () => {
+    // A server (or a proxy) that never sends a newline would otherwise grow the
+    // line buffer until the process ran out of memory. Recoverable, so the
+    // connection is dropped and retried rather than the store giving up.
+    const chunks = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const chunk = new TextEncoder().encode('x'.repeat(256 * 1024));
+        for (let i = 0; i < 6; i += 1) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    const drain = async (): Promise<void> => {
+      for await (const _ of iterSse(chunks)) {
+        // nothing is expected to dispatch
+      }
+    };
+    await expect(drain()).rejects.toBeInstanceOf(RecoverableTransportError);
+  });
+
+  it('bounds the accumulated data lines of one event the same way', async () => {
+    const line = `data: ${'y'.repeat(128 * 1024)}\n`;
+    const drain = async (): Promise<void> => {
+      for await (const _ of iterSse(sseBody(`event: put-object\n${line.repeat(10)}`))) {
+        // nothing is expected to dispatch
+      }
+    };
+    await expect(drain()).rejects.toBeInstanceOf(RecoverableTransportError);
+  });
+
+  it('still dispatches an event well inside the bound', async () => {
+    const big = JSON.stringify({ content: 'z'.repeat(64 * 1024) });
+    expect(await framed(`event: put-object\ndata: ${big}\n\n`)).toEqual([['put-object', JSON.parse(big)]]);
+  });
 });
 
 describe('streaming against the endpoint', () => {
@@ -1407,21 +1544,33 @@ class ScriptedRequester implements Requester {
 
   constructor(private readonly outcomes: unknown[] = []) {}
 
-  private async next(): Promise<Array<[string, unknown]>> {
+  /**
+   * Honours the store's abort signal the way the real requester does: a
+   * scripted promise that never settles still lets `close()` return, since the
+   * store aborts the signal and awaits the delivery loop.
+   */
+  private async next(signal: AbortSignal): Promise<Array<[string, unknown]>> {
     const outcome = this.outcomes.length > 0 ? this.outcomes.shift() : new RecoverableTransportError('x');
     if (outcome instanceof Error) throw outcome;
-    if (outcome instanceof Promise) return outcome as Promise<Array<[string, unknown]>>;
+    if (outcome instanceof Promise) {
+      const aborted = new Promise<never>((_, reject) => {
+        const onAbort = (): void => reject(signal.reason ?? new Error('aborted'));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+      return Promise.race([outcome as Promise<Array<[string, unknown]>>, aborted]);
+    }
     return outcome as Array<[string, unknown]>;
   }
 
-  async poll(basis: string | null, etag: string | null): Promise<PollResult> {
+  async poll(basis: string | null, etag: string | null, signal: AbortSignal): Promise<PollResult> {
     this.calls.push([basis, etag]);
-    return { notModified: false, events: await this.next(), etag: null };
+    return { notModified: false, events: await this.next(signal), etag: null };
   }
 
-  async stream(basis: string | null): Promise<AsyncIterable<[string, unknown]>> {
+  async stream(basis: string | null, signal: AbortSignal): Promise<AsyncIterable<[string, unknown]>> {
     this.calls.push([basis, null]);
-    const scripted = await this.next();
+    const scripted = await this.next(signal);
     return (async function* () {
       yield* scripted;
     })();
@@ -1696,6 +1845,25 @@ describe('failure handling', () => {
     store.start();
     expect(await waitUntil(() => store.failed !== null)).toBe(true);
     expect(store.failed).toContain('gave up after 4 consecutive failures');
+  });
+
+  it('gives up on a server that announces a transfer and drops before committing, every time (§3.25)', async () => {
+    // An `xfer-full` intent is a promise, not a delivery. A server that sends
+    // one and drops before `payload-transferred` has delivered nothing, and a
+    // store that counted the announcement as health would retry it forever at
+    // the initial backoff. Only a committed payload or a `none` intent resets
+    // the row of failures.
+    const outcomes: unknown[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      outcomes.push(asPairs(events(['server-intent', serverIntent('xfer-full')], ['put-object', putSkill()])));
+    }
+    const requester = new ScriptedRequester(outcomes);
+    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 3 });
+    store.start();
+    expect(await waitUntil(() => store.failed !== null, 5000)).toBe(true);
+    expect(store.failed).toContain('gave up after 4 consecutive failures');
+    expect(requester.calls).toHaveLength(4);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).toBeNull();
   });
 
   it('honours a Retry-After header off the wire', async () => {
@@ -2042,15 +2210,28 @@ describe('the missing contentHash', () => {
         ),
       );
     }
-    expect(_warnedHashless.size).toBeLessThan(600);
+    expect(reader._warnedHashless.size).toBeLessThan(600);
   });
 
   it('forgets what it remembers once everything held verifies', () => {
     const reader = new ProtocolReader(new SkillObjectSet());
     drive(reader, fullPayload([['put-object', putSkill('a', { omitHash: true })]]));
-    expect(_warnedHashless.size).toBeGreaterThan(0);
+    expect(reader._warnedHashless.size).toBeGreaterThan(0);
     drive(reader, fullPayload([['put-object', putSkill('a')]], 'basis-2'));
-    expect(_warnedHashless.size).toBe(0);
+    expect(reader._warnedHashless.size).toBe(0);
+  });
+
+  it('remembers per reader, so two stores in one process do not cross-talk', () => {
+    // The dedupe memory is held by the reader, not the module: a second store
+    // in the same process reporting the same hashless object is a second
+    // deployment problem, and must be told about it.
+    const first = new ProtocolReader(new SkillObjectSet());
+    drive(first, fullPayload([['put-object', putSkill('a', { omitHash: true })]]));
+    const before = errorSpy.mock.calls.length;
+    const second = new ProtocolReader(new SkillObjectSet());
+    drive(second, fullPayload([['put-object', putSkill('a', { omitHash: true })]]));
+    expect(errorSpy.mock.calls.length).toBeGreaterThan(before);
+    expect(first._warnedHashless).not.toBe(second._warnedHashless);
   });
 
   it('still reports each hashless object in a payload separately', () => {
@@ -2604,7 +2785,103 @@ describe('watchSkills', () => {
       getObject: () => null,
       allObjects: () => ({}),
     });
-    await expect(watchSkills('*', await scratchRoot())).rejects.toThrow(/addListener/);
+    // The message names both remedies: the one-shot reconcile, and the store
+    // that does implement the listener half of the seam.
+    await expect(watchSkills('*', await scratchRoot())).rejects.toThrow(/writeSkills[\s\S]*FDv2SkillStore/);
+  });
+
+  it('passes prune and timeout straight through to writeSkills (§3.26)', async () => {
+    // Driven behaviourally rather than by spying on the import: a `prune: false`
+    // that reached `writeSkills` leaves a stale managed skill alone on the
+    // initial reconcile *and* on a re-reconcile, and a `timeout: 0` that reached
+    // it exhausts before retrieval — both are §3.22 outcomes only `writeSkills`
+    // produces.
+    const seed = new InMemorySkillStore();
+    seed.put({ key: 'a', version: 1, content: 'first', contentHash: hash('first') });
+    seed.put({ key: 'stale', version: 1, content: 'old', contentHash: hash('old') });
+    _setStore(seed);
+    const root = path.join(await scratchRoot(), 'skills');
+    expect((await writeSkills('*', root)).ok).toBe(true);
+    // Now a store that no longer holds `stale`: with pruning on it would be removed.
+    const store = new InMemorySkillStore();
+    store.put({ key: 'a', version: 1, content: 'first', contentHash: hash('first') });
+    _setStore(store);
+
+    const { report, watcher } = await watchSkills('*', root, { debounceMs: 10, prune: false });
+    try {
+      expect(report.ok).toBe(true);
+      expect(report.actions.some((a) => a.action === 'removed')).toBe(false);
+      expect(await readFile(path.join(root, 'stale', 'SKILL.md'), 'utf8')).toBe('old');
+
+      store.put({ key: 'a', version: 2, content: 'second', contentHash: hash('second') });
+      expect(await waitUntil(() => watcher.reconciles === 1, 10_000)).toBe(true);
+      expect(await readFile(path.join(root, 'stale', 'SKILL.md'), 'utf8')).toBe('old');
+    } finally {
+      await watcher.close();
+    }
+
+    const timed = await watchSkills([{ key: 'a', version: 2 }], root, { debounceMs: 10, timeout: 0 });
+    try {
+      expect(timed.report.ok).toBe(false);
+      expect(timed.report.errors.map((a) => a.error).join('\n')).toMatch(/timeout was exhausted/);
+    } finally {
+      await timed.watcher.close();
+    }
+  });
+
+  it('close() survives a store whose removeListener throws, and stays closed', async () => {
+    // Detaching is best effort: a store that cannot detach must not leave the
+    // watcher half-closed with its timer armed, and a second close is a no-op.
+    let notify: (() => void) | null = null;
+    _setStore({
+      getObject: () => null,
+      allObjects: () => ({}),
+      addListener: (_kind: string, fn: () => void) => {
+        notify = fn;
+      },
+      removeListener: () => {
+        throw new Error('cannot detach');
+      },
+    });
+    const { watcher } = await watchSkills('*', path.join(await scratchRoot(), 'skills'), { debounceMs: 10 });
+    await watcher.close();
+    expect(consoleErrors()).toContain('cannot detach');
+    const errorsAfterClose = errorSpy.mock.calls.length;
+    await watcher.close();
+    expect(errorSpy.mock.calls.length).toBe(errorsAfterClose);
+    // Closed: a notification that still reaches it schedules nothing.
+    (notify as unknown as () => void)();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(watcher.reconciles).toBe(0);
+  });
+
+  it('logs an async onReconcile that rejects, and the next commit still reconciles', async () => {
+    // `onReconcile` may be async. A rejection must be caught and logged like a
+    // synchronous throw — not left as an unhandled rejection — and must not
+    // stop the watcher.
+    const store = new InMemorySkillStore();
+    store.put({ key: 'a', version: 1, content: 'first', contentHash: hash('first') });
+    _setStore(store);
+    let calls = 0;
+    const root = path.join(await scratchRoot(), 'skills');
+    const { watcher } = await watchSkills('*', root, {
+      debounceMs: 10,
+      onReconcile: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('async callback exploded');
+      },
+    });
+    try {
+      store.put({ key: 'a', version: 2, content: 'second', contentHash: hash('second') });
+      expect(await waitUntil(() => /async callback exploded/.test(consoleErrors()), 10_000)).toBe(true);
+      expect(consoleErrors()).toContain('callback threw');
+      store.put({ key: 'a', version: 3, content: 'third', contentHash: hash('third') });
+      expect(await waitUntil(() => watcher.reconciles === 2, 10_000)).toBe(true);
+      expect(calls).toBe(2);
+      expect(await readFile(path.join(root, 'a', 'SKILL.md'), 'utf8')).toBe('third');
+    } finally {
+      await watcher.close();
+    }
   });
 
   it('throws when no store is configured', async () => {
@@ -2746,6 +3023,39 @@ describe('lifecycle', () => {
     await store.waitForSkills(5000);
     await store.close();
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+  });
+
+  it('isInitialized tracks the first payload, and stays true after close (§3.25)', async () => {
+    // The probe `writeSkills('*')` reads to decide whether it may prune. Before
+    // the first payload, an empty store and an environment with no skills are
+    // the same answer through `allObjects`; this is what tells them apart.
+    const silent = new FDv2SkillStore(SDK_KEY, {
+      mode: 'poll',
+      pollIntervalMs: 60_000,
+      requester: new ScriptedRequester([new Promise(() => {})]),
+    });
+    openStores.push(silent);
+    expect(silent.isInitialized()).toBe(false);
+    silent.start();
+    expect(await silent.waitForSkills(50)).toBe(false);
+    expect(silent.isInitialized()).toBe(false);
+
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+    const delivering = pollStore();
+    delivering.start();
+    expect(await delivering.waitForSkills(5000)).toBe(true);
+    expect(delivering.isInitialized()).toBe(true);
+    await delivering.close();
+    // Content outlives the connection, so the fact about it does too.
+    expect(delivering.isInitialized()).toBe(true);
+  });
+
+  it('a 304 counts as initialized — the payload held is confirmed current', async () => {
+    endpoint.queuePoll([], { status: 304 });
+    const store = pollStore();
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(store.isInitialized()).toBe(true);
   });
 
   it('times out waitForSkills rather than hanging', async () => {
@@ -3034,6 +3344,173 @@ describe('endpoints', () => {
 });
 
 // ─── Layering, and the absence of telemetry ──────────────────────────────────
+
+// ─── Transport contract assertions the spec names (§3.25) ────────────────────
+
+describe('transport contract', () => {
+  const source = readFileSync(new URL('../skills-fdv2.ts', import.meta.url), 'utf8');
+
+  it('holds the wire kind as its own declaration, not an alias of the seam kind', () => {
+    // One is a wire value LaunchDarkly owns, the other an SDK seam. They are
+    // equal today; a change to either must be a deliberate change to that one.
+    expect(source).toMatch(/export const FDV2_OBJECT_KIND = 'skill';/);
+    expect(source).not.toMatch(/FDV2_OBJECT_KIND\s*=\s*SKILL_OBJECT_KIND/);
+    expect(FDV2_OBJECT_KIND).toBe(SKILL_OBJECT_KIND);
+  });
+
+  it('the 401 message names the SDK key', () => {
+    expect(classifyStatus(401).message).toMatch(/SDK key/);
+  });
+
+  it('a goodbye on a store holding committed content keeps it', () => {
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, fullPayload([['put-object', putSkill()]]));
+    const outcome = reader.handle('goodbye', { reason: 'recycle', silent: true, catastrophe: false });
+    expect(outcome.disconnect).toBeTruthy();
+    expect(held.get('pdf-extraction', null)).not.toBeNull();
+    // An in-flight transfer is abandoned too, without touching what was committed.
+    drive(reader, events(['server-intent', serverIntent('xfer-full')], ['put-object', putSkill('other')]));
+    reader.handle('goodbye', { reason: 'recycle', silent: true });
+    expect(held.size).toBe(1);
+  });
+
+  it('bound exhaustion logs the error and keeps serving last known good, in one test', async () => {
+    const requester = new ScriptedRequester([asPairs(fullPayload([['put-object', putSkill()]]))]);
+    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 2 });
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await waitUntil(() => store.failed !== null, 5000)).toBe(true);
+    expect(consoleErrors()).toMatch(/will not retry/);
+    expect(consoleErrors()).toMatch(/gave up after 3 consecutive failures/);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+    expect(store.allObjects(SKILL_OBJECT_KIND)).toHaveProperty('pdf-extraction');
+  });
+
+  it('holds a tampered object while the accessor reports integrity_failure', async () => {
+    // Verification is the accessor's job, not the transport's: the store keeps
+    // what arrived, and the reported outcome is what tells a caller to fail closed.
+    endpoint.queuePoll(fullPayload([['put-object', putSkill('tampered', { contentHash: hash('something else') })]]));
+    const store = pollStore();
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    _setStore(store);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'tampered')).not.toBeNull();
+    const outcome = await getSkillResult('tampered');
+    expect(outcome.reason).toBe('integrity_failure');
+    expect(outcome.skill).toBeNull();
+    expect(store.getObject(SKILL_OBJECT_KIND, 'tampered')).not.toBeNull();
+  });
+
+  it.each([
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('rejects a non-positive or non-finite pollIntervalMs (%s)', (value) => {
+    // `NaN` is the case a `<= 0` guard misses.
+    expect(() => new FDv2SkillStore(SDK_KEY, { mode: 'poll', pollIntervalMs: value })).toThrow(/pollIntervalMs/);
+  });
+
+  it('rejects a non-string credential', () => {
+    expect(() => new FDv2SkillStore(42 as never)).toThrow(/server-side SDK key/);
+    expect(() => new FDv2SkillStore(undefined as never)).toThrow(/server-side SDK key/);
+  });
+
+  it('refusal messages for mobile and client-side credentials say skills are server-side', () => {
+    expect(() => new FDv2SkillStore('mob-00000000-0000-4000-8000-000000000000')).toThrow(/server-side/);
+    expect(() => new FDv2SkillStore('0123456789abcdef01234567')).toThrow(/server-side/);
+  });
+
+  it.each([
+    Number.NaN,
+    Number.NEGATIVE_INFINITY,
+    -1,
+  ])('waitForSkills rejects a non-finite or negative timeoutMs (%s)', async (value) => {
+    const store = pollStore();
+    await expect(store.waitForSkills(value)).rejects.toThrow(/timeoutMs/);
+  });
+
+  it('an idle stream carrying heartbeats stays connected past what the read timeout alone would allow', async () => {
+    // The read deadline bounds the gap between reads, not the connection's
+    // life. Heartbeats well inside `readTimeoutMs` keep one connection open for
+    // several multiples of it, with no reconnect.
+    endpoint.holdStreamOpen = true;
+    endpoint.heartbeatMs = 20;
+    endpoint.queueStream(fullPayload([['put-object', putSkill()]]));
+    const store = streamStore({ readTimeoutMs: 100 });
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(endpoint.requests).toHaveLength(1);
+    expect(store.failed).toBeNull();
+    expect(store.diagnostics.connectionFailures).toBe(0);
+    expect(store.diagnostics.lastError).toBeNull();
+  });
+
+  it('a stream interrupted by close does not count as a success', async () => {
+    // `streamOnce` returning because the signal aborted is the store closing,
+    // not the server answering — so the row of failures must not be reset by it.
+    let release: (() => void) | null = null;
+    const parked: Requester = {
+      poll() {
+        throw new Error('not a polling double');
+      },
+      async stream(_basis, signal) {
+        return (async function* () {
+          yield ['heart-beat', {}] as [string, unknown];
+          await new Promise<void>((resolve) => {
+            release = resolve;
+            signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          // One more event after the abort, so the loop observes the signal.
+          yield ['heart-beat', {}] as [string, unknown];
+        })();
+      },
+    };
+    const requester = new ScriptedRequester([new RecoverableTransportError('x'), parked as never]);
+    const wrapped: Requester = {
+      poll: (b, e, s) => requester.poll(b, e, s),
+      stream: async (b, s) => {
+        if (requester.calls.length === 0) return requester.stream(b, s);
+        requester.calls.push([b, null]);
+        return parked.stream(b, s);
+      },
+    };
+    const store = scriptedStreamStore(wrapped, { maxConsecutiveFailures: 5 });
+    store.start();
+    expect(await waitUntil(() => release !== null, 5000)).toBe(true);
+    expect(store.diagnostics.connectionFailures).toBe(1);
+    await store.close();
+    expect(store.diagnostics.connectionFailures).toBe(1);
+  });
+});
+
+describe('listeners', () => {
+  it('logs an async listener whose promise rejects rather than leaving it unhandled', async () => {
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+    const store = pollStore();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      store.addListener(SKILL_OBJECT_KIND, async () => {
+        throw new Error('async listener exploded');
+      });
+      store.start();
+      expect(await store.waitForSkills(5000)).toBe(true);
+      expect(await waitUntil(() => /async listener exploded/.test(consoleErrors()), 5000)).toBe(true);
+      expect(consoleErrors()).toContain('delivery continues');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+      expect(store.failed).toBeNull();
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+});
 
 describe('layering', () => {
   /** `skills-fdv2.ts`'s own source text — the only way to assert a leaf. */
