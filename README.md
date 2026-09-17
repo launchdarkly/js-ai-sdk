@@ -126,6 +126,8 @@ cp .env.example .env
 # Fill in LD_SDK_KEY and the API key for your provider
 ```
 
+The SDK does not load `.env` itself — it only reads `process.env`. The examples below start with `import 'dotenv/config';` so that your app, not the library, decides whether a `.env` file is loaded.
+
 ### 3. Call a model
 
 #### 3a. Convenience functions
