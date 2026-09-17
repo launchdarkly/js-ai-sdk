@@ -3,7 +3,7 @@ import { runJudges } from './judges.js';
 import { extractVariation, getClient, initClient } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
 import { executeAndTrack } from './tracking.js';
-import type { LDContext, ToolHandlerFn } from './types.js';
+import type { LDContext, Message, ToolHandlerFn } from './types.js';
 import {
   type AiConfigRep,
   type GraphArgs,
@@ -205,6 +205,7 @@ const buildGraph = async (
         toolHandlers,
         variables: opts.variables,
         graphKey: key,
+        history: opts.history,
       });
       const response = typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse);
 
@@ -272,10 +273,13 @@ const buildGraph = async (
     for (const edge of outgoing) {
       const target = nodes.get(edge.targetKey);
       const toolName = `__handoff_${sanitizeName(edge.targetKey)}`;
-      const description =
-        (edge.handoff?.description as string | undefined) ??
-        target?.config.instructions?.slice(0, 120) ??
-        `Transfer control to ${edge.targetKey}`;
+      // The prefix is unconditional: without it, a description sourced from the target's own
+      // instructions reads as a tool that does the target's work, and the model calls it
+      // instead of the node's real tools.
+      const detail = (edge.handoff?.description as string | undefined) ?? target?.config.instructions?.slice(0, 120);
+      const description = detail
+        ? `Transfer control to ${edge.targetKey}. ${detail}`
+        : `Transfer control to ${edge.targetKey}.`;
 
       handoffTools[toolName] = {
         name: toolName,
@@ -285,13 +289,16 @@ const buildGraph = async (
       };
       handoffHandlers[toolName] = () => {
         if (!chosen) chosen = edge.targetKey;
-        return `Transferring to ${edge.targetKey}`;
+        // Selecting an edge does not end the turn; execution continues until the model
+        // produces its final text. A "transferring now" reply reads as though control has
+        // already left, and the model stops short of its own work.
+        return `Handoff to ${edge.targetKey} recorded. Finish your own work and provide your final response.`;
       };
     }
 
     const routedConfig: AiConfigRep = {
       ...node.config,
-      instructions: `${node.config.instructions ?? ''}\n\nSelect exactly one transfer tool to route to the next agent.`,
+      instructions: `${node.config.instructions ?? ''}\n\nComplete your task using your available tools first. Only once you have your final answer, call exactly one transfer tool to route to the next agent.`,
       tools: { ...(node.config.tools ?? {}), ...handoffTools },
     };
 
@@ -310,6 +317,7 @@ const buildGraph = async (
         toolHandlers: { ...(toolHandlers ?? {}), ...handoffHandlers },
         variables: opts.variables,
         graphKey: key,
+        history: opts.history,
       });
       const response = typeof rawRouteResponse === 'string' ? rawRouteResponse : JSON.stringify(rawRouteResponse);
 
@@ -481,6 +489,7 @@ export const graph = (
     input: string | undefined,
     context: LDContext,
     variables?: Record<string, unknown>,
+    history?: Message[],
   ) => Promise<ProviderGraphResponse>;
 } => {
   // Resolution is cached per context reference so multiple invoke() invocations
@@ -491,6 +500,7 @@ export const graph = (
     input: string | undefined,
     context: LDContext,
     variables?: Record<string, unknown>,
+    history?: Message[],
   ): Promise<ProviderGraphResponse> => {
     const resolvedInput = input ?? '';
     const resolvedOptions: GraphOptions = {
@@ -547,6 +557,10 @@ export const graph = (
           steps += 1;
           const routeOpts: RunNodeOptions = { variables };
           if (previousNode) routeOpts.from = previousNode;
+          // History provides prior conversation context to the entry point only.
+          // After the root hop, nodes stay oriented through the string threading
+          // built below, so history is not re-sent to downstream handlers.
+          else if (history && history.length > 0) routeOpts.history = history;
           const res: RouteResult = await def.route(current, currentInput, routeOpts);
           accumulate(current, res);
           last = res;

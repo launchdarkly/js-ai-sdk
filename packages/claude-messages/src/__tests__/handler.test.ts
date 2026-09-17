@@ -1056,6 +1056,50 @@ describe('createClaudeMessagesHandler', () => {
     expect(allContent).toContain('Hi there');
   });
 
+  it('multimodal image history content blocks are preserved on the wire', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const handler = createClaudeMessagesHandler();
+    const imageHistory = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+          { type: 'text' as const, text: 'What is in this image?' },
+        ],
+      },
+    ];
+    await handler(baseConfig as any, '', {}, {}, imageHistory);
+    const call = mockMessagesCreate.mock.calls[0][0];
+    const serialized = JSON.stringify(call.messages);
+    expect(serialized).toContain('"type":"image"');
+    expect(serialized).toContain('abc123');
+    expect(call.messages.filter((m: { role: string }) => m.role === 'user')).toHaveLength(1);
+  });
+
+  it('merges image-only history with userInput into one user turn (no consecutive users)', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const handler = createClaudeMessagesHandler();
+    const imageHistory = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+        ],
+      },
+    ];
+    await handler(baseConfig as any, 'What colour is this?', {}, {}, imageHistory);
+    const call = mockMessagesCreate.mock.calls[0][0];
+    const roles = call.messages.map((m: { role: string }) => m.role);
+    // Anthropic requires alternating roles — the image turn and the question must not
+    // arrive as two consecutive user messages.
+    expect(roles.some((r: string, i: number) => r === 'user' && roles[i + 1] === 'user')).toBe(false);
+    const last = call.messages[call.messages.length - 1];
+    expect(last.role).toBe('user');
+    const serialized = JSON.stringify(last.content);
+    expect(serialized).toContain('"type":"image"');
+    expect(serialized).toContain('What colour is this?');
+  });
+
   // ── §1.9 streaming ignores outputFormat ─────────────────────────────────────
 
   it('streaming handler does not inject outputFormat schema into system prompt', async () => {

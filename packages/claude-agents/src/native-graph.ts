@@ -4,6 +4,7 @@ import {
   type GraphDefinition,
   type GraphNode,
   getClient,
+  type Message,
   NATIVE_TOOL_KEY,
   NativeTool,
   type ProviderGraphResponse,
@@ -12,7 +13,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
-import { buildPrompt, buildToolMCP, partitionTools } from './handler.js';
+import { buildPrompt, buildQueryPrompt, buildToolMCP, partitionTools } from './handler.js';
 
 const TOOL_MCP_NAME = 'tool-mcp';
 const SUBAGENT_MCP_NAME = 'subagents';
@@ -81,10 +82,14 @@ const runQuery = async (
   graphKey: string,
   runId: string,
   childSubAgentTools: ReturnType<typeof tool>[],
+  // Root-only: prior conversation turns, streamed to `query()` as multimodal-native
+  // input. Sub-agents are reached through tool calls and never receive `history`.
+  history?: Message[],
 ): Promise<{ output: string; usage: { input: number; output: number; total: number } }> => {
   const trackData = makeNodeTrackData(node, graphKey, runId);
   const wrappedHandlers = wrapNativeTools(toolHandlers, ldContext, trackData);
   const { prompt, systemPrompt } = buildPrompt(node.config, input, variables);
+  const queryPrompt = buildQueryPrompt(node.config, input, variables, history, prompt);
 
   const { nativeToolMap, userConfigTools, nativeToolNames } = partitionTools(node.config.tools, wrappedHandlers);
 
@@ -112,7 +117,7 @@ const runQuery = async (
   let rawUsage: Record<string, unknown> = {};
 
   for await (const message of query({
-    prompt,
+    prompt: queryPrompt,
     options: {
       model: node.config.model.name,
       tools: nativeToolNames.length > 0 ? nativeToolNames : [],
@@ -166,8 +171,14 @@ export const toClaudeAgents = (
     /** LaunchDarkly context used for tracking events. Required for LD telemetry. */
     context?: LDContext;
   },
-): { invoke: (input?: string, variables?: Record<string, unknown>) => Promise<ProviderGraphResponse> } => {
-  const invoke = async (input = '', variables: Record<string, unknown> = {}): Promise<ProviderGraphResponse> => {
+): {
+  invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
+} => {
+  const invoke = async (
+    input = '',
+    variables: Record<string, unknown> = {},
+    history?: Message[],
+  ): Promise<ProviderGraphResponse> => {
     const def = await defPromise;
     if (!def.enabled) {
       throw new Error(`Agent graph "${def.key}" is disabled`);
@@ -193,11 +204,25 @@ export const toClaudeAgents = (
         node: GraphNode,
         nodeInput: string,
         childSubAgentTools: ReturnType<typeof tool>[],
+        // Root-only: applied to the entry node via the Anthropic-native streamed path (or
+        // forwarded to `runNode` for a non-Anthropic root). Sub-agent calls omit it, so
+        // downstream nodes never receive the original history array.
+        nodeHistory?: Message[],
       ): Promise<{ output: string; usage: { input: number; output: number; total: number } }> => {
         if (isAnthropicProvider(node)) {
-          return runQuery(node, nodeInput, variables, rawHandlers, ldContext, def.key, runId, childSubAgentTools);
+          return runQuery(
+            node,
+            nodeInput,
+            variables,
+            rawHandlers,
+            ldContext,
+            def.key,
+            runId,
+            childSubAgentTools,
+            nodeHistory,
+          );
         }
-        const res = await def.runNode(node, nodeInput, { toolHandlers: rawHandlers, variables });
+        const res = await def.runNode(node, nodeInput, { toolHandlers: rawHandlers, variables, history: nodeHistory });
         const outputStr = typeof res.response === 'string' ? res.response : JSON.stringify(res.response);
         return {
           output: outputStr,
@@ -268,7 +293,7 @@ export const toClaudeAgents = (
       let rootUsage = { input: 0, output: 0, total: 0 };
 
       try {
-        const result = await runForNode(root, input, rootChildSubAgentTools);
+        const result = await runForNode(root, input, rootChildSubAgentTools, history);
         finalOutput = result.output;
         rootUsage = result.usage;
         span.setStatus({ code: SpanStatusCode.OK });
