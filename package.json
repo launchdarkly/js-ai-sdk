@@ -15,7 +15,7 @@
     "test": "vitest run examples/utils.test.ts && yarn workspaces run test",
     "typecheck": "yarn workspaces run typecheck",
     "format": "biome format --write .",
-    "format:check": "biome format --check .",
+    "format:check": "biome format .",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "code:check": "biome check .",
