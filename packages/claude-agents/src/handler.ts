@@ -882,6 +882,37 @@ function buildOpeningMessages(
   return turns.map((turn) => ({ role: turn.role, parts: turnToSpanParts(turn.content) }));
 }
 
+/**
+ * `Options` keys this handler forwards verbatim from `config.model.parameters`, so an AI Config can
+ * cap turns or tune agent-run behaviour without a code change here. Anthropic's raw Messages API
+ * knobs (`temperature`, `max_tokens`, …) have no equivalent on this SDK's `Options` — the Claude
+ * Agent SDK runs the CLI, not a completions call — so keys outside this list are ignored rather
+ * than spread through, per the contract that unrecognized `model.parameters` keys are dropped, not
+ * forwarded to a shape the SDK does not accept.
+ */
+const FORWARDED_MODEL_PARAMETER_KEYS = [
+  'maxTurns',
+  'maxThinkingTokens',
+  'maxBudgetUsd',
+  'effort',
+  'fallbackModel',
+  'thinking',
+] as const;
+
+/**
+ * Picks the subset of `config.model.parameters` that maps onto `query()`'s `Options` type,
+ * unchanged otherwise: no default turn cap, no default budget — a config that sets nothing here
+ * produces `{}`, so `query()` sees exactly what it always has.
+ */
+function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
+  if (!parameters) return {};
+  const forwarded: Record<string, unknown> = {};
+  for (const key of FORWARDED_MODEL_PARAMETER_KEYS) {
+    if (parameters[key] !== undefined) forwarded[key] = parameters[key];
+  }
+  return forwarded;
+}
+
 function buildQueryOptions(
   config: AiConfigRep,
   prompt: string | AsyncIterable<SDKUserMessage>,
@@ -981,6 +1012,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
               mcpAllowedTools,
               toolMCP,
               toolTelemetry?.hooks,
+              buildModelParameterOptions(config.model.parameters),
             ),
           )) {
             recordConversationId(span, message);
@@ -1108,6 +1140,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
             toolMCP,
             toolTelemetry?.hooks,
             {
+              ...buildModelParameterOptions(config.model.parameters),
               includePartialMessages: true,
             },
           ),
