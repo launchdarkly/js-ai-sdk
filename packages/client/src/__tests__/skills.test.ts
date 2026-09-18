@@ -96,6 +96,15 @@ function rawSkill(overrides: Partial<RawSkillObject> & { key?: unknown } = {}): 
   } as RawSkillObject;
 }
 
+/**
+ * One over-cap string for the whole file.
+ *
+ * At 10 MiB this costs real time and memory to allocate and to hash, and §3.21
+ * asks for one true over-cap case rather than one per test — so the cases that
+ * need it share this.
+ */
+const OVERSIZE = 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1);
+
 function skill(content: Uint8Array = SKILL_BODY_BYTES, key = 'test-skill', version = 1): Skill {
   return createSkill({ key, version, content, contentHash: hash(content) });
 }
@@ -383,6 +392,60 @@ describe('skillRefs', () => {
   it('returns an empty list for a null or undefined config', () => {
     expect(skillRefs(null)).toEqual([]);
     expect(skillRefs(undefined)).toEqual([]);
+  });
+
+  it('drops a malformed entry and logs one warning per drop', async () => {
+    // The silence is what makes this load-bearing rather than cosmetic. The
+    // projection's output is what a caller hands `writeSkills`, and a shortened
+    // list is indistinguishable there from "that skill is no longer requested" —
+    // so with `prune: true` (the default) a silently dropped entry *deletes the
+    // skill's files*. One warning per drop, each naming the position, is what
+    // lets an operator find the offending entry.
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const refs = skillRefs({
+        ...base,
+        skills: [
+          { key: 'ok', version: 1 },
+          // Not an object at all.
+          'nope' as unknown as { key: string; version: number },
+          // An invalid key.
+          { key: 'Not/A/Key', version: 1 },
+          // An invalid version.
+          { key: 'also-ok', version: 0 },
+          { key: 'also-ok', version: 2 },
+        ],
+      });
+
+      // The usable entries survive, in order.
+      expect(refs).toEqual([
+        { key: 'ok', version: 1 },
+        { key: 'also-ok', version: 2 },
+      ]);
+
+      const lines = spy.mock.calls.map(([line]) => String(line));
+      expect(lines).toHaveLength(3);
+      // Each names its own position, so three drops are three distinct reports
+      // rather than one summary an operator cannot act on.
+      expect(lines[0]).toContain('skills[1]');
+      expect(lines[1]).toContain('skills[2]');
+      expect(lines[2]).toContain('skills[3]');
+      for (const line of lines) expect(line).toContain('dropped from the projection');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('warns about nothing when every entry is usable', async () => {
+    // The positive control: a suite in which the warning never fires at all
+    // cannot tell a per-drop warning from an unconditional one.
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(skillRefs({ ...base, skills: [{ key: 'a', version: 1 }] })).toHaveLength(1);
+      expect(spy.mock.calls).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('emits no telemetry', () => {
@@ -1096,9 +1159,8 @@ describe('integrity verification', () => {
   it('rejects content one byte over the size cap even when its hash matches', async () => {
     const emitter = new RecordingEmitter();
     _setEmitterForTesting(emitter);
-    const oversize = 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1);
     const store = new InMemorySkillStore();
-    store.put(rawSkill({ key: 'a', content: oversize }));
+    store.put(rawSkill({ key: 'a', content: OVERSIZE }));
     _setStore(store);
 
     expect(await getSkill('a')).toBeNull();
@@ -1291,6 +1353,33 @@ describe('telemetry seam, accessor half', () => {
     expect(props.expected_hash).toBe('b'.repeat(64));
     expect(props.observed_hash).toBe(hash(SKILL_BODY));
     expect(props.language).toBe('typescript');
+    // Exactly those five and no more: the signal's property set is a documented
+    // allowlist, so the assertion is on the whole set rather than on each
+    // member. The five present is half a test.
+    expect(Object.keys(props).sort()).toEqual(['expected_hash', 'language', 'observed_hash', 'skill_key', 'version']);
+  });
+
+  it('keeps the four record-only fields out of the signal', async () => {
+    // The log record is the larger of the two surfaces and carries four fields
+    // the signal must not: a stable `event` identity, the `action` taken, the
+    // human-readable `reason`, and the machine-parseable `reason_code`. Letting
+    // them leak into the signal is the regression this guards — the signal's
+    // property set is an allowlist that does not grow, and the two surfaces are
+    // deliberately different sizes.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    _setStore(new DictStore({ a: rawSkill({ key: 'a', contentHash: 'b'.repeat(64) }) }));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await getSkill('a');
+    } finally {
+      spy.mockRestore();
+    }
+
+    const [props] = emitter.signals(INTEGRITY_SIGNAL);
+    for (const field of ['event', 'action', 'reason', 'reason_code']) {
+      expect(field in props, field).toBe(false);
+    }
   });
 
   it('never puts the skill body in a signal', async () => {
@@ -1475,7 +1564,7 @@ describe('integrity-failure log record', () => {
     ['missing_content', spoiled({}, ['content']), GET],
     ['missing_content_hash', spoiled({}, ['contentHash']), GET],
     ['not_utf8', spoiled({ content: surrogate, contentHash: hash(Buffer.from(surrogate, 'utf-8')) }), GET],
-    ['over_size_cap', spoiled({ content: 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1) }), GET],
+    ['over_size_cap', spoiled({ content: OVERSIZE }), GET],
     ['hash_mismatch', spoiled({ contentHash: 'd'.repeat(64) }), GET],
   ];
 
@@ -1657,6 +1746,57 @@ describe('integrity-failure log record', () => {
     const [{ line }] = await logged(() => getSkill('a'));
 
     expect(line).not.toContain(secret);
+  });
+
+  it('agrees with the signal on every key the two surfaces share', async () => {
+    // The record's fields are *spread* from the signal's rather than rebuilt,
+    // and that is the property worth pinning: two independently assembled
+    // mappings would drift, and the ones most likely to drift are exactly the
+    // ones that matter — which fields are redacted and which are omitted. So
+    // this captures both surfaces from one failure and compares them key by key.
+    //
+    // A *redacting* failure on purpose: `contentHash` is not a digest, so
+    // `expected_hash` goes through the replacement branch on its way into both
+    // surfaces. A well-formed failure would compare equal even against an
+    // implementation that rebuilt the record by hand.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    _setStore(new DictStore({ a: rawSkill({ key: 'a', version: 7, contentHash: 'not-a-digest' }) }));
+
+    const [{ record }] = await logged(() => getSkill('a'));
+    const [props] = emitter.signals(INTEGRITY_SIGNAL);
+
+    // Every key the signal carries is a key the record carries — the overlap is
+    // the signal's whole property set, not an incidental one or two.
+    expect(Object.keys(props).sort()).toEqual(['expected_hash', 'language', 'observed_hash', 'skill_key', 'version']);
+    for (const key of Object.keys(props)) expect(record[key], key).toEqual(props[key]);
+    // Including the redaction, which is the half a rebuilt record loses.
+    expect(props.expected_hash).toBe('<not-a-sha256-digest>');
+  });
+
+  it('agrees with the signal on which fields are omitted, not only on values', async () => {
+    // The other half of "spread, not rebuilt": a field neither surface knows has
+    // to be missing from both. A record assembled separately is exactly where an
+    // explicit `null` or a stale default creeps in on one side only.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const raw = rawSkill({ key: 'a' });
+    // No content and an unusable version: nothing was hashed, so neither hash is
+    // known, and the version cannot be reported either.
+    delete raw.content;
+    raw.version = 0;
+    _setStore(new DictStore({ a: raw }));
+
+    const [{ record }] = await logged(() => getSkill('a'));
+    const [props] = emitter.signals(INTEGRITY_SIGNAL);
+
+    for (const key of ['version', 'expected_hash', 'observed_hash']) {
+      expect(key in props, `signal ${key}`).toBe(false);
+      expect(key in record, `record ${key}`).toBe(false);
+    }
+    // And what is left still agrees.
+    expect(Object.keys(props).sort()).toEqual(['language', 'skill_key']);
+    for (const key of Object.keys(props)) expect(record[key], key).toEqual(props[key]);
   });
 
   it('is logged with no emitter configured — telemetry off is not detection off', async () => {
