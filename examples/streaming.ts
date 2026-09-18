@@ -23,11 +23,16 @@ export async function run(key: string, userInput: string): Promise<void> {
     }).stream(userInput, newContext()),
   );
 
+  let wroteChunk = false;
   for await (const event of stream) {
     if (event.type === 'chunk') {
       process.stdout.write(event.text);
+      wroteChunk = true;
     } else {
       // Final event — full response + normalized usage
+      if (!wroteChunk) {
+        process.stdout.write(event.response);
+      }
       process.stdout.write('\n\n');
       process.stderr.write(`[debug] done event response length: ${event.response?.length ?? 0}\n`);
       process.stderr.write(`[debug] done event response preview: ${String(event.response).slice(0, 100)}\n`);

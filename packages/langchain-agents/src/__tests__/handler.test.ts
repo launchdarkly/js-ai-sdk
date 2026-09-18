@@ -313,6 +313,20 @@ describe('createLangChainAgentsHandler', () => {
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.usage.total_tokens', 12);
   });
 
+  it.each([
+    ['OpenAI', 'openai'],
+    ['Bedrock', 'bedrock'],
+    ['Azure', 'azure'],
+    ['Anthropic', 'anthropic'],
+    ['', 'openai'],
+  ] as const)('sets gen_ai.provider.name from config %s', async (providerName, expected) => {
+    mockCreateAgent.mockReturnValue(makeCallbackAgent({ output: 'ok', inputTokens: 1, outputTokens: 1 }));
+    const cfg = { ...baseConfig, provider: { name: providerName } };
+    await createLangChainAgentsHandler({} as any)(cfg as any, 'q');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', expected);
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.system', 'langchain');
+  });
+
   // ── LaunchDarkly correlation ────────────────────────────────────────────────
   //
   // The `feature_flag` span event is how the AI Config Monitoring tab locates a trace
@@ -1006,6 +1020,80 @@ describe('model source', () => {
     await createLangChainAgentsHandler()(cfg as any, 'q');
     expect(MockChatAnthropic).toHaveBeenCalledWith({ temperature: 0.1, model: 'claude-sonnet-4-5' });
     expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: constructed }));
+  });
+
+  it('prepends model.region onto the Bedrock model id once', async () => {
+    const constructed = { tag: 'bedrock' };
+    MockChatOpenAI.mockImplementation(function MockChatOpenAI() {
+      return constructed;
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'Bedrock' },
+      model: { name: 'anthropic.claude-sonnet-4-5', region: 'us', parameters: { temperature: 0.2 } },
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({
+      temperature: 0.2,
+      model: 'us.anthropic.claude-sonnet-4-5',
+    });
+    expect(cfg.model.name).toBe('anthropic.claude-sonnet-4-5');
+  });
+
+  it('does not double a Bedrock inference-profile prefix', async () => {
+    const constructed = { tag: 'bedrock' };
+    MockChatOpenAI.mockImplementation(function MockChatOpenAI() {
+      return constructed;
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'Bedrock' },
+      model: { name: 'us.anthropic.claude-sonnet-4-5', region: 'us' },
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ model: 'us.anthropic.claude-sonnet-4-5' });
+  });
+
+  it('leaves a Bedrock model name unchanged when region is absent', async () => {
+    const constructed = { tag: 'bedrock' };
+    MockChatOpenAI.mockImplementation(function MockChatOpenAI() {
+      return constructed;
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'Bedrock' },
+      model: { name: 'anthropic.claude-sonnet-4-5' },
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ model: 'anthropic.claude-sonnet-4-5' });
+  });
+
+  it('ignores model.region for a non-Bedrock provider', async () => {
+    const constructed = { tag: 'openai' };
+    MockChatOpenAI.mockImplementation(function MockChatOpenAI() {
+      return constructed;
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'OpenAI' },
+      model: { name: 'gpt-4o', region: 'us' },
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ model: 'gpt-4o' });
+  });
+
+  it('passes a prefixed Bedrock name to a factory without mutating the original config', async () => {
+    const llm = { invoke: vi.fn() };
+    const factory = vi.fn().mockReturnValue(llm);
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'Bedrock' },
+      model: { name: 'anthropic.claude-sonnet-4-5', region: 'us', parameters: { temperature: 0.2 } },
+    };
+    await createLangChainAgentsHandler(factory)(cfg as any, 'q');
+    expect(factory.mock.calls[0][0].model.name).toBe('us.anthropic.claude-sonnet-4-5');
+    expect(cfg.model.name).toBe('anthropic.claude-sonnet-4-5');
+    expect(factory.mock.calls[0][0]).not.toBe(cfg);
   });
 
   it('resolves a factory on the streaming path', async () => {
