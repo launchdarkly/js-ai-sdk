@@ -181,8 +181,8 @@ function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record
  * A function in `llm` is called with the evaluated config. An instance is used as-is.
  * Otherwise, the provider and model name from the AI config are used to
  * instantiate the appropriate model via a dynamic import, so that neither
- * @langchain/openai nor @langchain/anthropic is a hard dependency. Parameters are
- * passed through unchanged.
+ * @langchain/openai, @langchain/anthropic, nor @langchain/aws is a hard
+ * dependency. Parameters are passed through unchanged.
  */
 async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource): Promise<BaseChatModel> {
   const invocation = configForModelCall(config);
@@ -200,6 +200,16 @@ async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource)
       );
     }
     return new mod.ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022'));
+  }
+  if (providerName === 'bedrock') {
+    // biome-ignore lint/suspicious/noExplicitAny: @langchain/aws loaded via dynamic import with no static types
+    let mod: any;
+    try {
+      mod = await import('@langchain/aws');
+    } catch {
+      throw new Error('Using Bedrock models requires @langchain/aws. Install it with: npm install @langchain/aws');
+    }
+    return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, ''));
   }
   // biome-ignore lint/suspicious/noExplicitAny: @langchain/openai loaded via dynamic import with no static types
   let mod: any;

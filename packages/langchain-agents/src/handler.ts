@@ -275,6 +275,17 @@ async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSourc
     // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
     return new ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022') as any);
   }
+  if (provider === 'bedrock') {
+    // biome-ignore lint/suspicious/noExplicitAny: @langchain/aws loaded via dynamic import with no static types
+    let mod: any;
+    try {
+      mod = await import('@langchain/aws');
+    } catch {
+      throw new Error('Using Bedrock models requires @langchain/aws. Install it with: npm install @langchain/aws');
+    }
+    // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
+    return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '') as any);
+  }
   // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
   return new ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o') as any);
 }

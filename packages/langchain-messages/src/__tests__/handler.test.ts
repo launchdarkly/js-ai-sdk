@@ -66,7 +66,12 @@ vi.mock('@langchain/anthropic', () => ({
   ChatAnthropic: vi.fn().mockImplementation(() => ({})),
 }));
 
+vi.mock('@langchain/aws', () => ({
+  ChatBedrockConverse: vi.fn().mockImplementation(() => ({})),
+}));
+
 import { ChatAnthropic } from '@langchain/anthropic';
+import { ChatBedrockConverse } from '@langchain/aws';
 import { ChatOpenAI } from '@langchain/openai';
 import { createLangChainHandler } from '../handler.js';
 
@@ -1254,6 +1259,7 @@ describe('model source', () => {
   beforeEach(() => {
     vi.mocked(ChatOpenAI).mockClear();
     vi.mocked(ChatAnthropic).mockClear();
+    vi.mocked(ChatBedrockConverse).mockClear();
   });
 
   it('calls a factory with the evaluated config and uses the returned model', async () => {
@@ -1299,7 +1305,7 @@ describe('model source', () => {
   });
 
   it('prepends model.region onto the Bedrock model id once', async () => {
-    vi.mocked(ChatOpenAI).mockImplementation(function MockChatOpenAI() {
+    vi.mocked(ChatBedrockConverse).mockImplementation(function MockChatBedrockConverse() {
       return makeMockLLM('bedrock') as any;
     });
     const cfg = {
@@ -1308,7 +1314,7 @@ describe('model source', () => {
       model: { name: 'anthropic.claude-sonnet-4-5', region: 'us', parameters: { temperature: 0.2 } },
     };
     await createLangChainHandler()(cfg as any, 'q');
-    expect(ChatOpenAI).toHaveBeenCalledWith({
+    expect(ChatBedrockConverse).toHaveBeenCalledWith({
       temperature: 0.2,
       model: 'us.anthropic.claude-sonnet-4-5',
     });
@@ -1316,7 +1322,7 @@ describe('model source', () => {
   });
 
   it('does not double a Bedrock inference-profile prefix', async () => {
-    vi.mocked(ChatOpenAI).mockImplementation(function MockChatOpenAI() {
+    vi.mocked(ChatBedrockConverse).mockImplementation(function MockChatBedrockConverse() {
       return makeMockLLM('bedrock') as any;
     });
     const cfg = {
@@ -1325,11 +1331,11 @@ describe('model source', () => {
       model: { name: 'us.anthropic.claude-sonnet-4-5', region: 'us' },
     };
     await createLangChainHandler()(cfg as any, 'q');
-    expect(ChatOpenAI).toHaveBeenCalledWith({ model: 'us.anthropic.claude-sonnet-4-5' });
+    expect(ChatBedrockConverse).toHaveBeenCalledWith({ model: 'us.anthropic.claude-sonnet-4-5' });
   });
 
   it('leaves a Bedrock model name unchanged when region is absent', async () => {
-    vi.mocked(ChatOpenAI).mockImplementation(function MockChatOpenAI() {
+    vi.mocked(ChatBedrockConverse).mockImplementation(function MockChatBedrockConverse() {
       return makeMockLLM('bedrock') as any;
     });
     const cfg = {
@@ -1338,7 +1344,7 @@ describe('model source', () => {
       model: { name: 'anthropic.claude-sonnet-4-5' },
     };
     await createLangChainHandler()(cfg as any, 'q');
-    expect(ChatOpenAI).toHaveBeenCalledWith({ model: 'anthropic.claude-sonnet-4-5' });
+    expect(ChatBedrockConverse).toHaveBeenCalledWith({ model: 'anthropic.claude-sonnet-4-5' });
   });
 
   it('ignores model.region for a non-Bedrock provider', async () => {

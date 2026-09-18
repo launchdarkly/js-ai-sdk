@@ -48,10 +48,14 @@
   },
   "peerDependencies": {
     "@langchain/anthropic": ">=0.3",
+    "@langchain/aws": ">=1.0",
     "@langchain/openai": ">=1.0"
   },
   "peerDependenciesMeta": {
     "@langchain/anthropic": {
+      "optional": true
+    },
+    "@langchain/aws": {
       "optional": true
     },
     "@langchain/openai": {
@@ -60,6 +64,7 @@
   },
   "devDependencies": {
     "@langchain/anthropic": "1.5.1",
+    "@langchain/aws": "1.3.9",
     "@langchain/openai": "^1.4.7",
     "@opentelemetry/context-async-hooks": "^2.8.0",
     "@opentelemetry/sdk-trace-base": "^2.8.0",
