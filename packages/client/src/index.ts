@@ -19,6 +19,10 @@ export { buildJudgeTasks, runJudge } from './judges.js';
 export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';
+export { allSkills, getSkill, getSkillResult, getSkills, InMemorySkillStore, skillRefs } from './skills.js';
+export { MAX_SKILL_CONTENT_BYTES, SKILL_OBJECT_KIND } from './skills-core.js';
+export type { WriteSkillsOptions } from './skills-fs.js';
+export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
 export type {
   ConfigArgs,
   GraphArgs,
@@ -37,13 +41,23 @@ export type {
   LDSingleKindContext,
   LDUser,
   Message,
+  OnUnavailable,
   ProviderGraphResponse,
   ProviderHandler,
   ProviderResponse,
   ProviderSetupFn,
+  RawSkillObject,
+  ReconcileAction,
+  ReconcileActionKind,
+  ReconcileReport,
   RegistryInput,
   RouteResult,
   RunNodeOptions,
+  Skill,
+  SkillOutcome,
+  SkillOutcomeReason,
+  SkillReference,
+  SkillStore,
   StreamEvent,
   TokenUsage,
   Tool,
@@ -52,7 +66,14 @@ export type {
   TraverseVisitor,
   VariationMeta as LDVariationMeta,
 } from './types.js';
-export { GraphTopologySchema, NATIVE_TOOL_KEY, NativeTool } from './types.js';
+export {
+  createSkill,
+  createSkillOutcome,
+  createSkillReference,
+  GraphTopologySchema,
+  NATIVE_TOOL_KEY,
+  NativeTool,
+} from './types.js';
 export type { RunUsage, SpanUsage } from './utils.js';
 export {
   addCachedTokensToInput,
