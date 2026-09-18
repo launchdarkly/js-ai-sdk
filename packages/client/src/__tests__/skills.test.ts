@@ -996,6 +996,25 @@ describe('allSkills', () => {
     expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
   });
 
+  it('records no signal for a key an unusable sibling did not stop resolving', async () => {
+    // The other side of the rule above. A store may hold a malformed object
+    // beside a well-formed version of the same key; the well-formed one
+    // resolves, so the key was never withheld and must not be reported as
+    // though it were. Keeping the sibling could only add an integrity failure
+    // for a skill whose integrity is not in question.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 1 }));
+    store.put(rawSkill({ key: 'a', version: 'nope' as unknown as number }));
+    _setStore(store);
+
+    const found = await allSkills();
+
+    expect(found.map((s) => s.key)).toEqual(['a']);
+    expect(emitter.signals(INTEGRITY_SIGNAL)).toEqual([]);
+  });
+
   it('returns an empty list for an empty store', async () => {
     _setStore(new InMemorySkillStore());
     expect(await allSkills()).toEqual([]);

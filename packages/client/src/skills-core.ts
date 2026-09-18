@@ -499,10 +499,13 @@ export type ServedObject = {
  * The store key is carried through rather than discarded because the reconcile
  * attributes a failure to it when the object's own key is unusable.
  *
- * Objects too malformed to carry a usable key and version are **kept**, not
- * dropped, so verification is what withholds them: a silently dropped object
- * falls out of the requested set, and prune would then delete the last
- * known-good copy already on disk.
+ * An object too malformed to carry a usable key and version is **kept**, so
+ * verification is what withholds it: a silently dropped object falls out of the
+ * requested set, and prune would then delete the last known-good copy already on
+ * disk. The exception is an object whose skill key resolved anyway from another
+ * version — there the resolved object already holds the key in the requested
+ * set, so keeping the malformed one would only report a withholding for a key
+ * that in fact resolved.
  */
 export function newestByKey(objects: Record<string, RawSkillObject>): ServedObject[] {
   // The winning version is carried beside the object rather than re-read off it:
@@ -520,7 +523,16 @@ export function newestByKey(objects: Record<string, RawSkillObject>): ServedObje
     const held = best.get(key);
     if (held === undefined || version > held.version) best.set(key, { served: { objectKey, raw }, version });
   }
-  return [...[...best.values()].map(({ served }) => served), ...unusable];
+  // An unusable object whose own key resolved from another version is dropped
+  // here rather than passed on: the resolved object already holds that key in
+  // the requested set, so prune is already held off the copy on disk and the
+  // only thing the malformed sibling could still add is a withholding reported
+  // against a key that resolved.
+  const withheld = unusable.filter(({ raw }) => {
+    const key = typeof raw === 'object' && raw !== null ? raw.key : undefined;
+    return !(isValidSkillKey(key) && best.has(key));
+  });
+  return [...[...best.values()].map(({ served }) => served), ...withheld];
 }
 
 // ---------------------------------------------------------------------------
