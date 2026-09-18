@@ -189,6 +189,55 @@ describe('createClaudeAgentsHandler', () => {
     expect(result.output).toBe('final answer');
   });
 
+  it('forwards model.parameters.maxTurns to query options', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { maxTurns: 3 } } };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBe(3);
+  });
+
+  it('forwards recognized model.parameters keys to query options', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { maxThinkingTokens: 2048, maxBudgetUsd: 1.5, effort: 'high', fallbackModel: 'claude-haiku' },
+      },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxThinkingTokens).toBe(2048);
+    expect(options.maxBudgetUsd).toBe(1.5);
+    expect(options.effort).toBe('high');
+    expect(options.fallbackModel).toBe('claude-haiku');
+  });
+
+  it('ignores unrecognized model.parameters keys rather than forwarding them', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { temperature: 0.7, max_tokens: 100 } },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.temperature).toBeUndefined();
+    expect(options.max_tokens).toBeUndefined();
+  });
+
+  it('does not set maxTurns or other forwarded keys when model.parameters is absent', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await createClaudeAgentsHandler()(baseConfig as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBeUndefined();
+    expect(options.maxThinkingTokens).toBeUndefined();
+    expect(options.maxBudgetUsd).toBeUndefined();
+    expect(options.effort).toBeUndefined();
+    expect(options.fallbackModel).toBeUndefined();
+    expect(options.thinking).toBeUndefined();
+  });
+
   // ── 1.3 Tool wiring ─────────────────────────────────────────────────────────
 
   it('builds MCP server when config.tools has user-defined tools', async () => {
@@ -490,6 +539,18 @@ describe('createClaudeAgentsHandler', () => {
     const done = events.at(-1) as any;
     expect(done.type).toBe('done');
     expect(done.output).toBe('Final answer');
+  });
+
+  it('forwards model.parameters.maxTurns alongside includePartialMessages on the streaming path', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+    });
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { maxTurns: 5 } } };
+    const handler = createClaudeAgentsHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBe(5);
+    expect(options.includePartialMessages).toBe(true);
   });
 
   it('sets span attributes and puts content on attributes when enabled', async () => {
