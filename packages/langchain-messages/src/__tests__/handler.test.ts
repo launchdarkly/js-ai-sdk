@@ -1283,8 +1283,17 @@ describe('model source', () => {
     vi.mocked(ChatOpenAI).mockImplementation(function MockChatOpenAI() {
       return makeMockLLM('default-openai') as any;
     });
-    await createLangChainHandler()(parameterized as any, 'q');
-    expect(ChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, max_tokens: 512, model: 'gpt-4o' });
+    const cfg = {
+      ...parameterized,
+      model: { ...parameterized.model, parameters: { ...parameterized.model.parameters, tools: ['openai-tool'] } },
+    };
+    await createLangChainHandler()(cfg as any, 'q');
+    expect(ChatOpenAI).toHaveBeenCalledWith({
+      temperature: 0.2,
+      max_tokens: 512,
+      tools: ['openai-tool'],
+      model: 'gpt-4o',
+    });
   });
 
   it('spreads model.parameters into the default Anthropic constructor', async () => {
@@ -1311,13 +1320,18 @@ describe('model source', () => {
     const cfg = {
       ...parameterized,
       provider: { name: 'Bedrock' },
-      model: { name: 'anthropic.claude-sonnet-4-5', region: 'us', parameters: { temperature: 0.2 } },
+      model: {
+        name: 'anthropic.claude-sonnet-4-5',
+        region: 'us',
+        parameters: { temperature: 0.2, tools: [{ name: 'duplicated-search' }] },
+      },
     };
     await createLangChainHandler()(cfg as any, 'q');
     expect(ChatBedrockConverse).toHaveBeenCalledWith({
       temperature: 0.2,
       model: 'us.anthropic.claude-sonnet-4-5',
     });
+    expect(cfg.model.parameters.tools).toEqual([{ name: 'duplicated-search' }]);
     expect(cfg.model.name).toBe('anthropic.claude-sonnet-4-5');
   });
 

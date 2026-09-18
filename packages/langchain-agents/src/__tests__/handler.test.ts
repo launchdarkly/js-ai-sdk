@@ -1008,8 +1008,17 @@ describe('model source', () => {
     MockChatOpenAI.mockImplementation(function MockChatOpenAI() {
       return constructed;
     });
-    await createLangChainAgentsHandler()(parameterized as any, 'q');
-    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, max_tokens: 512, model: 'gpt-4o' });
+    const cfg = {
+      ...parameterized,
+      model: { ...parameterized.model, parameters: { ...parameterized.model.parameters, tools: ['openai-tool'] } },
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({
+      temperature: 0.2,
+      max_tokens: 512,
+      tools: ['openai-tool'],
+      model: 'gpt-4o',
+    });
     expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: constructed }));
   });
 
@@ -1036,14 +1045,24 @@ describe('model source', () => {
     const cfg = {
       ...parameterized,
       provider: { name: 'Bedrock' },
-      model: { name: 'anthropic.claude-sonnet-4-5', region: 'us', parameters: { temperature: 0.2 } },
+      tools: {
+        search: { name: 'search', type: 'function', parameters: { type: 'object' }, description: 'Search' },
+      },
+      model: {
+        name: 'anthropic.claude-sonnet-4-5',
+        region: 'us',
+        parameters: { temperature: 0.2, tools: [{ name: 'duplicated-search' }] },
+      },
     };
-    await createLangChainAgentsHandler()(cfg as any, 'q');
+    await createLangChainAgentsHandler()(cfg as any, 'q', { search: vi.fn() });
     expect(MockChatBedrockConverse).toHaveBeenCalledWith({
       temperature: 0.2,
       model: 'us.anthropic.claude-sonnet-4-5',
     });
-    expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: constructed }));
+    expect(mockCreateAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ model: constructed, tools: expect.arrayContaining([expect.anything()]) }),
+    );
+    expect(cfg.model.parameters.tools).toEqual([{ name: 'duplicated-search' }]);
     expect(cfg.model.name).toBe('anthropic.claude-sonnet-4-5');
   });
 
