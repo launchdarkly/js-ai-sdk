@@ -37,16 +37,30 @@ import { toLangChainMessages } from './messages.js';
 const TRACER_NAME = '@launchdarkly/ai-langchain-agents';
 
 /**
- * The provider that actually serves the model.
+ * The configured provider, lower-cased, for `gen_ai.provider.name`.
  *
  * `gen_ai.provider.name` names who served the request, and its semconv enum has no `langchain`
- * member — LangChain is the framework, not the provider. This mirrors the choice
- * `resolveBaseModel` makes, so the attribute agrees with the client that is really used.
- * `gen_ai.system` keeps the `langchain` value the handler shipped, so existing dashboards do not
- * break.
+ * member — LangChain is the framework, not the provider. Empty or missing names fall back to
+ * `openai`. `gen_ai.system` keeps the `langchain` value the handler shipped, so existing
+ * dashboards do not break.
  */
 function servingProvider(config: AiConfigRep): string {
-  return (config.provider?.name ?? '').toLowerCase() === 'anthropic' ? 'anthropic' : 'openai';
+  return (config.provider?.name || 'openai').toLowerCase();
+}
+
+function resolvedModelName(config: AiConfigRep, fallbackName = ''): string {
+  const name = config.model?.name || fallbackName;
+  const provider = (config.provider?.name ?? '').toLowerCase();
+  if (provider !== 'bedrock') return name;
+  const prefix = config.model?.region ?? '';
+  if (!prefix || name.startsWith(`${prefix}.`)) return name;
+  return `${prefix}.${name}`;
+}
+
+function configForModelCall(config: AiConfigRep): AiConfigRep {
+  const resolved = resolvedModelName(config);
+  if (config.model?.name === resolved) return config;
+  return { ...config, model: { ...config.model, name: resolved } };
 }
 
 /**
@@ -246,22 +260,36 @@ export function buildSpanCallbacks(
 export type LangChainModelSource = BaseChatModel | ((config: AiConfigRep) => BaseChatModel | Promise<BaseChatModel>);
 
 function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record<string, unknown> {
-  const parameters =
-    config.model?.parameters && typeof config.model.parameters === 'object' ? config.model.parameters : {};
-  return { ...parameters, model: config.model?.name || fallbackName };
+  const parameters = {
+    ...(config.model?.parameters && typeof config.model.parameters === 'object' ? config.model.parameters : {}),
+  };
+  if ((config.provider?.name ?? '').toLowerCase() === 'bedrock') delete parameters.tools;
+  return { ...parameters, model: resolvedModelName(config, fallbackName) };
 }
 
 async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSource): Promise<BaseChatModel> {
-  if (typeof llm === 'function') return llm(aiConfig);
+  const invocation = configForModelCall(aiConfig);
+  if (typeof llm === 'function') return llm(invocation);
   if (llm) return llm;
-  const provider = (aiConfig.provider?.name ?? '').toLowerCase();
+  const provider = (invocation.provider?.name ?? '').toLowerCase();
   if (provider === 'anthropic') {
     const { ChatAnthropic } = await import('@langchain/anthropic');
     // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
-    return new ChatAnthropic(modelConstructorArgs(aiConfig, 'claude-3-5-sonnet-20241022') as any);
+    return new ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022') as any);
+  }
+  if (provider === 'bedrock') {
+    // biome-ignore lint/suspicious/noExplicitAny: @langchain/aws loaded via dynamic import with no static types
+    let mod: any;
+    try {
+      mod = await import('@langchain/aws');
+    } catch {
+      throw new Error('Using Bedrock models requires @langchain/aws. Install it with: npm install @langchain/aws');
+    }
+    // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
+    return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '') as any);
   }
   // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
-  return new ChatOpenAI(modelConstructorArgs(aiConfig, 'gpt-4o') as any);
+  return new ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o') as any);
 }
 
 const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record<string, ToolHandlerFn>) =>

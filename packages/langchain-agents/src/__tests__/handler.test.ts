@@ -33,6 +33,7 @@ vi.mock('@langchain/core/tools', () => ({
 
 const MockChatOpenAI = vi.hoisted(() => vi.fn().mockImplementation(() => ({})));
 const MockChatAnthropic = vi.hoisted(() => vi.fn().mockImplementation(() => ({})));
+const MockChatBedrockConverse = vi.hoisted(() => vi.fn().mockImplementation(() => ({})));
 
 vi.mock('@langchain/openai', () => ({
   ChatOpenAI: MockChatOpenAI,
@@ -40,6 +41,10 @@ vi.mock('@langchain/openai', () => ({
 
 vi.mock('@langchain/anthropic', () => ({
   ChatAnthropic: MockChatAnthropic,
+}));
+
+vi.mock('@langchain/aws', () => ({
+  ChatBedrockConverse: MockChatBedrockConverse,
 }));
 
 vi.mock('@opentelemetry/api', async (importOriginal) => {
@@ -311,6 +316,20 @@ describe('createLangChainAgentsHandler', () => {
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 8);
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.usage.output_tokens', 4);
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.usage.total_tokens', 12);
+  });
+
+  it.each([
+    ['OpenAI', 'openai'],
+    ['Bedrock', 'bedrock'],
+    ['Azure', 'azure'],
+    ['Anthropic', 'anthropic'],
+    ['', 'openai'],
+  ] as const)('sets gen_ai.provider.name from config %s', async (providerName, expected) => {
+    mockCreateAgent.mockReturnValue(makeCallbackAgent({ output: 'ok', inputTokens: 1, outputTokens: 1 }));
+    const cfg = { ...baseConfig, provider: { name: providerName } };
+    await createLangChainAgentsHandler({} as any)(cfg as any, 'q');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', expected);
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.system', 'langchain');
   });
 
   // ── LaunchDarkly correlation ────────────────────────────────────────────────
@@ -964,6 +983,7 @@ describe('model source', () => {
   beforeEach(() => {
     MockChatOpenAI.mockClear();
     MockChatAnthropic.mockClear();
+    MockChatBedrockConverse.mockClear();
     mockCreateAgent.mockReset();
     mockCreateAgent.mockReturnValue(makeMockAgent());
   });
@@ -988,8 +1008,17 @@ describe('model source', () => {
     MockChatOpenAI.mockImplementation(function MockChatOpenAI() {
       return constructed;
     });
-    await createLangChainAgentsHandler()(parameterized as any, 'q');
-    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, max_tokens: 512, model: 'gpt-4o' });
+    const cfg = {
+      ...parameterized,
+      model: { ...parameterized.model, parameters: { ...parameterized.model.parameters, tools: ['openai-tool'] } },
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({
+      temperature: 0.2,
+      max_tokens: 512,
+      tools: ['openai-tool'],
+      model: 'gpt-4o',
+    });
     expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: constructed }));
   });
 
@@ -1006,6 +1035,91 @@ describe('model source', () => {
     await createLangChainAgentsHandler()(cfg as any, 'q');
     expect(MockChatAnthropic).toHaveBeenCalledWith({ temperature: 0.1, model: 'claude-sonnet-4-5' });
     expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: constructed }));
+  });
+
+  it('prepends model.region onto the Bedrock model id once', async () => {
+    const constructed = { tag: 'bedrock' };
+    MockChatBedrockConverse.mockImplementation(function MockChatBedrockConverse() {
+      return constructed;
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'Bedrock' },
+      tools: {
+        search: { name: 'search', type: 'function', parameters: { type: 'object' }, description: 'Search' },
+      },
+      model: {
+        name: 'anthropic.claude-sonnet-4-5',
+        region: 'us',
+        parameters: { temperature: 0.2, tools: [{ name: 'duplicated-search' }] },
+      },
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q', { search: vi.fn() });
+    expect(MockChatBedrockConverse).toHaveBeenCalledWith({
+      temperature: 0.2,
+      model: 'us.anthropic.claude-sonnet-4-5',
+    });
+    expect(mockCreateAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ model: constructed, tools: expect.arrayContaining([expect.anything()]) }),
+    );
+    expect(cfg.model.parameters.tools).toEqual([{ name: 'duplicated-search' }]);
+    expect(cfg.model.name).toBe('anthropic.claude-sonnet-4-5');
+  });
+
+  it('does not double a Bedrock inference-profile prefix', async () => {
+    const constructed = { tag: 'bedrock' };
+    MockChatBedrockConverse.mockImplementation(function MockChatBedrockConverse() {
+      return constructed;
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'Bedrock' },
+      model: { name: 'us.anthropic.claude-sonnet-4-5', region: 'us' },
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    expect(MockChatBedrockConverse).toHaveBeenCalledWith({ model: 'us.anthropic.claude-sonnet-4-5' });
+  });
+
+  it('leaves a Bedrock model name unchanged when region is absent', async () => {
+    const constructed = { tag: 'bedrock' };
+    MockChatBedrockConverse.mockImplementation(function MockChatBedrockConverse() {
+      return constructed;
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'Bedrock' },
+      model: { name: 'anthropic.claude-sonnet-4-5' },
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    expect(MockChatBedrockConverse).toHaveBeenCalledWith({ model: 'anthropic.claude-sonnet-4-5' });
+  });
+
+  it('ignores model.region for a non-Bedrock provider', async () => {
+    const constructed = { tag: 'openai' };
+    MockChatOpenAI.mockImplementation(function MockChatOpenAI() {
+      return constructed;
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'OpenAI' },
+      model: { name: 'gpt-4o', region: 'us' },
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ model: 'gpt-4o' });
+  });
+
+  it('passes a prefixed Bedrock name to a factory without mutating the original config', async () => {
+    const llm = { invoke: vi.fn() };
+    const factory = vi.fn().mockReturnValue(llm);
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'Bedrock' },
+      model: { name: 'anthropic.claude-sonnet-4-5', region: 'us', parameters: { temperature: 0.2 } },
+    };
+    await createLangChainAgentsHandler(factory)(cfg as any, 'q');
+    expect(factory.mock.calls[0][0].model.name).toBe('us.anthropic.claude-sonnet-4-5');
+    expect(cfg.model.name).toBe('anthropic.claude-sonnet-4-5');
+    expect(factory.mock.calls[0][0]).not.toBe(cfg);
   });
 
   it('resolves a factory on the streaming path', async () => {
