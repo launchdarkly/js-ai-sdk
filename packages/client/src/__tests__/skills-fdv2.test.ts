@@ -49,6 +49,7 @@ import {
   FetchRequester,
   isSkillEvent,
   iterSse,
+  MAX_RESPONSE_CHARS,
   type PollResult,
   ProtocolReader,
   RecoverableTransportError,
@@ -1383,33 +1384,82 @@ describe('SSE framing', () => {
     expect(await framed('event: heart-beat\n\n')).toEqual([['heart-beat', null]]);
   });
 
+  /**
+   * Feeds `iterSse` the same text in reads of a fixed size, so a test can say
+   * which quantity the bound is being pushed past. `sseBody` hands the whole
+   * body over as one read, which is the one shape a real `fetch` never produces:
+   * undici caps its chunks at 64 KiB (16 KiB through gzip) however much the
+   * server wrote at once.
+   */
+  const chunkedBody = (text: string, chunk: number): ReadableStream<Uint8Array> =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        for (let i = 0; i < text.length; i += chunk) controller.enqueue(encoder.encode(text.slice(i, i + chunk)));
+        controller.close();
+      },
+    });
+
+  /** Enqueues exactly the reads given, so a test can place the read boundaries. */
+  const readsOf = (...reads: string[]): ReadableStream<Uint8Array> =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        for (const read of reads) controller.enqueue(encoder.encode(read));
+        controller.close();
+      },
+    });
+
+  const drained = async (body: ReadableStream<Uint8Array>): Promise<Array<[string, unknown]>> => {
+    const seen: Array<[string, unknown]> = [];
+    for await (const event of iterSse(body)) seen.push(event);
+    return seen;
+  };
+
   it('bounds an unterminated line and fails recoverably rather than buffering it without limit', async () => {
     // A server (or a proxy) that never sends a newline would otherwise grow the
     // line buffer until the process ran out of memory. Recoverable, so the
     // connection is dropped and retried rather than the store giving up.
-    const chunks = new ReadableStream<Uint8Array>({
-      start(controller) {
-        const chunk = new TextEncoder().encode('x'.repeat(256 * 1024));
-        for (let i = 0; i < 6; i += 1) controller.enqueue(chunk);
-        controller.close();
-      },
-    });
-    const drain = async (): Promise<void> => {
-      for await (const _ of iterSse(chunks)) {
-        // nothing is expected to dispatch
-      }
-    };
-    await expect(drain()).rejects.toBeInstanceOf(RecoverableTransportError);
+    const newlineless = 'x'.repeat(MAX_RESPONSE_CHARS + 1024);
+    await expect(drained(chunkedBody(newlineless, 1024 * 1024))).rejects.toBeInstanceOf(RecoverableTransportError);
   });
 
   it('bounds the accumulated data lines of one event the same way', async () => {
-    const line = `data: ${'y'.repeat(128 * 1024)}\n`;
-    const drain = async (): Promise<void> => {
-      for await (const _ of iterSse(sseBody(`event: put-object\n${line.repeat(10)}`))) {
-        // nothing is expected to dispatch
-      }
-    };
-    await expect(drain()).rejects.toBeInstanceOf(RecoverableTransportError);
+    // Every read here ends on a line boundary, so no tail is ever carried and the
+    // accumulated `data:` total is the only quantity that grows. That is what
+    // makes this the per-event check rather than the tail check: handed the whole
+    // body in one read, or in reads that straddle the lines, the tail crosses
+    // first and this would pass without the per-event accounting it pins.
+    const line = `data: ${'y'.repeat(1024 * 1024)}\n`;
+    const dataPerLine = line.length - 'data: '.length;
+    const lines = Math.ceil(MAX_RESPONSE_CHARS / dataPerLine) + 1;
+    const body = readsOf('event: put-object\n', ...Array.from({ length: lines }, () => line));
+    await expect(drained(body)).rejects.toThrow(/characters of data for one event/);
+  });
+
+  it('accepts a read that delivered many finished events at once', async () => {
+    // The bound is per event, and the two quantities it measures must not be
+    // summed while a read is still being split: a burst whose events are each
+    // well inside the bound is not one oversized event, however much of it
+    // arrived together. Sized past the bound in total and nowhere near it per
+    // event, which is the only shape that tells the two apart.
+    const one = (i: number) =>
+      `event: put-object\ndata: ${JSON.stringify({ i, pad: 'p'.repeat(4 * 1024 * 1024) })}\n\n`;
+    const count = Math.ceil(MAX_RESPONSE_CHARS / (4 * 1024 * 1024)) + 1;
+    const burst = Array.from({ length: count }, (_, i) => one(i)).join('');
+    expect(burst.length).toBeGreaterThan(MAX_RESPONSE_CHARS);
+    expect(await drained(sseBody(burst))).toHaveLength(count);
+  });
+
+  it('accepts one event larger than the cap verification enforces on content', async () => {
+    // Content rides inline in the envelope, so the transport bound has to clear
+    // the 10 MiB content cap: a skill this size is verification's business to
+    // accept or withhold, and must reach it rather than being dropped as a
+    // framing failure and retried into the failure budget.
+    const big = JSON.stringify({ content: 'z'.repeat(11 * 1024 * 1024) });
+    expect(big.length).toBeLessThan(MAX_RESPONSE_CHARS);
+    const framedEvents = await drained(chunkedBody(`event: put-object\ndata: ${big}\n\n`, 64 * 1024));
+    expect(framedEvents).toEqual([['put-object', JSON.parse(big)]]);
   });
 
   it('still dispatches an event well inside the bound', async () => {
@@ -3372,6 +3422,74 @@ describe('endpoints', () => {
     await expect(requester.stream('(p:a:1)', new AbortController().signal)).rejects.toThrow();
     expect(urls[0]).toBe('https://sdk.example.com/sdk/poll?basis=%28p%3Aa%3A1%29');
     expect(urls[1]).toBe('https://stream.example.com/sdk/stream?basis=%28p%3Aa%3A1%29');
+  });
+
+  /**
+   * An oversized poll body, served in `chunk`-sized reads and counting how many
+   * were pulled. Finite on purpose, at a little past the bound: an unbounded
+   * reader then fails the read count rather than running the worker out of
+   * memory, so a regression here reads as an assertion and not as a crash.
+   */
+  const oversizedPollBody = (chunk: number): { body: ReadableStream<Uint8Array>; reads: () => number } => {
+    const total = Math.ceil(MAX_RESPONSE_CHARS / chunk) + 8;
+    let reads = 0;
+    return {
+      reads: () => reads,
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (reads >= total) {
+            controller.close();
+            return;
+          }
+          reads += 1;
+          controller.enqueue(new TextEncoder().encode('x'.repeat(chunk)));
+        },
+      }),
+    };
+  };
+
+  it('bounds a poll body rather than buffering whatever the server sends', async () => {
+    // `response.text()` would materialize the whole body and leave it to be
+    // measured after, which is no bound at all — the allocation has already
+    // happened. The read count is what pins that it stops early rather than
+    // reading to the end and rejecting the result.
+    const chunk = 1024 * 1024;
+    const { body, reads } = oversizedPollBody(chunk);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }));
+    const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1000);
+    await expect(requester.poll(null, null, new AbortController().signal)).rejects.toBeInstanceOf(
+      RecoverableTransportError,
+    );
+    expect(reads()).toBeLessThanOrEqual(MAX_RESPONSE_CHARS / chunk + 2);
+  });
+
+  it('says nothing was applied when a poll body crosses the bound', async () => {
+    const { body } = oversizedPollBody(4 * 1024 * 1024);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }));
+    const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1000);
+    await expect(requester.poll(null, null, new AbortController().signal)).rejects.toThrow(
+      /exceeded the \d+ character transport bound.*nothing from it was applied/,
+    );
+  });
+
+  it('reassembles a poll body that arrives across several reads', async () => {
+    // The bounded read decodes incrementally, so a multi-byte character split
+    // across two reads must not be mangled into replacement characters — that
+    // would corrupt content the hash is checked against.
+    const payload = JSON.stringify({ events: [{ event: 'put-object', data: { note: 'café — naïve' } }] });
+    const bytes = new TextEncoder().encode(payload);
+    const split = bytes.indexOf(0xc3) + 1; // mid-sequence, inside 'é'
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, split));
+        controller.enqueue(bytes.slice(split));
+        controller.close();
+      },
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }));
+    const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1000);
+    const result = await requester.poll(null, null, new AbortController().signal);
+    expect(result.events).toEqual([['put-object', { note: 'café — naïve' }]]);
   });
 });
 
