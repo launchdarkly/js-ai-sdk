@@ -1264,14 +1264,42 @@ describe('polling against the endpoint', () => {
     ]);
   });
 
-  it('returns an ETag as If-None-Match', async () => {
-    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]), { etag: 'W/"v1"' });
+  it('returns an ETag as If-None-Match for the basis it was issued against', async () => {
+    // An ETag validates one representation of one resource, and the basis is
+    // part of the request that names it. `W/"v1"` answers the request that
+    // carried no basis at all, so it is not offered once the payload it came
+    // with moved the basis on; `W/"v2"` answers a request from `basis-1`, which
+    // is still the question being asked, so it is.
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]], 'basis-1'), { etag: 'W/"v1"' });
+    endpoint.queuePoll(events(['server-intent', serverIntent('none')]), { etag: 'W/"v2"' });
     endpoint.queuePoll([], { status: 304 });
     const store = pollStore();
     store.start();
     await store.waitForSkills(5000);
-    expect(await waitUntil(() => endpoint.requests.length >= 2)).toBe(true);
-    expect(endpoint.requests[1].ifNoneMatch).toBe('W/"v1"');
+    expect(await waitUntil(() => endpoint.requests.length >= 3)).toBe(true);
+    expect(endpoint.requests.slice(0, 3).map((r) => r.query.basis)).toEqual([undefined, 'basis-1', 'basis-1']);
+    expect(endpoint.requests.slice(0, 3).map((r) => r.ifNoneMatch)).toEqual([undefined, undefined, 'W/"v2"']);
+  });
+
+  it('does not offer the etag of a body it never applied', async () => {
+    // The body announced a transfer and then broke off, so the payload it
+    // described was never committed. Offering its etag would invite a `304`
+    // that reports a store still missing that payload as current and healthy —
+    // and unlike the 200 it replaces, a 304 carries nothing to notice that on.
+    endpoint.queuePoll(
+      events(
+        ['server-intent', serverIntent('xfer-full')],
+        ['put-object', putSkill()],
+        ['error', { reason: 'cut off mid-payload' }],
+      ),
+      { etag: 'W/"v1"' },
+    );
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]], 'basis-1'), { etag: 'W/"v2"' });
+    const store = pollStore();
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(endpoint.requests[1].ifNoneMatch).toBeUndefined();
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
 
   it('keeps held content across a 304', async () => {

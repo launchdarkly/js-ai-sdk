@@ -1664,6 +1664,15 @@ export class FDv2SkillStore implements SkillStore {
 
   private basis: string | null = null;
   private etag: string | null = null;
+  /**
+   * The basis the current `etag` was issued against.
+   *
+   * An ETag validates one representation of one resource, and the basis is part
+   * of the request that names it. Holding the pair is what lets `pollOnce` tell
+   * an etag that still answers the question it is about to ask from one that
+   * answers a question it has stopped asking.
+   */
+  private etagBasis: string | null = null;
   private controller: AbortController | null = null;
   private loop: Promise<void> | null = null;
   private failedReason: string | null = null;
@@ -1977,6 +1986,7 @@ export class FDv2SkillStore implements SkillStore {
           }
           this.basis = null;
           this.etag = null;
+          this.etagBasis = null;
           repairingState = true;
         }
         // A connection the server closed while serving it normally ended
@@ -2071,19 +2081,32 @@ export class FDv2SkillStore implements SkillStore {
   }
 
   private async pollOnce(signal: AbortSignal): Promise<void> {
-    const result = await this.requester.poll(this.basis, this.etag, signal);
-    this.etag = result.etag;
+    const basis = this.basis;
+    // Only while the pair still holds. The basis is part of the request, so an
+    // etag issued before the basis moved validates a payload we have stopped
+    // asking for, and a server that answered it `304` would be answering the
+    // previous question. One unconditional request after each commit is the
+    // whole cost: a payload that changed was never going to be a 304 anyway.
+    const etag = this.etagBasis === basis ? this.etag : null;
+    const result = await this.requester.poll(basis, etag, signal);
     if (result.notModified) {
       // A 304 is a successful, current answer: the payload we hold is the payload
-      // the server has. It counts as a first payload so a boot that reconnects
-      // with a cached basis is not blocked on a transfer the server has no reason
-      // to send.
+      // the server has, because the etag that asked for it was issued for a body
+      // this store applied in full. It counts as a first payload so a boot that
+      // reconnects with a cached basis is not blocked on a transfer the server
+      // has no reason to send.
       this.markFirstPayload();
       return;
     }
     for (const [name, data] of result.events) {
       this.dispatch(this.apply(name, data));
     }
+    // Adopted only once the whole body has been applied. A body that threw
+    // partway — an `error` or `goodbye` after an announced transfer — left the
+    // payload it described unapplied, and keeping its etag would let the next
+    // `304` report a store that is missing that payload as current and healthy.
+    this.etag = result.etag;
+    this.etagBasis = basis;
   }
 
   private async streamOnce(signal: AbortSignal): Promise<void> {
