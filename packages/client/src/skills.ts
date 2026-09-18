@@ -21,6 +21,7 @@
 import {
   allRawObjects,
   clearState,
+  newestByKey,
   referenceTarget,
   requireStore,
   resolveFromStore,
@@ -65,23 +66,72 @@ export function _clearState(): void {
 }
 
 /**
- * A skill store backed by a plain object.
+ * A skill store backed by in-memory maps.
  *
  * Ships for local development, tests, and bring-your-own-content injection.
  * Holds raw wire objects verbatim and performs no validation of its own —
  * verification belongs at the accessor boundary, where it applies to every store
  * equally.
+ *
+ * Several versions of one key coexist here, because they coexist in a real
+ * delivery payload: the newest version of every skill, plus every version a
+ * variation currently pins. `getObject` therefore selects on `(key, version)`,
+ * and an omitted version means "the newest held".
+ *
+ * An object whose `version` is not an integer >= 1 is still accepted and still
+ * served, under its key alone. Withholding it is verification's job, not the
+ * store's: a store that quietly refused it would make a malformed object
+ * indistinguishable from an absent one, and no integrity signal would be
+ * recorded.
+ *
+ * The backing maps are real `Map`s rather than plain objects. Skill keys come off
+ * the wire, and a plain object inherits names that are not keys: a `put` of
+ * `__proto__` would corrupt what every other key resolves to, and `constructor`
+ * on an empty store would answer with the `Object` function. Nothing unverified
+ * escapes to user code either way — verification rejects a function as a
+ * non-object — but the store's own answers have to be right.
  */
 export class InMemorySkillStore implements SkillStore {
-  private readonly objects: Record<string, RawSkillObject>;
+  /** Well-formed objects, `key` -> `version` -> object. */
+  private readonly versions = new Map<string, Map<number, RawSkillObject>>();
+
+  /** Objects carrying no usable version, under their key alone. */
+  private readonly loose = new Map<string, RawSkillObject>();
+
   private readonly listeners = new Map<string, Array<(raw: RawSkillObject) => unknown>>();
 
   constructor(objects: Record<string, RawSkillObject> = {}) {
-    this.objects = { ...objects };
+    // Own enumerable entries only, so a map handed in with a `__proto__` entry
+    // is filed like any other rather than reaching through to the prototype.
+    for (const [objectKey, raw] of Object.entries(objects)) this.place(objectKey, raw);
   }
 
   /**
-   * Adds or replaces a raw skill object, keyed by its own `key` field.
+   * Files one raw object under its own identity, verbatim.
+   *
+   * `fallbackKey` is the map key it arrived under, used only when the object
+   * carries no string `key` of its own — which the constructor admits and `put`
+   * refuses.
+   */
+  private place(fallbackKey: string, raw: RawSkillObject): void {
+    const own = typeof raw === 'object' && raw !== null ? raw.key : undefined;
+    const key = typeof own === 'string' ? own : fallbackKey;
+    const version = typeof raw === 'object' && raw !== null ? raw.version : undefined;
+    if (isValidSkillVersion(version)) {
+      const held = this.versions.get(key) ?? new Map<number, RawSkillObject>();
+      held.set(version, raw);
+      this.versions.set(key, held);
+    } else {
+      this.loose.set(key, raw);
+    }
+  }
+
+  /**
+   * Adds or replaces a raw skill object, keyed by its own `key` and `version`
+   * fields.
+   *
+   * Putting a second version of a key keeps both; putting the same
+   * `(key, version)` twice replaces it.
    *
    * Notifies every skill-kind listener with the raw object as a single argument.
    * No validation happens here — verification belongs at the accessor boundary,
@@ -91,33 +141,51 @@ export class InMemorySkillStore implements SkillStore {
   put(raw: RawSkillObject): void {
     const { key } = raw;
     if (typeof key !== 'string') throw new Error("a raw skill object must carry a string 'key'");
-    this.objects[key] = raw;
+    this.place(key, raw);
     // A copy, so a listener that removes itself mid-notification does not
     // shift its neighbours out from under the iteration.
     for (const listener of [...(this.listeners.get(SKILL_OBJECT_KIND) ?? [])]) listener(raw);
   }
 
   /**
-   * The raw object held for `key`, whatever version it happens to be.
+   * The raw object held for `key` at `version`, or the newest held when no
+   * version is asked for.
    *
-   * The parameter is accepted because the `SkillStore` seam carries it — a real
-   * store may hold several versions of one key, and only the store can pick
-   * between them. This one holds a single object per key, so it answers with
-   * what it has and lets the accessor boundary refuse an answer that is not the
-   * version that was asked for.
-   *
-   * Deliberately not a filter: returning `null` for a pin this store cannot
-   * satisfy would make a version mismatch indistinguishable from an absence,
-   * which is the whole distinction the typed outcome exists to preserve.
+   * With nothing well-formed filed under the key, the version-less entry is all
+   * there is: it is served, and verification withholds it with a signal rather
+   * than it reading as simply absent. A pin that misses while well-formed
+   * versions *do* exist is a plain miss, and answering it with a leftover
+   * malformed object would record an integrity failure for a skill whose
+   * integrity is not in question.
    */
-  getObject(kind: string, key: string, _version?: number | null): RawSkillObject | null {
+  getObject(kind: string, key: string, version?: number | null): RawSkillObject | null {
     if (kind !== SKILL_OBJECT_KIND) return null;
-    return this.objects[key] ?? null;
+    const held = this.versions.get(key);
+    if (held === undefined || held.size === 0) return this.loose.get(key) ?? null;
+    if (version !== undefined && version !== null) return held.get(version) ?? null;
+    return held.get(Math.max(...held.keys())) ?? null;
   }
 
+  /**
+   * Every object held, one entry per `(key, version)`.
+   *
+   * The record's keys are **opaque store-internal identifiers**, as `SkillStore`
+   * documents: identity is read from each object's own `key` and `version`. Do
+   * not parse them and do not assume one entry per skill key.
+   *
+   * Null-prototype, because a loose object can be filed under the key
+   * `__proto__` and assigning that name on a plain object would set its
+   * prototype and silently drop the entry — shrinking a listing, which reads
+   * downstream as a revocation.
+   */
   allObjects(kind: string): Record<string, RawSkillObject> {
     if (kind !== SKILL_OBJECT_KIND) return {};
-    return { ...this.objects };
+    const out: Record<string, RawSkillObject> = Object.create(null);
+    for (const [key, held] of this.versions) {
+      for (const [version, raw] of held) out[`${key}:${version}`] = raw;
+    }
+    for (const [key, raw] of this.loose) out[key] = raw;
+    return out;
   }
 
   /**
@@ -273,15 +341,18 @@ export async function getSkills(refs: ReadonlyArray<SkillReference | string>): P
 /**
  * Retrieves every verified skill the store currently holds.
  *
- * Skills that fail verification are omitted. Throws only when no skill store is
- * configured.
+ * Where the store holds several versions of one key, the newest is the one
+ * returned. Skills that fail verification are omitted. Throws only when no skill
+ * store is configured.
  */
 export async function allSkills(): Promise<Skill[]> {
   const { objects, error } = allRawObjects(requireStore());
   if (error !== null) return [];
 
+  // One entry per key at its newest version: `allObjects` may hold several
+  // versions of one key, and a list carrying two of them is not a set of skills.
   const skills: Skill[] = [];
-  for (const raw of Object.values(objects)) {
+  for (const { raw } of newestByKey(objects)) {
     const skill = verifyRawSkill(raw);
     if (skill) skills.push(skill);
   }

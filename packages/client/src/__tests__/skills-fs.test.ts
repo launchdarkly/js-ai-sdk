@@ -291,6 +291,67 @@ describe('writeSkills basic writes', () => {
     expect(report.actions.filter((a) => a.action !== 'error')).toHaveLength(3);
   });
 
+  it('"*" collapses several versions of one key to the newest', async () => {
+    // <root>/<key>/SKILL.md is a single path, so two versions of one key is not
+    // a duplicate report but a write race against itself, resolved by whichever
+    // version iteration happened to reach last. A store holding one version per
+    // key cannot distinguish this from "write everything", so the two-version
+    // seed is the whole test. Newer seeded first, so insertion order cannot pass
+    // for ordering.
+    const newer = 'newer body\n';
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a', 5, newer));
+    store.put(rawSkill('a', 2, 'older body\n'));
+    _setStore(store);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    const written = report.actions.filter((a) => a.action !== 'error');
+    expect(written).toHaveLength(1);
+    expect(written[0].key).toBe('a');
+    expect(written[0].version).toBe(5);
+    expect(await readFile(path.join(root, 'a', SKILL_MD), 'utf-8')).toBe(newer);
+  });
+
+  it('"*" reports no error for a key a malformed sibling did not stop writing', async () => {
+    // A malformed object beside a good version of the same key. The good one
+    // resolves and materializes, so the run succeeded for that key: reporting
+    // the sibling as well would flip `report.ok` for a skill that is correctly
+    // on disk, and claim the copy there "was left alone" when this very run had
+    // just written it.
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a', 1));
+    store.put(rawSkill('a', 'nope' as unknown as number));
+    _setStore(store);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    expect(report.actions.map((a) => [a.key, a.action])).toEqual([['a', 'written']]);
+    expect(await readFile(path.join(root, 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+  });
+
+  it('"*" still reports a key nothing could resolve, and prunes nothing', async () => {
+    // The converse, and the reason a malformed object is kept at all. No
+    // version of 'b' is usable, so it stays in the requested set: the failure is
+    // reported, and prune leaves the copy already on disk alone rather than
+    // reading the key as revoked.
+    const existing = await placeManaged(root, 'b', SKILL_BODY);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a', 1));
+    store.put(rawSkill('b', 'nope' as unknown as number));
+    _setStore(store);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(false);
+    expect(actionsByKey(report).a.action).toBe('written');
+    expect(actionsByKey(report).b.action).toBe('error');
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+  });
+
   it('reports one action per requested skill — no silent skips', async () => {
     const report = await writeSkills([skill('a'), skill('b')], root);
     expect(report.actions.map((a) => a.key).sort()).toEqual(['a', 'b']);

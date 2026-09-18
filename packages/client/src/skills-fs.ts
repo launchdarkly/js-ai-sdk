@@ -39,6 +39,7 @@ import {
   getStore,
   isVerificationFailure,
   NO_STORE_MESSAGE,
+  newestByKey,
   type Resolution,
   recordMaterialized,
   recordRevoked,
@@ -606,8 +607,12 @@ function resolveAll(deadline: number, onUnavailable: OnUnavailable): { requests:
   const { objects, error } = allRawObjects(store);
   if (error !== null) return unavailableRun(unavailable(error), onUnavailable);
 
+  // One object per key, at its newest version. `allObjects` may hold several
+  // versions of one key, and <root>/<key>/SKILL.md is a single path — writing it
+  // twice in one run is not a duplicate report but a write race against itself,
+  // resolved by whichever version iteration happened to reach last.
   return {
-    requests: Object.entries(objects).map(([key, raw]) => pendingForRaw(key, raw)),
+    requests: newestByKey(objects).map(({ objectKey, raw }) => pendingForRaw(objectKey, raw)),
     incomplete: false,
   };
 }
