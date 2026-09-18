@@ -31,15 +31,14 @@ export async function run(key: string, userInput: string): Promise<void> {
     } else {
       // Final event — full response + normalized usage
       if (!wroteChunk) {
-        process.stdout.write(event.response);
+        process.stdout.write(event.response ?? '');
       }
       process.stdout.write('\n\n');
-      process.stderr.write(`[debug] done event response length: ${event.response?.length ?? 0}\n`);
-      process.stderr.write(`[debug] done event response preview: ${String(event.response).slice(0, 100)}\n`);
-
+      process.stdout.write(`Usage: ${JSON.stringify(event.usage, null, 2)}\n`);
       if (event.judgeResults) {
-        process.stderr.write(`[judges] ${JSON.stringify(event.judgeResults)}\n`);
+        process.stdout.write(`Judge results: ${JSON.stringify(event.judgeResults, null, 2)}\n`);
       }
+      process.stdout.write('\n');
     }
   }
 }
