@@ -85,35 +85,101 @@ The `3` after the delimiter is what a `{key, version}` reference pins and what b
 
 ## Public Exports (`src/index.ts`)
 
+This block is **generated from `src/index.ts`, verbatim and in its order** — it is not a curated
+summary. Regenerate it rather than hand-editing, or it drifts: it has previously listed a
+`./tracking.js` re-export that `index.ts` does not have, while omitting a dozen names it does.
+
 ```ts
+export type { AiConfigRep } from './client.js';
+export { config } from './client.js';
+export type { ContentCaptureOptions, SpanMessage, SpanMessagePart, ToolDefinitionInput } from './content.js';
+export {
+  langChainFinishReasons,
+  langChainSpanMessages,
+  setInputContentAttributes,
+  setOutputContentAttributes,
+  setToolCallContentAttributes,
+  setToolDefinitionAttributes,
+  textMessage,
+  toSemconvFinishReason,
+} from './content.js';
+export { graph, resolveGraph } from './graph.js';
+export { buildJudgeTasks, runJudge } from './judges.js';
 export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
-export type { LDContext, LDClientInterface, LDSingleKindContext, LDMultiKindContext, LDUser } from './types.js';
-export { config } from './client.js';
-export type { AiConfigRep } from './client.js';
-export type {
-  Tool, VariationMeta as LDVariationMeta, ProviderHandler, ProviderSetupFn, ProviderResponse,
-  ConfigArgs, TrackData,
-  GraphTopology, GraphEdge, GraphNode, GraphDefinition, GraphOptions, GraphArgs,
-  HandlerStreamEvent, StreamEvent, ProviderGraphResponse,
-} from './types.js';
-export { GraphTopologySchema, NativeTool, NATIVE_TOOL_KEY } from './types.js';
-export { Registry, globalRegistry, compose } from './registry.js';
-export { parseTemplate, parseJSONWithPossibleFences, createHandler } from './utils.js';
-export { graph, resolveGraph } from './graph.js';
-export { parseUsage, normalizeMode, parseAiConfig } from './tracking.js';
-
-// Agent Skills
-export { skillRefs, getSkill, getSkillResult, getSkills, allSkills, InMemorySkillStore } from './skills.js';
-export { writeSkills, SKILL_FILENAME, MANIFEST_FILENAME, MANIFEST_VERSION } from './skills-fs.js';
-export { FDv2SkillStore, DEFAULT_BASE_URI, DEFAULT_STREAM_URI } from './skills-fdv2.js';
-export { watchSkills, SkillWatcher, DEFAULT_DEBOUNCE_MS } from './skills-watch.js';
+export { compose, globalRegistry, Registry } from './registry.js';
+export { allSkills, getSkill, getSkillResult, getSkills, InMemorySkillStore, skillRefs } from './skills.js';
+export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills-fdv2.js';
+export { DEFAULT_BASE_URI, DEFAULT_STREAM_URI, FDv2SkillStore } from './skills-fdv2.js';
 export type { WriteSkillsOptions } from './skills-fs.js';
-export { createSkill, createSkillOutcome, createSkillReference } from './types.js';
+export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
+export type { WatchSkillsOptions } from './skills-watch.js';
+export { DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
 export type {
-  Skill, SkillOutcome, SkillOutcomeReason, SkillReference, SkillStore, RawSkillObject,
-  ReconcileAction, ReconcileActionKind, ReconcileReport, OnUnavailable,
+  ConfigArgs,
+  GraphArgs,
+  GraphDefinition,
+  GraphEdge,
+  GraphNode,
+  GraphOptions,
+  GraphTopology,
+  HandlerStreamEvent,
+  JudgeCallResult,
+  JudgeRunResult,
+  JudgeTask,
+  LDClientInterface,
+  LDContext,
+  LDMultiKindContext,
+  LDSingleKindContext,
+  LDUser,
+  Message,
+  OnUnavailable,
+  ProviderGraphResponse,
+  ProviderHandler,
+  ProviderResponse,
+  ProviderSetupFn,
+  RawSkillObject,
+  ReconcileAction,
+  ReconcileActionKind,
+  ReconcileReport,
+  RegistryInput,
+  RouteResult,
+  RunNodeOptions,
+  Skill,
+  SkillOutcome,
+  SkillOutcomeReason,
+  SkillReference,
+  SkillStore,
+  StreamEvent,
+  TokenUsage,
+  Tool,
+  ToolHandlerFn,
+  TrackData,
+  TraverseVisitor,
+  VariationMeta as LDVariationMeta,
 } from './types.js';
+export {
+  createSkill,
+  createSkillOutcome,
+  createSkillReference,
+  GraphTopologySchema,
+  NATIVE_TOOL_KEY,
+  NativeTool,
+} from './types.js';
+export type { RunUsage, SpanUsage } from './utils.js';
+export {
+  addCachedTokensToInput,
+  collapseMessagesToInstructions,
+  createHandler,
+  createRunUsage,
+  endSpanOnce,
+  langChainSpanUsage,
+  parseJSONWithPossibleFences,
+  parseTemplate,
+  setLdSpanAttributes,
+  setModelIdentityAttributes,
+  setUsageSpanAttributes,
+} from './utils.js';
 ```
 
 When adding a new export, add it here. Handler packages must never import from sub-paths (e.g. `@launchdarkly/ai-server/dist/client`).
@@ -318,7 +384,11 @@ Three specifics inside those two functions that a later contributor is most like
 
 ### 6. Bypassing `fsOps` for a destructive filesystem call
 
-`safe-fs.ts` routes the final rename and the managed-file unlink through the `fsOps` record so tests can intercept exactly those two operations. The orphaned-temp sweep goes through `unlinkNoFollow` for the same reason, and derives its filename pattern from `tempNamePattern` in `safe-fs.ts` rather than carrying a copy: that sweep is only entitled to unlink a file because the *name* identifies it as one this SDK created, so two spellings of the naming rule would eventually let it either miss orphans or remove something it did not write. Calling `fs.rename`/`fs.unlink` directly makes the operation invisible to the atomicity and "no operation was attempted" assertions, which then pass vacuously. Note also the limitation those tests document: Node exposes no `renameat`/`unlinkat`, so `SUPPORTS_DIR_FD` is `false` and the TOCTOU swap-race tests are skipped — the residual exposure is real and recorded, not fixed.
+`safe-fs.ts` routes the final rename and the managed-file unlink through the `fsOps` record so tests can intercept exactly those two operations. The orphaned-temp sweep goes through `unlinkNoFollow` for the same reason, and derives its filename pattern from `tempNamePattern` in `safe-fs.ts` rather than carrying a copy: that sweep is only entitled to unlink a file because the *name* identifies it as one this SDK created, so two spellings of the naming rule would eventually let it either miss orphans or remove something it did not write. Calling `fs.rename`/`fs.unlink` directly makes the operation invisible to the atomicity and "no operation was attempted" assertions, which then pass vacuously.
+
+There is a **third** hook, and it is deliberately not part of `fsOps`: the root-swap races mock `mkdir` and `open` through `vi.mock('node:fs/promises')`, because they have to fire *before* the root is pinned. Widening `fsOps` to cover those would blur what a "no filesystem operation was attempted" assertion means, so leave them separate.
+
+On the platform bound: Node exposes no `renameat`/`unlinkat`, so `SUPPORTS_DIR_FD` is `false` on every release to date — but that is **not** the end of the story, and an older version of this note said it was. `SUPPORTS_PROC_FD` addresses children through `/proc/self/fd/<fd>/<name>`, which the kernel resolves from the inode the descriptor holds rather than from the name it was opened under. That **closes** the swap window on Linux, so the swap-race tests *run* there and are skipped only where neither capability is present. Two consequences worth keeping straight: the `(dev, ino)` identity re-check is the macOS floor only and must not be attempted on the fast path (`lstat` of `/proc/self/fd/<fd>` reports procfs's magic symlink, not the directory); and a green macOS test run is not evidence about any of this, since all ten of those tests skip locally and execute on Linux CI alone.
 
 ### 7. "Fixing" the platform bound, or adding a writability field to `ReconcileReport`
 
