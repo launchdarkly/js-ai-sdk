@@ -1123,6 +1123,52 @@ export type PollResult = {
 };
 
 /**
+ * Reads a whole poll body, holding no more than `limit` UTF-16 code units of it.
+ *
+ * Read in chunks rather than all at once so a body that is never going to be
+ * accepted is abandoned as soon as it crosses the bound, instead of being
+ * buffered whole by `response.text()` and measured after — which is no bound at
+ * all, because by then the allocation has already happened.
+ *
+ * Deliberately does not touch the caller's {@link ReadDeadline}. In `'poll'`
+ * mode that deadline bounds the whole request, body included; touching it per
+ * read would silently turn it into the per-read gap that `'stream'` mode wants
+ * and polling does not.
+ */
+async function readBoundedText(body: ReadableStream<Uint8Array>, limit: number): Promise<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+      if (text.length > limit) {
+        throw new RecoverableTransportError(
+          `polling response exceeded the ${limit} character transport bound ` +
+            `(at least ${text.length} received); nothing from it was applied`,
+        );
+      }
+    }
+    // Flushes a truncated multi-byte sequence at the very end of the body as
+    // U+FFFD rather than dropping it, so a cut-short body fails in `JSON.parse`
+    // as the malformed payload it is.
+    return text + decoder.decode();
+  } finally {
+    // Same contract as `iterSse`: cancelling closes the connection underneath,
+    // so a body abandoned at the bound does not leave a socket open behind the
+    // retry. Best effort — the stream may already be errored or closed.
+    reader.cancel().catch(() => {});
+    try {
+      reader.releaseLock();
+    } catch {
+      // Already released, or the stream errored. Nothing to recover.
+    }
+  }
+}
+
+/**
  * Unwraps `{"events": [...]}`.
  *
  * Polling and streaming carry the *identical* event objects — polling just wraps
@@ -1230,16 +1276,34 @@ function readFailure(cause: unknown, what: string, deadline: ReadDeadline | unde
 }
 
 /**
- * Bound on what the SSE decoder will hold for one event: the unterminated tail
- * of the current line plus the accumulated `data:` lines, in UTF-16 code units.
+ * The most the transport will hold in memory from one response, in UTF-16 code
+ * units: one whole poll body, or one streamed event — the unterminated tail of
+ * its current line plus its accumulated `data:` lines.
  *
- * A skill object is a few kilobytes and the cap on content is 10 MiB after
- * decoding, so a legitimate event is well inside this; a server or proxy that
- * never sends a newline, or one event whose data never ends, would otherwise
- * grow memory without limit. Exceeding it is a recoverable transport failure,
- * so the connection is dropped and retried rather than the store giving up.
+ * A memory backstop, not a content limit. Verification caps each skill's content
+ * at 10 MiB (`MAX_SKILL_CONTENT_BYTES`) in `skills-core`, and content rides
+ * inline in the `put-object` envelope, so this bound has to sit *above* that one
+ * or a legitimate large skill becomes undeliverable: the decoder would reject
+ * it, the rejection is deterministic, and every retried connection would meet it
+ * again until the failure budget ran out and delivery gave up for the process
+ * lifetime. It is set far above any payload LaunchDarkly legitimately serves —
+ * the two bound different things and move independently.
+ *
+ * What it is really for is the unbounded case: a server or proxy that never sends
+ * a newline, one event whose data never ends, a poll body with no end in sight.
+ * Each of those would otherwise grow memory without limit. Crossing the bound is
+ * a recoverable transport failure, so the connection is dropped and retried and
+ * nothing from the payload in flight is committed, rather than the store giving
+ * up.
+ *
+ * The same number as Python's `MAX_RESPONSE_BYTES`, deliberately, so the two
+ * SDKs document one bound. The units are not identical and cannot be: Python
+ * counts bytes off the socket, this counts UTF-16 code units after decoding, so
+ * non-ASCII content is measured slightly differently either side. Acceptable in
+ * a backstop this far above real payloads; it would not be in a limit either SDK
+ * enforced as a contract.
  */
-export const MAX_SSE_EVENT_CHARS = 1024 * 1024;
+export const MAX_RESPONSE_CHARS = 64 * 1024 * 1024;
 
 /**
  * Decodes an SSE byte stream into `[event name, data]` pairs.
@@ -1247,7 +1311,7 @@ export const MAX_SSE_EVENT_CHARS = 1024 * 1024;
  * Minimal on purpose — this consumes one LaunchDarkly endpoint, not the whole
  * spec: `event:`/`data:` fields, multi-line `data` joined with newlines, a blank
  * line dispatching, and `:` comments skipped. Bounded by
- * {@link MAX_SSE_EVENT_CHARS} per event.
+ * {@link MAX_RESPONSE_CHARS} per event.
  *
  * Only the read itself is wrapped as recoverable (see {@link readFailure}).
  * Whatever the consumer's loop body throws while this generator is suspended at
@@ -1265,7 +1329,14 @@ export async function* iterSse(
   let dataLines: string[] = [];
   let dataChars = 0;
 
-  const overBound = (): boolean => buffer.length + dataChars > MAX_SSE_EVENT_CHARS;
+  // Two distinct quantities, deliberately not summed into one predicate. The
+  // data already accumulated for the current event is bounded on its own; the
+  // unterminated tail is bounded only once every complete line in the read has
+  // been consumed, at which point the tail is the current event's next line and
+  // adding the two is the honest measure of what one event holds. Summing them
+  // mid-split would measure whole finished events still waiting to be parsed.
+  const dataOverBound = (): boolean => dataChars > MAX_RESPONSE_CHARS;
+  const tailOverBound = (): boolean => buffer.length + dataChars > MAX_RESPONSE_CHARS;
 
   // Every block that ends clears the buffered fields, whether or not it turns
   // into an event: a block with no `event:` field is the default `message`
@@ -1299,11 +1370,6 @@ export async function* iterSse(
       const { done, value } = chunk;
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      if (overBound()) {
-        throw new RecoverableTransportError(
-          `the FDv2 stream sent more than ${MAX_SSE_EVENT_CHARS} characters without completing an event`,
-        );
-      }
       let newline = buffer.indexOf('\n');
       while (newline !== -1) {
         const line = buffer.slice(0, newline).replace(/\r$/, '');
@@ -1320,14 +1386,19 @@ export async function* iterSse(
           else if (field === 'data') {
             dataLines.push(value2);
             dataChars += value2.length + 1;
-            if (overBound()) {
+            if (dataOverBound()) {
               throw new RecoverableTransportError(
-                `the FDv2 stream sent more than ${MAX_SSE_EVENT_CHARS} characters of data for one event`,
+                `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters of data for one event`,
               );
             }
           }
         }
         newline = buffer.indexOf('\n');
+      }
+      if (tailOverBound()) {
+        throw new RecoverableTransportError(
+          `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters without completing an event`,
+        );
       }
     }
   } finally {
@@ -1402,9 +1473,13 @@ export class FetchRequester implements Requester {
       const response = await fetch(this.url(this.baseUri, POLL_PATH, basis), { headers, signal: deadline.signal });
       if (response.status === 304) return { notModified: true, events: [], etag };
       if (!response.ok) throw classifyStatus(response.status, response.headers);
+      // A 200 with no body at all is not a payload; `decodePollBody` rejects the
+      // empty string as the malformed response it is, under the same recoverable
+      // error as any other unusable body.
+      const body = response.body === null ? '' : await readBoundedText(response.body, MAX_RESPONSE_CHARS);
       return {
         notModified: false,
-        events: decodePollBody(await response.text()),
+        events: decodePollBody(body),
         etag: response.headers.get('ETag') ?? etag,
       };
     } catch (cause) {
