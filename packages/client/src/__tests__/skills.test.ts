@@ -1418,7 +1418,14 @@ describe('integrity-failure log record', () => {
   // text, and they cover the field set, not just the fact that something logged.
   const EVENT = 'ld.skills.integrity_failure';
 
-  type LoggedRecord = { line: string; record: Record<string, unknown> };
+  type LoggedRecord = {
+    /** The message text — the first argument. */
+    line: string;
+    /** The mapping parsed back out of the message text. */
+    record: Record<string, unknown>;
+    /** The structured attachment — every argument after the first. */
+    rest: unknown[];
+  };
 
   async function logged(run: () => Promise<unknown>): Promise<LoggedRecord[]> {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -1432,9 +1439,11 @@ describe('integrity-failure log record', () => {
       spy.mockRestore();
     }
     return calls
-      .map(([first]) => String(first))
-      .filter((line) => line.includes(EVENT))
-      .map((line) => ({ line, record: JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown> }));
+      .filter(([first]) => String(first).includes(EVENT))
+      .map(([first, ...rest]) => {
+        const line = String(first);
+        return { line, record: JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown>, rest };
+      });
   }
 
   const surrogate = 'hi \ud800 there';
@@ -1507,6 +1516,48 @@ describe('integrity-failure log record', () => {
     const [{ line, record }] = await logged(() => getSkill('a'));
 
     expect(line).toBe(`[LaunchDarkly] ${EVENT} ${JSON.stringify(record)}`);
+  });
+
+  it('emits the record twice over: in the message text and as structured data', async () => {
+    // Both forms are required, and neither is sufficient alone. A default
+    // `console.error` transport shows only the message text, so a
+    // structured-only record is invisible under the setup most customers have —
+    // and severity cannot stand in for it, because other store-failure paths in
+    // this module also log at error level. A structured pipeline, conversely,
+    // wants the mapping as *data* rather than as text it has to re-parse out of
+    // a prefixed line. Python's half of this is `extra={"ld_skills": record}`.
+    _setStore(new DictStore({ a: rawSkill({ key: 'a', version: 7, contentHash: 'd'.repeat(64) }) }));
+
+    const [{ line, record, rest }] = await logged(() => getSkill('a'));
+
+    // Form one: the event identity verbatim in the text, followed by the JSON.
+    expect(line.startsWith(`[LaunchDarkly] ${EVENT} `)).toBe(true);
+    // Form two: the same mapping, attached rather than serialized.
+    expect(rest).toHaveLength(1);
+    const attached = rest[0] as Record<string, unknown>;
+    expect(typeof attached).toBe('object');
+    expect(attached).not.toBeNull();
+    // The *same* mapping — asserted field-for-field, because an attachment that
+    // had drifted from the text would defeat the point of having both.
+    expect(attached).toEqual(record);
+    // And key order agrees too, which is what keeps the two halves from
+    // diverging the day someone reorders one of them.
+    expect(Object.keys(attached)).toEqual(Object.keys(record));
+  });
+
+  it('attaches the record on every reason_code, not just one path', async () => {
+    // The attachment is added at the single `console.error` call site, so one
+    // case would nearly prove it — but "nearly" is how a second call site gets
+    // added later without one. Sweep the vocabulary.
+    for (const [code, makeStore, run] of cases) {
+      _clearState();
+      _setStore(makeStore());
+
+      const [{ record, rest }] = await logged(run);
+
+      expect(rest, code).toHaveLength(1);
+      expect(rest[0], code).toEqual(record);
+    }
   });
 
   it('orders keys alphabetically, so the JSON is byte-identical across SDKs', async () => {

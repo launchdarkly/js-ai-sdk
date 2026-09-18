@@ -287,7 +287,7 @@ async function reconcile(
   // retrieval that failed, or a deadline that expired mid-write — means we do not
   // know what is still current. Either way, deleting would be a guess.
   if (prune && manifestError === null && !incomplete) {
-    actions.push(...(await pruneEntries(root, entries, new Set(requests.map((r) => r.key)))));
+    actions.push(...(await pruneEntries(root, entries, new Set(requests.map((r) => r.key)), deadline, timeout)));
   }
 
   if (manifestError === null) actions.push(...(await rewriteManifest(root, manifest, entries)));
@@ -913,7 +913,13 @@ async function writeOne(
     // the skill is wedged until a human intervenes.
     let onDisk: Buffer;
     try {
-      onDisk = await readRegularFile(target);
+      // Bounded at the resolved content's length, because this read reaches
+      // *unmanaged* files — that is the whole point of the self-heal above — so
+      // the file it opens is one an attacker with write access to the root may
+      // have planted, at whatever size they chose. `readRegularFile` reads one
+      // byte past the bound, which is what keeps a longer file from comparing
+      // equal to a prefix of itself; see its docblock.
+      onDisk = await readRegularFile(target, encoded.byteLength);
     } catch (error) {
       // A read that failed must never become an overwrite: we do not know what
       // is on disk, so this is the fail-closed branch and not a fall-through to
@@ -983,14 +989,43 @@ async function writeOne(
  * There is deliberately no `O_BINARY`: Node performs no CRLF translation on a
  * descriptor, so the bytes read back are already verbatim.
  *
+ * `maxBytes` bounds the read at `maxBytes + 1` bytes, and the `+ 1` is
+ * load-bearing rather than slack. The only consumer of a bounded read is the
+ * adoption comparison, which hashes what it gets: anything longer than the
+ * resolved content cannot match its digest, so one byte past the content's length
+ * is all that is needed to *prove* inequality — while bounding at exactly
+ * `maxBytes` would be a bug, because a file that is the content plus trailing
+ * bytes would read back as exactly the content, hash equal, and be adopted
+ * despite not being current. The bound matters because that read reaches
+ * arbitrary foreign files at a managed path rather than only files the manifest
+ * vouches for, so unbounded it pulls a planted multi-GB file into memory before
+ * the comparison ever runs.
+ *
+ * `undefined` reads to EOF, for the manifest — whose length no caller can predict
+ * and which is parsed rather than compared. The manifest is bounded differently,
+ * by being the one file under the root this SDK writes itself.
+ *
  * Throws for anything the caller must turn into a refusal.
  */
-async function readRegularFile(target: string): Promise<Buffer> {
+async function readRegularFile(target: string, maxBytes?: number): Promise<Buffer> {
   const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
   const handle = await open(target, flags);
   try {
     if (!(await handle.stat()).isFile()) throw new Error('the path is not a regular file');
-    return await handle.readFile();
+    if (maxBytes === undefined) return await handle.readFile();
+
+    // Read into a buffer sized to the bound, so the file's own size never
+    // determines the allocation. Looped because a single `read` is permitted to
+    // return short; it stops at the bound or at EOF, whichever comes first.
+    const limit = maxBytes + 1;
+    const buffer = Buffer.alloc(limit);
+    let filled = 0;
+    while (filled < limit) {
+      const { bytesRead } = await handle.read(buffer, filled, limit - filled, filled);
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    return buffer.subarray(0, filled);
   } finally {
     await handle.close().catch(() => undefined);
   }
@@ -1090,11 +1125,23 @@ function pruneError(key: string, message: string, version: unknown = null): Reco
  * This is also how revocation takes effect: a revoked skill is simply absent from
  * the resolved set, so the next reconcile removes it. There is deliberately no
  * opt-out.
+ *
+ * The deadline is checked **per entry**, not once before the loop. Checking once
+ * satisfies "the whole call is bounded" only in the letter: a long manifest is an
+ * unbounded number of `unlink` and `rmdir` calls after that check, each of which
+ * can block, so the call overruns the timeout it promised by an amount the caller
+ * cannot predict. Stopping partway is safe by construction — `rewriteManifest`
+ * rebuilds the manifest from what actually happened, so an entry this run never
+ * reached stays listed and the next reconcile prunes it. An exhausted entry is
+ * reported as an `error` and the loop continues rather than breaking, so the
+ * report names every skill that was left in place instead of only the first.
  */
 async function pruneEntries(
   root: PinnedDirectory,
   entries: Record<string, unknown>,
   requested: ReadonlySet<string>,
+  deadline: number,
+  timeout: number,
 ): Promise<ReconcileAction[]> {
   const actions: ReconcileAction[] = [];
 
@@ -1103,6 +1150,17 @@ async function pruneEntries(
     const record = entry as Record<string, unknown>;
     const { key } = record;
     if (typeof key !== 'string' || requested.has(key)) continue;
+
+    if (performance.now() >= deadline) {
+      actions.push(
+        pruneError(
+          key,
+          `the ${timeout}s timeout was exhausted before '${relative}' could be pruned; it was left in place`,
+          record.version,
+        ),
+      );
+      continue;
+    }
 
     // Only a manifest path this SDK could have written is removable.
     if (keyRejectionReason(key) !== null || relative !== `${key}/${SKILL_FILENAME}`) {

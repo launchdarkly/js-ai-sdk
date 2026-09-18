@@ -249,8 +249,18 @@ export function recordIntegrityFailure(
   record.skill_key = safeKey;
   if (isValidSkillVersion(extra.version)) record.version = extra.version;
 
+  // Emitted twice over, and both forms are required. The message text carries the
+  // event identity verbatim followed by the compact sorted-key JSON, which is the
+  // only form a plain `console.error` transport shows and what makes the line
+  // greppable and byte-comparable across SDKs. The same mapping goes out as a
+  // second argument, which is what a structured-console transport picks up as
+  // data rather than as text to re-parse — the counterpart to Python's
+  // `extra={"ld_skills": record}`. Neither alone is sufficient: a text-only
+  // record is invisible to a structured pipeline, and a structured-only one is
+  // invisible under the default setup, where severity cannot discriminate it from
+  // the other store-failure paths in this module that also log at error level.
   // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; integrity failures must be visible
-  console.error(`[LaunchDarkly] ${EVENT_INTEGRITY_FAILURE} ${JSON.stringify(record)}`);
+  console.error(`[LaunchDarkly] ${EVENT_INTEGRITY_FAILURE} ${JSON.stringify(record)}`, record);
   emit(SIGNAL_INTEGRITY_FAILURE, properties);
 }
 
@@ -326,8 +336,18 @@ export function isVerificationFailure(result: VerifiedContent | VerificationFail
  *
  * The wire object delivers `content` as a JSON string; this is the one place it
  * is encoded to UTF-8 bytes, and everything downstream — the hash, the `Skill`,
- * the file on disk — carries those bytes. A `Skill` already holds bytes, so the
- * pre-write pass hands them straight in and they are hashed as-is.
+ * the file on disk — carries those bytes. A `Skill` already holds bytes, and they
+ * are **snapshotted** here before being hashed, which is load-bearing rather than
+ * defensive copying for its own sake: `createSkill` freezes the wrapper but a
+ * TypedArray's elements cannot be frozen, so a `Skill` shares its buffer with
+ * whoever constructed it (`types.ts` says so). On the write path the hash is
+ * computed here and the rename happens several `await`s later — the existence
+ * check and the comparison read sit in between — so without the copy a caller
+ * mutating `skill.content` during that window writes bytes that were never
+ * hashed, which defeats verify-then-write entirely. The snapshot is what makes
+ * "the bytes that were hashed are the bytes that get written" true rather than
+ * merely likely. Python gets the same guarantee for free, its `bytes` being
+ * immutable.
  *
  * Returns the verbatim bytes and their locally computed sha256, or a
  * human-readable reason — having already recorded the integrity signal, so the
@@ -347,7 +367,17 @@ export function verifiedBytes(
   expectedHash: string,
   version: number,
 ): VerifiedContent | VerificationFailure {
-  const encoded = typeof content === 'string' ? new TextEncoder().encode(content) : content;
+  // A copy on the bytes path, not a bare reference: see the docblock. A string is
+  // already immutable and `encode` allocates, so that path needs no copy.
+  //
+  // `new Uint8Array(content)` rather than `content.slice()`, and the difference is
+  // not stylistic: `Buffer` is a `Uint8Array` subclass, a caller may perfectly
+  // legally hand one to `createSkill`, and `Buffer.prototype.slice` is the legacy
+  // spelling that returns a **view over the same memory** instead of a copy. So
+  // `slice()` would snapshot a plain `Uint8Array` and silently fail to snapshot a
+  // `Buffer` — the fix would look present and not be. The constructor copies for
+  // either, and normalizes a pooled `Buffer` view to a standalone buffer besides.
+  const encoded = typeof content === 'string' ? new TextEncoder().encode(content) : new Uint8Array(content);
 
   if (encoded.byteLength > MAX_SKILL_CONTENT_BYTES) {
     const reason = `content is ${encoded.byteLength} bytes, over the ${MAX_SKILL_CONTENT_BYTES} byte cap`;
