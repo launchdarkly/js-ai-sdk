@@ -1,6 +1,7 @@
 import { getClient } from './lifecycle.js';
 import type {
   AiConfigRep,
+  GraphNode,
   LDContext,
   Message,
   ProviderHandler,
@@ -68,6 +69,49 @@ export const wrapToolHandlers = (
 };
 
 /**
+ * Copies the pinned model-config identity (`modelKey`, `modelVersion`) from a
+ * variation's `_ldMeta` into a shape that can be spread into `TrackData`.
+ * Keys are omitted (not set to `undefined`) when absent; an empty `modelKey`
+ * is treated as absent. `_ldMeta` is an untyped flag payload, so a
+ * `modelVersion` that does not coerce to a finite integer is omitted rather
+ * than emitted as `NaN`. Gonfalon's cost attribution reads these two fields
+ * from every `$ld:ai:*` event payload.
+ *
+ * @internal Exported for the client package's own tests; adapters should use
+ * {@link makeNodeTrackData} instead.
+ */
+export const modelStampsFromMeta = (
+  meta: VariationMeta | null | undefined,
+): Pick<TrackData, 'modelKey' | 'modelVersion'> => {
+  const stamps: Pick<TrackData, 'modelKey' | 'modelVersion'> = {};
+  const modelKey: unknown = meta?.modelKey;
+  if (typeof modelKey === 'string' && modelKey.length > 0) stamps.modelKey = modelKey;
+  const raw: unknown = meta?.modelVersion;
+  // `Number('')` and `Number('  ')` are 0, so blank strings must be rejected before coercion.
+  if (typeof raw === 'number' || (typeof raw === 'string' && raw.trim().length > 0)) {
+    const version = Number(raw);
+    if (Number.isInteger(version)) stamps.modelVersion = version;
+  }
+  return stamps;
+};
+
+/**
+ * Builds the standard tracking payload for a graph node event. Shared by all
+ * native graph adapters (openai-agents, claude-agents, langchain-agents) so the
+ * payload shape — including the `_ldMeta` model stamps — is defined once.
+ */
+export const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: string): TrackData => ({
+  runId,
+  configKey: node.key,
+  variationKey: node.meta.variationKey ?? '',
+  version: node.meta.version ?? 1,
+  modelName: node.config.model.name,
+  providerName: node.config.provider.name,
+  ...modelStampsFromMeta(node.meta),
+  graphKey,
+});
+
+/**
  * Reads the LaunchDarkly environment MongoDB ObjectId from the SDK's internal
  * feature store init metadata. This mirrors what the official OTel hook does
  * when it emits `feature_flag` events; we need it to set `feature_flag.set.id`
@@ -116,6 +160,7 @@ export const executeAndTrack = async ({
     version: meta.version ?? 1,
     modelName: config.model.name ?? '',
     providerName: config.provider?.name ?? '',
+    ...modelStampsFromMeta(meta),
     ...(graphKey ? { graphKey } : {}),
     environmentId: tryGetEnvironmentId(),
   };
@@ -196,6 +241,7 @@ export async function* executeAndStream({
     version: meta.version ?? 1,
     modelName: config.model.name ?? '',
     providerName: config.provider?.name ?? '',
+    ...modelStampsFromMeta(meta),
     ...(graphKey ? { graphKey } : {}),
     environmentId: tryGetEnvironmentId(),
   };

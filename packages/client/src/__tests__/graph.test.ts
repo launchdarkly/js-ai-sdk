@@ -85,6 +85,32 @@ describe('resolveGraph()', () => {
     expect(def.enabled).toBe(true);
   });
 
+  it('copies modelKey and modelVersion from the graph _ldMeta onto graph-level event payloads', async () => {
+    setupTwoNodeGraph();
+    mockVariation.mockResolvedValue({
+      _ldMeta: { enabled: true, variationKey: 'gv1', version: 2, modelKey: 'graph-model', modelVersion: 5 },
+      root: 'root-node',
+      edges: { 'root-node': [{ key: 'leaf-node' }] },
+    });
+    await graph('graph-flag', { handlers: [makeHandler()] }).invoke('hi', mockContext);
+    const graphCalls = mockTrack.mock.calls.filter((c) => String(c[0]).startsWith('$ld:ai:graph:'));
+    expect(graphCalls.length).toBeGreaterThan(0);
+    for (const call of graphCalls) {
+      expect(call[2]).toMatchObject({ modelKey: 'graph-model', modelVersion: 5 });
+    }
+  });
+
+  it('omits modelKey and modelVersion from graph-level event payloads when _ldMeta lacks them', async () => {
+    setupTwoNodeGraph();
+    await graph('graph-flag', { handlers: [makeHandler()] }).invoke('hi', mockContext);
+    const graphCalls = mockTrack.mock.calls.filter((c) => String(c[0]).startsWith('$ld:ai:graph:'));
+    expect(graphCalls.length).toBeGreaterThan(0);
+    for (const call of graphCalls) {
+      expect('modelKey' in call[2]).toBe(false);
+      expect('modelVersion' in call[2]).toBe(false);
+    }
+  });
+
   it('returns enabled: false when topology has no root', async () => {
     mockVariation.mockResolvedValue({ edges: {} });
     const def = await resolveGraph('graph-flag', { context: mockContext });

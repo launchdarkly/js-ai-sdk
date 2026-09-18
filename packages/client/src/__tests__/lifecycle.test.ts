@@ -468,6 +468,31 @@ describe('lifecycle', () => {
       expect(result.meta?.variationKey).toBe('v1');
     });
 
+    it('preserves modelKey and modelVersion from _ldMeta on meta', async () => {
+      const mockClient = makeMockClient();
+      mockClient.variation = vi.fn().mockResolvedValue({
+        _ldMeta: {
+          enabled: true,
+          variationKey: 'v1',
+          version: 1,
+          mode: 'messages',
+          modelKey: 'my-model',
+          modelVersion: 3,
+        },
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'You are helpful.',
+      });
+      mockLdInit.mockReturnValue(mockClient);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { inspectConfig } = await import('../lifecycle.js');
+      const result = await inspectConfig('my-flag', { kind: 'user' as const, key: 'user-1' });
+
+      expect(result.meta?.modelKey).toBe('my-model');
+      expect(result.meta?.modelVersion).toBe(3);
+    });
+
     it('returns enabled=false and config=null when the variation is disabled', async () => {
       const mockClient = makeMockClient();
       mockClient.variation = vi.fn().mockResolvedValue({
@@ -535,6 +560,31 @@ describe('lifecycle', () => {
 
       expect(config.model.name).toBe('gpt-4o');
       expect(meta.variationKey).toBe('v1');
+    });
+
+    it('preserves modelKey and modelVersion from _ldMeta on meta', async () => {
+      const mockClient = makeMockClient();
+      mockClient.variation = vi.fn().mockResolvedValue({
+        _ldMeta: {
+          enabled: true,
+          variationKey: 'v1',
+          version: 1,
+          mode: 'messages',
+          modelKey: 'my-model',
+          modelVersion: 3,
+        },
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'You are helpful.',
+      });
+      mockLdInit.mockReturnValue(mockClient);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { extractVariation } = await import('../lifecycle.js');
+      const { meta } = await extractVariation('my-flag', { kind: 'user' as const, key: 'user-1' });
+
+      expect(meta.modelKey).toBe('my-model');
+      expect(meta.modelVersion).toBe(3);
     });
 
     it('throws when the variation is disabled', async () => {

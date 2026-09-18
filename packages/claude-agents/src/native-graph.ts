@@ -5,6 +5,7 @@ import {
   type GraphNode,
   getClient,
   type Message,
+  makeNodeTrackData,
   NATIVE_TOOL_KEY,
   NativeTool,
   type ProviderGraphResponse,
@@ -23,16 +24,6 @@ const SUBAGENT_TOOL_PREFIX = `mcp__${SUBAGENT_MCP_NAME}__`;
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 const sanitizeName = (key: string) => key.replace(/[^a-z0-9_-]/gi, '_');
-
-const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: string): TrackData => ({
-  runId,
-  configKey: node.key,
-  variationKey: node.meta.variationKey ?? '',
-  version: node.meta.version ?? 1,
-  modelName: node.config.model.name,
-  providerName: node.config.provider.name,
-  graphKey,
-});
 
 const buildNativeHooks = (nativeToolMap: Map<string, ToolHandlerFn>) => {
   if (nativeToolMap.size === 0) return undefined;

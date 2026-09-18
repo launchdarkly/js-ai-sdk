@@ -8,11 +8,11 @@ import {
   imageBlockToUrl,
   type Message,
   type MessageContent,
+  makeNodeTrackData,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
   type ToolHandlerFn,
-  type TrackData,
 } from '@launchdarkly/ai-server';
 import { Agent, handoff, Runner, tool } from '@openai/agents';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
@@ -80,16 +80,6 @@ const toUserContentParts = (content: MessageContent): OpenAIUserContentPart[] =>
       : { type: 'input_image' as const, image: imageBlockToUrl(block) },
   );
 };
-
-const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: string): TrackData => ({
-  runId,
-  configKey: node.key,
-  variationKey: node.meta.variationKey ?? '',
-  version: node.meta.version ?? 1,
-  modelName: node.config.model.name,
-  providerName: node.config.provider.name,
-  graphKey,
-});
 
 // ─── toOpenAIAgents ───────────────────────────────────────────────────────────
 

@@ -2,7 +2,7 @@ import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { runJudges } from './judges.js';
 import { extractVariation, getClient, initClient } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
-import { executeAndTrack } from './tracking.js';
+import { executeAndTrack, modelStampsFromMeta } from './tracking.js';
 import type { LDContext, Message, ToolHandlerFn } from './types.js';
 import {
   type AiConfigRep,
@@ -119,6 +119,7 @@ const buildGraph = async (
     version: meta.version ?? 1,
     modelName: '',
     providerName: '',
+    ...modelStampsFromMeta(meta),
     graphKey: key,
   };
 
