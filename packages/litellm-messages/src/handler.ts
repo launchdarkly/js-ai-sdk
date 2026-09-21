@@ -118,6 +118,18 @@ function startToolSpan(name: string, id: string, parentContext: Context): Span {
   return span;
 }
 
+const HANDLER_OWNED_MODEL_PARAMETERS = [
+  'api_key',
+  'base_url',
+  'messages',
+  'model',
+  'output_format',
+  'response_format',
+  'stream',
+  'stream_options',
+  'tools',
+] as const;
+
 function mapContent(content: MessageContent): unknown {
   if (typeof content === 'string') return content;
   return content.map((block) =>
@@ -133,34 +145,36 @@ function buildMessages(
   variables: Record<string, unknown>,
   history?: Message[],
 ): Array<Record<string, unknown>> {
-  if (configRep.messages?.length) {
-    const messages: Array<Record<string, unknown>> = configRep.messages.map((message) => ({
-      role: message.role,
+  const system = configRep.messages?.length
+    ? configRep.messages
+        .filter((message) => message.role === 'system')
+        .map((message) => ({
+          role: message.role,
+          content: parseTemplate(message.content, variables),
+        }))
+    : configRep.instructions
+      ? [{ role: 'system', content: parseTemplate(configRep.instructions, variables) }]
+      : [];
+  const configMessages = (configRep.messages ?? [])
+    .filter((message) => message.role !== 'system')
+    .map((message) => ({
+      role: message.role as 'user' | 'assistant',
       content: parseTemplate(message.content, variables),
     }));
-    if (history?.length) {
-      const system = messages.filter((message) => message.role === 'system');
-      const configMessages = messages.filter((message) => message.role !== 'system') as Array<{
-        role: 'user' | 'assistant';
-        content: string;
-      }>;
-      return [
-        ...system,
-        ...composeHistory({ configMessages, history, userInput }).map((message) => ({
-          role: message.role,
-          content: mapContent(message.content),
-        })),
-      ];
-    }
-    if (messages.at(-1)?.role !== 'user') messages.push({ role: 'user', content: userInput });
-    return messages;
+
+  if (history?.length) {
+    return [
+      ...system,
+      ...composeHistory({ configMessages, history, userInput }).map((message) => ({
+        role: message.role,
+        content: mapContent(message.content),
+      })),
+    ];
   }
 
-  return [
-    ...(configRep.instructions ? [{ role: 'system', content: parseTemplate(configRep.instructions, variables) }] : []),
-    ...(history?.map((message) => ({ role: message.role, content: mapContent(message.content) })) ?? []),
-    { role: 'user', content: userInput },
-  ];
+  const messages: Array<Record<string, unknown>> = [...system, ...configMessages];
+  if (messages.at(-1)?.role !== 'user') messages.push({ role: 'user', content: userInput });
+  return messages;
 }
 
 function buildTools(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn>) {
@@ -214,12 +228,7 @@ function ownedRequest(
   stream: boolean,
 ): Record<string, unknown> {
   const parameters = { ...(configRep.model.parameters ?? {}) } as Record<string, unknown>;
-  delete parameters.model;
-  delete parameters.messages;
-  delete parameters.tools;
-  delete parameters.stream;
-  delete parameters.stream_options;
-  delete parameters.response_format;
+  for (const key of HANDLER_OWNED_MODEL_PARAMETERS) delete parameters[key];
   return {
     ...parameters,
     model: configRep.model.name,

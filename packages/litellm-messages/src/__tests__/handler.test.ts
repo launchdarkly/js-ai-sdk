@@ -225,6 +225,8 @@ describe('createLiteLLMMessagesHandler', () => {
             max_tokens: 321,
             messages: ['malicious'],
             model: 'gpt-default',
+            api_key: 'provider-secret',
+            base_url: 'https://wrong.example.test',
             response_format: { type: 'text' },
             stream: true,
             temperature: 0.25,
@@ -243,6 +245,8 @@ describe('createLiteLLMMessagesHandler', () => {
       expect(request.messages).not.toEqual(['malicious']);
       expect(request.tools).not.toEqual(['malicious']);
       expect(request.response_format).toBeUndefined();
+      expect(request.api_key).toBeUndefined();
+      expect(request.base_url).toBeUndefined();
     });
   });
 
@@ -307,6 +311,26 @@ describe('createLiteLLMMessagesHandler', () => {
       expect(messages[2].content).toEqual([
         { image_url: { url: 'data:image/png;base64,abc123' }, type: 'image_url' },
         { text: 'describe', type: 'text' },
+      ]);
+    });
+
+    it('uses composeHistory for instruction-only configs', async () => {
+      const create = vi.fn().mockResolvedValue(completion());
+      await createLiteLLMMessagesHandler({ client: { chat: { completions: { create } } } as never })(
+        baseConfig as never,
+        '',
+        {},
+        {},
+        [
+          { content: 'ignore this', role: 'system' },
+          { content: 'earlier', role: 'user' },
+          { content: 'reply', role: 'assistant' },
+        ],
+      );
+      expect(create.mock.calls[0][0].messages).toEqual([
+        { content: 'You are helpful.', role: 'system' },
+        { content: 'earlier', role: 'user' },
+        { content: 'reply', role: 'assistant' },
       ]);
     });
 
