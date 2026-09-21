@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "license": "Apache-2.0",
   "author": "LaunchDarkly <team@launchdarkly.com>",
-  "description": "Node.js convenience wrapper for @launchdarkly/ai-server — bundles @launchdarkly/node-server-sdk so no peer dependency setup is required",
+  "description": "Node.js convenience wrapper for @launchdarkly/ai-server \u2014 bundles @launchdarkly/node-server-sdk so no peer dependency setup is required",
   "repository": {
     "type": "git",
     "url": "https://github.com/launchdarkly/js-ai-sdk.git",
@@ -24,21 +24,28 @@
     "access": "public"
   },
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "prepare": "tsc",
-    "build": "tsc",
-    "build:watch": "tsc --watch",
+    "prepare": "tsup-node",
+    "build": "tsup-node",
+    "build:watch": "tsup-node --watch",
     "clean": "rm -rf dist",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"

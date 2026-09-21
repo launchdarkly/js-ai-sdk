@@ -94,17 +94,17 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 
 ## Module format support
 
-Every published package is ESM-only today: `"exports"` declares an `import` condition and no `require` condition. What that means per consumer shape:
+Every published package ships both formats: `"exports"` declares an `import` condition (`dist/index.js`, ESM) and a `require` condition (`dist/index.cjs`, CommonJS), each with its own declaration file. What that means per consumer shape:
 
 | Consumer shape | Status | Proven by CI |
 |---|---|---|
-| Native ESM (`import … from '@launchdarkly/ai-node'`) | Supported | Yes — the unit suite runs as ESM on Node 24 |
-| CommonJS source, unbundled, loading via `await import(…)` | Supported | No — Node resolves the package at runtime; verify in your own runtime |
-| Webpack CommonJS output with `externals: [nodeExternals({ allowlist: [/^@launchdarkly\/ai-/] })]` | Supported | Yes — `yarn test:integration` builds and invokes a bundled CommonJS handler on Node 22 |
-| Webpack CommonJS output with the packages left external | **Not supported** — Webpack downlevels `await import()` to `require()` and Node throws `ERR_PACKAGE_PATH_NOT_EXPORTED` | Yes — kept as a regression fixture on Node 22 |
-| `require('@launchdarkly/ai-node')` | **Not supported** — no `require` condition is published | No |
+| Native ESM (`import … from '@launchdarkly/ai-node'`) | Supported | Yes — the unit suite runs as ESM on Node 24, plus a packed-tarball consumer on Node 22 and 24 |
+| `require('@launchdarkly/ai-node')` | Supported | Yes — a packed-tarball consumer on Node 22 and 24 |
+| CommonJS source, unbundled, loading via `await import(…)` | Supported | Yes — same consumer |
+| Webpack CommonJS output with the packages left external | Supported | Yes — `yarn test:integration` bundles and invokes a CommonJS Lambda handler on Node 22 |
+| Webpack CommonJS output with `externals: [nodeExternals({ allowlist: [/^@launchdarkly\/ai-/] })]` | Supported | Yes — same suite |
 
-If you bundle a CommonJS Lambda, follow the [AWS Lambda + Serverless Framework + Webpack recipe](packages/ai-node/README.md#aws-lambda--serverless-framework--webpack).
+Optional dependencies — `@launchdarkly/node-server-sdk`, the OpenTelemetry packages, and the LangChain provider packages — stay behind a runtime `import()` in both formats, so installing them remains optional on CommonJS too.
 
 ## Quick Start
 
