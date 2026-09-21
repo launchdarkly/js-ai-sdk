@@ -13,6 +13,7 @@
     "build": "tsc --build",
     "clean": "tsc --build --clean",
     "test": "vitest run examples/utils.test.ts && yarn workspaces run test",
+    "test:integration": "vitest run integration-tests/commonjs-webpack/commonjs-webpack.test.ts",
     "typecheck": "yarn workspaces run typecheck",
     "format": "biome format --write .",
     "format:check": "biome format --check .",

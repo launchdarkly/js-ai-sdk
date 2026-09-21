@@ -86,6 +86,33 @@ if (result.enabled) {
 
 Never throws. Returns `{ enabled: boolean, config: AiConfigRep | null, meta: VariationMeta | null }`.
 
+## AWS Lambda + Serverless Framework + Webpack
+
+The LaunchDarkly AI packages are currently published as ESM-only (`"exports"` exposes an `import` condition and no `require` condition). A Lambda that emits **CommonJS** and bundles with Webpack + [`webpack-node-externals`](https://www.npmjs.com/package/webpack-node-externals) leaves them external by default, Webpack downlevels `await import('@launchdarkly/ai-node')` to `require(...)`, and Node's resolver rejects it:
+
+```text
+Error [ERR_PACKAGE_PATH_NOT_EXPORTED]: No "exports" main defined in /var/task/node_modules/@launchdarkly/ai-node/package.json
+```
+
+Nothing in LaunchDarkly surfaces this: the failure happens before any SDK code runs, so AI configs are never evaluated and no AI runs appear in AI Insights. An application that falls back to a prompt in code keeps returning plausible output while LaunchDarkly targeting, metrics, and tracing are silently inactive.
+
+Allowlist the LaunchDarkly AI packages so the bundler inlines them instead of externalizing them:
+
+```js
+// webpack.config.js
+const nodeExternals = require('webpack-node-externals');
+
+module.exports = {
+  target: 'node22',
+  externals: [nodeExternals({ allowlist: [/^@launchdarkly\/ai-/] })],
+  // ...rest of your Serverless/Webpack config
+};
+```
+
+The pattern must cover every LaunchDarkly AI package you import — `@launchdarkly/ai-node`, the handler packages, and `@launchdarkly/ai-otel`. `@launchdarkly/node-server-sdk` and the OpenTelemetry packages ship CommonJS entry points and can stay external.
+
+Two alternatives work as well: emit ESM from Lambda (`"type": "module"` and an `.mjs` handler), or run unbundled and let Node resolve `node_modules` at runtime.
+
 ## Full API reference
 
 See [`@launchdarkly/ai-server`](../client/README.md) — all exports are re-exported unchanged from this package.
