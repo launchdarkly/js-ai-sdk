@@ -81,6 +81,24 @@
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
       "component": "@launchdarkly/ai-langchain-messages"
+    },
+    "packages/litellm-agents": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
+      "component": "@launchdarkly/ai-litellm-agents"
+    },
+    "packages/litellm-messages": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
+      "component": "@launchdarkly/ai-litellm-messages"
     }
   }
 }

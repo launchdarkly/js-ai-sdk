@@ -9,6 +9,8 @@
     { "path": "packages/openai-agents" },
     { "path": "packages/openai-messages" },
     { "path": "packages/langchain-messages" },
-    { "path": "packages/langchain-agents" }
+    { "path": "packages/langchain-agents" },
+    { "path": "packages/litellm-messages" },
+    { "path": "packages/litellm-agents" }
   ]
 }

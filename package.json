@@ -33,6 +33,8 @@
     "@launchdarkly/ai-claude-messages": "*",
     "@launchdarkly/ai-langchain-agents": "*",
     "@launchdarkly/ai-langchain-messages": "*",
+    "@launchdarkly/ai-litellm-agents": "*",
+    "@launchdarkly/ai-litellm-messages": "*",
     "@launchdarkly/ai-node": "*",
     "@launchdarkly/ai-openai-agents": "*",
     "@launchdarkly/ai-openai-messages": "*",
