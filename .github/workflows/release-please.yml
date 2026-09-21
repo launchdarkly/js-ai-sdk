@@ -10,6 +10,11 @@
 #   - Allows publishing a specific package to npm
 #   - Supports prerelease and dry-run modes
 #
+# RELEASE CANARY (after a publish, or on demand):
+#   - Installs the exact published versions into a CommonJS Serverless/Webpack app
+#   - Deploys, invokes, and removes an ephemeral Node 22 Lambda via GitHub OIDC
+#   - Requires the AWS_LAMBDA_CANARY_ROLE_ARN repository variable; skipped while it is unset
+#
 name: release-please
 
 on:
@@ -41,6 +46,11 @@ on:
         description: 'Is this a dry run. If so no package will be published.'
         type: boolean
         required: true
+      canary_versions:
+        description: 'Run only the Lambda release canary against these exact published versions, e.g. ai-node=0.3.0,openai-messages=0.3.0,ai-otel=0.2.0'
+        type: string
+        required: false
+        default: ''
 
 jobs:
   release-please:
@@ -303,7 +313,7 @@ jobs:
 
   manual-publish:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.canary_versions == '' }}
     permissions:
       id-token: write
       contents: read
@@ -319,3 +329,105 @@ jobs:
           workspace_path: ${{ inputs.workspace_path }}
           prerelease: ${{ inputs.prerelease }}
           dry_run: ${{ inputs.dry_run }}
+
+  # --- Published-artifact Lambda release canary ---
+  #
+  # Proves the versions that just landed on npm can be installed into a clean CommonJS
+  # package, bundled by Serverless 3 + Webpack 5 + webpack-node-externals 3, loaded by a real
+  # Node 22 Lambda, and removed again. It loads packages only — no SDK key, no flag evaluation,
+  # no model call. See integration-tests/lambda-commonjs/README.md for the required AWS role.
+
+  release-canary:
+    name: Published-artifact Lambda canary
+    runs-on: ubuntu-latest
+    needs:
+      - release-please
+      - release-client
+      - release-ai-node
+      - release-ai-otel
+      - release-openai-messages
+    if: >-
+      ${{ always()
+        && !contains(needs.*.result, 'failure')
+        && !contains(needs.*.result, 'cancelled')
+        && vars.AWS_LAMBDA_CANARY_ROLE_ARN != ''
+        && (github.event_name != 'workflow_dispatch' || inputs.canary_versions != '')
+        && (github.event_name == 'workflow_dispatch'
+          || needs.release-please.outputs.package-ai-node-released == 'true'
+          || needs.release-please.outputs.package-ai-otel-released == 'true'
+          || needs.release-please.outputs.package-openai-messages-released == 'true') }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_LAMBDA_CANARY_REGION || 'us-east-1' }}
+      CANARY_STAGE: c${{ github.run_id }}-${{ github.run_attempt }}
+      SLS_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve canary versions
+        id: versions
+        env:
+          REQUESTED_VERSIONS: ${{ inputs.canary_versions }}
+        run: |
+          set -euo pipefail
+          if [ -n "${REQUESTED_VERSIONS:-}" ]; then
+            resolved="$REQUESTED_VERSIONS"
+          else
+            resolved=$(node -e "const m=require('./.release-please-manifest.json');process.stdout.write(['ai-node','openai-messages','ai-otel'].map((p)=>p+'='+m['packages/'+p]).join(','))")
+          fi
+          echo "Canary versions: $resolved"
+          echo "resolved=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the versions to be visible on npm
+        env:
+          LD_AI_CANARY_VERSIONS: ${{ steps.versions.outputs.resolved }}
+        run: node integration-tests/lambda-commonjs/canary.mjs wait
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          audience: 'https://github.com/launchdarkly'
+          role-to-assume: ${{ vars.AWS_LAMBDA_CANARY_ROLE_ARN }}
+          role-session-name: JsAiSdkLambdaCanary
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build the canary package
+        env:
+          LD_AI_CANARY_VERSIONS: ${{ steps.versions.outputs.resolved }}
+        run: node integration-tests/lambda-commonjs/canary.mjs build --package --stage="$CANARY_STAGE"
+
+      - name: Deploy the ephemeral Lambda
+        working-directory: integration-tests/lambda-commonjs/.canary/app
+        run: npx serverless deploy --stage "$CANARY_STAGE"
+
+      - name: Invoke and assert the capability payload
+        env:
+          LD_AI_CANARY_VERSIONS: ${{ steps.versions.outputs.resolved }}
+        run: |
+          set -euo pipefail
+          aws lambda invoke \
+            --function-name "ld-ai-canary-$CANARY_STAGE" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{}' \
+            response.json
+          cat response.json
+          node integration-tests/lambda-commonjs/canary.mjs assert --response=response.json
+
+      - name: Remove the ephemeral Lambda
+        if: always()
+        run: |
+          set -uo pipefail
+          status=0
+          (cd integration-tests/lambda-commonjs/.canary/app && npx serverless remove --stage "$CANARY_STAGE") || status=1
+          aws logs delete-log-group --log-group-name "/aws/lambda/ld-ai-canary-$CANARY_STAGE" 2>/dev/null || true
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Canary cleanup failed — check for a leftover ld-ai-canary-$CANARY_STAGE stack"
+          fi
+          exit "$status"
