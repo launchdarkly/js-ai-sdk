@@ -45,6 +45,7 @@ vi.mock('@openai/agents', () => ({
   tool: mockTool,
 }));
 
+import type { GraphDefinition, GraphNode } from '@launchdarkly/ai-server';
 import { toLiteLLMAgents } from '../native-graph.js';
 
 function node(key: string, model: string, children: string[] = [], withTool = false) {
@@ -73,10 +74,10 @@ function node(key: string, model: string, children: string[] = [], withTool = fa
   };
 }
 
-function graphDefinition() {
+function graphDefinition(): GraphDefinition {
   const leaf = node('leaf', 'gemini/leaf-alias');
   const root = node('root', 'anthropic/root-alias', ['leaf'], true);
-  return {
+  const definition = {
     enabled: true,
     getNode: (key: string) => (key === 'root' ? root : key === 'leaf' ? leaf : null),
     key: 'litellm-graph',
@@ -87,6 +88,7 @@ function graphDefinition() {
     },
     root,
   };
+  return definition as unknown as GraphDefinition;
 }
 
 describe('toLiteLLMAgents', () => {
@@ -199,8 +201,9 @@ describe('toLiteLLMAgents', () => {
 
   it('composes root config messages before runtime history', async () => {
     const definition = graphDefinition();
-    delete (definition.root.config as { instructions?: string }).instructions;
-    Object.assign(definition.root.config, {
+    const root = definition.root as GraphNode;
+    delete (root.config as { instructions?: string }).instructions;
+    Object.assign(root.config, {
       messages: [
         { content: 'System {{name}}', role: 'system' },
         { content: 'Configured {{name}}', role: 'user' },

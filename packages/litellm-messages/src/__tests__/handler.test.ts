@@ -370,7 +370,7 @@ describe('createLiteLLMMessagesHandler', () => {
       await createLiteLLMMessagesHandler({ client: { chat: { completions: { create } } } as never })(
         config as never,
         'q',
-        { first: vi.fn(), second: vi.fn() },
+        { first: vi.fn<() => unknown>(), second: vi.fn<() => unknown>() },
       );
       expect(create.mock.calls[0][0].tools).toEqual([
         {
@@ -443,7 +443,7 @@ describe('createLiteLLMMessagesHandler', () => {
       await createLiteLLMMessagesHandler({ client: { chat: { completions: { create } } } as never })(
         { ...baseConfig, outputFormat: schema, tools: { lookup: tool('lookup') } } as never,
         'q',
-        { lookup: vi.fn() },
+        { lookup: vi.fn<() => unknown>() },
       );
       for (const [request] of create.mock.calls) {
         expect(request.response_format).toEqual({
@@ -568,7 +568,7 @@ describe('createLiteLLMMessagesHandler', () => {
       await createLiteLLMMessagesHandler({ client: { chat: { completions: { create } } } as never })(
         { ...baseConfig, tools: { lookup: tool('lookup') } } as never,
         'q',
-        { lookup: vi.fn() },
+        { lookup: vi.fn<() => unknown>() },
       );
       const chats = mockSpans.filter(({ name }) => name === 'chat anthropic/claude-sonnet-4');
       expect(chats).toHaveLength(2);
