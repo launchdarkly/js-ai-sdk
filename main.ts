@@ -12,6 +12,9 @@ import * as langchain from './examples/langchain';
 import * as langchainAgents from './examples/langchain-agents';
 import * as langchainMessages from './examples/langchain-messages';
 import * as langchainThinking from './examples/langchain-thinking';
+import * as litellm from './examples/litellm';
+import * as litellmAgents from './examples/litellm-agents';
+import * as litellmMessages from './examples/litellm-messages';
 import * as nativeGraph from './examples/native-graph';
 import * as nativeGraphLangchain from './examples/native-graph-langchain';
 import * as openaiAgents from './examples/openai-agents';
@@ -32,6 +35,9 @@ type Example =
   | 'langchain-agents'
   | 'langchain-messages'
   | 'langchain-thinking'
+  | 'litellm'
+  | 'litellm-agents'
+  | 'litellm-messages'
   | 'native-graph'
   | 'native-graph-langchain'
   | 'openai-agents'
@@ -52,6 +58,9 @@ const EXAMPLES: Record<Example, { run: (key: string, userInput: string) => Promi
   'langchain-agents': langchainAgents,
   'langchain-messages': langchainMessages,
   'langchain-thinking': langchainThinking,
+  litellm,
+  'litellm-agents': litellmAgents,
+  'litellm-messages': litellmMessages,
   'native-graph': nativeGraph,
   'native-graph-langchain': nativeGraphLangchain,
   'openai-agents': openaiAgents,

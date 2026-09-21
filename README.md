@@ -26,7 +26,7 @@ That call is the whole integration. Everything it does is configured in LaunchDa
 - Run agents and multi-step graphs, where each step can use a different provider
 - Score output quality with judges, including scoring that stays off the request path
 - See cost, latency, token usage, errors, and full conversations with no instrumentation code
-- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, or your own handler
+- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, LiteLLM, or your own handler
 
 - [What you get](#what-you-get)
 - [How It Works](#how-it-works)
@@ -89,6 +89,8 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-claude-agents](packages/claude-agents/README.md)`           | Anthropic | `agent`    | Claude Agent SDK — agentic loop with MCP tool support |
 | `[@launchdarkly/ai-langchain-messages](packages/langchain-messages/README.md)` | `*` (any) | `messages` | Any `BaseChatModel` via LangChain `bindTools` loop    |
 | `[@launchdarkly/ai-langchain-agents](packages/langchain-agents/README.md)`     | `*` (any) | `agent`    | LangGraph `createReactAgent` — managed ReAct loop     |
+| `[@launchdarkly/ai-litellm-messages](packages/litellm-messages/README.md)`     | `*` (any) | `messages` | OpenAI-compatible requests through a LiteLLM proxy    |
+| `[@launchdarkly/ai-litellm-agents](packages/litellm-agents/README.md)`         | `*` (any) | `agent`    | OpenAI Agents SDK through a LiteLLM proxy              |
 
 
 ## Quick Start
@@ -125,6 +127,10 @@ No code changes are needed between the two — `initClient()` detects whether th
 cp .env.example .env
 # Fill in LD_SDK_KEY and the API key for your provider
 ```
+
+LiteLLM integrations additionally require `LITELLM_BASE_URL` to point to the
+proxy's OpenAI-compatible `/v1` endpoint. Set `LITELLM_API_KEY` only when the
+proxy has authentication enabled. Provider credentials belong on the proxy.
 
 ### 3. Call a model
 
@@ -164,6 +170,8 @@ console.log(result.response);
 | `claudeAgents`      | `@launchdarkly/ai-claude-agents`      | `@anthropic-ai/claude-agent-sdk` | Claude Agent SDK (MCP)       |
 | `langchainMessages` | `@launchdarkly/ai-langchain-messages` | `@langchain/core`                | LangChain `bindTools` loop   |
 | `langchainAgents`   | `@launchdarkly/ai-langchain-agents`   | `@langchain/langgraph`           | LangGraph `createReactAgent` |
+| `litellmMessages`   | `@launchdarkly/ai-litellm-messages`   | `openai`                         | LiteLLM proxy chat completions |
+| `litellmAgents`     | `@launchdarkly/ai-litellm-agents`     | `@openai/agents`                 | OpenAI Agents via LiteLLM proxy |
 
 
 ---
@@ -268,7 +276,7 @@ console.log(result.usage);    // aggregate { input, output, total }
 await shutdown();
 ```
 
-Provider packages also export single-provider conveniences (`claudeGraph`, `openaiGraph`, `langchainGraph`) that pre-bind their handler. For mixed-provider graphs, use the base `graph()` and pass multiple handlers.
+Provider packages also export conveniences (`claudeGraph`, `openaiGraph`, `langchainGraph`, `litellmGraph`) that pre-bind their handler. For mixed-provider graphs, use the base `graph()` and pass multiple handlers.
 
 ---
 
@@ -325,6 +333,21 @@ import { toOpenAIAgents } from '@launchdarkly/ai-openai-agents';
 const result = await toOpenAIAgents(
   resolveGraph('support-graph', { context }),
   { toolHandlers: registry.tools, context }
+).invoke('I was double charged');
+```
+
+##### `toLiteLLMAgents` — OpenAI Agents SDK over LiteLLM
+
+Builds the same native Agents SDK handoff tree while binding each evaluated
+node model to the configured LiteLLM proxy.
+
+```ts
+import { resolveGraph } from '@launchdarkly/ai-server';
+import { toLiteLLMAgents } from '@launchdarkly/ai-litellm-agents';
+
+const result = await toLiteLLMAgents(
+  resolveGraph('support-graph', { context }),
+  { toolHandlers: registry.tools },
 ).invoke('I was double charged');
 ```
 
@@ -574,6 +597,9 @@ yarn start [example] [flag-key] [user-input]
 | `graph-history`     | `yarn start graph-history` | `graph().invoke()` with multimodal `history` forwarded to the root node                        |
 | `native-graph`      | `yarn start native-graph` | `toClaudeAgents` + `resolveGraph` — native Claude Agent SDK runner                              |
 | `openai-only`       | `yarn start openai-only`  | `config()` with a custom `Registry` restricted to OpenAI handlers                   |
+| `litellm`           | `yarn start litellm` | `config()` routing both messages and agents through LiteLLM |
+| `litellm-agents`    | `yarn start litellm-agents` | `litellmAgents()` through the configured LiteLLM proxy |
+| `litellm-messages`  | `yarn start litellm-messages` | `litellmMessages()` through the configured LiteLLM proxy |
 
 
 **Examples:**
@@ -615,7 +641,9 @@ js-ai-sdk/
 │   ├── openai-agents/   # @launchdarkly/ai-openai-agents
 │   ├── openai-messages/ # @launchdarkly/ai-openai-messages
 │   ├── langchain-agents/   # @launchdarkly/ai-langchain-agents
-│   └── langchain-messages/ # @launchdarkly/ai-langchain-messages
+│   ├── langchain-messages/ # @launchdarkly/ai-langchain-messages
+│   ├── litellm-agents/     # @launchdarkly/ai-litellm-agents
+│   └── litellm-messages/   # @launchdarkly/ai-litellm-messages
 ├── .env.example         # Template — copy to .env and fill in your values
 └── agents.md            # Architecture reference for AI agents and contributors
 ```
