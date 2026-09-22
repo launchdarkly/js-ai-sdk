@@ -17,6 +17,7 @@ import {
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  pickForwardedModelParameters,
   type SpanMessage,
   type SpanMessagePart,
   setConversationIdIfAbsent,
@@ -905,12 +906,7 @@ const FORWARDED_MODEL_PARAMETER_KEYS = [
  * produces `{}`, so `query()` sees exactly what it always has.
  */
 function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
-  if (!parameters) return {};
-  const forwarded: Record<string, unknown> = {};
-  for (const key of FORWARDED_MODEL_PARAMETER_KEYS) {
-    if (parameters[key] !== undefined) forwarded[key] = parameters[key];
-  }
-  return forwarded;
+  return pickForwardedModelParameters(parameters, FORWARDED_MODEL_PARAMETER_KEYS);
 }
 
 function buildQueryOptions(

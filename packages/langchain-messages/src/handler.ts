@@ -19,6 +19,7 @@ import {
   type Message,
   type MessageContent,
   type NativeTool,
+  normalizeModelParameters,
   type ProviderHandler,
   parseTemplate,
   type SpanUsage,
@@ -170,9 +171,7 @@ function normalizeOutputSchema(schema: Record<string, unknown>): Record<string, 
 export type LangChainModelSource = BaseChatModel | ((config: AiConfigRep) => BaseChatModel | Promise<BaseChatModel>);
 
 function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record<string, unknown> {
-  const parameters = {
-    ...(config.model?.parameters && typeof config.model.parameters === 'object' ? config.model.parameters : {}),
-  };
+  const parameters = { ...normalizeModelParameters(config.model?.parameters) };
   if ((config.provider?.name ?? '').toLowerCase() === 'bedrock') delete parameters.tools;
   // Name from the config always wins over a colliding `model` key in the parameter bag.
   return { ...parameters, model: resolvedModelName(config, fallbackName) };

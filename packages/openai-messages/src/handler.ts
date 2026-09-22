@@ -14,6 +14,7 @@ import {
   type Message,
   type ProviderHandler,
   parseTemplate,
+  pickForwardedModelParameters,
   type SpanMessage,
   type SpanMessagePart,
   type SpanUsage,
@@ -359,12 +360,7 @@ const FORWARDED_MODEL_PARAMETER_KEYS = [
  * `{}`, so the request sent is byte-for-byte what it always was.
  */
 function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
-  if (!parameters) return {};
-  const forwarded: Record<string, unknown> = {};
-  for (const key of FORWARDED_MODEL_PARAMETER_KEYS) {
-    if (parameters[key] !== undefined) forwarded[key] = parameters[key];
-  }
-  return forwarded;
+  return pickForwardedModelParameters(parameters, FORWARDED_MODEL_PARAMETER_KEYS);
 }
 
 export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {

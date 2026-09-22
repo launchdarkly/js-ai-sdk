@@ -15,6 +15,7 @@ import {
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  pickForwardedModelParameters,
   type SpanMessage,
   type SpanMessagePart,
   type SpanUsage,
@@ -524,11 +525,7 @@ const FORWARDED_MODEL_SETTINGS_KEYS = [
  * produces `undefined`, so the Agent is constructed exactly as it always has been.
  */
 function buildModelSettings(parameters: AiConfigRep['model']['parameters']): ModelSettings | undefined {
-  if (!parameters) return undefined;
-  const settings: Record<string, unknown> = {};
-  for (const key of FORWARDED_MODEL_SETTINGS_KEYS) {
-    if (parameters[key] !== undefined) settings[key] = parameters[key];
-  }
+  const settings = pickForwardedModelParameters(parameters, FORWARDED_MODEL_SETTINGS_KEYS);
   return Object.keys(settings).length > 0 ? (settings as ModelSettings) : undefined;
 }
 
