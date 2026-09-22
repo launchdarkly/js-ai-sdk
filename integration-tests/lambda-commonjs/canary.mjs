@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-// Release canary driver: stages a clean CommonJS Serverless app that installs the exact
-// published versions of the LaunchDarkly AI packages, then packages, waits on npm, or asserts
-// the capability payload a deployed Lambda returned.
+// Release canary driver. It stages a clean CommonJS Serverless app.
+// The app installs the exact published versions of the LaunchDarkly AI packages.
+// The driver waits on npm, builds the app, or checks the payload from a deployed Lambda.
 //
 // Usage:
 //   node canary.mjs wait   --ai-node=0.3.0 --openai-messages=0.3.0 --ai-otel=0.2.0

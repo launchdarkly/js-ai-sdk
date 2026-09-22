@@ -332,10 +332,11 @@ jobs:
 
   # --- Published-artifact Lambda release canary ---
   #
-  # Proves the versions that just landed on npm can be installed into a clean CommonJS
-  # package, bundled by Serverless 3 + Webpack 5 + webpack-node-externals 3, loaded by a real
-  # Node 22 Lambda, and removed again. It loads packages only — no SDK key, no flag evaluation,
-  # no model call. See integration-tests/lambda-commonjs/README.md for the required AWS role.
+  # This job installs the versions that npm now serves into a clean CommonJS package.
+  # Serverless 3, Webpack 5, and webpack-node-externals 3 bundle that package.
+  # A real Node 22 Lambda then loads it, and the job deletes the Lambda again.
+  # The job loads packages only. It uses no SDK key, no flag evaluation, and no model call.
+  # See integration-tests/lambda-commonjs/README.md for the AWS role that this job needs.
 
   release-canary:
     name: Published-artifact Lambda canary
