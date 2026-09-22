@@ -401,7 +401,7 @@ Returns:
 
 Creates an agent graph caller bound to a graph flag key. Uses a model-driven router: starts at the root node and lets the model choose which outgoing edge to follow at each step, threading each node's output into the next. Stops when the model produces a terminal answer, a leaf is reached, a node is revisited (cycle guard), or the step cap is hit.
 
-Returns `{ invoke(input: string | undefined, context: LDContext, variables?: Record<string, any>): Promise<ProviderGraphResponse> }`.
+Returns `{ invoke(input: string | undefined, context: LDContext, variables?: Record<string, any>): Promise<ProviderGraphResponse>, stream(input: string | undefined, context: LDContext, variables?: Record<string, any>): AsyncGenerator<GraphStreamEvent> }`.
 
 Requires `handlers` (either in `options` or via `options.registry`) to be set. For framework packages that need to walk the topology and build their own execution structure, use `resolveGraph` instead.
 

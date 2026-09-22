@@ -161,12 +161,20 @@ const result = await g.invoke(
 console.log(result.response); // final output
 console.log(result.usage);    // aggregate { input, output, total }
 
+// Stream tokens while traversing the same graph path (node boundaries included):
+for await (const event of g.stream('I was double charged', { kind: 'user', key: 'user-123' })) {
+  if (event.type === 'chunk') process.stdout.write(event.text);
+  if (event.type === 'done') console.log('\n', event.usage);
+}
+
 await shutdown();
 ```
 
 Routing is by each node config's `provider.name` + `meta.mode`, so a single graph can mix providers when you pass multiple handlers. Provider packages also export a single-provider convenience (e.g. `claudeGraph`, `openaiGraph`, `langchainGraph`) that pre-binds their handler.
 
-`resolveGraph(key, options)` returns a `GraphDefinition` without executing it. It still requires `context` at resolution time (it has no deferred `.invoke()`). The definition carries `.enabled` so you can branch on a disabled graph before traversing. `graph(...).invoke()` throws if the graph is disabled.
+`graph(...).stream()` yields `GraphStreamEvent` values (`node_start`, `chunk` with `nodeKey`, `node_done`, `handoff`, final `done`) while keeping the same handoff / path / graph-level telemetry as `invoke()`. Handlers without `.stream` fall back to a single chunk per node, matching `config().stream()`.
+
+`resolveGraph(key, options)` returns a `GraphDefinition` without executing it. It still requires `context` at resolution time (it has no deferred `.invoke()`). The definition carries `.enabled` so you can branch on a disabled graph before traversing. `graph(...).invoke()` / `.stream()` throw if the graph is disabled.
 
 ### `Registry` / `globalRegistry` / `compose`
 
@@ -255,5 +263,6 @@ All types are re-exported from this package. Handler packages import them from h
 | `GraphArgs` | Options accepted by `resolveGraph()` — extends `GraphOptions` with a required `context` |
 | `GraphDefinition` | A resolved agent graph: topology accessors, `runNode`, and the traverse primitives |
 | `GraphNode` / `GraphEdge` | A node (evaluated agent config + edges) and a directed edge (with handoff data) |
-| `ProviderGraphResponse` | The value returned by `graph(...).invoke()`: `{ response, usage, trackData, judgeResults? }` |
+| `ProviderGraphResponse` | The value returned by `graph(...).invoke()`: `{ response, usage, judgeResults? }` |
+| `GraphStreamEvent` | Events yielded by `graph(...).stream()`: `node_start` / `chunk` / `node_done` / `handoff` / `done` |
 | `GraphTopology` | The parsed graph flag shape (`root` + `edges`) |
