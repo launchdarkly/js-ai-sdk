@@ -33,6 +33,7 @@ import type {
   ModelProvider,
   ModelRequest,
   ModelResponse,
+  ModelSettings,
   RunRawModelStreamEvent,
   StreamEvent,
   StreamedRunResult,
@@ -495,6 +496,52 @@ function configConversationTurns(config: AiConfigRep, variables: Record<string, 
     .map((m) => ({ role: m.role as 'user' | 'assistant', content: parseTemplate(m.content, variables) }));
 }
 
+/**
+ * `ModelSettings` keys this handler forwards verbatim from `config.model.parameters`, so an AI
+ * Config can tune the underlying model call without a code change here. Kept to the scalar tuning
+ * knobs plus `toolChoice`/`truncation`/`promptCacheRetention`, which are the settings customers
+ * configure through the LaunchDarkly UI today; `providerData` and `retry` are left out because
+ * they are SDK escape hatches (arbitrary provider-specific payload, client-side retry behaviour)
+ * rather than model tuning parameters, and forwarding them unreviewed would let a config reach
+ * past this handler's own request shape.
+ */
+const FORWARDED_MODEL_SETTINGS_KEYS = [
+  'temperature',
+  'topP',
+  'frequencyPenalty',
+  'presencePenalty',
+  'maxTokens',
+  'toolChoice',
+  'parallelToolCalls',
+  'truncation',
+  'store',
+  'promptCacheRetention',
+] as const satisfies ReadonlyArray<keyof ModelSettings>;
+
+/**
+ * Picks the subset of `config.model.parameters` that maps onto the Agents SDK's `ModelSettings`,
+ * unchanged otherwise: no default temperature, no default cap — a config that sets nothing here
+ * produces `undefined`, so the Agent is constructed exactly as it always has been.
+ */
+function buildModelSettings(parameters: AiConfigRep['model']['parameters']): ModelSettings | undefined {
+  if (!parameters) return undefined;
+  const settings: Record<string, unknown> = {};
+  for (const key of FORWARDED_MODEL_SETTINGS_KEYS) {
+    if (parameters[key] !== undefined) settings[key] = parameters[key];
+  }
+  return Object.keys(settings).length > 0 ? (settings as ModelSettings) : undefined;
+}
+
+/**
+ * `maxTurns` is a `Runner.run` option, not a `ModelSettings` field — it caps the agentic loop
+ * rather than tuning any single model call — so it is read out of `model.parameters` separately
+ * and forwarded to `run()` instead of the `Agent` constructor.
+ */
+function buildMaxTurns(parameters: AiConfigRep['model']['parameters']): number | undefined {
+  const maxTurns = parameters?.maxTurns;
+  return typeof maxTurns === 'number' ? maxTurns : undefined;
+}
+
 function buildAgentAndPrompt(
   config: AiConfigRep,
   userInput: string,
@@ -536,6 +583,7 @@ function buildAgentAndPrompt(
   const tools = config.tools ? buildAgentTools(config.tools, toolHandlers) : [];
 
   const outputType = includeOutputType ? buildOutputType(config.outputFormat) : undefined;
+  const modelSettings = buildModelSettings(config.model.parameters);
 
   const agent = new Agent({
     name: 'assistant',
@@ -543,6 +591,7 @@ function buildAgentAndPrompt(
     ...(instructions ? { instructions } : {}),
     ...(tools.length > 0 ? { tools } : {}),
     ...(outputType ? { outputType } : {}),
+    ...(modelSettings ? { modelSettings } : {}),
   });
 
   return { agent, prompt, instructions };
@@ -606,8 +655,9 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
           modelProvider: new SpanningModelProvider(defaultModelProvider(), config, parentContext, captureContent),
         });
         try {
+          const maxTurns = buildMaxTurns(config.model.parameters);
           // biome-ignore lint/suspicious/noExplicitAny: Runner.run accepts string | AgentInputItem[]; our item shape is structurally compatible
-          const result = await runner.run(agent, prompt as any);
+          const result = await runner.run(agent, prompt as any, maxTurns !== undefined ? { maxTurns } : undefined);
           const finalOutput = result.finalOutput ?? '';
           const { inputTokens, outputTokens } = result.state.usage;
 
@@ -673,8 +723,10 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
         modelProvider: new SpanningModelProvider(defaultModelProvider(), config, parentContext, captureContent),
       });
       try {
+        const maxTurns = buildMaxTurns(config.model.parameters);
+        const runOptions = { stream: true, signal: abortRun.signal, ...(maxTurns !== undefined ? { maxTurns } : {}) };
         // biome-ignore lint/suspicious/noExplicitAny: Agents SDK run() stream overload requires an any-cast option
-        const streamed = await runner.run(agent, prompt as any, { stream: true, signal: abortRun.signal } as any);
+        const streamed = await runner.run(agent, prompt as any, runOptions as any);
         // biome-ignore lint/suspicious/noExplicitAny: StreamedRunResult generics are irrelevant to this handler
         const streamedResult = streamed as StreamedRunResult<any, any>;
         let fullOutput = '';
