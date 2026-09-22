@@ -1259,3 +1259,184 @@ describe('createClaudeMessagesHandler — MAX_STEPS cap (§1.10)', () => {
     );
   });
 });
+
+describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockChildSpans.length = 0;
+  });
+
+  function makeStreamMock(events: any[], finalMsg: any) {
+    const asyncIterable = (async function* () {
+      for (const e of events) yield e;
+    })();
+    return {
+      [Symbol.asyncIterator]: () => asyncIterable[Symbol.asyncIterator](),
+      finalMessage: vi.fn().mockResolvedValue(finalMsg),
+    };
+  }
+
+  it('forwards recognized keys (temperature, top_p, top_k, stop_sequences, thinking) to messages.create', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          temperature: 0.5,
+          top_p: 0.9,
+          top_k: 40,
+          stop_sequences: ['STOP'],
+          thinking: { type: 'enabled', budget_tokens: 2048 },
+        },
+      },
+    };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    const call = mockMessagesCreate.mock.calls[0][0];
+    expect(call.temperature).toBe(0.5);
+    expect(call.top_p).toBe(0.9);
+    expect(call.top_k).toBe(40);
+    expect(call.stop_sequences).toEqual(['STOP']);
+    expect(call.thinking).toEqual({ type: 'enabled', budget_tokens: 2048 });
+  });
+
+  it('still defaults max_tokens to 1024 when model.parameters is set but omits it', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { temperature: 0.3 } } };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    expect(mockMessagesCreate.mock.calls[0][0].max_tokens).toBe(1024);
+  });
+
+  it('forwards a configured max_tokens unchanged (existing behaviour)', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_tokens: 2048 } } };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    expect(mockMessagesCreate.mock.calls[0][0].max_tokens).toBe(2048);
+  });
+
+  it('does not let model.parameters override model, messages, tools, or system', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          model: 'evil-model',
+          messages: ['evil'],
+          tools: ['evil'],
+          system: 'evil system',
+          stream: true,
+        },
+      },
+    };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    const call = mockMessagesCreate.mock.calls[0][0];
+    expect(call.model).toBe(baseConfig.model.name);
+    expect(call.system).toBe('You are helpful.');
+    expect(Array.isArray(call.messages)).toBe(true);
+    expect(call.messages.at(-1).content).toBe('hi');
+    expect(call.tools).toBeUndefined();
+  });
+
+  it('drops unknown model.parameters keys', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { made_up_key: 'nope' } } };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    expect(mockMessagesCreate.mock.calls[0][0]).not.toHaveProperty('made_up_key');
+  });
+
+  it('leaves the call unchanged from today when model.parameters is absent', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const handler = createClaudeMessagesHandler();
+    await handler(baseConfig as any, 'hi');
+    const call = mockMessagesCreate.mock.calls[0][0];
+    expect(call).toEqual({
+      model: baseConfig.model.name,
+      max_tokens: 1024,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+  });
+
+  it('leaves the call unchanged from today when model.parameters is an empty object', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: {} } };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    const call = mockMessagesCreate.mock.calls[0][0];
+    expect(call).toEqual({
+      model: baseConfig.model.name,
+      max_tokens: 1024,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+  });
+
+  // ── streaming path ──────────────────────────────────────────────────────────
+
+  it('forwards recognized model.parameters to messages.stream', async () => {
+    const finalMsg = {
+      usage: { input_tokens: 3, output_tokens: 7 },
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Hi' }],
+    };
+    mockMessagesStream.mockReturnValue(makeStreamMock([], finalMsg));
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { temperature: 0.7, top_k: 10 } } };
+    const handler = createClaudeMessagesHandler();
+    const gen = handler.stream?.(cfg as any, 'q', {}, {});
+    for await (const _e of gen) {
+      // drain
+    }
+    const call = mockMessagesStream.mock.calls[0][0];
+    expect(call.temperature).toBe(0.7);
+    expect(call.top_k).toBe(10);
+  });
+
+  it('streaming path still defaults max_tokens to 1024 and drops unknown keys', async () => {
+    const finalMsg = {
+      usage: { input_tokens: 3, output_tokens: 7 },
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Hi' }],
+    };
+    mockMessagesStream.mockReturnValue(makeStreamMock([], finalMsg));
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { made_up_key: 'nope' } } };
+    const handler = createClaudeMessagesHandler();
+    const gen = handler.stream?.(cfg as any, 'q', {}, {});
+    for await (const _e of gen) {
+      // drain
+    }
+    const call = mockMessagesStream.mock.calls[0][0];
+    expect(call.max_tokens).toBe(1024);
+    expect(call).not.toHaveProperty('made_up_key');
+  });
+
+  it('streaming path does not let model.parameters override model/messages/system', async () => {
+    const finalMsg = {
+      usage: { input_tokens: 3, output_tokens: 7 },
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Hi' }],
+    };
+    mockMessagesStream.mockReturnValue(makeStreamMock([], finalMsg));
+    const cfg = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { model: 'evil-model', system: 'evil system', messages: ['evil'] },
+      },
+    };
+    const handler = createClaudeMessagesHandler();
+    const gen = handler.stream?.(cfg as any, 'q', {}, {});
+    for await (const _e of gen) {
+      // drain
+    }
+    const call = mockMessagesStream.mock.calls[0][0];
+    expect(call.model).toBe(baseConfig.model.name);
+    expect(call.system).toBe('You are helpful.');
+    expect(call.messages.at(-1).content).toBe('q');
+  });
+});
