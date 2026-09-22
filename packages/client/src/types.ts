@@ -275,6 +275,17 @@ export type RawSkillObject = {
  * only, and do throw. A watcher that silently never fires is indistinguishable
  * from one whose objects never changed. `removeListener` has no such constraint:
  * a kind holding no listeners is simply nothing to remove.
+ * * `isInitialized` is the optional readiness half of the seam, probed the same
+ * way `addListener` is. It reports whether the store has received its initial
+ * data — for a delivery transport, whether a payload has arrived yet. A store
+ * that does not implement it is treated as initialized, which is correct for
+ * one populated by hand (`InMemorySkillStore` implements nothing here), and a
+ * probe that throws counts as *not* initialized. It matters because "the store
+ * holds nothing" and "the store has not heard yet" are the same answer through
+ * `allObjects`, and `writeSkills('*')` reads the first as "every skill was
+ * revoked" — so a reconcile against an uninitialized store reports retrieval
+ * unavailable and prunes nothing. `FDv2SkillStore` implements it as "a payload
+ * has committed", the same fact `waitForSkills` resolves to without the wait.
  *
  * Everything a store serves is untrusted input. The transport is not part of the
  * trust boundary — key, version, size, and content hash are revalidated at the
@@ -296,6 +307,12 @@ export type SkillStore = {
   allObjects(kind: string): Record<string, RawSkillObject>;
   addListener?(kind: string, fn: (raw: RawSkillObject) => unknown): void;
   removeListener?(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+  /**
+   * Whether the store has received its initial data. Optional; absent means
+   * initialized. See the type's docblock for why the materialization path
+   * consults it before it may prune.
+   */
+  isInitialized?(): boolean;
 };
 
 /** Builds a frozen {@link SkillReference}. */

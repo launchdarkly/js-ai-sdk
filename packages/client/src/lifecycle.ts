@@ -218,7 +218,15 @@ function isLDClient(value: unknown): value is LDClientInterface {
  *
  * **Overload 2 — pre-initialized client (edge / custom runtimes):**
  * Pass an already-initialized `LDClientInterface`-compatible client (e.g. from
- * `@launchdarkly/vercel-server-sdk`) to bypass the Node SDK entirely.
+ * `@launchdarkly/vercel-server-sdk`) to bypass the Node SDK entirely. The
+ * optional second argument is the same options bag as the first overload.
+ *
+ * Idempotent for the client singleton: a second call returns the existing
+ * client and every other option is ignored — with one deliberate exception.
+ * **`skillStore` is applied on every call, before the idempotency check**, so a
+ * client that was lazily auto-initialized, or initialized without a store, can
+ * be given one afterwards with `initClient({ skillStore: store })`. A nullish
+ * `skillStore` never clears a configured store; `shutdown()` does that.
  *
  * Both overloads return the client instance for further customization.
  */
@@ -243,9 +251,12 @@ export async function initClient(
   if (isLDClient(optionsOrClient)) {
     // Pre-initialized client path (edge / custom runtimes).
     // Still run telemetry setup so OTel traces work regardless of which
-    // LD SDK is providing the client. SDK key is optional here — it's only
-    // used for the highlight.project_id resource attribute.
-    await setupTelemetry({}, process.env.LD_SDK_KEY ?? '');
+    // LD SDK is providing the client, and with the caller's options — the
+    // second argument is the same bag as the other overload, so `otlpEndpoint`,
+    // `serviceName` and `environment` mean the same thing here. SDK key is
+    // optional here — it's only used for the highlight.project_id resource
+    // attribute.
+    await setupTelemetry(clientOptions ?? {}, clientOptions?.sdkKey ?? process.env.LD_SDK_KEY ?? '');
     singleton.client = optionsOrClient;
     singleton.initPromise = Promise.resolve(optionsOrClient);
     return optionsOrClient;

@@ -45,6 +45,7 @@ import {
   recordRevoked,
   referenceTarget,
   resolveFromStore,
+  storeIsInitialized,
   verifiedBytes,
   verifyRawSkill,
 } from './skills-core.js';
@@ -56,6 +57,7 @@ import type {
   ReconcileReport,
   Skill,
   SkillReference,
+  SkillStore,
 } from './types.js';
 import {
   createReconcileAction,
@@ -222,6 +224,13 @@ export async function writeSkills(
     throw new Error(`timeout must be a non-negative number of seconds, got ${JSON.stringify(timeout)}`);
   }
 
+  // The request shape is validated before the root is resolved, so a mistaken
+  // call — a bare key string where an array was meant — does not leave a freshly
+  // created root directory behind as a side effect of failing.
+  if (typeof skills === 'string' && skills !== '*') {
+    throw new Error(`writeSkills takes an array of skills or the literal "*"; got ${JSON.stringify(skills)}`);
+  }
+
   const deadline = performance.now() + timeout * 1000;
   const rootPath = await resolveRoot(root);
 
@@ -352,7 +361,7 @@ async function writeAll(
         createReconcileAction({
           key: request.key,
           action: 'error',
-          error: request.error ?? `skill '${request.key}' could not be resolved`,
+          error: request.error ?? `skill ${shownKey(request.key)} could not be resolved`,
         }),
       );
       continue;
@@ -479,9 +488,9 @@ function isSkill(item: Skill | SkillReference | string): item is Skill {
  * Turns the caller's input into one request per skill.
  *
  * Also reports whether any retrieval was left incomplete — an absent store, a
- * throwing store, or an exhausted timeout. That flag suppresses pruning: deleting
- * managed files because retrieval failed would turn a transport outage into data
- * loss.
+ * store still waiting for its initial data, a throwing store, or an exhausted
+ * timeout. That flag suppresses pruning: deleting managed files because
+ * retrieval failed would turn a transport outage into data loss.
  */
 async function resolveRequests(
   skills: ReadonlyArray<Skill | SkillReference | string> | '*',
@@ -489,6 +498,8 @@ async function resolveRequests(
   onUnavailable: OnUnavailable,
 ): Promise<{ requests: PendingWrite[]; incomplete: boolean }> {
   if (typeof skills === 'string') {
+    // `writeSkills` has already refused any string but '*', before the root
+    // was resolved; this is the same guard as a type narrowing.
     if (skills !== '*') {
       throw new Error(`writeSkills takes an array of skills or the literal "*"; got ${JSON.stringify(skills)}`);
     }
@@ -515,29 +526,58 @@ async function resolveRequests(
   return { requests, incomplete };
 }
 
+/** Retrieval could not happen at all; `error` is already worded as unavailable. */
+type RetrievalBlocked = { readonly blocked: string };
+
+function isBlocked(result: SkillStore | RetrievalBlocked): result is RetrievalBlocked {
+  return 'blocked' in result;
+}
+
+/**
+ * The single gate that decides whether retrieval is available — for one
+ * reference and for the `'*'` form alike, so the two cannot disagree about
+ * what counts as "the store could not answer".
+ *
+ * Three conditions block it, and every one of them is `store_unavailable`
+ * rather than the store answering "no": an exhausted deadline, an absent store,
+ * and a store that has not received its initial data. Reporting any of them as
+ * an absence is what would let a prune delete working files over a non-answer.
+ *
+ * The readiness check is the one that is easy to leave out. A store still
+ * waiting for its first delivery answers every read with "nothing", which is
+ * indistinguishable through the seam from an environment that holds no skills —
+ * and the `'*'` form reads that as every skill having been revoked. Blocking
+ * here reports the run incomplete, which is what suppresses the prune.
+ *
+ * `subject` is what the message says could not be retrieved.
+ */
+function availableStore(deadline: number, subject: string): SkillStore | RetrievalBlocked {
+  if (performance.now() >= deadline) {
+    return { blocked: unavailable(`the timeout was exhausted before ${subject} could be retrieved`) };
+  }
+  const store = getStore();
+  if (store === null) return { blocked: unavailable(NO_STORE_MESSAGE) };
+  if (!storeIsInitialized(store)) {
+    return {
+      blocked: unavailable(
+        `the skill store has not received its initial data, so ${subject} could not be retrieved and nothing on ` +
+          'disk was changed. Wait for delivery before reconciling: FDv2SkillStore.waitForSkills(timeoutMs) ' +
+          'resolves true once the first payload has arrived.',
+      ),
+    };
+  }
+  return store;
+}
+
 /**
  * Resolves one reference for the materialization path.
  *
- * Same core as the accessors, plus the two conditions only this path treats as
- * data rather than as an exception: an exhausted deadline and an absent store.
+ * Same core as the accessors, plus the conditions only this path treats as data
+ * rather than as an exception — see {@link availableStore}.
  */
 function resolveReference(key: string, wantedVersion: number | null, deadline: number): Resolution {
-  // Both of this function's own outcomes are `store_unavailable`: neither is the
-  // store answering "no". An exhausted deadline and an absent store are reasons
-  // the retrieval could not happen, and reporting either as an absence is what
-  // would let a prune delete working files over a non-answer.
-  if (performance.now() >= deadline) {
-    return {
-      error: unavailable(`the timeout was exhausted before '${key}' could be retrieved`),
-      reason: 'store_unavailable',
-      unavailable: true,
-    };
-  }
-
-  const store = getStore();
-  if (store === null) {
-    return { error: unavailable(NO_STORE_MESSAGE), reason: 'store_unavailable', unavailable: true };
-  }
+  const store = availableStore(deadline, `'${key}'`);
+  if (isBlocked(store)) return { error: store.blocked, reason: 'store_unavailable', unavailable: true };
 
   const resolved = resolveFromStore(store, key, wantedVersion);
   if (resolved.unavailable && resolved.error) {
@@ -581,6 +621,10 @@ function pendingForRaw(objectKey: string, raw: unknown): PendingWrite {
   const candidate = typeof raw === 'object' && raw !== null ? (raw as RawSkillObject).key : undefined;
   const key = isValidSkillKey(candidate) ? candidate : objectKey;
   if (!isValidSkillKey(key)) {
+    // Neither key is usable, so this failure cannot be attributed to a skill —
+    // the run-level sentinel is the honest report. `resolveAll` reads that
+    // sentinel back as an incomplete run, because a failure with no key cannot
+    // protect its copy on disk the way the branch below does.
     return { key: '', error: 'the skill store served an object under an invalid key; it was withheld' };
   }
   return {
@@ -591,15 +635,8 @@ function pendingForRaw(objectKey: string, raw: unknown): PendingWrite {
 
 /** Resolves the `'*'` form — everything the store currently holds. */
 function resolveAll(deadline: number, onUnavailable: OnUnavailable): { requests: PendingWrite[]; incomplete: boolean } {
-  if (performance.now() >= deadline) {
-    return unavailableRun(
-      unavailable('the timeout was exhausted before the skill set could be retrieved'),
-      onUnavailable,
-    );
-  }
-
-  const store = getStore();
-  if (store === null) return unavailableRun(unavailable(NO_STORE_MESSAGE), onUnavailable);
+  const store = availableStore(deadline, 'the skill set');
+  if (isBlocked(store)) return unavailableRun(store.blocked, onUnavailable);
 
   // Deliberately not via allSkills(), which reports a throwing store as an empty
   // result — that would look like "every skill was revoked" and let prune delete
@@ -611,10 +648,14 @@ function resolveAll(deadline: number, onUnavailable: OnUnavailable): { requests:
   // versions of one key, and <root>/<key>/SKILL.md is a single path — writing it
   // twice in one run is not a duplicate report but a write race against itself,
   // resolved by whichever version iteration happened to reach last.
-  return {
-    requests: newestByKey(objects).map(({ objectKey, raw }) => pendingForRaw(objectKey, raw)),
-    incomplete: false,
-  };
+  const requests = newestByKey(objects).map(({ objectKey, raw }) => pendingForRaw(objectKey, raw));
+  // A withholding that could not be attributed to a key leaves the run
+  // incomplete. Every other failure keeps its key in the requested set, which is
+  // what holds prune off the copy on disk; a run-level failure has no key to do
+  // that with, so suppressing prune wholesale is the only thing left that stops
+  // an unreadable object reading as a revocation.
+  const unattributed = requests.some((request) => !request.skill && request.key === '');
+  return { requests, incomplete: unattributed };
 }
 
 // -------------------------------------------------------------------------
@@ -683,7 +724,7 @@ async function resolveRoot(root: string): Promise<string> {
  * Loads the manifest.
  *
  * A manifest that cannot be read, cannot be parsed, is not an object, carries a
- * `manifestVersion` this release does not understand, or has a malformed `entries`
+ * `manifestVersion` outside `[1, MANIFEST_VERSION]`, or has a malformed `entries`
  * map is **corrupt**. The caller then performs no destructive action and leaves the
  * file itself alone: rewriting it would destroy the only record of what the SDK
  * owns, and acting on a manifest we cannot read would mean guessing at which of
@@ -736,7 +777,10 @@ async function loadManifest(
 
   const manifest = data as Record<string, unknown>;
   const version = manifest.manifestVersion;
-  if (typeof version !== 'number' || !Number.isInteger(version) || version > MANIFEST_VERSION) {
+  // Bounded at both ends. No release ever wrote a version below 1, so 0 or a
+  // negative is not an older schema this release could still read — it is a
+  // schema that never existed, and acting on its entries would be a guess.
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > MANIFEST_VERSION) {
     return {
       manifest: {},
       error: `the skills manifest ${MANIFEST_FILENAME} declares manifestVersion ${JSON.stringify(version)}, which this SDK cannot read; refusing every destructive action`,
@@ -758,6 +802,21 @@ async function loadManifest(
 // Per-skill reconcile
 // -------------------------------------------------------------------------
 
+/** How much of an attacker-reachable key an error message echoes. */
+const SHOWN_KEY_CHARS = 32;
+
+/**
+ * A key as it may appear in an error message: truncated to
+ * {@link SHOWN_KEY_CHARS}, because a key is attacker-reachable input and a
+ * rejected one is echoed into `ReconcileAction.error` — a 100 KB "key" must not
+ * become a 100 KB error string. Quoted with `JSON.stringify` so control
+ * characters are escaped rather than written into the log.
+ */
+function shownKey(key: unknown): string {
+  if (typeof key !== 'string') return JSON.stringify(key) ?? String(key);
+  return key.length > SHOWN_KEY_CHARS ? `${JSON.stringify(key.slice(0, SHOWN_KEY_CHARS))}...` : JSON.stringify(key);
+}
+
 /**
  * Why `key` must not become a directory name under the managed root, or `null`.
  *
@@ -769,14 +828,14 @@ async function loadManifest(
  */
 function keyRejectionReason(key: unknown): string | null {
   if (!isValidSkillKey(key)) {
-    return `${JSON.stringify(key)} is not a valid skill key (^[a-z0-9][a-z0-9-]*$, at most ${SKILL_KEY_MAX_LENGTH} characters)`;
+    return `${shownKey(key)} is not a valid skill key (^[a-z0-9][a-z0-9-]*$, at most ${SKILL_KEY_MAX_LENGTH} characters)`;
   }
   // The data model allows 256 characters; no mainstream filesystem allows a
   // 256-byte path component. Catch it here so it is a reported action rather than
   // an ENAMETOOLONG thrown from the first stat in the caller.
   const keyBytes = Buffer.byteLength(key, 'utf-8');
   if (keyBytes > MAX_PATH_COMPONENT_BYTES) {
-    return `skill key '${key.slice(0, 32)}...' is ${keyBytes} bytes, over the ${MAX_PATH_COMPONENT_BYTES}-byte limit for a single directory name`;
+    return `skill key ${shownKey(key)} is ${keyBytes} bytes, over the ${MAX_PATH_COMPONENT_BYTES}-byte limit for a single directory name`;
   }
   // Same argument one step further: the grammar admits names Windows resolves as
   // devices instead of as paths. This layer is the right place for it — see

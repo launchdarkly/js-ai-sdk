@@ -73,18 +73,26 @@ const SIGNAL_REVOKED = 'AgentControl Skill Revoked Received';
 const EVENT_INTEGRITY_FAILURE = 'ld.skills.integrity_failure';
 
 /**
- * Why a skill was withheld: a closed vocabulary with exactly one token per call
- * site of `recordIntegrityFailure`.
+ * Why a skill was withheld: a closed vocabulary of nine tokens.
  *
  * Customers alert on these tokens, and every language implementation emits the
- * same eight for the same conditions, so a polyglot fleet writes one detection
- * rule rather than two. A ninth token is a cross-SDK change — add it everywhere,
+ * same nine for the same conditions, so a polyglot fleet writes one detection
+ * rule rather than two. A tenth token is a cross-SDK change — add it everywhere,
  * or not at all.
+ *
+ * Eight of the nine are one per call site of `recordIntegrityFailure`, decided
+ * inside `verifyRawSkill` over a single object, and they fire **both** detection
+ * surfaces. `key_mismatch` is the exception on both counts: it comes from
+ * `recordKeyMismatch` at the retrieval boundary, after verification has already
+ * passed, and it fires the log record only. It shares this vocabulary anyway
+ * because a customer's detection rule cares that integrity failed, not about
+ * which layer noticed — see `recordKeyMismatch` for why the signal stays out.
  */
 export type IntegrityReasonCode =
   | 'hash_mismatch'
   | 'invalid_key'
   | 'invalid_version'
+  | 'key_mismatch'
   | 'missing_content'
   | 'missing_content_hash'
   | 'not_an_object'
@@ -180,6 +188,38 @@ export function requireStore(): SkillStore {
 }
 
 /**
+ * Whether `store` has received its initial data.
+ *
+ * `true` for a store that does not implement the optional `isInitialized`,
+ * since a hand-populated store is never waiting for anything. Probed rather
+ * than required on the seam for the reason `SkillStore` gives: a required
+ * member would reject every store without it.
+ *
+ * This is what keeps `writeSkills('*')` from reading a store that has not yet
+ * received a payload as an environment whose every skill was revoked. Retrieval
+ * through such a store is reported unavailable, which suppresses pruning — the
+ * same treatment a throwing store gets, and for the same reason: deleting a
+ * customer's files because content could not be retrieved would turn a slow
+ * boot into data loss.
+ *
+ * A probe that throws counts as not initialized. A store that cannot answer
+ * whether it is ready is not one to authorize deletions on.
+ */
+export function storeIsInitialized(store: SkillStore): boolean {
+  const probe = (store as { isInitialized?: unknown }).isInitialized;
+  if (typeof probe !== 'function') return true;
+  try {
+    return Boolean(probe.call(store));
+  } catch (error) {
+    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a failing store must be visible
+    console.warn(
+      `[LaunchDarkly] The skill store's isInitialized() threw; treating the store as not yet initialized: ${storeThrew(error)}`,
+    );
+    return false;
+  }
+}
+
+/**
  * Records one signal. Never throws into the calling operation — a broken emitter
  * must not be able to fail a retrieval or a reconcile.
  */
@@ -262,6 +302,68 @@ export function recordIntegrityFailure(
   // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; integrity failures must be visible
   console.error(`[LaunchDarkly] ${EVENT_INTEGRITY_FAILURE} ${JSON.stringify(record)}`, record);
   emit(SIGNAL_INTEGRITY_FAILURE, properties);
+}
+
+/**
+ * Records a store answering under a key other than the one requested.
+ *
+ * **Log record only — no product signal.** This is the one integrity failure
+ * that fires one surface rather than both, and the asymmetry is the decision
+ * rather than an oversight.
+ *
+ * The record fires because a substituting store is a genuine tampering
+ * indicator, and the record is the customer-owned detection path — the only one
+ * that works when telemetry is opt-out or the instance has no telemetry
+ * destination at all. It reuses `EVENT_INTEGRITY_FAILURE` deliberately: that
+ * string is a documented compatibility surface a customer's SIEM matches on, so
+ * reusing it means an existing rule catches this case without being rewritten,
+ * with `reason_code` distinguishing it.
+ *
+ * The signal stays out because the overwhelmingly common cause of a key mismatch
+ * is not an attacker but a **broken store adapter** — a stale cache entry, a
+ * colliding key, a wrong index lookup. Counting those as integrity failures in
+ * LaunchDarkly's own product counter is the same false positive
+ * `resolveFromStore` already refuses when a pinned `getObject` answers with a
+ * non-object: it reads that as `absent` rather than inventing a tampering
+ * signal from a merely broken adapter.
+ *
+ * Lives here, beside `recordIntegrityFailure`, so the single-emission-site rule
+ * still holds by reading one module.
+ *
+ * Both keys are shape-checked and redacted on the same rule as every other key
+ * that reaches a surface. `served` cannot actually be hostile on the path that
+ * calls this — `verifyRawSkill` accepted it first — but that is a property of
+ * the current call order rather than of this function, and the check is what
+ * stops a future reordering from publishing a body here.
+ */
+export function recordKeyMismatch(requested: unknown, served: unknown): void {
+  const record: Record<string, unknown> = {
+    action: 'withheld',
+    event: EVENT_INTEGRITY_FAILURE,
+    language: LANGUAGE,
+    // Named apart from the eight so a reader of the line can tell the retrieval
+    // boundary from a verification failure without consulting the spec.
+    reason: 'the skill store answered under a different key than the one requested',
+    reason_code: 'key_mismatch' satisfies IntegrityReasonCode,
+    // The key the store answered under: the one datum that makes a broken
+    // adapter diagnosable, so it is a parseable field rather than prose buried
+    // in `reason`. Record-only, and never added to the signal's allowlist.
+    served_key: isValidSkillKey(served) ? served : '<invalid-key>',
+    // `skill_key` keeps the meaning it has on every other record — the key the
+    // *caller asked for* — so a rule that groups by it keeps working.
+    skill_key: isValidSkillKey(requested) ? requested : '<invalid-key>',
+  };
+  // No `expected_hash` or `observed_hash`: verification passed, so there is no
+  // hash disagreement to report, and an absent field stays absent rather than
+  // being emitted as null. No `version` either — the object's version verified
+  // fine and is not what disqualified the answer.
+  //
+  // Keys above are in alphabetical order, as in `recordIntegrityFailure`, so the
+  // emitted line is byte-identical across SDKs for the same input. Do not
+  // reorder.
+  //
+  // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; integrity failures must be visible
+  console.error(`[LaunchDarkly] ${EVENT_INTEGRITY_FAILURE} ${JSON.stringify(record)}`, record);
 }
 
 /**
@@ -641,9 +743,13 @@ export function resolveFromStore(store: SkillStore, key: string, wantedVersion: 
     // is not `wrong_version` either — that token names a version mismatch
     // specifically, and there is deliberately no `wrong_key` to parallel it.
     //
-    // This path reports the outcome reason only: `verifyRawSkill` has already
-    // passed, so no integrity signal is recorded and no `ld.skills.integrity_failure`
-    // record is logged. That asymmetry is deliberate and pinned by a test.
+    // Records the log surface but not the product signal. `verifyRawSkill` has
+    // already passed, so this is not a verification failure and does not go
+    // through `recordIntegrityFailure`; see `recordKeyMismatch` for why the two
+    // surfaces part company here. The asymmetry is pinned by a test in both
+    // directions, because an implementation that emitted the signal too would
+    // look correct from every other angle.
+    recordKeyMismatch(key, skill.key);
     return {
       error: `skill '${key}' is not available: the store answered under key '${skill.key}'`,
       reason: 'integrity_failure',
