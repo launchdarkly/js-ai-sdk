@@ -893,20 +893,29 @@ function buildQueryOptions(
   toolMCP: any,
   // biome-ignore lint/suspicious/noExplicitAny: Claude SDK hooks config type is not publicly exported
   hooks: any,
-  extra?: Record<string, unknown>,
+  /**
+   * The customer's `model.parameters`, forwarded verbatim. Untrusted: it is whatever was
+   * saved on the AI Config, so it is spread FIRST and every handler-owned key below
+   * overrides it. Passed explicitly rather than folded into `internalOptions` so the two
+   * trust levels cannot be confused at a call site.
+   */
+  modelParameters: Record<string, unknown>,
+  /** Options this handler sets for itself, e.g. `includePartialMessages` on the streaming
+   * path. Trusted, so these are spread LAST and win over everything. */
+  internalOptions?: Record<string, unknown>,
 ) {
   const allAllowedTools = [...mcpAllowedTools, ...nativeToolNames];
   return {
     prompt,
     options: {
-      // Spread first: every key below is handler-owned and must win over a config value.
-      ...extra,
+      ...modelParameters,
       model: config.model.name,
       tools: nativeToolNames.length > 0 ? nativeToolNames : [],
       allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
       mcpServers: toolMCP ? { [TOOL_MCP_NAME]: toolMCP } : undefined,
       hooks,
       systemPrompt,
+      ...internalOptions,
     },
   };
 }
@@ -1110,10 +1119,8 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
             mcpAllowedTools,
             toolMCP,
             toolTelemetry?.hooks,
-            {
-              ...normalizeModelParameters(config.model.parameters),
-              includePartialMessages: true,
-            },
+            normalizeModelParameters(config.model.parameters),
+            { includePartialMessages: true },
           ),
         )) {
           recordConversationId(span, message);
