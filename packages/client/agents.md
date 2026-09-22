@@ -386,6 +386,10 @@ Prune is **suppressed** — not merely empty — whenever the run cannot tell wh
 
 A reconcile's contract is one root, one reconcile at a time: two interleaved runs read the same manifest, each writes it back from its own picture, and the loser's entries vanish while the files it wrote stay on disk unmanaged. `SkillWatcher` chains its own reconciles so they never overlap, but it cannot see a second watcher on the same root or a caller's own `writeSkills` against it. Do neither.
 
+### 4d. Expecting revocation to reach a boot-only `writeSkills` deployment
+
+Without `watchSkills`, the revocation bound is process lifetime: a skill revoked after boot stays on disk until the process reconciles again, so a restart (or an explicit re-run of `writeSkills`) is the incident-response action — and content an agent has already read into a conversation is out of reach at this layer either way.
+
 ### 5. Relaxing a path or manifest check in `skills-fs.ts`
 
 `keyRejectionReason` and `unsafePathReason` are shared by the write and prune paths precisely so the two cannot disagree about which paths this SDK may destroy, and both are **non-relaxable**. The same goes for the manifest rules: a destructive operation is permitted only on a path the manifest lists under a matching key, and a corrupt manifest suppresses every destructive action. Each of these has a dedicated abuse-case test in `src/__tests__/skills-fs.test.ts`; if one starts failing, the defense is what changed, not the test.
