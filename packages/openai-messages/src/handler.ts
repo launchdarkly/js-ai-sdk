@@ -331,6 +331,42 @@ const jsonSchemaFormat = (schema: Record<string, unknown>): any => ({
 const toToolDefinitions = (tools: FunctionTool[]): ToolDefinitionInput[] =>
   tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
 
+/**
+ * `ResponseCreateParams` keys this handler forwards verbatim from `config.model.parameters`, so an
+ * AI Config can tune sampling and token limits without a code change here. Kept to an explicit
+ * allowlist, not a spread, because the Responses API's request type is closed and a customer must
+ * not be able to smuggle `model`, `input`, `tools`, or `previous_response_id` back in through
+ * `model.parameters` and quietly override the values this handler computes itself.
+ */
+const FORWARDED_MODEL_PARAMETER_KEYS = [
+  'temperature',
+  'top_p',
+  'max_output_tokens',
+  'top_logprobs',
+  'parallel_tool_calls',
+  'reasoning',
+  'truncation',
+  'metadata',
+  'store',
+  'service_tier',
+  'prompt_cache_key',
+  'safety_identifier',
+] as const;
+
+/**
+ * Picks the subset of `config.model.parameters` that maps onto `ResponseCreateParams`, unchanged
+ * otherwise: no default temperature, no default cap. A config that sets nothing here produces
+ * `{}`, so the request sent is byte-for-byte what it always was.
+ */
+function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
+  if (!parameters) return {};
+  const forwarded: Record<string, unknown> = {};
+  for (const key of FORWARDED_MODEL_PARAMETER_KEYS) {
+    if (parameters[key] !== undefined) forwarded[key] = parameters[key];
+  }
+  return forwarded;
+}
+
 export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   const openai = new OpenAI();
 
@@ -403,6 +439,7 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
 
           let response = await runModelTurn(
             {
+              ...buildModelParameterOptions(config.model.parameters),
               model: config.model.name,
               input: inputMessages,
               ...(tools.length > 0 ? { tools } : {}),
@@ -445,6 +482,7 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
 
             response = await runModelTurn(
               {
+                ...buildModelParameterOptions(config.model.parameters),
                 model: config.model.name,
                 previous_response_id: response.id,
                 input: toolOutputs,
@@ -526,8 +564,18 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
           let finalResp: OpenAI.Responses.Response;
           try {
             const streamParams = previousResponseId
-              ? { model: config.model.name, previous_response_id: previousResponseId, input: currentInput }
-              : { model: config.model.name, input: currentInput, ...(tools.length > 0 ? { tools } : {}) };
+              ? {
+                  ...buildModelParameterOptions(config.model.parameters),
+                  model: config.model.name,
+                  previous_response_id: previousResponseId,
+                  input: currentInput,
+                }
+              : {
+                  ...buildModelParameterOptions(config.model.parameters),
+                  model: config.model.name,
+                  input: currentInput,
+                  ...(tools.length > 0 ? { tools } : {}),
+                };
 
             // biome-ignore lint/suspicious/noExplicitAny: streamParams union type does not match the SDK's overloaded stream() signature
             const responseStream = openai.responses.stream(streamParams as any);

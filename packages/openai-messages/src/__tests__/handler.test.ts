@@ -301,6 +301,59 @@ describe('createOpenAIHandler', () => {
     expect(call.tools ?? []).toHaveLength(0);
   });
 
+  // ── 1.3b model.parameters forwarding ────────────────────────────────────────
+
+  it('forwards allowlisted model.parameters fields to the provider call', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { temperature: 0.4, top_p: 0.9, max_output_tokens: 256 },
+      },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.temperature).toBe(0.4);
+    expect(call.top_p).toBe(0.9);
+    expect(call.max_output_tokens).toBe(256);
+  });
+
+  it('drops unrecognized model.parameters keys rather than forwarding them', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { max_tokens: 999, foo: 'bar' } },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.max_tokens).toBeUndefined();
+    expect(call.foo).toBeUndefined();
+  });
+
+  it('does not let model.parameters override model, input, tools, or previous_response_id', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { model: 'evil-model', input: 'evil-input', tools: ['evil'], previous_response_id: 'evil-id' },
+      },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.model).toBe('gpt-4o');
+    expect(call.previous_response_id).toBeUndefined();
+    expect(call.tools ?? []).toHaveLength(0);
+  });
+
+  it('behaves identically to today when model.parameters is absent', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    await createOpenAIHandler()(baseConfig as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call).toEqual({ model: 'gpt-4o', input: expect.any(Array) });
+  });
+
   // ── 1.4 Tool execution loop ─────────────────────────────────────────────────
 
   it('invokes the tool handler and loops until end', async () => {
@@ -665,6 +718,30 @@ describe('createOpenAIHandler', () => {
   it('handler.stream is defined', () => {
     const handler = createOpenAIHandler();
     expect(typeof handler.stream).toBe('function');
+  });
+
+  it('forwards allowlisted model.parameters fields to the streaming provider call', async () => {
+    mockResponsesStream.mockReturnValue(
+      makeResponseStreamMock([{ type: 'response.output_text.delta', delta: 'hi' }], baseFinalResponse),
+    );
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { temperature: 0.4, top_p: 0.9, max_output_tokens: 256 } },
+    };
+    await collectStream(createOpenAIHandler().stream?.(config as any, 'q', {}, {}));
+    const call = mockResponsesStream.mock.calls[0][0];
+    expect(call.temperature).toBe(0.4);
+    expect(call.top_p).toBe(0.9);
+    expect(call.max_output_tokens).toBe(256);
+  });
+
+  it('the streaming call is unchanged from today when model.parameters is absent', async () => {
+    mockResponsesStream.mockReturnValue(
+      makeResponseStreamMock([{ type: 'response.output_text.delta', delta: 'hi' }], baseFinalResponse),
+    );
+    await collectStream(createOpenAIHandler().stream?.(baseConfig as any, 'q', {}, {}));
+    const call = mockResponsesStream.mock.calls[0][0];
+    expect(call).toEqual({ model: 'gpt-4o', input: expect.any(Array) });
   });
 
   it('handler.stream returns an async iterable', () => {
