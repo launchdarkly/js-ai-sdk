@@ -329,6 +329,42 @@ const buildMessages = (
   return { messages, system };
 };
 
+/**
+ * `MessageCreateParamsBase` keys this handler forwards verbatim from `config.model.parameters`,
+ * beyond `max_tokens`, which is handled separately because it carries a default. Excludes
+ * `model`, `messages`, `tools`, `system`, `max_tokens`, and `stream`, which this handler sets
+ * itself from the config and the call shape — a `model.parameters` value for any of those must
+ * not be able to override what the handler already decided.
+ */
+const FORWARDED_MODEL_PARAMETER_KEYS = [
+  'cache_control',
+  'container',
+  'inference_geo',
+  'metadata',
+  'output_config',
+  'service_tier',
+  'stop_sequences',
+  'temperature',
+  'thinking',
+  'tool_choice',
+  'top_k',
+  'top_p',
+] as const;
+
+/**
+ * Picks the subset of `config.model.parameters` that maps onto `MessageCreateParamsBase`,
+ * unchanged otherwise: a config that sets nothing here produces `{}`, so the provider call sees
+ * exactly what it always has.
+ */
+function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
+  if (!parameters) return {};
+  const forwarded: Record<string, unknown> = {};
+  for (const key of FORWARDED_MODEL_PARAMETER_KEYS) {
+    if (parameters[key] !== undefined) forwarded[key] = parameters[key];
+  }
+  return forwarded;
+}
+
 const MAX_STEPS = 10;
 
 export function createClaudeMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
@@ -366,6 +402,7 @@ export function createClaudeMessagesHandler({ captureContent = false }: ContentC
       let response: Anthropic.Message;
       try {
         response = await anthropic.messages.create({
+          ...buildModelParameterOptions(config.model.parameters),
           model: config.model.name,
           max_tokens: maxTokens,
           ...(system ? { system } : {}),
@@ -526,6 +563,7 @@ export function createClaudeMessagesHandler({ captureContent = false }: ContentC
           let finalMsg: Anthropic.Message;
           try {
             const stream = anthropic.messages.stream({
+              ...buildModelParameterOptions(config.model.parameters),
               model: config.model.name,
               max_tokens: maxTokens,
               ...(system ? { system } : {}),
