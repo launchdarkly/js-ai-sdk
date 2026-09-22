@@ -43,6 +43,7 @@ import {
   DEFAULT_STREAM_READ_TIMEOUT_MS,
   DEFAULT_STREAM_URI,
   decodePollBody,
+  FatalTransportError,
   FDV2_KEY_DELIMITER,
   FDV2_OBJECT_KIND,
   FDv2SkillStore,
@@ -166,6 +167,8 @@ class FakeFDv2Endpoint {
   readonly requests: RecordedRequest[] = [];
   holdStreamOpen = false;
   dropStreams = false;
+  /** When set, `/sdk/stream` answers 307 with this `Location` instead of a body. */
+  redirectStreamTo: string | null = null;
   /** When set alongside `holdStreamOpen`, a `heart-beat` is sent on this interval. */
   heartbeatMs: number | null = null;
   private readonly heartbeats = new Set<ReturnType<typeof setInterval>>();
@@ -174,6 +177,7 @@ class FakeFDv2Endpoint {
     events: WireEvent[];
     etag?: string;
     retryAfter?: string;
+    location?: string;
   }> = [];
   private readonly streams: WireEvent[][] = [];
   private readonly held = new Set<ServerResponse>();
@@ -193,13 +197,14 @@ class FakeFDv2Endpoint {
 
   queuePoll(
     payloadEvents: WireEvent[] = [],
-    extra: { status?: number; etag?: string; retryAfter?: string } = {},
+    extra: { status?: number; etag?: string; retryAfter?: string; location?: string } = {},
   ): void {
     this.polls.push({
       status: extra.status ?? 200,
       events: payloadEvents,
       etag: extra.etag,
       retryAfter: extra.retryAfter,
+      location: extra.location,
     });
   }
 
@@ -231,6 +236,7 @@ class FakeFDv2Endpoint {
     // Sent even when blank: a proxy that emits an empty `Retry-After` is a case
     // the store has to survive, so the fake has to be able to produce one.
     if (queued.retryAfter !== undefined) headers['Retry-After'] = queued.retryAfter;
+    if (queued.location !== undefined) headers.Location = queued.location;
     if (queued.status === 200) {
       const body = JSON.stringify({ events: queued.events });
       res.writeHead(200, { ...headers, 'Content-Type': 'application/json' });
@@ -242,6 +248,11 @@ class FakeFDv2Endpoint {
   }
 
   private serveStream(res: ServerResponse): void {
+    if (this.redirectStreamTo !== null) {
+      res.writeHead(307, { Location: this.redirectStreamTo });
+      res.end();
+      return;
+    }
     const payloadEvents = this.streams.shift() ?? [];
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
     const body = payloadEvents
@@ -284,6 +295,8 @@ class FakeFDv2Endpoint {
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
 let endpoint: FakeFDv2Endpoint;
+/** Extra hosts a test opened, to stand for wherever a `Location` header points. */
+let extraEndpoints: FakeFDv2Endpoint[];
 let openStores: FDv2SkillStore[];
 let tempRoots: string[];
 let warnSpy: ReturnType<typeof vi.spyOn>;
@@ -292,6 +305,7 @@ let errorSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(async () => {
   endpoint = new FakeFDv2Endpoint();
   await endpoint.listen();
+  extraEndpoints = [];
   openStores = [];
   tempRoots = [];
   _clearState();
@@ -302,6 +316,7 @@ beforeEach(async () => {
 afterEach(async () => {
   for (const store of openStores) await store.close();
   await endpoint.close();
+  for (const extra of extraEndpoints) await extra.close();
   for (const root of tempRoots) await rm(root, { recursive: true, force: true });
   _clearState();
   vi.restoreAllMocks();
@@ -330,6 +345,14 @@ function streamStore(options: Record<string, unknown> = {}): FDv2SkillStore {
   });
   openStores.push(store);
   return store;
+}
+
+/** A second host, to stand for wherever a `Location` header points. */
+async function secondEndpoint(): Promise<FakeFDv2Endpoint> {
+  const second = new FakeFDv2Endpoint();
+  await second.listen();
+  extraEndpoints.push(second);
+  return second;
 }
 
 async function scratchRoot(): Promise<string> {
@@ -3661,6 +3684,192 @@ describe('transport contract', () => {
     expect(store.diagnostics.connectionFailures).toBe(1);
     await store.close();
     expect(store.diagnostics.connectionFailures).toBe(1);
+  });
+
+  // Every request carries the SDK key in `Authorization`, so the base URI is
+  // `https://` only. Plain `http://` is allowed to a loopback host and nowhere
+  // else: that is what this suite's own endpoints listen on, and it never
+  // leaves the machine.
+  describe('base URI scheme', () => {
+    it('refuses a plain http:// baseUri, naming https://', () => {
+      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: 'http://example.com' })).toThrow(/cleartext/);
+      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: 'http://sdk.launchdarkly.com' })).toThrow(/https:\/\//);
+    });
+
+    it('refuses a plain http:// baseUri even with a requester injected', () => {
+      // The check is on the store, not on the socket it happens to open.
+      const requester = new ScriptedRequester([]);
+      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: 'http://relay.internal:8030', requester })).toThrow(
+        /cleartext/,
+      );
+    });
+
+    it.each([
+      'http://localhost:8030',
+      'http://127.0.0.1:8030',
+      'http://[::1]:8030',
+      'http://LOCALHOST/',
+    ])('allows plain http:// to a loopback host (%s)', (uri) => {
+      expect(requesterOf(new FDv2SkillStore(SDK_KEY, { baseUri: uri })).baseUri).toBe(uri.replace(/\/+$/, ''));
+      expect(requesterOf(new FDv2SkillStore(SDK_KEY, { streamUri: uri })).streamUri).toBe(uri.replace(/\/+$/, ''));
+    });
+
+    it('a private address is not loopback', () => {
+      // Only the machine itself is exempt; the LAN is not.
+      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: 'http://10.0.0.5:8030' })).toThrow(/cleartext/);
+    });
+
+    it.each([
+      '',
+      '   ',
+      'sdk.launchdarkly.com',
+      'ftp://sdk.launchdarkly.com',
+      'https://',
+    ])('refuses anything but an https:// URL with a host (%j)', (uri) => {
+      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: uri })).toThrow(/https:\/\//);
+      expect(() => new FDv2SkillStore(SDK_KEY, { streamUri: uri })).toThrow(/https:\/\//);
+    });
+
+    it('refuses a non-string URI', () => {
+      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: 42 as never })).toThrow(/https:\/\/.*none was given/);
+    });
+
+    it('accepts https://, and the defaults', () => {
+      expect(requesterOf(new FDv2SkillStore(SDK_KEY, { baseUri: 'https://sdk.example.com/' })).baseUri).toBe(
+        'https://sdk.example.com',
+      );
+      expect(requesterOf(new FDv2SkillStore(SDK_KEY)).baseUri).toBe(DEFAULT_BASE_URI);
+    });
+
+    it('refuses a plain http:// streamUri by name', () => {
+      // The streaming host is checked too, and the message names it.
+      expect(
+        () =>
+          new FDv2SkillStore(SDK_KEY, { baseUri: 'https://sdk.example.com', streamUri: 'http://stream.example.com' }),
+      ).toThrow(/streamUri.*cleartext/);
+    });
+
+    it('the refusal names the defaults', () => {
+      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: 'http://example.com' })).toThrow(
+        /https:\/\/sdk\.launchdarkly\.com.*https:\/\/stream\.launchdarkly\.com/,
+      );
+    });
+  });
+
+  // `fetch`'s default `redirect: 'follow'` copies every request header onto
+  // the redirected request, `Authorization` included. Both requests are sent
+  // with `redirect: 'manual'` instead, so a 3xx is a fatal, non-retried failure
+  // and the SDK key never reaches the host `Location` names.
+  describe('redirects are refused', () => {
+    it.each([301, 302, 307, 308])('a poll redirect (%i) is fatal and not followed', async (status) => {
+      const second = await secondEndpoint();
+      endpoint.queuePoll([], { status, location: `${second.baseUri}/sdk/poll` });
+      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5000);
+      const failure = await requester.poll(null, null, new AbortController().signal).then(
+        () => null,
+        (cause: unknown) => cause,
+      );
+      expect(failure).toBeInstanceOf(FatalTransportError);
+      expect((failure as Error).message).toContain(String(status));
+      expect((failure as Error).message).toMatch(/redirect/i);
+      expect((failure as Error).message).toContain('not followed');
+      expect(endpoint.requests).toHaveLength(1);
+      expect(second.requests).toEqual([]);
+    });
+
+    it('a stream redirect is fatal and not followed', async () => {
+      const second = await secondEndpoint();
+      endpoint.redirectStreamTo = `${second.baseUri}/sdk/stream`;
+      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5000);
+      await expect(requester.stream(null, new AbortController().signal)).rejects.toThrow(FatalTransportError);
+      await expect(requester.stream(null, new AbortController().signal)).rejects.toThrow(/307.*redirect/);
+      expect(second.requests).toEqual([]);
+    });
+
+    it('a same-host redirect is refused too', async () => {
+      // The endpoints do not redirect, so there is nothing legitimate to follow.
+      endpoint.queuePoll([], { status: 302, location: `${endpoint.baseUri}/sdk/poll` });
+      endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5000);
+      await expect(requester.poll(null, null, new AbortController().signal)).rejects.toThrow(FatalTransportError);
+      expect(endpoint.requests).toHaveLength(1);
+    });
+
+    it('routes a 3xx through classifyStatus as fatal, and 304 not at all', () => {
+      for (const status of [300, 301, 302, 303, 307, 308]) {
+        expect(classifyStatus(status)).toBeInstanceOf(FatalTransportError);
+        expect(classifyStatus(status).message).toMatch(/never forwarded/);
+      }
+      expect(classifyStatus(304)).not.toBeInstanceOf(FatalTransportError);
+    });
+
+    it('the SDK key never reaches the second host', async () => {
+      // End to end through the store: the redirect stops delivery for good,
+      // with no retry spent on it, and the second host sees no request at all —
+      // so no `Authorization` header, since that is what following would have
+      // forwarded.
+      const second = await secondEndpoint();
+      endpoint.queuePoll([], { status: 301, location: `${second.baseUri}/sdk/poll` });
+      endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+      const store = pollStore();
+      store.start();
+      expect(await waitUntil(() => store.failed !== null)).toBe(true);
+      expect(await store.waitForSkills(5000)).toBe(false);
+      expect(store.failed).toContain('301');
+      expect(store.failed).toContain('never forwarded');
+      expect(consoleErrors()).toContain('redirect');
+      expect(store.diagnostics.connectionFailures).toBe(0);
+      expect(endpoint.requests).toHaveLength(1);
+      expect(endpoint.requests[0]?.authorization).toBe(SDK_KEY);
+      expect(second.requests.map((r) => r.authorization)).toEqual([]);
+    });
+
+    it('a redirect in stream mode stops delivery', async () => {
+      const second = await secondEndpoint();
+      endpoint.redirectStreamTo = `${second.baseUri}/sdk/stream`;
+      const store = streamStore();
+      store.start();
+      expect(await waitUntil(() => store.failed !== null)).toBe(true);
+      expect(store.failed).toContain('307');
+      expect(endpoint.requests).toHaveLength(1);
+      expect(second.requests).toEqual([]);
+    });
+
+    it('a redirect after a committed payload keeps serving last known good', async () => {
+      const second = await secondEndpoint();
+      endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+      endpoint.queuePoll([], { status: 302, location: `${second.baseUri}/sdk/poll` });
+      const store = pollStore();
+      store.start();
+      expect(await store.waitForSkills(5000)).toBe(true);
+      expect(await waitUntil(() => store.failed !== null)).toBe(true);
+      expect(store.failed).toContain('302');
+      expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+      expect(second.requests).toEqual([]);
+    });
+
+    it('a redirect with no Location is still fatal', async () => {
+      endpoint.queuePoll([], { status: 302 });
+      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5000);
+      await expect(requester.poll(null, null, new AbortController().signal)).rejects.toThrow(FatalTransportError);
+    });
+
+    it('a 304 is not a redirect', async () => {
+      // The refusal must leave the poll's not-modified path exactly as it was.
+      endpoint.queuePoll([], { status: 304 });
+      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5000);
+      const result = await requester.poll(null, 'etag-1', new AbortController().signal);
+      expect(result.notModified).toBe(true);
+      expect(result.etag).toBe('etag-1');
+      expect(result.events).toEqual([]);
+    });
+
+    it('both fetches are sent with redirect: manual', () => {
+      // Pinned at the source, since the endpoint doubles cannot tell 'manual'
+      // from a runtime that happened not to follow.
+      expect(source.match(/^\s+redirect: 'manual',$/gm)).toHaveLength(2);
+      expect(source).not.toMatch(/redirect: 'follow'/);
+    });
   });
 });
 

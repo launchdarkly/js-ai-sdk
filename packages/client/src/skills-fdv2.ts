@@ -192,6 +192,52 @@ export function requireServerSideCredential(sdkKey: unknown): string {
   return key;
 }
 
+/** The only hosts a plain `http://` URI may name: a local test double. */
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '::1']);
+
+/**
+ * Refuses a URI that would send the SDK key in cleartext.
+ *
+ * Every request carries the environment's server-side SDK key in
+ * `Authorization`, so the transport is `https://` only. The one exception is
+ * `http://` to a loopback host (`localhost`, `127.0.0.1`, `::1`), which never
+ * leaves the machine and is what a local test double listens on. Throws rather
+ * than warns, for the same reason the credential check does: a store that would
+ * leak its key should not exist.
+ *
+ * Returns the URI trimmed. The check is on the store, not on the socket it
+ * happens to open, so it runs whether or not a `Requester` was injected.
+ */
+export function requireHttpsUri(uri: unknown, option: 'baseUri' | 'streamUri' = 'baseUri'): string {
+  if (typeof uri !== 'string' || uri.trim() === '') {
+    throw new Error(`FDv2SkillStore requires an https:// URI for ${option}; none was given.`);
+  }
+  const trimmed = uri.trim();
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    parsed = null;
+  }
+  // WHATWG `hostname` keeps the brackets on an IPv6 literal; the loopback list
+  // names the address, as the Python SDK's does.
+  const hostname = parsed?.hostname.replace(/^\[(.*)\]$/, '$1') ?? '';
+  if (parsed?.protocol === 'https:' && hostname !== '') return trimmed;
+  if (parsed?.protocol === 'http:' && LOOPBACK_HOSTS.has(hostname)) return trimmed;
+  if (parsed?.protocol === 'http:') {
+    throw new Error(
+      `FDv2SkillStore refuses ${option} ${JSON.stringify(trimmed)}: a plain http:// URI would send the server-side ` +
+        'SDK key in cleartext. Use https:// (the defaults are https://sdk.launchdarkly.com for polling and ' +
+        'https://stream.launchdarkly.com for streaming). Plain http:// is allowed only for a loopback host ' +
+        '(localhost, 127.0.0.1, ::1) serving a local test double.',
+    );
+  }
+  throw new Error(
+    `FDv2SkillStore refuses ${option} ${JSON.stringify(trimmed)}: expected an https:// URI with a host, such as ` +
+      'https://sdk.launchdarkly.com.',
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Diagnostics — and the contentHash gap in particular
 // ---------------------------------------------------------------------------
@@ -1089,6 +1135,37 @@ export function retryAfterMs(headers: Headers | null | undefined): number | null
   return Math.max(0, seconds * 1000);
 }
 
+/**
+ * The fatal error for a 3xx. Both fetches are sent with `redirect: 'manual'`,
+ * because the default `'follow'` copies every request header onto the
+ * redirected request, `Authorization` included, so a 3xx from a proxy or a
+ * misconfigured private instance would hand the SDK key to whatever host
+ * `Location` names. Same-host redirects are refused too: the endpoints this
+ * module calls do not redirect, and a 304 is not a redirect and never reaches
+ * here.
+ */
+function redirectRefused(status: string): FatalTransportError {
+  return new FatalTransportError(
+    `LaunchDarkly returned ${status}, a redirect. Redirects are not followed, so the SDK key is never forwarded to a ` +
+      'host other than the base URI. The SDK-facing FDv2 endpoints do not redirect; check the base URI, and any proxy ' +
+      'in between, for the address being redirected to.',
+  );
+}
+
+/**
+ * The error for a response `fetch` answered with `redirect: 'manual'`, or
+ * `null` when it was not a redirect. A runtime that withholds the status of a
+ * redirect answers with an `opaqueredirect` response instead; that is still a
+ * redirect and still refused.
+ */
+function refusedRedirect(response: Response): FatalTransportError | null {
+  if (response.type === 'opaqueredirect') return redirectRefused('a 3xx status');
+  if (response.status >= 300 && response.status < 400 && response.status !== 304) {
+    return classifyStatus(response.status, response.headers);
+  }
+  return null;
+}
+
 /** Turns an HTTP error status into the right error type. */
 export function classifyStatus(status: number, headers?: Headers | null): Error {
   if (status === 401) {
@@ -1098,6 +1175,7 @@ export function classifyStatus(status: number, headers?: Headers | null): Error 
     );
   }
   if (status === 403) return new FatalTransportError(`LaunchDarkly returned HTTP 403. ${FORBIDDEN_ADVICE}`);
+  if (status >= 300 && status < 400 && status !== 304) return redirectRefused(`HTTP ${status}`);
   if (status === 404) {
     return new FatalTransportError(
       'LaunchDarkly returned HTTP 404 for the FDv2 endpoint. Check the base URI, and that this instance serves ' +
@@ -1470,8 +1548,18 @@ export class FetchRequester implements Requester {
     // headers and body together.
     const deadline = readDeadline(signal, this.readTimeoutMs);
     try {
-      const response = await fetch(this.url(this.baseUri, POLL_PATH, basis), { headers, signal: deadline.signal });
+      // `redirect: 'manual'`: a 3xx comes back as itself and is refused below,
+      // rather than being followed with the SDK key attached.
+      const response = await fetch(this.url(this.baseUri, POLL_PATH, basis), {
+        headers,
+        signal: deadline.signal,
+        redirect: 'manual',
+      });
+      // A 304 is a current answer, not a redirect; it is settled before either
+      // check below can see it.
       if (response.status === 304) return { notModified: true, events: [], etag };
+      const redirect = refusedRedirect(response);
+      if (redirect) throw redirect;
       if (!response.ok) throw classifyStatus(response.status, response.headers);
       // A 200 with no body at all is not a payload; `decodePollBody` rejects the
       // empty string as the malformed response it is, under the same recoverable
@@ -1503,12 +1591,21 @@ export class FetchRequester implements Requester {
     const deadline = readDeadline(signal, this.readTimeoutMs);
     let response: Response;
     try {
-      response = await fetch(this.url(this.streamUri, STREAM_PATH, basis), { headers, signal: deadline.signal });
+      response = await fetch(this.url(this.streamUri, STREAM_PATH, basis), {
+        headers,
+        signal: deadline.signal,
+        redirect: 'manual',
+      });
     } catch (cause) {
       deadline.clear();
       throw readFailure(cause, 'streaming request', deadline);
     }
 
+    const redirect = refusedRedirect(response);
+    if (redirect) {
+      deadline.clear();
+      throw redirect;
+    }
     if (!response.ok) {
       deadline.clear();
       throw classifyStatus(response.status, response.headers);
@@ -1574,12 +1671,20 @@ export type FDv2SkillStoreOptions = {
    * Origin for `GET /sdk/poll`. Default {@link DEFAULT_BASE_URI}. When given
    * without `streamUri`, it is used for streaming too, which is what a relay or
    * private instance serving both endpoints from one host needs.
+   *
+   * Must be `https://`; the constructor throws otherwise, because every request
+   * carries the server-side SDK key in `Authorization`. Plain `http://` is
+   * accepted only for a loopback host (`localhost`, `127.0.0.1`, `::1`) serving
+   * a local test double. Redirects from it are never followed.
    */
   readonly baseUri?: string;
   /**
    * Origin for `GET /sdk/stream`. Default {@link DEFAULT_STREAM_URI}, or
    * `baseUri` when that is given, since LaunchDarkly serves streaming from a
    * separate host but a relay or private instance usually does not.
+   *
+   * Held to the same rule as `baseUri`: `https://`, or plain `http://` to a
+   * loopback host only, and redirects from it are never followed.
    */
   readonly streamUri?: string;
   readonly pollIntervalMs?: number;
@@ -1634,6 +1739,12 @@ export type FDv2SkillStoreOptions = {
  * **Server-side only.** Skills are for server-side agent runtimes and skill
  * content is customer-confidential. A mobile key or a client-side environment ID
  * throws from the constructor.
+ *
+ * **The SDK key goes only where it was pointed.** `baseUri` and `streamUri` must
+ * each be `https://` — plain `http://` is refused except to a loopback host, for
+ * local test doubles — and redirects are never followed, so a 3xx from a proxy
+ * or a private instance is a fatal failure rather than a request carrying the
+ * key to whatever host `Location` named.
  *
  * **Delivery is in the background; retrieval is not.** A background task owns
  * the connection and fills memory, and `getObject` only ever reads what has
@@ -1715,10 +1826,13 @@ export class FDv2SkillStore implements SkillStore {
     this.initialBackoffMs = options.initialBackoffMs ?? 1_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
     this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? 10;
-    const baseUri = options.baseUri ?? DEFAULT_BASE_URI;
+    const baseUri = requireHttpsUri(options.baseUri ?? DEFAULT_BASE_URI);
     // A custom `baseUri` alone means one host serves both endpoints; only the
     // LaunchDarkly defaults split them.
-    const streamUri = options.streamUri ?? (options.baseUri === undefined ? DEFAULT_STREAM_URI : baseUri);
+    const streamUri = requireHttpsUri(
+      options.streamUri ?? (options.baseUri === undefined ? DEFAULT_STREAM_URI : baseUri),
+      'streamUri',
+    );
     this.requester = options.requester ?? new FetchRequester(key, baseUri, readTimeoutMs, streamUri);
   }
 
