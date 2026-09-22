@@ -427,8 +427,15 @@ jobs:
           set -uo pipefail
           status=0
           (cd integration-tests/lambda-commonjs/.canary/app && npx serverless remove --stage "$CANARY_STAGE") || status=1
-          aws logs delete-log-group --log-group-name "/aws/lambda/ld-ai-canary-$CANARY_STAGE" 2>/dev/null || true
+          log_group="/aws/lambda/ld-ai-canary-$CANARY_STAGE"
+          if ! delete_output=$(aws logs delete-log-group --log-group-name "$log_group" 2>&1); then
+            # Stack removal already deletes the log group, so a missing group is a success.
+            if ! printf '%s' "$delete_output" | grep -q 'ResourceNotFoundException'; then
+              echo "$delete_output"
+              status=1
+            fi
+          fi
           if [ "$status" -ne 0 ]; then
-            echo "::error::Canary cleanup failed — check for a leftover ld-ai-canary-$CANARY_STAGE stack"
+            echo "::error::Canary cleanup failed. Look for a leftover ld-ai-canary-$CANARY_STAGE stack or $log_group log group."
           fi
           exit "$status"

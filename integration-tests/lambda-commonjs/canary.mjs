@@ -36,6 +36,15 @@ const TOOLCHAIN = {
   'webpack-node-externals': '3.0.0',
 };
 
+/** The exact type each export must have inside the Lambda. */
+const EXPECTED_CAPABILITIES = {
+  config: 'function',
+  initClient: 'function',
+  shutdown: 'function',
+  openaiMessages: 'function',
+  aiOtel: 'object',
+};
+
 const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-.]+)?$/;
 
 const NPM_WAIT_ATTEMPTS = 30;
@@ -177,14 +186,10 @@ function assertResponse(responsePath, versions) {
     fail(`Expected a Node 22 runtime, got ${payload.runtime}.`);
   }
 
-  for (const [symbol, type] of Object.entries(payload.capabilities ?? {})) {
-    if (type !== 'function' && type !== 'object') {
-      fail(`Capability ${symbol} resolved to ${type}.`);
-    }
-  }
-  for (const symbol of ['config', 'initClient', 'openaiMessages']) {
-    if (!(symbol in (payload.capabilities ?? {}))) {
-      fail(`Capability payload is missing ${symbol}: ${JSON.stringify(payload)}`);
+  for (const [symbol, expectedType] of Object.entries(EXPECTED_CAPABILITIES)) {
+    const actualType = payload.capabilities?.[symbol];
+    if (actualType !== expectedType) {
+      fail(`Capability ${symbol} resolved to ${actualType ?? 'nothing'}, expected ${expectedType}.`);
     }
   }
   for (const [packageName, expected] of Object.entries(versions)) {

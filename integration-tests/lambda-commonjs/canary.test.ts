@@ -81,6 +81,24 @@ describe('release canary driver', () => {
     expect(result.stderr).toContain('Capability config resolved to undefined');
   });
 
+  it('rejects a callable export that resolves to the wrong type', () => {
+    const result = assertPayload({
+      ...PAYLOAD,
+      capabilities: { ...PAYLOAD.capabilities, initClient: 'object' },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Capability initClient resolved to object, expected function');
+  });
+
+  it('rejects a payload that drops an expected export', () => {
+    const { shutdown: _dropped, ...capabilities } = PAYLOAD.capabilities;
+    const result = assertPayload({ ...PAYLOAD, capabilities });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Capability shutdown resolved to nothing');
+  });
+
   it('reports a Lambda invocation error instead of passing', () => {
     const result = assertPayload({
       errorType: 'Error',
