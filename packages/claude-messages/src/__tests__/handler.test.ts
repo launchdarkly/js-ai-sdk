@@ -1342,12 +1342,14 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     expect(call.tools).toBeUndefined();
   });
 
-  it('drops unknown model.parameters keys', async () => {
+  it('forwards an unrecognized model.parameters key rather than dropping it', async () => {
+    // The LaunchDarkly UI already constrains which keys can be saved, so an unsupported key
+    // reaching the Anthropic SDK is expected to surface as a provider error, not be silently dropped.
     mockMessagesCreate.mockResolvedValue(mockFinalResponse());
     const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { made_up_key: 'nope' } } };
     const handler = createClaudeMessagesHandler();
     await handler(cfg as any, 'hi');
-    expect(mockMessagesCreate.mock.calls[0][0]).not.toHaveProperty('made_up_key');
+    expect(mockMessagesCreate.mock.calls[0][0]).toHaveProperty('made_up_key', 'nope');
   });
 
   it('leaves the call unchanged from today when model.parameters is absent', async () => {
@@ -1397,7 +1399,7 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     expect(call.top_k).toBe(10);
   });
 
-  it('streaming path still defaults max_tokens to 1024 and drops unknown keys', async () => {
+  it('streaming path still defaults max_tokens to 1024 and forwards an unrecognized key', async () => {
     const finalMsg = {
       usage: { input_tokens: 3, output_tokens: 7 },
       stop_reason: 'end_turn',
@@ -1412,7 +1414,7 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     }
     const call = mockMessagesStream.mock.calls[0][0];
     expect(call.max_tokens).toBe(1024);
-    expect(call).not.toHaveProperty('made_up_key');
+    expect(call).toHaveProperty('made_up_key', 'nope');
   });
 
   it('streaming path does not let model.parameters override model/messages/system', async () => {

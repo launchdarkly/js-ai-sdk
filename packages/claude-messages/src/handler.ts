@@ -13,9 +13,9 @@ import {
   type Message,
   type MessageContent,
   type NativeTool,
+  normalizeModelParameters,
   type ProviderHandler,
   parseTemplate,
-  pickForwardedModelParameters,
   type SpanMessage,
   type SpanMessagePart,
   setInputContentAttributes,
@@ -330,37 +330,6 @@ const buildMessages = (
   return { messages, system };
 };
 
-/**
- * `MessageCreateParamsBase` keys this handler forwards verbatim from `config.model.parameters`,
- * beyond `max_tokens`, which is handled separately because it carries a default. Excludes
- * `model`, `messages`, `tools`, `system`, `max_tokens`, and `stream`, which this handler sets
- * itself from the config and the call shape — a `model.parameters` value for any of those must
- * not be able to override what the handler already decided.
- */
-const FORWARDED_MODEL_PARAMETER_KEYS = [
-  'cache_control',
-  'container',
-  'inference_geo',
-  'metadata',
-  'output_config',
-  'service_tier',
-  'stop_sequences',
-  'temperature',
-  'thinking',
-  'tool_choice',
-  'top_k',
-  'top_p',
-] as const;
-
-/**
- * Picks the subset of `config.model.parameters` that maps onto `MessageCreateParamsBase`,
- * unchanged otherwise: a config that sets nothing here produces `{}`, so the provider call sees
- * exactly what it always has.
- */
-function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
-  return pickForwardedModelParameters(parameters, FORWARDED_MODEL_PARAMETER_KEYS);
-}
-
 const MAX_STEPS = 10;
 
 export function createClaudeMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
@@ -398,12 +367,12 @@ export function createClaudeMessagesHandler({ captureContent = false }: ContentC
       let response: Anthropic.Message;
       try {
         response = await anthropic.messages.create({
-          ...buildModelParameterOptions(config.model.parameters),
+          ...normalizeModelParameters(config.model.parameters),
           model: config.model.name,
           max_tokens: maxTokens,
-          ...(system ? { system } : {}),
+          system,
           messages: conversation,
-          ...(tools.length > 0 ? { tools } : {}),
+          tools: tools.length > 0 ? tools : undefined,
         });
       } catch (err) {
         failSpan(modelSpan, err);
@@ -559,12 +528,12 @@ export function createClaudeMessagesHandler({ captureContent = false }: ContentC
           let finalMsg: Anthropic.Message;
           try {
             const stream = anthropic.messages.stream({
-              ...buildModelParameterOptions(config.model.parameters),
+              ...normalizeModelParameters(config.model.parameters),
               model: config.model.name,
               max_tokens: maxTokens,
-              ...(system ? { system } : {}),
+              system,
               messages: conversation,
-              ...(tools.length > 0 ? { tools } : {}),
+              tools: tools.length > 0 ? tools : undefined,
             });
 
             // Yield text deltas for this turn

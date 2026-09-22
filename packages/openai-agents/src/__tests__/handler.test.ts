@@ -249,7 +249,9 @@ describe('createOpenAIAgentHandler', () => {
     });
   });
 
-  it('ignores unrecognized model.parameters keys rather than forwarding them', async () => {
+  it('forwards unrecognized model.parameters keys through to modelSettings rather than dropping them', async () => {
+    // The LaunchDarkly UI already constrains which keys can be saved, so an unsupported key
+    // reaching the Agents SDK is expected to surface as a provider error, not be silently dropped.
     mockRun.mockResolvedValue(mockRunResult());
     const config = {
       ...baseConfig,
@@ -257,7 +259,7 @@ describe('createOpenAIAgentHandler', () => {
     };
     await createOpenAIAgentHandler()(config as any, 'q');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
-    expect(agentArgs.modelSettings).toBeUndefined();
+    expect(agentArgs.modelSettings).toEqual({ someUnknownKey: 'nope', anotherOne: 42 });
   });
 
   it('does not set modelSettings or maxTurns when model.parameters is absent', async () => {
@@ -623,7 +625,13 @@ describe('createOpenAIAgentHandler', () => {
     };
     const handler = createOpenAIAgentHandler();
     await collectStream(handler.stream?.(config as any, 'q', {}, {}));
-    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ temperature: 0.5 });
+    // `maxTurns` is read separately for Runner.run, but the whole bag (including it) also passes
+    // straight through to modelSettings now that there is no allowlist filtering it out.
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({
+      temperature: 0.5,
+      maxTurns: 5,
+      unknownKey: 'nope',
+    });
     const runOptions = mockRun.mock.calls[0][2];
     expect(runOptions).toMatchObject({ maxTurns: 5 });
   });

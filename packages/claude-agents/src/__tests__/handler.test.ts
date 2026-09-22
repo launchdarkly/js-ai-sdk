@@ -214,7 +214,9 @@ describe('createClaudeAgentsHandler', () => {
     expect(options.fallbackModel).toBe('claude-haiku');
   });
 
-  it('ignores unrecognized model.parameters keys rather than forwarding them', async () => {
+  it('forwards unrecognized model.parameters keys through to query options rather than dropping them', async () => {
+    // The LaunchDarkly UI already constrains which keys can be saved, so an unsupported key
+    // reaching query() is expected to surface as a CLI/provider error, not be silently dropped.
     mockQuery.mockImplementation(makeResultMessage());
     const config = {
       ...baseConfig,
@@ -222,8 +224,34 @@ describe('createClaudeAgentsHandler', () => {
     };
     await createClaudeAgentsHandler()(config as any, 'q');
     const { options } = mockQuery.mock.calls[0][0];
-    expect(options.temperature).toBeUndefined();
-    expect(options.max_tokens).toBeUndefined();
+    expect(options.temperature).toBe(0.7);
+    expect(options.max_tokens).toBe(100);
+  });
+
+  it('does not let model.parameters override model, tools, allowedTools, mcpServers, hooks, or systemPrompt', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          model: 'smuggled-model',
+          tools: ['smuggled-tool'],
+          allowedTools: ['smuggled-allowed'],
+          mcpServers: { smuggled: true },
+          hooks: { smuggled: true },
+          systemPrompt: 'smuggled prompt',
+        },
+      },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.model).toBe('claude-opus-4-5');
+    expect(options.systemPrompt).toBe('You are helpful.');
+    expect(options.tools).not.toEqual(['smuggled-tool']);
+    expect(options.allowedTools).not.toEqual(['smuggled-allowed']);
+    expect(options.mcpServers).not.toEqual({ smuggled: true });
+    expect(options.hooks).not.toEqual({ smuggled: true });
   });
 
   it('does not set maxTurns or other forwarded keys when model.parameters is absent', async () => {
@@ -550,6 +578,20 @@ describe('createClaudeAgentsHandler', () => {
     await collectStream(handler.stream?.(config as any, 'q', {}, {}));
     const { options } = mockQuery.mock.calls[0][0];
     expect(options.maxTurns).toBe(5);
+    expect(options.includePartialMessages).toBe(true);
+  });
+
+  it('does not let model.parameters override includePartialMessages on the streaming path', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+    });
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { includePartialMessages: false } },
+    };
+    const handler = createClaudeAgentsHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    const { options } = mockQuery.mock.calls[0][0];
     expect(options.includePartialMessages).toBe(true);
   });
 

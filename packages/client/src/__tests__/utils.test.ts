@@ -7,7 +7,6 @@ import {
   parseJSONWithPossibleFences,
   parseTemplate,
   parseUsage,
-  pickForwardedModelParameters,
   setLdSpanAttributes,
   setUsageSpanAttributes,
 } from '../utils.js';
@@ -620,40 +619,6 @@ describe('setUsageSpanAttributes', () => {
       'gen_ai.usage.cache_creation.input_tokens': 0,
       'gen_ai.usage.prompt_tokens': 0,
       'gen_ai.usage.completion_tokens': 0,
-    });
-  });
-});
-
-// ─── pickForwardedModelParameters ─────────────────────────────────────────────
-
-describe('pickForwardedModelParameters', () => {
-  const KEYS = ['temperature', 'top_p', 'maxTurns'] as const;
-
-  it('returns {} when parameters is undefined', () => {
-    expect(pickForwardedModelParameters(undefined, KEYS)).toEqual({});
-  });
-
-  it('returns {} when parameters sets nothing in the allowlist', () => {
-    expect(pickForwardedModelParameters({ unrelated: 'x' }, KEYS)).toEqual({});
-  });
-
-  it('picks only the allowlisted keys, preserving their values', () => {
-    expect(pickForwardedModelParameters({ temperature: 0.5, unrelated: 'x', maxTurns: 3 }, KEYS)).toEqual({
-      temperature: 0.5,
-      maxTurns: 3,
-    });
-  });
-
-  it('drops a key whose value is explicitly undefined', () => {
-    expect(pickForwardedModelParameters({ temperature: undefined, top_p: 0.9 }, KEYS)).toEqual({
-      top_p: 0.9,
-    });
-  });
-
-  it('passes through falsy-but-defined values, including 0 and false', () => {
-    expect(pickForwardedModelParameters({ temperature: 0, maxTurns: false }, KEYS)).toEqual({
-      temperature: 0,
-      maxTurns: false,
     });
   });
 });

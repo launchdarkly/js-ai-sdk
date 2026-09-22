@@ -564,44 +564,15 @@ export function parseJSONWithPossibleFences<T>(rawText: string): T | null {
 }
 
 /**
- * Picks the subset of `config.model.parameters` whose keys appear in `keys`, unchanged
- * otherwise: a config that sets nothing in `keys` produces `{}`, so the provider call sees
- * exactly what it always has.
- *
- * For handlers whose provider request type is **closed** — an unknown field is a runtime
- * error to the SDK, not a harmless extra — rather than open-ended. Those handlers
- * (`claude-agents`, `claude-messages`, `openai-messages`, `openai-agents`) each keep their own
- * `FORWARDED_*_KEYS` allowlist next to the request shape it maps onto; this helper only owns the
- * picking loop the four of them used to repeat. `openai-agents` additionally collapses an empty
- * result to `undefined` itself, since only that caller needs the Agent constructed exactly as it
- * was before this helper existed — that collapsing is not this function's job.
- *
- * LangChain's handlers are the opposite case — the chat model takes an open-ended options bag, so
- * narrowing it to a key list would silently drop settings that work today. They use
- * `normalizeModelParameters` instead, which forwards the whole object.
- */
-export function pickForwardedModelParameters<K extends string>(
-  parameters: Record<string, unknown> | undefined,
-  keys: ReadonlyArray<K>,
-): Record<string, unknown> {
-  const picked: Record<string, unknown> = {};
-  if (!parameters) return picked;
-  for (const key of keys) {
-    if (parameters[key] !== undefined) picked[key] = parameters[key];
-  }
-  return picked;
-}
-
-/**
  * Returns `parameters` unchanged when it is a usable object, `{}` otherwise.
  *
- * The LangChain handlers spread the *entire* `model.parameters` bag into the chat model
- * constructor rather than picking an allowlist — LangChain's chat models take an open-ended
- * options bag, so narrowing it here would silently drop customer settings that work today. This
- * is the defensive guard three call sites (`langchain-messages`, `langchain-agents`, and its
- * per-node native graph model factory) used to repeat inline: `model.parameters` is optional on
- * `AiConfigRep`, and a config's own `model` field is technically reachable as `unknown` at these
- * call sites, so both must be checked before spreading.
+ * Every handler spreads the *entire* `model.parameters` bag straight into its provider call
+ * rather than picking an allowlist. The LaunchDarkly UI already constrains which keys a customer
+ * can save, and an unsupported key reaching the provider is expected to surface as a provider
+ * error rather than being silently dropped here. This is the defensive guard the call sites used
+ * to repeat inline: `model.parameters` is optional on `AiConfigRep`, and a config's own `model`
+ * field is technically reachable as `unknown` at these call sites, so both must be checked before
+ * spreading.
  */
 export function normalizeModelParameters(parameters: unknown): Record<string, unknown> {
   return parameters && typeof parameters === 'object' ? (parameters as Record<string, unknown>) : {};

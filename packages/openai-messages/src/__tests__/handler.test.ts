@@ -319,7 +319,9 @@ describe('createOpenAIHandler', () => {
     expect(call.max_output_tokens).toBe(256);
   });
 
-  it('drops unrecognized model.parameters keys rather than forwarding them', async () => {
+  it('forwards unrecognized model.parameters keys through to the provider call rather than dropping them', async () => {
+    // The LaunchDarkly UI already constrains which keys can be saved, so an unsupported key
+    // reaching the Responses API is expected to surface as a provider error, not be silently dropped.
     mockResponsesCreate.mockResolvedValue(mockFinalResponse());
     const config = {
       ...baseConfig,
@@ -327,8 +329,8 @@ describe('createOpenAIHandler', () => {
     };
     await createOpenAIHandler()(config as any, 'q');
     const call = mockResponsesCreate.mock.calls[0][0];
-    expect(call.max_tokens).toBeUndefined();
-    expect(call.foo).toBeUndefined();
+    expect(call.max_tokens).toBe(999);
+    expect(call.foo).toBe('bar');
   });
 
   it('does not let model.parameters override model, input, tools, or previous_response_id', async () => {

@@ -93,7 +93,6 @@ export {
   omitModelStamps,
   parseJSONWithPossibleFences,
   parseTemplate,
-  pickForwardedModelParameters,
   setLdSpanAttributes,
   setModelIdentityAttributes,
   setUsageSpanAttributes,

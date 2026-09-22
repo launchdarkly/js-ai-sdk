@@ -13,9 +13,9 @@ import {
   type Message,
   type MessageContent,
   type NativeTool,
+  normalizeModelParameters,
   type ProviderHandler,
   parseTemplate,
-  pickForwardedModelParameters,
   type SpanMessage,
   type SpanMessagePart,
   type SpanUsage,
@@ -498,34 +498,12 @@ function configConversationTurns(config: AiConfigRep, variables: Record<string, 
 }
 
 /**
- * `ModelSettings` keys this handler forwards verbatim from `config.model.parameters`, so an AI
- * Config can tune the underlying model call without a code change here. Kept to the scalar tuning
- * knobs plus `toolChoice`/`truncation`/`promptCacheRetention`, which are the settings customers
- * configure through the LaunchDarkly UI today; `providerData` and `retry` are left out because
- * they are SDK escape hatches (arbitrary provider-specific payload, client-side retry behaviour)
- * rather than model tuning parameters, and forwarding them unreviewed would let a config reach
- * past this handler's own request shape.
- */
-const FORWARDED_MODEL_SETTINGS_KEYS = [
-  'temperature',
-  'topP',
-  'frequencyPenalty',
-  'presencePenalty',
-  'maxTokens',
-  'toolChoice',
-  'parallelToolCalls',
-  'truncation',
-  'store',
-  'promptCacheRetention',
-] as const satisfies ReadonlyArray<keyof ModelSettings>;
-
-/**
- * Picks the subset of `config.model.parameters` that maps onto the Agents SDK's `ModelSettings`,
- * unchanged otherwise: no default temperature, no default cap — a config that sets nothing here
- * produces `undefined`, so the Agent is constructed exactly as it always has been.
+ * `config.model.parameters`, forwarded verbatim as the Agents SDK's `ModelSettings`, unchanged
+ * otherwise: no default temperature, no default cap — a config that sets nothing here produces
+ * `undefined`, so the Agent is constructed exactly as it always has been.
  */
 function buildModelSettings(parameters: AiConfigRep['model']['parameters']): ModelSettings | undefined {
-  const settings = pickForwardedModelParameters(parameters, FORWARDED_MODEL_SETTINGS_KEYS);
+  const settings = normalizeModelParameters(parameters);
   return Object.keys(settings).length > 0 ? (settings as ModelSettings) : undefined;
 }
 
