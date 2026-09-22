@@ -94,17 +94,19 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 
 ## Module format support
 
-Every published package is ESM-only today: `"exports"` declares an `import` condition and no `require` condition. What that means per consumer shape:
+Every package publishes ESM only — `"exports"` declares an `import` condition and no `require` condition. Import them from ESM, or from CommonJS with `await import()`.
 
-| Consumer shape | Status | Proven by CI |
-|---|---|---|
-| Native ESM (`import … from '@launchdarkly/ai-node'`) | Supported | Yes — the unit suite runs as ESM on Node 24 |
-| CommonJS source, unbundled, loading via `await import(…)` | Supported | No — Node resolves the package at runtime; verify in your own runtime |
-| Webpack CommonJS output with `externals: [nodeExternals({ allowlist: [/^@launchdarkly\/ai-/] })]` | Supported | Yes — `yarn test:integration` builds and invokes a bundled CommonJS handler on Node 22 |
-| Webpack CommonJS output with the packages left external | **Not supported** — Webpack downlevels `await import()` to `require()` and Node throws `ERR_PACKAGE_PATH_NOT_EXPORTED` | Yes — kept as a regression fixture on Node 22 |
-| `require('@launchdarkly/ai-node')` | **Not supported** — no `require` condition is published | No |
 
-If you bundle a CommonJS Lambda, follow the [AWS Lambda + Serverless Framework + Webpack recipe](packages/ai-node/README.md#aws-lambda--serverless-framework--webpack).
+| How you load the SDK                                                | Supported | Notes                                                                               |
+| ------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------- |
+| `import { config } from '@launchdarkly/ai-node'`                    | Yes       | Verified in CI on Node 24                                                           |
+| `await import('@launchdarkly/ai-node')` from unbundled CommonJS     | Yes       | Node resolves the package at runtime                                                |
+| `await import(…)` from a Webpack CommonJS bundle, packages inlined  | Yes       | Verified in CI on Node 22 — requires `allowlist: [/^@launchdarkly\/ai-/]`           |
+| `await import(…)` from a Webpack CommonJS bundle, packages external | No        | Webpack rewrites the import to `require()` and Node throws `ERR_PACKAGE_PATH_NOT_EXPORTED` |
+| `require('@launchdarkly/ai-node')`                                  | No        | No `require` condition is published                                                 |
+
+
+Bundling a CommonJS Lambda is the common case for the last two rows — follow the [AWS Lambda + Serverless Framework + Webpack](packages/ai-node/README.md#aws-lambda--serverless-framework--webpack) recipe.
 
 ## Quick Start
 
