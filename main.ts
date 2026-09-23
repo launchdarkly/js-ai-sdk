@@ -4,6 +4,7 @@ import * as agent from './examples/agent';
 import * as claudeAgents from './examples/claude-agents';
 import * as claudeMessages from './examples/claude-messages';
 import * as conversation from './examples/conversation';
+import * as googleAdkAgents from './examples/google-adk-agents';
 import * as graph from './examples/graph';
 import * as graphHistory from './examples/graph-history';
 import * as history from './examples/history';
@@ -23,6 +24,7 @@ type Example =
   | 'agent'
   | 'claude-agents'
   | 'claude-messages'
+  | 'google-adk-agents'
   | 'graph'
   | 'graph-history'
   | 'conversation'
@@ -44,6 +46,7 @@ const EXAMPLES: Record<Example, { run: (key: string, userInput: string) => Promi
   'claude-agents': claudeAgents,
   'claude-messages': claudeMessages,
   conversation: conversation,
+  'google-adk-agents': googleAdkAgents,
   graph: graph,
   'graph-history': graphHistory,
   history: history,
