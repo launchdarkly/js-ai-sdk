@@ -963,7 +963,7 @@ export const graph = (
 
         if (!res.next || visited.has(res.next.key)) break;
 
-        yield { type: 'handoff', from: current.key, to: res.next.key };
+        yield { type: 'handoff', sourceKey: current.key, targetKey: res.next.key };
 
         visited.add(current.key);
         previousNode = current;

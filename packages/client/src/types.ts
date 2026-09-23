@@ -384,7 +384,7 @@ export type GraphStreamEvent =
   | { type: 'node_start'; nodeKey: string }
   | { type: 'chunk'; text: string; nodeKey: string }
   | { type: 'node_done'; nodeKey: string; response: string; usage: TokenUsage }
-  | { type: 'handoff'; from: string; to: string }
+  | { type: 'handoff'; sourceKey: string; targetKey: string }
   | {
       type: 'done';
       response: string;

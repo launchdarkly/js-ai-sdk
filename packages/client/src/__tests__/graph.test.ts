@@ -764,7 +764,11 @@ describe('graph().stream()', () => {
     const types = events.map((e) => e.type);
     const handoffIndex = types.indexOf('handoff');
     expect(handoffIndex).toBeGreaterThan(-1);
-    expect(events[handoffIndex]).toEqual({ type: 'handoff', from: 'root-node', to: 'leaf-node' });
+    expect(events[handoffIndex]).toEqual({
+      type: 'handoff',
+      sourceKey: 'root-node',
+      targetKey: 'leaf-node',
+    });
     expect(types[handoffIndex - 1]).toBe('node_done');
     expect(types[handoffIndex + 1]).toBe('node_start');
   });
