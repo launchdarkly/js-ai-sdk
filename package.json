@@ -10,8 +10,8 @@
   ],
   "scripts": {
     "start": "tsx main.ts",
-    "build": "tsc --build",
-    "clean": "tsc --build --clean",
+    "build": "yarn workspace @launchdarkly/ai-server run build && yarn workspaces run build",
+    "clean": "yarn workspaces run clean",
     "test": "vitest run examples/utils.test.ts && yarn workspaces run test",
     "test:integration": "vitest run integration-tests/commonjs-webpack/commonjs-webpack.test.ts",
     "typecheck": "yarn workspaces run typecheck",
@@ -44,6 +44,7 @@
     "dotenv": "^16.5.0",
     "lefthook": "2.1.9",
     "sherif": "1.11.1",
+    "tsup": "^8.5.1",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0",
     "vitest": "latest"

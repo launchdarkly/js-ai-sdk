@@ -1,14 +1,14 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/client" },
-    { "path": "packages/ai-node" },
-    { "path": "packages/ai-otel" },
-    { "path": "packages/claude-agents" },
-    { "path": "packages/claude-messages" },
-    { "path": "packages/openai-agents" },
-    { "path": "packages/openai-messages" },
-    { "path": "packages/langchain-messages" },
-    { "path": "packages/langchain-agents" }
+    { "path": "packages/client/tsconfig.ref.json" },
+    { "path": "packages/ai-node/tsconfig.ref.json" },
+    { "path": "packages/ai-otel/tsconfig.ref.json" },
+    { "path": "packages/claude-agents/tsconfig.ref.json" },
+    { "path": "packages/claude-messages/tsconfig.ref.json" },
+    { "path": "packages/openai-agents/tsconfig.ref.json" },
+    { "path": "packages/openai-messages/tsconfig.ref.json" },
+    { "path": "packages/langchain-messages/tsconfig.ref.json" },
+    { "path": "packages/langchain-agents/tsconfig.ref.json" }
   ]
 }

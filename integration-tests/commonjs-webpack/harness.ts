@@ -12,12 +12,15 @@ export const consumerDir = join(stagingDir, 'consumer');
 const tarballDir = join(stagingDir, 'tarballs');
 
 /** Workspaces a CommonJS Lambda consumer installs from npm. */
-const WORKSPACES = ['client', 'ai-node', 'ai-otel', 'openai-messages'];
+const WORKSPACES = ['client', 'ai-node', 'ai-otel', 'openai-messages', 'langchain-messages'];
 
 /** Pinned to the versions reported in AIC-3370. */
 const BUNDLER_DEPS = ['webpack@5.104.1', 'webpack-cli@6.0.1', 'webpack-node-externals@3.0.0'];
 
 export type Variant = 'externalized' | 'allowlisted';
+
+/** Workspace name -> paths inside the tarball `npm publish` would upload. */
+export const packedFiles = new Map<string, string[]>();
 
 export interface RunResult {
   status: number;
@@ -48,6 +51,12 @@ function runOrThrow(command: string, args: string[], cwd: string, env?: NodeJS.P
   return result;
 }
 
+/** Drops any lifecycle-script output npm emitted before its `--json` payload. */
+function stripPrefix(stdout: string): string {
+  const start = stdout.search(/^\[$/m);
+  return start === -1 ? stdout : stdout.slice(start);
+}
+
 /**
  * Builds the workspaces, packs them the way `npm publish` would, and installs the tarballs into an
  * isolated CommonJS consumer alongside the Serverless-style bundler toolchain.
@@ -64,8 +73,16 @@ export function createConsumer(): string {
       'npm',
       ['pack', join(repoRoot, 'packages', workspace), '--pack-destination', tarballDir, '--json'],
       repoRoot,
+      { npm_config_ignore_scripts: 'true' },
     );
-    const [entry] = JSON.parse(packed.stdout) as Array<{ filename: string }>;
+    const [entry] = JSON.parse(stripPrefix(packed.stdout)) as Array<{
+      filename: string;
+      files: Array<{ path: string }>;
+    }>;
+    packedFiles.set(
+      workspace,
+      entry.files.map(({ path }) => path),
+    );
     return join(tarballDir, entry.filename);
   });
 
@@ -88,4 +105,9 @@ export function bundle(variant: Variant): RunResult {
 
 export function invoke(variant: Variant): RunResult {
   return run('node', ['invoke.cjs', `./dist-${variant}/handler.js`], consumerDir);
+}
+
+/** Runs an unbundled entry point against the installed tarballs. */
+export function runEntrypoint(file: string): RunResult {
+  return run('node', [file], consumerDir);
 }
