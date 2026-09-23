@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-messages-0.2.0...@launchdarkly/ai-langchain-messages-0.3.0) (2026-09-18)
+
+
+### Features
+
+* **AIC-3106:** add multimodal history support to graph().invoke() ([#18](https://github.com/launchdarkly/js-ai-sdk/issues/18)) ([9737530](https://github.com/launchdarkly/js-ai-sdk/commit/9737530fbd0610fbaebf3f36e3f0c5b2e7c5c834))
+
+
+### Bug Fixes
+
+* **AIC-3382:** support Bedrock configs in LangChain handlers ([#72](https://github.com/launchdarkly/js-ai-sdk/issues/72)) ([a1487cf](https://github.com/launchdarkly/js-ai-sdk/commit/a1487cfd5379493e80ca34263121350a9d3d7156))
+* extract LangChain content-block text and apply model parameters after eval ([#54](https://github.com/launchdarkly/js-ai-sdk/issues/54)) ([e34e779](https://github.com/launchdarkly/js-ai-sdk/commit/e34e779fd22181c7d455b696f44b1aa4523e76af))
+
 ## [0.2.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-messages-0.1.1...@launchdarkly/ai-langchain-messages-0.2.0) (2026-09-08)
 
 
