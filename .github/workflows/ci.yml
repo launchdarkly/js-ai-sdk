@@ -147,6 +147,32 @@ jobs:
       - name: Run tests
         run: yarn test
 
+  # ─── CommonJS/Webpack integration ───────────────────────────────────────────
+  # Packs the workspaces, installs the tarballs into an isolated CommonJS consumer,
+  # bundles it with Webpack + webpack-node-externals, and invokes the bundle. Runs on
+  # Node 22 to match the AWS Lambda runtime the failure was reported on.
+  integration-commonjs-webpack:
+    name: CommonJS/Webpack integration (Node 22)
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: CommonJS/Webpack integration tests
+        run: yarn test:integration
+
   # ─── Build ──────────────────────────────────────────────────────────────────
   build:
     name: Build all packages

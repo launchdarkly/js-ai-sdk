@@ -31,6 +31,7 @@ That call is the whole integration. Everything it does is configured in LaunchDa
 - [What you get](#what-you-get)
 - [How It Works](#how-it-works)
 - [Packages](#packages)
+- [Module format support](#module-format-support)
 - [Quick Start](#quick-start)
   - [1. Install](#1-install)
   - [2. Configure environment](#2-configure-environment)
@@ -90,6 +91,22 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-langchain-messages](packages/langchain-messages/README.md)` | `*` (any) | `messages` | Any `BaseChatModel` via LangChain `bindTools` loop    |
 | `[@launchdarkly/ai-langchain-agents](packages/langchain-agents/README.md)`     | `*` (any) | `agent`    | LangGraph `createReactAgent` — managed ReAct loop     |
 
+
+## Module format support
+
+Every package publishes ESM only — `"exports"` declares an `import` condition and no `require` condition. Import them from ESM, or from CommonJS with `await import()`.
+
+
+| How you load the SDK                                                | Supported | Notes                                                                               |
+| ------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------- |
+| `import { config } from '@launchdarkly/ai-node'`                    | Yes       | Verified in CI on Node 24                                                           |
+| `await import('@launchdarkly/ai-node')` from unbundled CommonJS     | Yes       | Node resolves the package at runtime                                                |
+| `await import(…)` from a Webpack CommonJS bundle, packages inlined  | Yes       | Verified in CI on Node 22 — requires `allowlist: [/^@launchdarkly\/ai-/]`           |
+| `await import(…)` from a Webpack CommonJS bundle, packages external | No        | Webpack rewrites the import to `require()` and Node throws `ERR_PACKAGE_PATH_NOT_EXPORTED` |
+| `require('@launchdarkly/ai-node')`                                  | No        | No `require` condition is published                                                 |
+
+
+Bundling a CommonJS Lambda is the common case for the last two rows — follow the [AWS Lambda + Serverless Framework + Webpack](packages/ai-node/README.md#aws-lambda--serverless-framework--webpack) recipe.
 
 ## Quick Start
 
