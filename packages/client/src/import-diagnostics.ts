@@ -46,8 +46,10 @@ export function moduleNameFromError(error: unknown, fallback: string): string {
   const message = errorMessage(error);
   const specifier = message.match(/Cannot find (?:module|package) '([^']+)'/);
   if (specifier) return specifier[1];
-  const fromPath = message.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/);
-  return fromPath ? fromPath[1] : fallback;
+  const fromPath = [...message.matchAll(/node_modules\/((?:@[^/]+\/)?[^/]+)/g)]
+    .map((match) => match[1])
+    .filter((name) => name !== '.pnpm');
+  return fromPath.at(-1) ?? fallback;
 }
 
 export function esmExternalizationDiagnostic(moduleName: string): string {
