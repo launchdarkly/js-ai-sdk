@@ -94,17 +94,17 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 
 ## Module format support
 
-Every published package ships both formats: `"exports"` declares an `import` condition (`dist/index.js`, ESM) and a `require` condition (`dist/index.cjs`, CommonJS), each with its own declaration file. What that means per consumer shape:
+Every package publishes both formats. The `"exports"` map declares an `import` condition (`dist/index.js`, ESM) and a `require` condition (`dist/index.cjs`, CommonJS). Each condition has its own declaration file.
 
-| Consumer shape | Status | Proven by CI |
-|---|---|---|
-| Native ESM (`import … from '@launchdarkly/ai-node'`) | Supported | Yes — the unit suite runs as ESM on Node 24, plus a packed-tarball consumer on Node 22 and 24 |
-| `require('@launchdarkly/ai-node')` | Supported | Yes — a packed-tarball consumer on Node 22 and 24 |
-| CommonJS source, unbundled, loading via `await import(…)` | Supported | Yes — same consumer |
-| Webpack CommonJS output with the packages left external | Supported | Yes — `yarn test:integration` bundles and invokes a CommonJS Lambda handler on Node 22 |
-| Webpack CommonJS output with `externals: [nodeExternals({ allowlist: [/^@launchdarkly\/ai-/] })]` | Supported | Yes — same suite |
+| How you load the SDK                                                | Supported | Notes                                                                     |
+| ------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------- |
+| `import { config } from '@launchdarkly/ai-node'`                    | Yes       | Verified in CI on Node 22 and Node 24                                     |
+| `require('@launchdarkly/ai-node')`                                  | Yes       | Verified in CI on Node 22 and Node 24                                     |
+| `await import('@launchdarkly/ai-node')` from unbundled CommonJS     | Yes       | Node resolves the package at runtime                                      |
+| `await import(…)` from a Webpack CommonJS bundle, packages external | Yes       | Verified in CI on Node 22 and Node 24                                     |
+| `await import(…)` from a Webpack CommonJS bundle, packages inlined  | Yes       | Verified in CI on Node 22 and Node 24                                     |
 
-Optional dependencies — `@launchdarkly/node-server-sdk`, the OpenTelemetry packages, and the LangChain provider packages — stay behind a runtime `import()` in both formats, so installing them remains optional on CommonJS too.
+Optional dependencies stay behind a runtime `import()` in both formats. This covers `@launchdarkly/node-server-sdk`, the OpenTelemetry packages, and the LangChain provider packages. So you install them only when you need them.
 
 ## Quick Start
 
