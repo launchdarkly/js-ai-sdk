@@ -5,6 +5,7 @@
 const versions = require('./versions.json');
 
 exports.handler = async () => {
+  const aiServer = await import('@launchdarkly/ai-server');
   const aiNode = await import('@launchdarkly/ai-node');
   const openaiMessages = await import('@launchdarkly/ai-openai-messages');
   const aiOtel = await import('@launchdarkly/ai-otel');
@@ -14,6 +15,7 @@ exports.handler = async () => {
     runtime: process.version,
     versions,
     capabilities: {
+      aiServer: typeof aiServer,
       config: typeof aiNode.config,
       initClient: typeof aiNode.initClient,
       shutdown: typeof aiNode.shutdown,

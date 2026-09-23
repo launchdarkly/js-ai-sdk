@@ -5,11 +5,12 @@
 // The driver waits on npm, builds the app, or checks the payload from a deployed Lambda.
 //
 // Usage:
-//   node canary.mjs wait   --ai-node=0.3.0 --openai-messages=0.3.0 --ai-otel=0.2.0
-//   node canary.mjs build  --ai-node=0.3.0 --openai-messages=0.3.0 --ai-otel=0.2.0 [--package] [--stage=local]
-//   node canary.mjs assert --response=<path> --ai-node=0.3.0 --openai-messages=0.3.0 --ai-otel=0.2.0
+//   node canary.mjs wait   --ai-server=0.4.0 --ai-node=0.3.0 --openai-messages=0.3.0 --ai-otel=0.2.0
+//   node canary.mjs build  <same version flags> [--package] [--stage=local]
+//   node canary.mjs assert --response=<path> <same version flags>
 //
-// Versions may also be supplied as LD_AI_CANARY_VERSIONS='ai-node=0.3.0,openai-messages=0.3.0,ai-otel=0.2.0'.
+// Versions may also be supplied as
+// LD_AI_CANARY_VERSIONS='ai-server=0.4.0,ai-node=0.3.0,openai-messages=0.3.0,ai-otel=0.2.0'.
 
 import { spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -20,8 +21,10 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 export const appDir = join(here, '.canary', 'app');
 
-/** Short name -> published package name. One core wrapper, one message handler, the OTel bundle. */
+// Short name -> published package name. The core package is installed directly, because
+// ai-node depends on it with `*` and would otherwise resolve to any visible core version.
 const PACKAGES = {
+  'ai-server': '@launchdarkly/ai-server',
   'ai-node': '@launchdarkly/ai-node',
   'openai-messages': '@launchdarkly/ai-openai-messages',
   'ai-otel': '@launchdarkly/ai-otel',
@@ -38,6 +41,7 @@ const TOOLCHAIN = {
 
 /** The exact type each export must have inside the Lambda. */
 const EXPECTED_CAPABILITIES = {
+  aiServer: 'object',
   config: 'function',
   initClient: 'function',
   shutdown: 'function',

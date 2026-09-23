@@ -47,7 +47,7 @@ on:
         type: boolean
         required: true
       canary_versions:
-        description: 'Run only the Lambda release canary against these exact published versions, e.g. ai-node=0.3.0,openai-messages=0.3.0,ai-otel=0.2.0'
+        description: 'Run only the Lambda release canary against these exact published versions, e.g. ai-server=0.4.0,ai-node=0.3.0,openai-messages=0.3.0,ai-otel=0.2.0'
         type: string
         required: false
         default: ''
@@ -354,6 +354,7 @@ jobs:
         && vars.AWS_LAMBDA_CANARY_ROLE_ARN != ''
         && (github.event_name != 'workflow_dispatch' || inputs.canary_versions != '')
         && (github.event_name == 'workflow_dispatch'
+          || needs.release-please.outputs.package-client-released == 'true'
           || needs.release-please.outputs.package-ai-node-released == 'true'
           || needs.release-please.outputs.package-ai-otel-released == 'true'
           || needs.release-please.outputs.package-openai-messages-released == 'true') }}
@@ -381,7 +382,7 @@ jobs:
           if [ -n "${REQUESTED_VERSIONS:-}" ]; then
             resolved="$REQUESTED_VERSIONS"
           else
-            resolved=$(node -e "const m=require('./.release-please-manifest.json');process.stdout.write(['ai-node','openai-messages','ai-otel'].map((p)=>p+'='+m['packages/'+p]).join(','))")
+            resolved=$(node -e "const m=require('./.release-please-manifest.json');const d={'ai-server':'packages/client','ai-node':'packages/ai-node','openai-messages':'packages/openai-messages','ai-otel':'packages/ai-otel'};process.stdout.write(Object.entries(d).map(([n,p])=>n+'='+m[p]).join(','))")
           fi
           echo "Canary versions: $resolved"
           echo "resolved=$resolved" >> "$GITHUB_OUTPUT"

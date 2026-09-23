@@ -8,17 +8,19 @@ import { describe, expect, it } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 const driver = join(here, 'canary.mjs');
 
-const VERSIONS = ['--ai-node=0.3.0', '--openai-messages=0.3.0', '--ai-otel=0.2.0'];
+const VERSIONS = ['--ai-server=0.4.0', '--ai-node=0.3.0', '--openai-messages=0.3.0', '--ai-otel=0.2.0'];
 
 const PAYLOAD = {
   ok: true,
   runtime: 'v22.11.0',
   versions: {
+    '@launchdarkly/ai-server': '0.4.0',
     '@launchdarkly/ai-node': '0.3.0',
     '@launchdarkly/ai-openai-messages': '0.3.0',
     '@launchdarkly/ai-otel': '0.2.0',
   },
   capabilities: {
+    aiServer: 'object',
     config: 'function',
     initClient: 'function',
     shutdown: 'function',
@@ -48,7 +50,12 @@ describe('release canary driver', () => {
   });
 
   it('rejects versions that are not exact', () => {
-    const result = assertPayload(PAYLOAD, ['--ai-node=latest', '--openai-messages=0.3.0', '--ai-otel=0.2.0']);
+    const result = assertPayload(PAYLOAD, [
+      '--ai-server=0.4.0',
+      '--ai-node=latest',
+      '--openai-messages=0.3.0',
+      '--ai-otel=0.2.0',
+    ]);
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('not an exact version');
