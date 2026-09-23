@@ -49,7 +49,7 @@ export function moduleNameFromError(error: unknown, fallback: string): string {
   const fromPath = [...message.matchAll(/node_modules\/((?:@[^/]+\/)?[^/]+)/g)]
     .map((match) => match[1])
     .filter((name) => name !== '.pnpm');
-  return fromPath.at(-1) ?? fallback;
+  return fromPath[0] ?? fallback;
 }
 
 export function esmExternalizationDiagnostic(moduleName: string): string {
