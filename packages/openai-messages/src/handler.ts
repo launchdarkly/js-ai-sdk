@@ -15,6 +15,7 @@ import {
   normalizeModelParameters,
   type ProviderHandler,
   parseTemplate,
+  pickForwardedModelParameters,
   type SpanMessage,
   type SpanMessagePart,
   type SpanUsage,
@@ -29,6 +30,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
+import type { ResponseCreateParamsBase } from 'openai/resources/responses/responses';
 
 const TRACER_NAME = '@launchdarkly/ai-openai-messages';
 
@@ -332,6 +334,93 @@ const jsonSchemaFormat = (schema: Record<string, unknown>): any => ({
 const toToolDefinitions = (tools: FunctionTool[]): ToolDefinitionInput[] =>
   tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
 
+/**
+ * `ResponseCreateParamsBase` keys this handler forwards verbatim from `config.model.parameters`,
+ * after the `max_tokens` / `max_completion_tokens` → `max_output_tokens` rename below — the
+ * LaunchDarkly UI offers the Chat Completions parameter set, and the Responses API this handler
+ * calls does not accept either of those two names.
+ *
+ * Handler-owned (this handler sets these itself, from the config and the call shape, so a
+ * `model.parameters` value must not be able to override what it already decided): `model`,
+ * `input`, `tools`, `previous_response_id`, `text`.
+ *
+ * Excluded (not a model setting — transport/plumbing this handler does not use):
+ * - `background` — async execution mode, not a generation setting.
+ * - `context_management` — server-side conversation compaction, not a generation setting.
+ * - `conversation` — this handler threads multi-turn state itself via `previous_response_id` and
+ *   the composed message history, not via OpenAI's server-side conversation objects.
+ * - `include` — controls which extra fields the API echoes back in the response body.
+ * - `prompt` — references one of OpenAI's own stored prompt templates, which conflicts with the
+ *   `input` this handler already builds from `config.messages` / `config.instructions`.
+ * - `prompt_cache_key`, `prompt_cache_retention` — cache bucketing/retention hints; no effect on
+ *   model output.
+ * - `safety_identifier`, `user` (`user` is `safety_identifier`'s deprecated predecessor) —
+ *   end-user identifiers for OpenAI's own abuse monitoring, not a generation setting.
+ * - `store` — whether OpenAI persists the response server-side for later retrieval, not a
+ *   generation setting.
+ * - `stream` — this handler selects streaming by choosing between `responses.create()` and
+ *   `responses.stream()`, not by setting a field, so a config value here would fight the method
+ *   actually invoked.
+ * - `stream_options` — only meaningful alongside `stream: true`; same reasoning as `stream`.
+ */
+const FORWARDED_MODEL_PARAMETER_KEYS = [
+  'instructions',
+  'max_output_tokens',
+  'metadata',
+  'moderation',
+  'parallel_tool_calls',
+  'reasoning',
+  'service_tier',
+  'temperature',
+  'tool_choice',
+  'top_logprobs',
+  'top_p',
+  'truncation',
+] as const;
+
+type OpenAIHandlerOwnedKeys = 'input' | 'model' | 'previous_response_id' | 'text' | 'tools';
+type OpenAIExcludedKeys =
+  | 'background'
+  | 'context_management'
+  | 'conversation'
+  | 'include'
+  | 'prompt'
+  | 'prompt_cache_key'
+  | 'prompt_cache_retention'
+  | 'safety_identifier'
+  | 'store'
+  | 'stream'
+  | 'stream_options'
+  | 'user';
+// If a key of ResponseCreateParamsBase is added to the SDK and not classified above as forwarded,
+// handler-owned, or excluded, this type resolves to something other than `never` and the
+// assignment below fails to compile, naming the unclassified key.
+type OpenAIUndecidedModelParameterKeys = Exclude<
+  keyof ResponseCreateParamsBase,
+  OpenAIHandlerOwnedKeys | OpenAIExcludedKeys | (typeof FORWARDED_MODEL_PARAMETER_KEYS)[number]
+>;
+const _openaiModelParameterKeysExhaustive: Record<OpenAIUndecidedModelParameterKeys, never> = {} as Record<
+  never,
+  never
+>;
+
+/**
+ * Picks the subset of `config.model.parameters` that maps onto `ResponseCreateParamsBase`, after
+ * renaming the two Chat Completions token-limit spellings the LaunchDarkly UI offers —
+ * `max_tokens` and `max_completion_tokens` — to the Responses API's own `max_output_tokens`.
+ * Precedence when a config sets more than one spelling: an explicit `max_output_tokens` wins, then
+ * `max_completion_tokens`, then `max_tokens`. A config that sets nothing here produces `{}`, so the
+ * provider call sees exactly what it always has.
+ */
+function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
+  const normalized = normalizeModelParameters(parameters);
+  const { max_tokens, max_completion_tokens, max_output_tokens, ...rest } = normalized;
+  const resolvedMaxOutputTokens = max_output_tokens ?? max_completion_tokens ?? max_tokens;
+  const withRenamedMaxTokens =
+    resolvedMaxOutputTokens !== undefined ? { ...rest, max_output_tokens: resolvedMaxOutputTokens } : rest;
+  return pickForwardedModelParameters(withRenamedMaxTokens, FORWARDED_MODEL_PARAMETER_KEYS);
+}
+
 export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   const openai = new OpenAI();
 
@@ -404,7 +493,7 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
 
           let response = await runModelTurn(
             {
-              ...normalizeModelParameters(config.model.parameters),
+              ...buildModelParameterOptions(config.model.parameters),
               model: config.model.name,
               input: inputMessages,
               tools: tools.length > 0 ? tools : undefined,
@@ -448,7 +537,7 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
 
             response = await runModelTurn(
               {
-                ...normalizeModelParameters(config.model.parameters),
+                ...buildModelParameterOptions(config.model.parameters),
                 model: config.model.name,
                 previous_response_id: response.id,
                 input: toolOutputs,
@@ -533,14 +622,14 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
           try {
             const streamParams = previousResponseId
               ? {
-                  ...normalizeModelParameters(config.model.parameters),
+                  ...buildModelParameterOptions(config.model.parameters),
                   model: config.model.name,
                   previous_response_id: previousResponseId,
                   input: currentInput,
                   tools: undefined,
                 }
               : {
-                  ...normalizeModelParameters(config.model.parameters),
+                  ...buildModelParameterOptions(config.model.parameters),
                   model: config.model.name,
                   input: currentInput,
                   tools: tools.length > 0 ? tools : undefined,

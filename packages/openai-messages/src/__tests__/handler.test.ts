@@ -319,18 +319,61 @@ describe('createOpenAIHandler', () => {
     expect(call.max_output_tokens).toBe(256);
   });
 
-  it('forwards unrecognized model.parameters keys through to the provider call rather than dropping them', async () => {
-    // The LaunchDarkly UI already constrains which keys can be saved, so an unsupported key
-    // reaching the Responses API is expected to surface as a provider error, not be silently dropped.
+  it('drops an unrecognized model.parameters key rather than forwarding it', async () => {
+    // Unlike the four framework handlers, this handler wraps the raw Responses API client: an
+    // unsupported key reaching responses.create is a wire-level 400, not a harmlessly ignored extra.
     mockResponsesCreate.mockResolvedValue(mockFinalResponse());
     const config = {
       ...baseConfig,
-      model: { ...baseConfig.model, parameters: { max_tokens: 999, foo: 'bar' } },
+      model: { ...baseConfig.model, parameters: { foo: 'bar' } },
     };
     await createOpenAIHandler()(config as any, 'q');
     const call = mockResponsesCreate.mock.calls[0][0];
-    expect(call.max_tokens).toBe(999);
-    expect(call.foo).toBe('bar');
+    expect(call).not.toHaveProperty('foo');
+  });
+
+  it('renames max_tokens (Chat Completions spelling) to max_output_tokens (Responses spelling)', async () => {
+    // The LaunchDarkly UI offers the Chat Completions parameter set; the Responses API this
+    // handler calls only accepts max_output_tokens. Without the rename this would drop silently
+    // (max_tokens is not a Responses key) or, worse, 400 if the UI ever changes to forward it raw.
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_tokens: 999 } } };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.max_output_tokens).toBe(999);
+    expect(call).not.toHaveProperty('max_tokens');
+  });
+
+  it('renames max_completion_tokens to max_output_tokens', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_completion_tokens: 777 } } };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.max_output_tokens).toBe(777);
+    expect(call).not.toHaveProperty('max_completion_tokens');
+  });
+
+  it('precedence: an explicit max_output_tokens wins over max_completion_tokens and max_tokens', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { max_tokens: 1, max_completion_tokens: 2, max_output_tokens: 3 },
+      },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    expect(mockResponsesCreate.mock.calls[0][0].max_output_tokens).toBe(3);
+  });
+
+  it('precedence: max_completion_tokens wins over max_tokens when max_output_tokens is absent', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { max_tokens: 1, max_completion_tokens: 2 } },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    expect(mockResponsesCreate.mock.calls[0][0].max_output_tokens).toBe(2);
   });
 
   // This handler wraps the raw Responses API client, which reads snake_case keys itself, so
