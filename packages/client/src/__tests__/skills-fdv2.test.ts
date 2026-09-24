@@ -2351,10 +2351,6 @@ describe('the missing contentHash', () => {
     // as a skill key drops out of the keep-set and prune deletes the last
     // known-good copy. Which is the outcome this transport was written to avoid.
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
-    endpoint.queuePoll(
-      fullPayload([['put-object', putSkill('pdf-extraction', { objectVersion: 4, omitHash: true })]], 'basis-2'),
-    );
-    endpoint.queuePoll([], { status: 304 });
 
     const store = pollStore({ pollIntervalMs: 20 });
     store.start();
@@ -2366,6 +2362,15 @@ describe('the missing contentHash', () => {
     await writeSkills('*', root);
     expect(readFileSync(written, 'utf8')).toBe(SKILL_BODY);
 
+    // Queued only now, and deliberately not up front. `waitForSkills` promises
+    // the *first* commit and nothing about the second, so a hashless payload
+    // waiting in the queue commits on the next poll — 20ms later — and a
+    // reconcile that has not run by then withholds every object and writes
+    // nothing. That is a real race the assertion above cannot survive, and it
+    // fails as an ENOENT on the read rather than as anything self-explanatory.
+    endpoint.queuePoll(
+      fullPayload([['put-object', putSkill('pdf-extraction', { objectVersion: 4, omitHash: true })]], 'basis-2'),
+    );
     expect(await waitUntil(() => store.diagnostics.hashlessObjects > 0, 5000)).toBe(true);
     const report = await writeSkills('*', root);
 
