@@ -8,6 +8,7 @@ import {
   parseJSONWithPossibleFences,
   parseTemplate,
   parseUsage,
+  pickForwardedModelParameters,
   setLdSpanAttributes,
   setUsageSpanAttributes,
 } from '../utils.js';
@@ -646,6 +647,31 @@ describe('normalizeModelParameters', () => {
 
   it('returns an empty array unchanged (arrays are objects)', () => {
     expect(normalizeModelParameters([])).toEqual([]);
+  });
+});
+
+// ─── pickForwardedModelParameters ─────────────────────────────────────────────
+
+describe('pickForwardedModelParameters', () => {
+  it('returns {} when parameters is undefined', () => {
+    expect(pickForwardedModelParameters(undefined, ['temperature'])).toEqual({});
+  });
+
+  it('returns {} when parameters sets none of the allowed keys', () => {
+    expect(pickForwardedModelParameters({ made_up_key: 'nope' }, ['temperature'])).toEqual({});
+  });
+
+  it('picks only the keys present in both parameters and the allowlist', () => {
+    const parameters = { temperature: 0.5, top_p: 0.9, made_up_key: 'nope' };
+    expect(pickForwardedModelParameters(parameters, ['temperature', 'top_p'])).toEqual({
+      temperature: 0.5,
+      top_p: 0.9,
+    });
+  });
+
+  it('omits an allowed key whose value is undefined', () => {
+    const parameters = { temperature: undefined, top_p: 0.9 };
+    expect(pickForwardedModelParameters(parameters, ['temperature', 'top_p'])).toEqual({ top_p: 0.9 });
   });
 });
 

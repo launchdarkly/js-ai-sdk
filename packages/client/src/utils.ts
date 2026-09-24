@@ -566,16 +566,48 @@ export function parseJSONWithPossibleFences<T>(rawText: string): T | null {
 /**
  * Returns `parameters` unchanged when it is a usable object, `{}` otherwise.
  *
- * Every handler spreads the *entire* `model.parameters` bag straight into its provider call
- * rather than picking an allowlist. The LaunchDarkly UI already constrains which keys a customer
- * can save, and an unsupported key reaching the provider is expected to surface as a provider
- * error rather than being silently dropped here. This is the defensive guard the call sites used
- * to repeat inline: `model.parameters` is optional on `AiConfigRep`, and a config's own `model`
- * field is technically reachable as `unknown` at these call sites, so both must be checked before
- * spreading.
+ * The four framework handlers (`claude-agents`, `openai-agents`, `langchain-messages`,
+ * `langchain-agents`) spread the *entire* `model.parameters` bag straight into their underlying
+ * framework call rather than picking an allowlist — their frameworks already ignore keys they do
+ * not recognize, so narrowing here would only drop settings that work today for no safety benefit.
+ * This is the defensive guard those call sites used to repeat inline: `model.parameters` is
+ * optional on `AiConfigRep`, and a config's own `model` field is technically reachable as
+ * `unknown` at these call sites, so both must be checked before spreading.
+ *
+ * The two handlers that wrap a raw provider client (`claude-messages`, `openai-messages`) do NOT
+ * use this: an unrecognized key reaches those providers' wire APIs verbatim and is rejected with a
+ * 400, so they use `pickForwardedModelParameters` against an explicit, compiler-checked allowlist
+ * instead.
  */
 export function normalizeModelParameters(parameters: unknown): Record<string, unknown> {
   return parameters && typeof parameters === 'object' ? (parameters as Record<string, unknown>) : {};
+}
+
+/**
+ * Picks the subset of `parameters` whose keys appear in `keys`, unchanged otherwise: a config that
+ * sets nothing in `keys` produces `{}`, so the provider call sees exactly what it always has.
+ *
+ * For handlers whose provider request type is **closed** — an unknown field is a wire-level 400
+ * from the provider, not a harmless extra — rather than open-ended. Those handlers
+ * (`claude-messages`, `openai-messages`) each keep their own `FORWARDED_*_KEYS` allowlist next to
+ * the request shape it maps onto, checked at compile time against the SDK's own base request type
+ * so the list cannot silently drift; this helper only owns the picking loop.
+ *
+ * The four framework handlers are the opposite case — their frameworks take an open-ended options
+ * bag and already ignore keys they do not recognize, so narrowing it to a key list would silently
+ * drop settings that work today. They use `normalizeModelParameters` instead, which forwards the
+ * whole object.
+ */
+export function pickForwardedModelParameters<K extends string>(
+  parameters: Record<string, unknown> | undefined,
+  keys: ReadonlyArray<K>,
+): Record<string, unknown> {
+  const picked: Record<string, unknown> = {};
+  if (!parameters) return picked;
+  for (const key of keys) {
+    if (parameters[key] !== undefined) picked[key] = parameters[key];
+  }
+  return picked;
 }
 
 /**
