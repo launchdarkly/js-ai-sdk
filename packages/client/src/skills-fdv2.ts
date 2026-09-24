@@ -45,14 +45,33 @@ import { isValidSkillVersion } from './types.js';
 /**
  * The FDv2 `kind` skills are delivered under.
  *
- * Object kinds on the SDK-facing channel are open strings: the agent-skill
- * payload is classified `generic` and every object in it carries the kind its
- * producer registered, which for skills is the bare category name. Delivery
- * lower-cases the kind, so an exact comparison is the whole test. The kind
- * happens to equal `SKILL_OBJECT_KIND` today; they are still separate constants,
- * because one is a wire value LaunchDarkly owns and the other is an SDK seam.
+ * Object kinds on the SDK-facing channel are open strings: every object in the
+ * agent-skill payload carries the kind its producer registered, which for skills
+ * is the bare category name. Delivery lower-cases the kind, so an exact
+ * comparison is the whole test. The kind happens to equal `SKILL_OBJECT_KIND`
+ * today; they are still separate constants, because one is a wire value
+ * LaunchDarkly owns and the other is an SDK seam.
+ *
+ * Not to be confused with {@link FDV2_PAYLOAD_KIND}: this is the kind of the
+ * *objects*, that one the kind of the *payload* they arrive in.
  */
 export const FDV2_OBJECT_KIND = 'skill';
+
+/**
+ * The kind of the FDv2 payload skills are delivered in, declared on every
+ * request as `?kinds=`.
+ *
+ * Delivery narrows a connection to the payload kinds it declares and defaults to
+ * flags, so this is not an optimisation: a request that omits it receives the
+ * environment's flag payload and no skills at all. Declaring it is also what
+ * makes the connection carry exactly one payload — the shape
+ * {@link ProtocolReader} is built for — since a skill-enabled environment
+ * assigns both the flag payload and this one.
+ *
+ * The wire accepts a comma-separated list, but this store wants the skill
+ * payload and nothing else, so it declares this one kind alone.
+ */
+export const FDV2_PAYLOAD_KIND = 'agent-skill';
 
 /**
  * What separates a skill's key from its version inside the object's wire `key`.
@@ -302,6 +321,16 @@ export type StoreDiagnostics = {
    * there delivered nothing either, and does raise it.
    */
   readonly connectionFailures: number;
+  /**
+   * Requests answered with "no payload of the kind you asked for"
+   * ({@link NoSkillPayloadError}). Cumulative, and never reset.
+   *
+   * It is deliberately not a `connectionFailures`: nothing is wrong, there is
+   * nothing to deliver. Nonzero and rising alongside an empty store is the
+   * difference between "this environment has no skills" and "delivery is
+   * broken", which is the pair this whole type exists to separate.
+   */
+  readonly payloadUnavailable: number;
   /** The most recent transport error, if any. Human-readable; do not parse. */
   readonly lastError: string | null;
 };
@@ -769,6 +798,7 @@ function freshDiagnostics(): MutableDiagnostics {
     payloadsIgnored: 0,
     hashlessObjects: 0,
     connectionFailures: 0,
+    payloadUnavailable: 0,
     lastError: null,
   };
 }
@@ -1112,6 +1142,28 @@ export class RecoverableTransportError extends Error {
  */
 export class StaleRequestStateError extends RecoverableTransportError {}
 
+/**
+ * An HTTP 422: delivery has no payload of the kind this store declared.
+ *
+ * That is the answer for every project in which no skill has ever been created,
+ * since the agent-skill payload row is created with the first one. Neither of
+ * the two obvious classifications is right, which is why this is its own class:
+ *
+ * - as a failure it would spend `maxConsecutiveFailures` and then give up
+ *   permanently — "gave up after N consecutive failures" — on a configuration
+ *   that is merely waiting for its first skill;
+ * - as fatal, the skill created a minute later would never arrive, because
+ *   nothing reopens delivery short of a process restart.
+ *
+ * `expected` is what keeps it off `connectionFailures`, `lastError` and the
+ * per-attempt warning; the rest is in the delivery loop.
+ */
+export class NoSkillPayloadError extends RecoverableTransportError {
+  constructor(message: string) {
+    super(message, null, true);
+  }
+}
+
 const REQUEST_ADVICE =
   'The request this adapter sent was not understood. It carries only the SDK key and, after the first payload, ' +
   "a 'basis' selector, so check the base URI and that the endpoint speaks FDv2.";
@@ -1186,6 +1238,13 @@ export function classifyStatus(status: number, headers?: Headers | null): Error 
   // be one the server no longer accepts. Recoverable so the selector can be
   // dropped and a full transfer requested; fatal once that has been tried.
   if (status === 400) return new StaleRequestStateError(`LaunchDarkly returned HTTP 400. ${REQUEST_ADVICE}`);
+  if (status === 422) {
+    return new NoSkillPayloadError(
+      'LaunchDarkly has no Agent Skills payload for this environment (HTTP 422). This is what it answers until the ' +
+        'first skill is created in this project, so delivery keeps asking and picks one up without a restart. If ' +
+        'this environment does have skills, check that this SDK key belongs to it.',
+    );
+  }
   if ([405, 406, 414, 501].includes(status)) {
     return new FatalTransportError(
       `LaunchDarkly returned HTTP ${status}, which retrying will not fix. ${REQUEST_ADVICE}`,
@@ -1524,16 +1583,22 @@ export class FetchRequester implements Requester {
   }
 
   /**
-   * The request URL: the path, plus `basis` once a payload has committed.
+   * The request URL: the path, the payload kind this store accepts, and `basis`
+   * once a payload has committed.
+   *
+   * `kinds` is on every request, including the first one, because it selects
+   * what the connection is served rather than describing what it already holds
+   * (see {@link FDV2_PAYLOAD_KIND}).
    *
    * Deliberately no `mv` (data model version). That parameter selects the *flag*
-   * data model and the connection rejects any value but the flag default; the
-   * agent-skill payload is generic, is served regardless of it, and has no model
-   * version of its own to ask for.
+   * data model; delivery overrides whatever a request asks for with the
+   * payload's own default for any non-flagging payload, so sending it would
+   * state a preference that is ignored.
    */
   private url(origin: string, path: string, basis: string | null): string {
-    if (!basis) return `${origin}${path}`;
-    return `${origin}${path}?${new URLSearchParams({ basis }).toString()}`;
+    const params = new URLSearchParams({ kinds: FDV2_PAYLOAD_KIND });
+    if (basis) params.set('basis', basis);
+    return `${origin}${path}?${params.toString()}`;
   }
 
   /**
@@ -1806,6 +1871,9 @@ export class FDv2SkillStore implements SkillStore {
   // one that says goodbye having delivered nothing, and only the former escapes
   // the bound.
   private reachedServer = false;
+  // Said once per store rather than once per attempt: the condition holds until
+  // somebody creates a skill, and delivery keeps asking throughout.
+  private warnedNoSkillPayload = false;
 
   constructor(sdkKey: string, options: FDv2SkillStoreOptions = {}) {
     const key = requireServerSideCredential(sdkKey);
@@ -2103,6 +2171,16 @@ export class FDv2SkillStore implements SkillStore {
           this.etagBasis = null;
           repairingState = true;
         }
+        if (cause instanceof NoSkillPayloadError) {
+          this.reader.diagnostics.payloadUnavailable += 1;
+          if (!this.warnedNoSkillPayload) {
+            this.warnedNoSkillPayload = true;
+            warn(
+              `Skill delivery is idle: ${cause.message} Retrying every ${Math.round(this.maxBackoffMs)}ms; this is ` +
+                'the only time it will be said.',
+            );
+          }
+        }
         // A connection the server closed while serving it normally ended
         // without being a failure — see `dispatch` for which ones qualify. It
         // reconnects like one, but it neither counts against
@@ -2125,16 +2203,22 @@ export class FDv2SkillStore implements SkillStore {
           }
         }
         const requested = cause.retryAfterMs;
-        const delay = Math.min(
-          requested !== null && Number.isFinite(requested)
-            ? // A server asking for no delay still gets one: honouring
-              // `Retry-After: 0` literally would reconnect in a loop and burn
-              // the whole retry bound in milliseconds.
-              Math.max(requested, this.initialBackoffMs)
-            : backoffDelayMs(this.failures, this.initialBackoffMs, this.maxBackoffMs),
-          // `Retry-After` is a request and `maxBackoffMs` is a promise.
-          this.maxBackoffMs,
-        );
+        const delay =
+          cause instanceof NoSkillPayloadError
+            ? // At the cap rather than on the backoff schedule: `failures`
+              // deliberately never moves, so the schedule would hold this at
+              // the *initial* delay forever.
+              this.maxBackoffMs
+            : Math.min(
+                requested !== null && Number.isFinite(requested)
+                  ? // A server asking for no delay still gets one: honouring
+                    // `Retry-After: 0` literally would reconnect in a loop and burn
+                    // the whole retry bound in milliseconds.
+                    Math.max(requested, this.initialBackoffMs)
+                  : backoffDelayMs(this.failures, this.initialBackoffMs, this.maxBackoffMs),
+                // `Retry-After` is a request and `maxBackoffMs` is a promise.
+                this.maxBackoffMs,
+              );
         if (!cause.expected) {
           warn(`Skill delivery failed (${cause.message}); retrying in ${Math.round(delay)}ms`);
         }
