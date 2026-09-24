@@ -1361,14 +1361,48 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     expect(call.tools).toBeUndefined();
   });
 
-  it('forwards an unrecognized model.parameters key rather than dropping it', async () => {
-    // The LaunchDarkly UI already constrains which keys can be saved, so an unsupported key
-    // reaching the Anthropic SDK is expected to surface as a provider error, not be silently dropped.
+  it('drops an unrecognized model.parameters key rather than forwarding it', async () => {
+    // Unlike the four framework handlers, this handler wraps the raw Anthropic SDK client: an
+    // unsupported key reaching messages.create is a wire-level 400, not a harmlessly ignored extra.
     mockMessagesCreate.mockResolvedValue(mockFinalResponse());
     const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { made_up_key: 'nope' } } };
     const handler = createClaudeMessagesHandler();
     await handler(cfg as any, 'hi');
-    expect(mockMessagesCreate.mock.calls[0][0]).toHaveProperty('made_up_key', 'nope');
+    expect(mockMessagesCreate.mock.calls[0][0]).not.toHaveProperty('made_up_key');
+  });
+
+  it('drops a UI-offered key the Messages API top level does not accept', async () => {
+    // The LaunchDarkly UI offers top-level `effort`; the Messages API only takes it nested under
+    // `output_config`. Without the rename in buildModelParameterOptions this would 400.
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { effort: 'high' } } };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    const call = mockMessagesCreate.mock.calls[0][0];
+    expect(call).not.toHaveProperty('effort');
+    expect(call.output_config).toEqual({ effort: 'high' });
+  });
+
+  it('an explicit output_config.effort in the config wins over the top-level effort rename', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { effort: 'high', output_config: { effort: 'low' } } },
+    };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    expect(mockMessagesCreate.mock.calls[0][0].output_config).toEqual({ effort: 'low' });
+  });
+
+  it('merges a renamed effort into an output_config that also sets other fields', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { effort: 'high', output_config: { format: { type: 'text' } } } },
+    };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    expect(mockMessagesCreate.mock.calls[0][0].output_config).toEqual({ effort: 'high', format: { type: 'text' } });
   });
 
   it('leaves the call unchanged from today when model.parameters is absent', async () => {
@@ -1418,7 +1452,7 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     expect(call.top_k).toBe(10);
   });
 
-  it('streaming path still defaults max_tokens to 1024 and forwards an unrecognized key', async () => {
+  it('streaming path still defaults max_tokens to 1024 and drops an unrecognized key', async () => {
     const finalMsg = {
       usage: { input_tokens: 3, output_tokens: 7 },
       stop_reason: 'end_turn',
@@ -1433,7 +1467,7 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     }
     const call = mockMessagesStream.mock.calls[0][0];
     expect(call.max_tokens).toBe(1024);
-    expect(call).toHaveProperty('made_up_key', 'nope');
+    expect(call).not.toHaveProperty('made_up_key');
   });
 
   it('streaming path does not let model.parameters override model/messages/system', async () => {
