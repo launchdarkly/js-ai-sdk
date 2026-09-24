@@ -337,13 +337,18 @@ const buildMessages = (
  * (after the `effort` rename below is folded into `output_config`), beyond `max_tokens`, which is
  * handled separately because it carries a default.
  *
+ * The rule for this list: exclude a key only if setting it would BREAK the handler; forward
+ * everything else the API accepts, even settings with no obvious generation effect — those are
+ * forwarded because a config that sets one still gets a working call.
+ *
  * Handler-owned (this handler sets these itself, from the config and the call shape, so a
  * `model.parameters` value must not be able to override what it already decided): `model`,
  * `messages`, `system`, `tools`, `max_tokens`.
  *
- * Excluded (not a model setting): `stream` — this handler selects streaming by choosing between
- * `messages.create()` and `messages.stream()`, not by setting a field on the request body, so a
- * config value here would fight the method actually invoked.
+ * Excluded (would break the handler): `stream` — this handler selects streaming by choosing
+ * between `messages.create()` and `messages.stream()`, not by setting a field on the request
+ * body, so a config value here would fight the method actually invoked rather than configure
+ * anything.
  */
 const FORWARDED_MODEL_PARAMETER_KEYS = [
   'cache_control',

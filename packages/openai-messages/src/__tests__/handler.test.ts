@@ -332,6 +332,68 @@ describe('createOpenAIHandler', () => {
     expect(call).not.toHaveProperty('foo');
   });
 
+  // The rule is: exclude a key only if setting it would break the handler. These keys are real
+  // Responses API fields with no obvious generation effect, but a config that sets one still
+  // gets a working call, so they are forwarded rather than excluded.
+  it('forwards keys with no generation effect (store, user, safety_identifier, prompt_cache_key, prompt_cache_retention, include, context_management)', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          store: true,
+          user: 'user-123',
+          safety_identifier: 'user-123',
+          prompt_cache_key: 'cache-key',
+          prompt_cache_retention: '24h',
+          include: ['file_search_call.results'],
+          context_management: [{ type: 'compaction' }],
+        },
+      },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.store).toBe(true);
+    expect(call.user).toBe('user-123');
+    expect(call.safety_identifier).toBe('user-123');
+    expect(call.prompt_cache_key).toBe('cache-key');
+    expect(call.prompt_cache_retention).toBe('24h');
+    expect(call.include).toEqual(['file_search_call.results']);
+    expect(call.context_management).toEqual([{ type: 'compaction' }]);
+  });
+
+  it('drops background, conversation, and prompt, which would break the handler', async () => {
+    // background: the call would return before the output exists, so the handler gets no result.
+    // conversation, prompt: server-side state/templates that conflict with the input this handler
+    // builds itself.
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { background: true, conversation: 'conv_123', prompt: { id: 'pmpt_123' } },
+      },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call).not.toHaveProperty('background');
+    expect(call).not.toHaveProperty('conversation');
+    expect(call).not.toHaveProperty('prompt');
+  });
+
+  it('drops stream and stream_options, which the handler decides itself by calling create() vs stream()', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { stream: true, stream_options: { include_obfuscation: false } } },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call).not.toHaveProperty('stream');
+    expect(call).not.toHaveProperty('stream_options');
+  });
+
   it('renames max_tokens (Chat Completions spelling) to max_output_tokens (Responses spelling)', async () => {
     // The LaunchDarkly UI offers the Chat Completions parameter set; the Responses API this
     // handler calls only accepts max_output_tokens. Without the rename this would drop silently

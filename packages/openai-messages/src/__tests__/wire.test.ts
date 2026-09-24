@@ -83,4 +83,19 @@ describe('createOpenAIHandler — wire-level request body', () => {
 
     expect(capturedBody?.temperature).toBe(0.25);
   });
+
+  it('forwards store (no generation effect, but does not break the handler) and drops background (would break it)', async () => {
+    const { createOpenAIHandler } = await import('../handler.js');
+    const config = {
+      model: { name: 'gpt-4o', parameters: { store: true, background: true } },
+      provider: { name: 'OpenAI' },
+      instructions: 'You are helpful.',
+    };
+
+    const handler = createOpenAIHandler();
+    await handler(config as any, 'hi');
+
+    expect(capturedBody?.store).toBe(true);
+    expect(capturedBody).not.toHaveProperty('background');
+  });
 });

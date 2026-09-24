@@ -340,58 +340,51 @@ const toToolDefinitions = (tools: FunctionTool[]): ToolDefinitionInput[] =>
  * LaunchDarkly UI offers the Chat Completions parameter set, and the Responses API this handler
  * calls does not accept either of those two names.
  *
+ * The rule for this list: exclude a key only if setting it would BREAK the handler (wrong or
+ * missing result, or a request the handler cannot build); forward everything else the API
+ * accepts, even settings with no obvious generation effect (`store`, `user`,
+ * `safety_identifier`, `prompt_cache_key`, `prompt_cache_retention`, `include`,
+ * `context_management`, ...) — those are forwarded, not excluded, because a config that sets one
+ * still gets a working call.
+ *
  * Handler-owned (this handler sets these itself, from the config and the call shape, so a
  * `model.parameters` value must not be able to override what it already decided): `model`,
  * `input`, `tools`, `previous_response_id`, `text`.
  *
- * Excluded (not a model setting — transport/plumbing this handler does not use):
- * - `background` — async execution mode, not a generation setting.
- * - `context_management` — server-side conversation compaction, not a generation setting.
- * - `conversation` — this handler threads multi-turn state itself via `previous_response_id` and
- *   the composed message history, not via OpenAI's server-side conversation objects.
- * - `include` — controls which extra fields the API echoes back in the response body.
- * - `prompt` — references one of OpenAI's own stored prompt templates, which conflicts with the
- *   `input` this handler already builds from `config.messages` / `config.instructions`.
- * - `prompt_cache_key`, `prompt_cache_retention` — cache bucketing/retention hints; no effect on
- *   model output.
- * - `safety_identifier`, `user` (`user` is `safety_identifier`'s deprecated predecessor) —
- *   end-user identifiers for OpenAI's own abuse monitoring, not a generation setting.
- * - `store` — whether OpenAI persists the response server-side for later retrieval, not a
- *   generation setting.
- * - `stream` — this handler selects streaming by choosing between `responses.create()` and
- *   `responses.stream()`, not by setting a field, so a config value here would fight the method
- *   actually invoked.
- * - `stream_options` — only meaningful alongside `stream: true`; same reasoning as `stream`.
+ * Excluded (would break the handler):
+ * - `stream`, `stream_options` — the handler chooses streaming itself, by calling
+ *   `responses.create()` vs `responses.stream()`; a config value here fights that choice rather
+ *   than configuring anything.
+ * - `background` — the call returns before the output exists, so the handler would get no result
+ *   to return.
+ * - `conversation`, `prompt` — supply server-side conversation state / a stored prompt template
+ *   that conflicts with the `input` this handler already builds from `config.messages` /
+ *   `config.instructions` and threads itself via `previous_response_id`.
  */
 const FORWARDED_MODEL_PARAMETER_KEYS = [
+  'context_management',
+  'include',
   'instructions',
   'max_output_tokens',
   'metadata',
   'moderation',
   'parallel_tool_calls',
+  'prompt_cache_key',
+  'prompt_cache_retention',
   'reasoning',
+  'safety_identifier',
   'service_tier',
+  'store',
   'temperature',
   'tool_choice',
   'top_logprobs',
   'top_p',
   'truncation',
+  'user',
 ] as const;
 
 type OpenAIHandlerOwnedKeys = 'input' | 'model' | 'previous_response_id' | 'text' | 'tools';
-type OpenAIExcludedKeys =
-  | 'background'
-  | 'context_management'
-  | 'conversation'
-  | 'include'
-  | 'prompt'
-  | 'prompt_cache_key'
-  | 'prompt_cache_retention'
-  | 'safety_identifier'
-  | 'store'
-  | 'stream'
-  | 'stream_options'
-  | 'user';
+type OpenAIExcludedKeys = 'background' | 'conversation' | 'prompt' | 'stream' | 'stream_options';
 // If a key of ResponseCreateParamsBase is added to the SDK and not classified above as forwarded,
 // handler-owned, or excluded, this type resolves to something other than `never` and the
 // assignment below fails to compile, naming the unclassified key.
