@@ -53,7 +53,7 @@ import { isValidSkillVersion } from './types.js';
  * LaunchDarkly owns and the other is an SDK seam.
  *
  * Not to be confused with {@link FDV2_PAYLOAD_KIND}: this is the kind of the
- * *objects*, that is the kind of the *payload* they arrive in.
+ * *objects*, that one the kind of the *payload* they arrive in.
  */
 export const FDV2_OBJECT_KIND = 'skill';
 
@@ -322,16 +322,13 @@ export type StoreDiagnostics = {
    */
   readonly connectionFailures: number;
   /**
-   * Requests LaunchDarkly answered with "no payload of the kind you asked for"
-   * (HTTP 422) — the answer for a project in which no skill has ever been
-   * created.
+   * Requests answered with "no payload of the kind you asked for"
+   * ({@link NoSkillPayloadError}). Cumulative, and never reset.
    *
    * It is deliberately not a `connectionFailures`: nothing is wrong, there is
    * nothing to deliver. Nonzero and rising alongside an empty store is the
    * difference between "this environment has no skills" and "delivery is
-   * broken", which is the pair this whole type exists to separate. It does not
-   * reset, so a store that was empty and then received its first payload reads
-   * as both, in the order it happened.
+   * broken", which is the pair this whole type exists to separate.
    */
   readonly payloadUnavailable: number;
   /** The most recent transport error, if any. Human-readable; do not parse. */
@@ -1148,21 +1145,18 @@ export class StaleRequestStateError extends RecoverableTransportError {}
 /**
  * An HTTP 422: delivery has no payload of the kind this store declared.
  *
- * That is the answer for every environment whose project has never had a skill,
- * because the agent-skill payload is created with the first one and the
- * declaration then matches nothing the credential is assigned. So it is neither
- * a failure nor fatal, and is classed as neither:
+ * That is the answer for every project in which no skill has ever been created,
+ * since the agent-skill payload row is created with the first one. Neither of
+ * the two obvious classifications is right, which is why this is its own class:
  *
- * - counting it as a failure would spend `maxConsecutiveFailures` and then give
- *   up permanently — reported as "gave up after N consecutive failures" — on a
- *   configuration that is merely waiting for its first skill;
- * - treating it as fatal would mean the skill created a minute later never
- *   arrives, because nothing reopens delivery short of a process restart.
+ * - as a failure it would spend `maxConsecutiveFailures` and then give up
+ *   permanently — "gave up after N consecutive failures" — on a configuration
+ *   that is merely waiting for its first skill;
+ * - as fatal, the skill created a minute later would never arrive, because
+ *   nothing reopens delivery short of a process restart.
  *
- * `expected` keeps it off `connectionFailures`, `lastError` and the per-attempt
- * warning; the loop reports it once, counts it under
- * `diagnostics.payloadUnavailable`, and retries at the backoff cap for as long
- * as the store is open.
+ * `expected` is what keeps it off `connectionFailures`, `lastError` and the
+ * per-attempt warning; the rest is in the delivery loop.
  */
 export class NoSkillPayloadError extends RecoverableTransportError {
   constructor(message: string) {
@@ -1244,9 +1238,6 @@ export function classifyStatus(status: number, headers?: Headers | null): Error 
   // be one the server no longer accepts. Recoverable so the selector can be
   // dropped and a full transfer requested; fatal once that has been tried.
   if (status === 400) return new StaleRequestStateError(`LaunchDarkly returned HTTP 400. ${REQUEST_ADVICE}`);
-  // Not "retrying will not fix it" and not a failure either: the payload this
-  // store asks for does not exist yet. Creating the first skill in the project
-  // is what fixes it, and delivery keeps asking until then.
   if (status === 422) {
     return new NoSkillPayloadError(
       'LaunchDarkly has no Agent Skills payload for this environment (HTTP 422). This is what it answers until the ' +
@@ -1880,9 +1871,8 @@ export class FDv2SkillStore implements SkillStore {
   // one that says goodbye having delivered nothing, and only the former escapes
   // the bound.
   private reachedServer = false;
-  // Whether the "no skill payload for this environment" line has been said. Once
-  // per store, not once per attempt: the condition persists until somebody
-  // creates a skill, and delivery keeps asking the whole time.
+  // Said once per store rather than once per attempt: the condition holds until
+  // somebody creates a skill, and delivery keeps asking throughout.
   private warnedNoSkillPayload = false;
 
   constructor(sdkKey: string, options: FDv2SkillStoreOptions = {}) {
@@ -2215,11 +2205,9 @@ export class FDv2SkillStore implements SkillStore {
         const requested = cause.retryAfterMs;
         const delay =
           cause instanceof NoSkillPayloadError
-            ? // Not backing off from a failure, waiting for somebody to create a
-              // skill. `failures` never moved, so the exponential schedule would
-              // hold this at the *initial* delay forever — the cap is both the
-              // cheapest place to sit and the one that does not depend on a
-              // counter this case deliberately leaves alone.
+            ? // At the cap rather than on the backoff schedule: `failures`
+              // deliberately never moves, so the schedule would hold this at
+              // the *initial* delay forever.
               this.maxBackoffMs
             : Math.min(
                 requested !== null && Number.isFinite(requested)
