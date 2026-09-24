@@ -279,6 +279,22 @@ describe('createOpenAIAgentHandler', () => {
     expect(runOptions).toEqual({ maxTurns: 3 });
   });
 
+  // The LaunchDarkly UI writes model.parameters in snake_case (the wire name every provider
+  // client expects), but the Agents SDK's ModelSettings/Runner.run only read camelCase — so a
+  // config saved as `max_turns` / `top_p` must reach the Agents SDK as `maxTurns` / `topP`.
+  it('converts snake_case model.parameters keys to camelCase for modelSettings and Runner.run', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { max_turns: 4, top_p: 0.9, max_tokens: 256 } },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    expect(agentArgs.modelSettings).toEqual({ maxTurns: 4, topP: 0.9, maxTokens: 256 });
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions).toEqual({ maxTurns: 4 });
+  });
+
   // ── 1.3 Tool conversion ─────────────────────────────────────────────────────
 
   it('creates agent tools when config.tools is present', async () => {
@@ -634,6 +650,21 @@ describe('createOpenAIAgentHandler', () => {
     });
     const runOptions = mockRun.mock.calls[0][2];
     expect(runOptions).toMatchObject({ maxTurns: 5 });
+  });
+
+  it('converts a snake_case max_turns to maxTurns on the streaming path', async () => {
+    const streamedResult = {
+      [Symbol.asyncIterator]: async function* () {},
+      state: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+      finalOutput: '',
+    };
+    mockRun.mockResolvedValue(streamedResult);
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_turns: 6, top_p: 0.8 } } };
+    const handler = createOpenAIAgentHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ maxTurns: 6, topP: 0.8 });
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions).toMatchObject({ maxTurns: 6 });
   });
 
   it('does not set modelSettings or maxTurns on the streaming path when model.parameters is absent', async () => {

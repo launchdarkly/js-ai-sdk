@@ -1317,6 +1317,25 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     expect(mockMessagesCreate.mock.calls[0][0].max_tokens).toBe(2048);
   });
 
+  // This handler wraps the raw @anthropic-ai/sdk client, which reads snake_case keys itself, so
+  // (unlike the four framework handlers) the UI's snake_case must reach messages.create untouched
+  // rather than being camelized.
+  it('forwards snake_case model.parameters keys unchanged, not camelized', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { max_tokens: 300, top_p: 0.8, stop_sequences: ['STOP'] } },
+    };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    const call = mockMessagesCreate.mock.calls[0][0];
+    expect(call.max_tokens).toBe(300);
+    expect(call.top_p).toBe(0.8);
+    expect(call.stop_sequences).toEqual(['STOP']);
+    expect(call.maxTokens).toBeUndefined();
+    expect(call.topP).toBeUndefined();
+  });
+
   it('does not let model.parameters override model, messages, tools, or system', async () => {
     mockMessagesCreate.mockResolvedValue(mockFinalResponse());
     const cfg = {

@@ -333,6 +333,23 @@ describe('createOpenAIHandler', () => {
     expect(call.foo).toBe('bar');
   });
 
+  // This handler wraps the raw Responses API client, which reads snake_case keys itself, so
+  // (unlike the four framework handlers) the UI's snake_case must reach responses.create untouched
+  // rather than being camelized.
+  it('forwards snake_case model.parameters keys unchanged, not camelized', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { top_p: 0.7, max_output_tokens: 128 } },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.top_p).toBe(0.7);
+    expect(call.max_output_tokens).toBe(128);
+    expect(call.topP).toBeUndefined();
+    expect(call.maxOutputTokens).toBeUndefined();
+  });
+
   it('does not let model.parameters override model, input, tools, or previous_response_id', async () => {
     mockResponsesCreate.mockResolvedValue(mockFinalResponse());
     const config = {

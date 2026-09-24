@@ -5,6 +5,7 @@ import {
   type CanonicalTurn,
   type ConfigTurn,
   type ContentCaptureOptions,
+  camelizeModelParameters,
   composeHistory,
   config,
   contentToText,
@@ -992,7 +993,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
               mcpAllowedTools,
               toolMCP,
               toolTelemetry?.hooks,
-              normalizeModelParameters(config.model.parameters),
+              camelizeModelParameters(normalizeModelParameters(config.model.parameters)),
             ),
           )) {
             recordConversationId(span, message);
@@ -1119,7 +1120,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
             mcpAllowedTools,
             toolMCP,
             toolTelemetry?.hooks,
-            normalizeModelParameters(config.model.parameters),
+            camelizeModelParameters(normalizeModelParameters(config.model.parameters)),
             { includePartialMessages: true },
           ),
         )) {

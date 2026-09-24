@@ -579,6 +579,61 @@ export function normalizeModelParameters(parameters: unknown): Record<string, un
 }
 
 /**
+ * Converts one snake_case key to camelCase, or returns `undefined` when the key should pass
+ * through unchanged: a key with no underscore (already camelCase, or a single word like
+ * `temperature`), or one with a leading, trailing, or doubled underscore, where guessing the
+ * intended split would be wrong more often than leaving it alone.
+ */
+function camelizeKey(key: string): string | undefined {
+  if (!key.includes('_')) return undefined;
+  const parts = key.split('_');
+  if (parts.some((part) => part.length === 0)) return undefined;
+  return (
+    parts[0] +
+    parts
+      .slice(1)
+      .map((part) => part[0].toUpperCase() + part.slice(1))
+      .join('')
+  );
+}
+
+/**
+ * Converts the TOP-LEVEL keys of a `model.parameters` bag from snake_case (the LaunchDarkly UI's
+ * convention, and the wire name every provider SDK expects) to camelCase, for the four handlers
+ * whose underlying framework — as opposed to a raw provider client — only reads camelCase option
+ * names: `max_turns` becomes `maxTurns`, `top_p` becomes `topP`. Every camelCase key generated
+ * this way, so no lookup table to keep in sync with new provider parameters.
+ *
+ * Only top-level keys convert. A nested value such as `thinking: { budget_tokens: 1024 }` is
+ * copied through untouched, because these frameworks hand that inner object to the provider API
+ * raw, snake_case and all.
+ *
+ * When a bag sets both spellings of one key (`max_turns` and `maxTurns`), the snake_case one
+ * wins — it is the convention the UI writes, so it is treated as authoritative — deterministically
+ * regardless of which key came first in the object.
+ *
+ * Returns a new object; never mutates the input.
+ */
+export function camelizeModelParameters(parameters: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  const converted: Array<[string, unknown]> = [];
+  for (const [key, value] of Object.entries(parameters)) {
+    const camelKey = camelizeKey(key);
+    if (camelKey === undefined) {
+      result[key] = value;
+    } else {
+      converted.push([camelKey, value]);
+    }
+  }
+  // Applied after every unconverted key, so a snake_case key always overwrites a colliding
+  // camelCase key regardless of iteration order.
+  for (const [camelKey, value] of converted) {
+    result[camelKey] = value;
+  }
+  return result;
+}
+
+/**
  * Returns a copy of `trackData` without `modelKey` / `modelVersion`. Used when
  * overlaying a judge's `trackData` on its parent's so a judge without a pinned
  * model config does not inherit the parent's model identity.

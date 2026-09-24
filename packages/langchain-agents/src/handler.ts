@@ -6,6 +6,7 @@ import {
   type AiConfigRep,
   type ConfigTurn,
   type ContentCaptureOptions,
+  camelizeModelParameters,
   composeHistory,
   config,
   createHandler,
@@ -261,7 +262,7 @@ export function buildSpanCallbacks(
 export type LangChainModelSource = BaseChatModel | ((config: AiConfigRep) => BaseChatModel | Promise<BaseChatModel>);
 
 function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record<string, unknown> {
-  const parameters = { ...normalizeModelParameters(config.model?.parameters) };
+  const parameters = { ...camelizeModelParameters(normalizeModelParameters(config.model?.parameters)) };
   if ((config.provider?.name ?? '').toLowerCase() === 'bedrock') delete parameters.tools;
   return { ...parameters, model: resolvedModelName(config, fallbackName) };
 }
