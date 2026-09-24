@@ -499,7 +499,8 @@ function configConversationTurns(config: AiConfigRep, variables: Record<string, 
 }
 
 /**
- * `config.model.parameters`, forwarded verbatim as the Agents SDK's `ModelSettings`, unchanged
+ * `config.model.parameters`, top-level keys camelized (`top_p` becomes `topP`) and passed as the
+ * Agents SDK's `ModelSettings`, unchanged
  * otherwise: no default temperature, no default cap — a config that sets nothing here produces
  * `undefined`, so the Agent is constructed exactly as it always has been.
  */

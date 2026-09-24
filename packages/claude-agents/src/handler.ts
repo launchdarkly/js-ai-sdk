@@ -895,7 +895,8 @@ function buildQueryOptions(
   // biome-ignore lint/suspicious/noExplicitAny: Claude SDK hooks config type is not publicly exported
   hooks: any,
   /**
-   * The customer's `model.parameters`, forwarded verbatim. Untrusted: it is whatever was
+   * The customer's `model.parameters`, with top-level keys camelized for the Claude Agent
+   * SDK (`max_turns` becomes `maxTurns`). Untrusted: it is whatever was
    * saved on the AI Config, so it is spread FIRST and every handler-owned key below
    * overrides it. Passed explicitly rather than folded into `internalOptions` so the two
    * trust levels cannot be confused at a call site.
