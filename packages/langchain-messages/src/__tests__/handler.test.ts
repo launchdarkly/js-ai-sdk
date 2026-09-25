@@ -1279,7 +1279,11 @@ describe('model source', () => {
     expect(result.output).toBe('from-instance');
   });
 
-  it('spreads model.parameters into the default OpenAI constructor', async () => {
+  // @langchain/openai's ChatOpenAI constructor only reads camelCase (`maxTokens`), so
+  // `modelConstructorArgs` camelizes the snake_case bag the UI writes before spreading it in
+  // here — this is the exact conversion the casing fix adds, so this assertion changed from
+  // `max_tokens: 512` (the old, buggy pass-through) to `maxTokens: 512`.
+  it('spreads model.parameters into the default OpenAI constructor, camelized', async () => {
     vi.mocked(ChatOpenAI).mockImplementation(function MockChatOpenAI() {
       return makeMockLLM('default-openai') as any;
     });
@@ -1290,10 +1294,22 @@ describe('model source', () => {
     await createLangChainHandler()(cfg as any, 'q');
     expect(ChatOpenAI).toHaveBeenCalledWith({
       temperature: 0.2,
-      max_tokens: 512,
+      maxTokens: 512,
       tools: ['openai-tool'],
       model: 'gpt-4o',
     });
+  });
+
+  it('camelCase model.parameters keys still pass through unchanged into the default constructor', async () => {
+    vi.mocked(ChatOpenAI).mockImplementation(function MockChatOpenAI() {
+      return makeMockLLM('default-openai') as any;
+    });
+    const cfg = {
+      ...baseConfig,
+      model: { name: 'gpt-4o', parameters: { temperature: 0.2, maxTokens: 512 } },
+    };
+    await createLangChainHandler()(cfg as any, 'q');
+    expect(ChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
   });
 
   it('spreads model.parameters into the default Anthropic constructor', async () => {

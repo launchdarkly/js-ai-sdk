@@ -84,14 +84,17 @@ export { GraphTopologySchema, NATIVE_TOOL_KEY, NativeTool } from './types.js';
 export type { RunUsage, SpanUsage } from './utils.js';
 export {
   addCachedTokensToInput,
+  camelizeModelParameters,
   collapseMessagesToInstructions,
   createHandler,
   createRunUsage,
   endSpanOnce,
   langChainSpanUsage,
+  normalizeModelParameters,
   omitModelStamps,
   parseJSONWithPossibleFences,
   parseTemplate,
+  pickForwardedModelParameters,
   setLdSpanAttributes,
   setModelIdentityAttributes,
   setUsageSpanAttributes,

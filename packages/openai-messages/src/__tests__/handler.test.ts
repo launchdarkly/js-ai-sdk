@@ -301,6 +301,183 @@ describe('createOpenAIHandler', () => {
     expect(call.tools ?? []).toHaveLength(0);
   });
 
+  // ── 1.3b model.parameters forwarding ────────────────────────────────────────
+
+  it('forwards allowlisted model.parameters fields to the provider call', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { temperature: 0.4, top_p: 0.9, max_output_tokens: 256 },
+      },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.temperature).toBe(0.4);
+    expect(call.top_p).toBe(0.9);
+    expect(call.max_output_tokens).toBe(256);
+  });
+
+  it('drops an unrecognized model.parameters key rather than forwarding it', async () => {
+    // Unlike the four framework handlers, this handler wraps the raw Responses API client: an
+    // unsupported key reaching responses.create is a wire-level 400, not a harmlessly ignored extra.
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { foo: 'bar' } },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call).not.toHaveProperty('foo');
+  });
+
+  // The rule is: exclude a key only if setting it would break the handler. These keys are real
+  // Responses API fields with no obvious generation effect, but a config that sets one still
+  // gets a working call, so they are forwarded rather than excluded.
+  it('forwards keys with no generation effect (store, user, safety_identifier, prompt_cache_key, prompt_cache_retention, include, context_management)', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          store: true,
+          user: 'user-123',
+          safety_identifier: 'user-123',
+          prompt_cache_key: 'cache-key',
+          prompt_cache_retention: '24h',
+          include: ['file_search_call.results'],
+          context_management: [{ type: 'compaction' }],
+        },
+      },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.store).toBe(true);
+    expect(call.user).toBe('user-123');
+    expect(call.safety_identifier).toBe('user-123');
+    expect(call.prompt_cache_key).toBe('cache-key');
+    expect(call.prompt_cache_retention).toBe('24h');
+    expect(call.include).toEqual(['file_search_call.results']);
+    expect(call.context_management).toEqual([{ type: 'compaction' }]);
+  });
+
+  it('drops background, conversation, and prompt, which would break the handler', async () => {
+    // background: the call would return before the output exists, so the handler gets no result.
+    // conversation, prompt: server-side state/templates that conflict with the input this handler
+    // builds itself.
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { background: true, conversation: 'conv_123', prompt: { id: 'pmpt_123' } },
+      },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call).not.toHaveProperty('background');
+    expect(call).not.toHaveProperty('conversation');
+    expect(call).not.toHaveProperty('prompt');
+  });
+
+  it('drops stream and stream_options, which the handler decides itself by calling create() vs stream()', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { stream: true, stream_options: { include_obfuscation: false } } },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call).not.toHaveProperty('stream');
+    expect(call).not.toHaveProperty('stream_options');
+  });
+
+  it('renames max_tokens (Chat Completions spelling) to max_output_tokens (Responses spelling)', async () => {
+    // The LaunchDarkly UI offers the Chat Completions parameter set; the Responses API this
+    // handler calls only accepts max_output_tokens. Without the rename this would drop silently
+    // (max_tokens is not a Responses key) or, worse, 400 if the UI ever changes to forward it raw.
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_tokens: 999 } } };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.max_output_tokens).toBe(999);
+    expect(call).not.toHaveProperty('max_tokens');
+  });
+
+  it('renames max_completion_tokens to max_output_tokens', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_completion_tokens: 777 } } };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.max_output_tokens).toBe(777);
+    expect(call).not.toHaveProperty('max_completion_tokens');
+  });
+
+  it('precedence: an explicit max_output_tokens wins over max_completion_tokens and max_tokens', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { max_tokens: 1, max_completion_tokens: 2, max_output_tokens: 3 },
+      },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    expect(mockResponsesCreate.mock.calls[0][0].max_output_tokens).toBe(3);
+  });
+
+  it('precedence: max_completion_tokens wins over max_tokens when max_output_tokens is absent', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { max_tokens: 1, max_completion_tokens: 2 } },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    expect(mockResponsesCreate.mock.calls[0][0].max_output_tokens).toBe(2);
+  });
+
+  // This handler wraps the raw Responses API client, which reads snake_case keys itself, so
+  // (unlike the four framework handlers) the UI's snake_case must reach responses.create untouched
+  // rather than being camelized.
+  it('forwards snake_case model.parameters keys unchanged, not camelized', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { top_p: 0.7, max_output_tokens: 128 } },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.top_p).toBe(0.7);
+    expect(call.max_output_tokens).toBe(128);
+    expect(call.topP).toBeUndefined();
+    expect(call.maxOutputTokens).toBeUndefined();
+  });
+
+  it('does not let model.parameters override model, input, tools, or previous_response_id', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { model: 'evil-model', input: 'evil-input', tools: ['evil'], previous_response_id: 'evil-id' },
+      },
+    };
+    await createOpenAIHandler()(config as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call.model).toBe('gpt-4o');
+    expect(call.previous_response_id).toBeUndefined();
+    expect(call.tools ?? []).toHaveLength(0);
+  });
+
+  it('behaves identically to today when model.parameters is absent', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    await createOpenAIHandler()(baseConfig as any, 'q');
+    const call = mockResponsesCreate.mock.calls[0][0];
+    expect(call).toEqual({ model: 'gpt-4o', input: expect.any(Array) });
+  });
+
   // ── 1.4 Tool execution loop ─────────────────────────────────────────────────
 
   it('invokes the tool handler and loops until end', async () => {
@@ -665,6 +842,30 @@ describe('createOpenAIHandler', () => {
   it('handler.stream is defined', () => {
     const handler = createOpenAIHandler();
     expect(typeof handler.stream).toBe('function');
+  });
+
+  it('forwards allowlisted model.parameters fields to the streaming provider call', async () => {
+    mockResponsesStream.mockReturnValue(
+      makeResponseStreamMock([{ type: 'response.output_text.delta', delta: 'hi' }], baseFinalResponse),
+    );
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { temperature: 0.4, top_p: 0.9, max_output_tokens: 256 } },
+    };
+    await collectStream(createOpenAIHandler().stream?.(config as any, 'q', {}, {}));
+    const call = mockResponsesStream.mock.calls[0][0];
+    expect(call.temperature).toBe(0.4);
+    expect(call.top_p).toBe(0.9);
+    expect(call.max_output_tokens).toBe(256);
+  });
+
+  it('the streaming call is unchanged from today when model.parameters is absent', async () => {
+    mockResponsesStream.mockReturnValue(
+      makeResponseStreamMock([{ type: 'response.output_text.delta', delta: 'hi' }], baseFinalResponse),
+    );
+    await collectStream(createOpenAIHandler().stream?.(baseConfig as any, 'q', {}, {}));
+    const call = mockResponsesStream.mock.calls[0][0];
+    expect(call).toEqual({ model: 'gpt-4o', input: expect.any(Array) });
   });
 
   it('handler.stream returns an async iterable', () => {

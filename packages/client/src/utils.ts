@@ -564,6 +564,108 @@ export function parseJSONWithPossibleFences<T>(rawText: string): T | null {
 }
 
 /**
+ * Returns `parameters` unchanged when it is a usable object, `{}` otherwise.
+ *
+ * The four framework handlers (`claude-agents`, `openai-agents`, `langchain-messages`,
+ * `langchain-agents`) spread the *entire* `model.parameters` bag straight into their underlying
+ * framework call rather than picking an allowlist — their frameworks already ignore keys they do
+ * not recognize, so narrowing here would only drop settings that work today for no safety benefit.
+ * This is the defensive guard those call sites used to repeat inline: `model.parameters` is
+ * optional on `AiConfigRep`, and a config's own `model` field is technically reachable as
+ * `unknown` at these call sites, so both must be checked before spreading.
+ *
+ * The two handlers that wrap a raw provider client (`claude-messages`, `openai-messages`) do NOT
+ * use this: an unrecognized key reaches those providers' wire APIs verbatim and is rejected with a
+ * 400, so they use `pickForwardedModelParameters` against an explicit, compiler-checked allowlist
+ * instead.
+ */
+export function normalizeModelParameters(parameters: unknown): Record<string, unknown> {
+  return parameters && typeof parameters === 'object' ? (parameters as Record<string, unknown>) : {};
+}
+
+/**
+ * Picks the subset of `parameters` whose keys appear in `keys`, unchanged otherwise: a config that
+ * sets nothing in `keys` produces `{}`, so the provider call sees exactly what it always has.
+ *
+ * For handlers whose provider request type is **closed** — an unknown field is a wire-level 400
+ * from the provider, not a harmless extra — rather than open-ended. Those handlers
+ * (`claude-messages`, `openai-messages`) each keep their own `FORWARDED_*_KEYS` allowlist next to
+ * the request shape it maps onto, checked at compile time against the SDK's own base request type
+ * so the list cannot silently drift; this helper only owns the picking loop.
+ *
+ * The four framework handlers are the opposite case — their frameworks take an open-ended options
+ * bag and already ignore keys they do not recognize, so narrowing it to a key list would silently
+ * drop settings that work today. They use `normalizeModelParameters` instead, which forwards the
+ * whole object.
+ */
+export function pickForwardedModelParameters<K extends string>(
+  parameters: Record<string, unknown> | undefined,
+  keys: ReadonlyArray<K>,
+): Record<string, unknown> {
+  const picked: Record<string, unknown> = {};
+  if (!parameters) return picked;
+  for (const key of keys) {
+    if (parameters[key] !== undefined) picked[key] = parameters[key];
+  }
+  return picked;
+}
+
+/**
+ * Converts one snake_case key to camelCase, or returns `undefined` when the key should pass
+ * through unchanged: a key with no underscore (already camelCase, or a single word like
+ * `temperature`), or one with a leading, trailing, or doubled underscore, where guessing the
+ * intended split would be wrong more often than leaving it alone.
+ */
+function camelizeKey(key: string): string | undefined {
+  if (!key.includes('_')) return undefined;
+  const parts = key.split('_');
+  if (parts.some((part) => part.length === 0)) return undefined;
+  return (
+    parts[0] +
+    parts
+      .slice(1)
+      .map((part) => part[0].toUpperCase() + part.slice(1))
+      .join('')
+  );
+}
+
+/**
+ * Converts the TOP-LEVEL keys of a `model.parameters` bag from snake_case (the LaunchDarkly UI's
+ * convention, and the wire name every provider SDK expects) to camelCase, for the four handlers
+ * whose underlying framework — as opposed to a raw provider client — only reads camelCase option
+ * names: `max_turns` becomes `maxTurns`, `top_p` becomes `topP`. Every camelCase key generated
+ * this way, so no lookup table to keep in sync with new provider parameters.
+ *
+ * Only top-level keys convert. A nested value such as `thinking: { budget_tokens: 1024 }` is
+ * copied through untouched, because these frameworks hand that inner object to the provider API
+ * raw, snake_case and all.
+ *
+ * When a bag sets both spellings of one key (`max_turns` and `maxTurns`), the snake_case one
+ * wins — it is the convention the UI writes, so it is treated as authoritative — deterministically
+ * regardless of which key came first in the object.
+ *
+ * Returns a new object; never mutates the input.
+ */
+export function camelizeModelParameters(parameters: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  const converted: Array<[string, unknown]> = [];
+  for (const [key, value] of Object.entries(parameters)) {
+    const camelKey = camelizeKey(key);
+    if (camelKey === undefined) {
+      result[key] = value;
+    } else {
+      converted.push([camelKey, value]);
+    }
+  }
+  // Applied after every unconverted key, so a snake_case key always overwrites a colliding
+  // camelCase key regardless of iteration order.
+  for (const [camelKey, value] of converted) {
+    result[camelKey] = value;
+  }
+  return result;
+}
+
+/**
  * Returns a copy of `trackData` without `modelKey` / `modelVersion`. Used when
  * overlaying a judge's `trackData` on its parent's so a judge without a pinned
  * model config does not inherit the parent's model identity.

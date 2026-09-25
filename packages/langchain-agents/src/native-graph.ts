@@ -6,6 +6,7 @@ import { ToolNode, toolsCondition } from '@langchain/langgraph/prebuilt';
 import { ChatOpenAI } from '@langchain/openai';
 import type { LDContext } from '@launchdarkly/ai-server';
 import {
+  camelizeModelParameters,
   composeHistory,
   type GraphDefinition,
   type GraphNode,
@@ -13,6 +14,7 @@ import {
   type Message,
   makeNodeTrackData,
   type NativeTool,
+  normalizeModelParameters,
   type ProviderGraphResponse,
   parseTemplate,
   type ToolHandlerFn,
@@ -144,9 +146,7 @@ export const toLangGraph = (
       opts?.modelFactory ??
       ((node) =>
         new ChatOpenAI({
-          ...(node.config.model.parameters && typeof node.config.model.parameters === 'object'
-            ? node.config.model.parameters
-            : {}),
+          ...camelizeModelParameters(normalizeModelParameters(node.config.model.parameters)),
           model: node.config.model.name,
         }));
     const ldContext = opts?.context;

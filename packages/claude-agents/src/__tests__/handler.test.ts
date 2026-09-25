@@ -189,6 +189,113 @@ describe('createClaudeAgentsHandler', () => {
     expect(result.output).toBe('final answer');
   });
 
+  it('forwards model.parameters.maxTurns to query options', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { maxTurns: 3 } } };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBe(3);
+  });
+
+  // The LaunchDarkly UI writes model.parameters in snake_case (the wire name every provider
+  // client expects), but the Claude Agent SDK's query() Options only reads camelCase — so a
+  // config saved as `max_turns` must reach query() as `maxTurns`, not vanish silently.
+  it('converts a snake_case max_turns to maxTurns for query options', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_turns: 7 } } };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBe(7);
+    expect(options.max_turns).toBeUndefined();
+  });
+
+  it('converts snake_case model.parameters keys for query options (maxThinkingTokens etc.)', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { max_thinking_tokens: 2048, max_budget_usd: 1.5, fallback_model: 'claude-haiku' },
+      },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxThinkingTokens).toBe(2048);
+    expect(options.maxBudgetUsd).toBe(1.5);
+    expect(options.fallbackModel).toBe('claude-haiku');
+  });
+
+  it('forwards recognized model.parameters keys to query options', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { maxThinkingTokens: 2048, maxBudgetUsd: 1.5, effort: 'high', fallbackModel: 'claude-haiku' },
+      },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxThinkingTokens).toBe(2048);
+    expect(options.maxBudgetUsd).toBe(1.5);
+    expect(options.effort).toBe('high');
+    expect(options.fallbackModel).toBe('claude-haiku');
+  });
+
+  it('forwards unrecognized model.parameters keys through to query options rather than dropping them', async () => {
+    // The LaunchDarkly UI already constrains which keys can be saved, so an unsupported key
+    // reaching query() is expected to surface as a CLI/provider error, not be silently dropped.
+    // The key here has no underscore, so the snake_case->camelCase conversion this handler now
+    // applies leaves it alone — this test is about the allowlist, not casing.
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { temperature: 0.7, someUnknownKey: 100 } },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.temperature).toBe(0.7);
+    expect(options.someUnknownKey).toBe(100);
+  });
+
+  it('does not let model.parameters override model, tools, allowedTools, mcpServers, hooks, or systemPrompt', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          model: 'smuggled-model',
+          tools: ['smuggled-tool'],
+          allowedTools: ['smuggled-allowed'],
+          mcpServers: { smuggled: true },
+          hooks: { smuggled: true },
+          systemPrompt: 'smuggled prompt',
+        },
+      },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.model).toBe('claude-opus-4-5');
+    expect(options.systemPrompt).toBe('You are helpful.');
+    expect(options.tools).not.toEqual(['smuggled-tool']);
+    expect(options.allowedTools).not.toEqual(['smuggled-allowed']);
+    expect(options.mcpServers).not.toEqual({ smuggled: true });
+    expect(options.hooks).not.toEqual({ smuggled: true });
+  });
+
+  it('does not set maxTurns or other forwarded keys when model.parameters is absent', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await createClaudeAgentsHandler()(baseConfig as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBeUndefined();
+    expect(options.maxThinkingTokens).toBeUndefined();
+    expect(options.maxBudgetUsd).toBeUndefined();
+    expect(options.effort).toBeUndefined();
+    expect(options.fallbackModel).toBeUndefined();
+    expect(options.thinking).toBeUndefined();
+  });
+
   // ── 1.3 Tool wiring ─────────────────────────────────────────────────────────
 
   it('builds MCP server when config.tools has user-defined tools', async () => {
@@ -490,6 +597,44 @@ describe('createClaudeAgentsHandler', () => {
     const done = events.at(-1) as any;
     expect(done.type).toBe('done');
     expect(done.output).toBe('Final answer');
+  });
+
+  it('forwards model.parameters.maxTurns alongside includePartialMessages on the streaming path', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+    });
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { maxTurns: 5 } } };
+    const handler = createClaudeAgentsHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBe(5);
+    expect(options.includePartialMessages).toBe(true);
+  });
+
+  it('converts a snake_case max_turns to maxTurns on the streaming path', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+    });
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_turns: 9 } } };
+    const handler = createClaudeAgentsHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBe(9);
+    expect(options.max_turns).toBeUndefined();
+  });
+
+  it('does not let model.parameters override includePartialMessages on the streaming path', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+    });
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { includePartialMessages: false } },
+    };
+    const handler = createClaudeAgentsHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.includePartialMessages).toBe(true);
   });
 
   it('sets span attributes and puts content on attributes when enabled', async () => {

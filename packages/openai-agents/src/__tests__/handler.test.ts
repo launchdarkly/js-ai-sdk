@@ -227,6 +227,74 @@ describe('createOpenAIAgentHandler', () => {
     expect(mockAgentConstructor.mock.calls[0][0].instructions).toBe('From instructions.');
   });
 
+  // ── 1.2b model.parameters forwarding ─────────────────────────────────────────
+
+  it('forwards recognized model.parameters keys to Agent modelSettings', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { temperature: 0.4, topP: 0.9, maxTokens: 256, frequencyPenalty: 0.1, presencePenalty: 0.2 },
+      },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    expect(agentArgs.modelSettings).toEqual({
+      temperature: 0.4,
+      topP: 0.9,
+      maxTokens: 256,
+      frequencyPenalty: 0.1,
+      presencePenalty: 0.2,
+    });
+  });
+
+  it('forwards unrecognized model.parameters keys through to modelSettings rather than dropping them', async () => {
+    // The LaunchDarkly UI already constrains which keys can be saved, so an unsupported key
+    // reaching the Agents SDK is expected to surface as a provider error, not be silently dropped.
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { someUnknownKey: 'nope', anotherOne: 42 } },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    expect(agentArgs.modelSettings).toEqual({ someUnknownKey: 'nope', anotherOne: 42 });
+  });
+
+  it('does not set modelSettings or maxTurns when model.parameters is absent', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    await createOpenAIAgentHandler()(baseConfig as any, 'q');
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    expect(agentArgs.modelSettings).toBeUndefined();
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions).toBeUndefined();
+  });
+
+  it('forwards model.parameters.maxTurns to Runner.run options', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { maxTurns: 3 } } };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions).toEqual({ maxTurns: 3 });
+  });
+
+  // The LaunchDarkly UI writes model.parameters in snake_case (the wire name every provider
+  // client expects), but the Agents SDK's ModelSettings/Runner.run only read camelCase — so a
+  // config saved as `max_turns` / `top_p` must reach the Agents SDK as `maxTurns` / `topP`.
+  it('converts snake_case model.parameters keys to camelCase for modelSettings and Runner.run', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { max_turns: 4, top_p: 0.9, max_tokens: 256 } },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    expect(agentArgs.modelSettings).toEqual({ maxTurns: 4, topP: 0.9, maxTokens: 256 });
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions).toEqual({ maxTurns: 4 });
+  });
+
   // ── 1.3 Tool conversion ─────────────────────────────────────────────────────
 
   it('creates agent tools when config.tools is present', async () => {
@@ -558,6 +626,59 @@ describe('createOpenAIAgentHandler', () => {
     const done = events.at(-1) as any;
     expect(done.type).toBe('done');
     expect(done.usage).toMatchObject({ input_tokens: 4, output_tokens: 6 });
+  });
+
+  it('forwards model.parameters (modelSettings and maxTurns) on the streaming path', async () => {
+    const streamedResult = {
+      [Symbol.asyncIterator]: async function* () {},
+      state: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+      finalOutput: '',
+    };
+    mockRun.mockResolvedValue(streamedResult);
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { temperature: 0.5, maxTurns: 5, unknownKey: 'nope' } },
+    };
+    const handler = createOpenAIAgentHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    // `maxTurns` is read separately for Runner.run, but the whole bag (including it) also passes
+    // straight through to modelSettings now that there is no allowlist filtering it out.
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({
+      temperature: 0.5,
+      maxTurns: 5,
+      unknownKey: 'nope',
+    });
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions).toMatchObject({ maxTurns: 5 });
+  });
+
+  it('converts a snake_case max_turns to maxTurns on the streaming path', async () => {
+    const streamedResult = {
+      [Symbol.asyncIterator]: async function* () {},
+      state: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+      finalOutput: '',
+    };
+    mockRun.mockResolvedValue(streamedResult);
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_turns: 6, top_p: 0.8 } } };
+    const handler = createOpenAIAgentHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ maxTurns: 6, topP: 0.8 });
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions).toMatchObject({ maxTurns: 6 });
+  });
+
+  it('does not set modelSettings or maxTurns on the streaming path when model.parameters is absent', async () => {
+    const streamedResult = {
+      [Symbol.asyncIterator]: async function* () {},
+      state: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+      finalOutput: '',
+    };
+    mockRun.mockResolvedValue(streamedResult);
+    const handler = createOpenAIAgentHandler();
+    await collectStream(handler.stream?.(baseConfig as any, 'q', {}, {}));
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toBeUndefined();
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions.maxTurns).toBeUndefined();
   });
 
   it('sets invoke_agent on the root and emits a chat span on streaming', async () => {
