@@ -1,6 +1,13 @@
 import 'dotenv/config';
 import { trace } from '@opentelemetry/api';
 import { ConversationIdSpanProcessor } from './conversation.js';
+import {
+  describeImportFailure,
+  isEsmInteropError,
+  moduleNameFromError,
+  resetEsmExternalizationWarning,
+  warnEsmExternalizationOnce,
+} from './import-diagnostics.js';
 import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
 import { parseAiConfig } from './types.js';
@@ -65,7 +72,11 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
     ({ resourceFromAttributes } = await import('@opentelemetry/resources'));
     ({ AsyncLocalStorageContextManager } = await import('@opentelemetry/context-async-hooks'));
     ({ CompositePropagator, W3CBaggagePropagator, W3CTraceContextPropagator } = await import('@opentelemetry/core'));
-  } catch {
+  } catch (err) {
+    if (isEsmInteropError(err)) {
+      warnEsmExternalizationOnce(moduleNameFromError(err, 'an OpenTelemetry SDK package'), err);
+      return;
+    }
     // biome-ignore lint/suspicious/noConsole: intentional warning when optional OTel peer deps are missing
     console.warn(
       '[LaunchDarkly] Telemetry is disabled because one or more OpenTelemetry SDK ' +
@@ -131,6 +142,7 @@ export async function waitForTelemetry(timeoutMs = 5000): Promise<void> {
  * Must be called before process.exit() to ensure all pending spans are exported.
  */
 export async function shutdownTelemetry(): Promise<void> {
+  resetEsmExternalizationWarning();
   if (tracerProvider) {
     await tracerProvider.shutdown();
     tracerProvider = null;
@@ -175,8 +187,10 @@ async function initBaseClient(options: InitBaseClientOptions = {}): Promise<LDCl
   let init: any;
   try {
     ({ init } = await import('@launchdarkly/node-server-sdk'));
-  } catch {
-    throw new Error(
+  } catch (err) {
+    throw describeImportFailure(
+      '@launchdarkly/node-server-sdk',
+      err,
       '[LaunchDarkly] @launchdarkly/node-server-sdk is not installed. ' +
         'Either install it (npm install @launchdarkly/node-server-sdk) or pass a ' +
         'pre-initialized LD client to initClient().',
