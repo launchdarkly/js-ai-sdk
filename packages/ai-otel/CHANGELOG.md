@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-otel-0.1.1...@launchdarkly/ai-otel-0.2.0) (2026-09-25)
+
+
+### Features
+
+* **build:** build the AI SDK like the other LaunchDarkly JS SDKs so CommonJS apps can load it (2/4) ([#77](https://github.com/launchdarkly/js-ai-sdk/issues/77)) ([2cda755](https://github.com/launchdarkly/js-ai-sdk/commit/2cda7551c8feb7e352040384befea2cd76cb5d94))
+* **build:** dual ESM/CommonJS output via tsup ([d8e62e4](https://github.com/launchdarkly/js-ai-sdk/commit/d8e62e405d21b1854f5b29a0aa5661099b1d8c37))
+
 ## [0.1.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-otel-0.1.0...@launchdarkly/ai-otel-0.1.1) (2026-08-07)
 
 

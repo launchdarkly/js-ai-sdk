@@ -1,9 +1,9 @@
 {
   "name": "@launchdarkly/ai-node",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "Apache-2.0",
   "author": "LaunchDarkly <team@launchdarkly.com>",
-  "description": "Node.js convenience wrapper for @launchdarkly/ai-server \u2014 bundles @launchdarkly/node-server-sdk so no peer dependency setup is required",
+  "description": "Node.js convenience wrapper for @launchdarkly/ai-server — bundles @launchdarkly/node-server-sdk so no peer dependency setup is required",
   "repository": {
     "type": "git",
     "url": "https://github.com/launchdarkly/js-ai-sdk.git",
