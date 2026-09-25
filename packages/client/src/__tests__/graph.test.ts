@@ -27,7 +27,7 @@ vi.mock('../judges.js', () => ({
 import { ConversationIdSpanProcessor, GEN_AI_CONVERSATION_ID, withConversationId } from '../conversation.js';
 import { graph, resolveGraph } from '../graph.js';
 import { getClient } from '../lifecycle.js';
-import type { ProviderHandler } from '../types.js';
+import type { HandlerStreamEvent, ProviderHandler } from '../types.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -54,6 +54,32 @@ function makeHandler(output = 'agent-response'): ProviderHandler {
   return h;
 }
 
+async function* makeStreamGenerator(
+  chunks: string[],
+  usage: Record<string, unknown>,
+): AsyncGenerator<HandlerStreamEvent> {
+  for (const text of chunks) {
+    yield { type: 'chunk', text };
+  }
+  yield { type: 'done', usage };
+}
+
+function makeStreamingHandler(
+  chunks: string[] = ['hello', ' world'],
+  usage: Record<string, unknown> = { input_tokens: 2, output_tokens: 3 },
+): ProviderHandler {
+  const h: ProviderHandler = vi.fn().mockResolvedValue({ output: chunks.join(''), usage });
+  h.providesFor = ['OpenAI', 'messages'];
+  h.stream = vi.fn().mockImplementation(() => makeStreamGenerator(chunks, usage));
+  return h;
+}
+
+async function collectStream<T>(gen: AsyncGenerator<T>): Promise<T[]> {
+  const events: T[] = [];
+  for await (const event of gen) events.push(event);
+  return events;
+}
+
 /** Sets up a two-node graph topology: root → leaf */
 function setupTwoNodeGraph() {
   // Graph topology variation
@@ -68,6 +94,60 @@ function setupTwoNodeGraph() {
     if (key === 'leaf-node') return { config: makeAgentConfig('I am leaf'), meta: makeMeta() };
     throw new Error(`Unknown node key: ${key}`);
   });
+}
+
+/** Root with two outgoing edges — exercises the multi-edge streamRoute branch. */
+function setupBranchingGraph() {
+  mockVariation.mockResolvedValue({
+    root: 'root-node',
+    edges: {
+      'root-node': [{ key: 'agent-a' }, { key: 'agent-b' }],
+    },
+  });
+  mockExtractVariation.mockImplementation(async (key: string) => {
+    if (key === 'root-node') return { config: makeAgentConfig('I am root'), meta: makeMeta() };
+    if (key === 'agent-a') return { config: makeAgentConfig('I am A'), meta: makeMeta() };
+    if (key === 'agent-b') return { config: makeAgentConfig('I am B'), meta: makeMeta() };
+    throw new Error(`Unknown node key: ${key}`);
+  });
+}
+
+/**
+ * Streaming handler that, when handoff tools are present (multi-edge route), invokes the
+ * tool for `pickTarget`. Leaf nodes see no handoff tools and just stream text.
+ */
+function makeBranchPickingStreamHandler(pickTarget: string): ProviderHandler {
+  const usage = { input_tokens: 1, output_tokens: 1 };
+  const sanitized = pickTarget.replace(/[^a-zA-Z0-9_]/g, '_');
+  const h: ProviderHandler = vi.fn().mockResolvedValue({ output: 'ok', usage });
+  h.providesFor = ['OpenAI', 'messages'];
+  h.stream = vi.fn().mockImplementation(async function* (
+    _config: unknown,
+    _input?: string,
+    toolHandlers?: Record<string, (...args: unknown[]) => unknown>,
+  ): AsyncGenerator<HandlerStreamEvent> {
+    const handoff = Object.entries(toolHandlers ?? {}).find(([name]) => name === `__handoff_${sanitized}`);
+    if (handoff) handoff[1]();
+    yield { type: 'chunk', text: 'ok' };
+    yield { type: 'done', usage };
+  });
+  return h;
+}
+
+function makeBranchPickingThenThrowStreamHandler(pickTarget: string, message: string): ProviderHandler {
+  const sanitized = pickTarget.replace(/[^a-zA-Z0-9_]/g, '_');
+  const h: ProviderHandler = vi.fn().mockResolvedValue({ output: 'ok', usage: { input_tokens: 1, output_tokens: 1 } });
+  h.providesFor = ['OpenAI', 'messages'];
+  h.stream = vi.fn().mockImplementation(async function* (
+    _config: unknown,
+    _input?: string,
+    toolHandlers?: Record<string, (...args: unknown[]) => unknown>,
+  ): AsyncGenerator<HandlerStreamEvent> {
+    const handoff = Object.entries(toolHandlers ?? {}).find(([name]) => name === `__handoff_${sanitized}`);
+    if (handoff) handoff[1]();
+    throw new Error(message);
+  });
+  return h;
 }
 
 // ─── resolveGraph() ───────────────────────────────────────────────────────────
@@ -374,14 +454,52 @@ describe('graph().invoke()', () => {
 //
 // The telemetry contract claims the conversation id lands on `launchdarkly.graph` spans. True by
 // construction — the shared processor stamps every span — but a graph span is created by
-// `startActiveSpan` deep inside `buildGraph`'s await chain, so this guards the claim directly.
+// `startActiveSpan` / `startSpan` deep inside the await / generator chain, so this guards the
+// claim directly. Both invoke and stream tests share one TracerProvider: OTel's
+// `setGlobalTracerProvider` ignores subsequent registrations, so a second describe with its
+// own provider would never see the spans.
 
-describe('graph().invoke() conversation id', () => {
+describe('graph() conversation id', () => {
   const exporter = new InMemorySpanExporter();
   const provider = new BasicTracerProvider({
     spanProcessors: [new ConversationIdSpanProcessor(), new SimpleSpanProcessor(exporter)],
   });
+  const tracer = provider.getTracer('@launchdarkly/ai-server');
   const contextManager = new AsyncLocalStorageContextManager();
+
+  /**
+   * Opens spans the way real handlers do: bare `startSpan` parents off `context.active()`,
+   * so a correctly activated `launchdarkly.graph` span becomes the parent. Without that activation,
+   * these land as disconnected roots.
+   */
+  function makeSpanCreatingStreamHandler(chunks: string[] = ['ok']): ProviderHandler {
+    const usage = { input_tokens: 2, output_tokens: 3 };
+    const h: ProviderHandler = vi.fn().mockResolvedValue({ output: chunks.join(''), usage });
+    h.providesFor = ['OpenAI', 'messages'];
+    h.stream = vi.fn().mockImplementation(async function* (): AsyncGenerator<HandlerStreamEvent> {
+      const root = tracer.startSpan('invoke_agent');
+      for (const text of chunks) {
+        const chat = tracer.startSpan('chat gpt-4o', undefined, trace.setSpan(context.active(), root));
+        chat.end();
+        yield { type: 'chunk', text };
+      }
+      root.end();
+      yield { type: 'done', usage };
+    });
+    return h;
+  }
+
+  function makeSpanCreatingHandler(output = 'ok'): ProviderHandler {
+    const h: ProviderHandler = vi.fn().mockImplementation(async () => {
+      const root = tracer.startSpan('invoke_agent');
+      const chat = tracer.startSpan('chat gpt-4o', undefined, trace.setSpan(context.active(), root));
+      chat.end();
+      root.end();
+      return { output, usage: { input_tokens: 2, output_tokens: 3 } };
+    });
+    h.providesFor = ['OpenAI', 'messages'];
+    return h;
+  }
 
   beforeAll(() => {
     contextManager.enable();
@@ -394,11 +512,14 @@ describe('graph().invoke() conversation id', () => {
     await provider.shutdown();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     exporter.reset();
     vi.clearAllMocks();
     mockTrack.mockReset();
     (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack, variation: mockVariation });
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockReset();
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
   });
 
   it('stamps gen_ai.conversation.id on the launchdarkly.graph span', async () => {
@@ -423,5 +544,415 @@ describe('graph().invoke() conversation id', () => {
     const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
     expect(graphSpan).toBeDefined();
     expect(graphSpan?.attributes[GEN_AI_CONVERSATION_ID]).toBeUndefined();
+  });
+
+  it('stamps gen_ai.conversation.id on the launchdarkly.graph span when stream is bound at call time', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+
+    const gen = withConversationId('thread-graph-stream', () =>
+      graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext),
+    );
+    await collectStream(gen);
+
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
+    expect(graphSpan).toBeDefined();
+    expect(graphSpan?.attributes[GEN_AI_CONVERSATION_ID]).toBe('thread-graph-stream');
+  });
+
+  it('nests handler spans under launchdarkly.graph on the stream path (single trace)', async () => {
+    setupTwoNodeGraph();
+    const handler = makeSpanCreatingStreamHandler(['ok']);
+    await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+
+    const spans = exporter.getFinishedSpans();
+    const graphSpan = spans.find((s) => s.name === 'launchdarkly.graph');
+    expect(graphSpan).toBeDefined();
+    const graphId = graphSpan!.spanContext().spanId;
+    const traceId = graphSpan!.spanContext().traceId;
+
+    const byId = new Map(spans.map((s) => [s.spanContext().spanId, s]));
+    const isUnderGraph = (span: (typeof spans)[number]): boolean => {
+      if (span.name === 'launchdarkly.graph') return true;
+      let parentId = span.parentSpanContext?.spanId;
+      const seen = new Set<string>();
+      while (parentId && !seen.has(parentId)) {
+        if (parentId === graphId) return true;
+        seen.add(parentId);
+        parentId = byId.get(parentId)?.parentSpanContext?.spanId;
+      }
+      return false;
+    };
+
+    for (const span of spans) {
+      expect(span.spanContext().traceId).toBe(traceId);
+      expect(isUnderGraph(span)).toBe(true);
+    }
+  });
+
+  it('nests handler spans under launchdarkly.graph on the invoke path (single trace)', async () => {
+    setupTwoNodeGraph();
+    const handler = makeSpanCreatingHandler();
+    await graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext);
+
+    const spans = exporter.getFinishedSpans();
+    const graphSpan = spans.find((s) => s.name === 'launchdarkly.graph');
+    expect(graphSpan).toBeDefined();
+    const graphId = graphSpan!.spanContext().spanId;
+    const traceId = graphSpan!.spanContext().traceId;
+
+    const byId = new Map(spans.map((s) => [s.spanContext().spanId, s]));
+    const isUnderGraph = (span: (typeof spans)[number]): boolean => {
+      if (span.name === 'launchdarkly.graph') return true;
+      let parentId = span.parentSpanContext?.spanId;
+      const seen = new Set<string>();
+      while (parentId && !seen.has(parentId)) {
+        if (parentId === graphId) return true;
+        seen.add(parentId);
+        parentId = byId.get(parentId)?.parentSpanContext?.spanId;
+      }
+      return false;
+    };
+
+    for (const span of spans) {
+      expect(span.spanContext().traceId).toBe(traceId);
+      expect(isUnderGraph(span)).toBe(true);
+    }
+  });
+
+  it('marks launchdarkly.graph abandoned when the consumer breaks mid-stream', async () => {
+    setupTwoNodeGraph();
+    const handler = makeSpanCreatingStreamHandler(['a', 'b', 'c']);
+    const gen = graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext);
+
+    for await (const event of gen) {
+      if (event.type === 'chunk') break;
+    }
+
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
+    expect(graphSpan).toBeDefined();
+    expect(graphSpan?.attributes['launchdarkly.stream.abandoned']).toBe(true);
+    const eventNames = mockTrack.mock.calls.map((c: unknown[]) => c[0]);
+    expect(eventNames).not.toContain('$ld:ai:graph:invocation_success');
+  });
+
+  it('parents launchdarkly.graph to the caller span when the generator is iterated later', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+    const caller = tracer.startSpan('caller');
+
+    // Build the generator inside the caller's scope and iterate after it exits — the shape a
+    // request handler produces when it hands the stream off to a renderer.
+    const gen = context.with(trace.setSpan(context.active(), caller), () =>
+      graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext),
+    );
+    await collectStream(gen);
+    caller.end();
+
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
+    expect(graphSpan).toBeDefined();
+    expect(graphSpan?.parentSpanContext?.spanId).toBe(caller.spanContext().spanId);
+    expect(graphSpan?.spanContext().traceId).toBe(caller.spanContext().traceId);
+  });
+
+  it('nests graph judge spans under launchdarkly.graph on the stream path', async () => {
+    setupTwoNodeGraph();
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockImplementation(
+      async (args: { config?: { judgeConfiguration?: { judges?: { key: string }[] } } }) => {
+        const isGraphJudge = args.config?.judgeConfiguration?.judges?.[0]?.key === 'graph-judge';
+        // Judge handlers open spans off context.active(), same as provider handlers.
+        const judgeSpan = tracer.startSpan(isGraphJudge ? 'judge_graph' : 'judge_node');
+        judgeSpan.end();
+        return isGraphJudge ? { 'graph-judge': { score: 1 } } : {};
+      },
+    );
+
+    await collectStream(
+      graph('graph-flag', { handlers: [makeStreamingHandler(['ok'])], graphJudge: 'graph-judge' }).stream(
+        'hi',
+        mockContext,
+      ),
+    );
+
+    const spans = exporter.getFinishedSpans();
+    const graphSpan = spans.find((s) => s.name === 'launchdarkly.graph');
+    const judgeSpan = spans.find((s) => s.name === 'judge_graph');
+    expect(graphSpan).toBeDefined();
+    expect(judgeSpan).toBeDefined();
+    expect(judgeSpan?.spanContext().traceId).toBe(graphSpan?.spanContext().traceId);
+    expect(judgeSpan?.parentSpanContext?.spanId).toBe(graphSpan?.spanContext().spanId);
+  });
+});
+
+// ─── graph().stream() ─────────────────────────────────────────────────────────
+
+describe('graph().stream()', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockTrack.mockReset();
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack, variation: mockVariation });
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockReset();
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+  });
+
+  it('returns an async generator', () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler();
+    const gen = graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext);
+    expect(typeof gen[Symbol.asyncIterator]).toBe('function');
+  });
+
+  it('throws when graph is disabled', async () => {
+    mockVariation.mockResolvedValue({ someOtherField: 'value' });
+    const handler = makeStreamingHandler();
+    const gen = graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext);
+    await expect(collectStream(gen)).rejects.toThrow(/disabled/i);
+  });
+
+  it('throws when no handlers are provided', async () => {
+    setupTwoNodeGraph();
+    const gen = graph('graph-flag', {}).stream('hi', mockContext);
+    await expect(collectStream(gen)).rejects.toThrow(/handlers/i);
+  });
+
+  it('emits node_start for each visited node in order', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+    const events = await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+    const starts = events.filter((e) => e.type === 'node_start');
+    expect(starts.map((e) => (e as { nodeKey: string }).nodeKey)).toEqual(['root-node', 'leaf-node']);
+  });
+
+  it('forwards chunk events tagged with the active nodeKey', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['Hi', '!']);
+    const events = await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+    const chunks = events.filter((e) => e.type === 'chunk');
+    expect(chunks).toEqual([
+      { type: 'chunk', text: 'Hi', nodeKey: 'root-node' },
+      { type: 'chunk', text: '!', nodeKey: 'root-node' },
+      { type: 'chunk', text: 'Hi', nodeKey: 'leaf-node' },
+      { type: 'chunk', text: '!', nodeKey: 'leaf-node' },
+    ]);
+  });
+
+  it('emits node_done after each node with response and usage', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['Hi', '!'], { input_tokens: 2, output_tokens: 3 });
+    const events = await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+    const dones = events.filter((e) => e.type === 'node_done');
+    expect(dones).toHaveLength(2);
+    expect(dones[0]).toMatchObject({
+      type: 'node_done',
+      nodeKey: 'root-node',
+      response: 'Hi!',
+      usage: { input: 2, output: 3, total: 5 },
+    });
+    expect(dones[1]).toMatchObject({
+      type: 'node_done',
+      nodeKey: 'leaf-node',
+      response: 'Hi!',
+      usage: { input: 2, output: 3, total: 5 },
+    });
+  });
+
+  it('emits handoff from root to leaf between node_done and next node_start', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+    const events = await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+    const types = events.map((e) => e.type);
+    const handoffIndex = types.indexOf('handoff');
+    expect(handoffIndex).toBeGreaterThan(-1);
+    expect(events[handoffIndex]).toEqual({
+      type: 'handoff',
+      sourceKey: 'root-node',
+      targetKey: 'leaf-node',
+    });
+    expect(types[handoffIndex - 1]).toBe('node_done');
+    expect(types[handoffIndex + 1]).toBe('node_start');
+  });
+
+  it('yields a final done event with leaf response and aggregate usage', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['final'], { input_tokens: 2, output_tokens: 3 });
+    const events = await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+    const done = events.at(-1);
+    expect(done).toMatchObject({
+      type: 'done',
+      response: 'final',
+      usage: { input: 4, output: 6, total: 10 },
+    });
+    expect((done as { path?: unknown }).path).toBeUndefined();
+    expect((done as { nodes?: unknown }).nodes).toBeUndefined();
+  });
+
+  it('places all lifecycle events before the final done', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['a']);
+    const events = await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+    const doneIndex = events.findIndex((e) => e.type === 'done');
+    expect(doneIndex).toBe(events.length - 1);
+    const after = events.slice(doneIndex + 1);
+    expect(after).toHaveLength(0);
+  });
+
+  it('tracks $ld:ai:graph:invocation_success on success', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+    await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+    const eventNames = mockTrack.mock.calls.map((c: unknown[]) => c[0]);
+    expect(eventNames).toContain('$ld:ai:graph:invocation_success');
+  });
+
+  it('tracks $ld:ai:graph:duration:total on success', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+    await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+    const eventNames = mockTrack.mock.calls.map((c: unknown[]) => c[0]);
+    expect(eventNames).toContain('$ld:ai:graph:duration:total');
+  });
+
+  it('tracks $ld:ai:graph:path on success', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+    await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+    const pathCall = mockTrack.mock.calls.find((c: unknown[]) => c[0] === '$ld:ai:graph:path');
+    expect(pathCall).toBeDefined();
+  });
+
+  it('tracks $ld:ai:graph:handoff_success when routing from root to leaf', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+    await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+    const handoffCall = mockTrack.mock.calls.find((c: unknown[]) => c[0] === '$ld:ai:graph:handoff_success');
+    expect(handoffCall).toBeDefined();
+    expect(handoffCall?.[2]).toMatchObject({ sourceKey: 'root-node', targetKey: 'leaf-node' });
+  });
+
+  it('tracks $ld:ai:graph:invocation_failure and re-throws when a node stream throws', async () => {
+    setupTwoNodeGraph();
+    const err = new Error('stream boom');
+    const handler = makeStreamingHandler();
+    handler.stream = async function* () {
+      throw err;
+    };
+    await expect(collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext))).rejects.toThrow(
+      'stream boom',
+    );
+    const eventNames = mockTrack.mock.calls.map((c: unknown[]) => c[0]);
+    expect(eventNames).toContain('$ld:ai:graph:invocation_failure');
+  });
+
+  it('emits per-node generation:success with graphKey on track data', async () => {
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+    await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+    const successCalls = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:generation:success');
+    expect(successCalls.length).toBeGreaterThanOrEqual(2);
+    for (const call of successCalls) {
+      expect(call[2]).toMatchObject({ graphKey: 'graph-flag' });
+    }
+  });
+
+  it('falls back to the blocking handler when stream is not defined', async () => {
+    setupTwoNodeGraph();
+    const handler = makeHandler('blocked');
+    const events = await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+    const chunks = events.filter((e) => e.type === 'chunk');
+    expect(chunks).toEqual([
+      { type: 'chunk', text: 'blocked', nodeKey: 'root-node' },
+      { type: 'chunk', text: 'blocked', nodeKey: 'leaf-node' },
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: 'done', response: 'blocked' });
+  });
+
+  it('includes graphJudge results on the final done event', async () => {
+    const judgeData = { 'graph-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'ok', score: 0.8 } };
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue(judgeData);
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['final']);
+    const events = await collectStream(
+      graph('graph-flag', { handlers: [handler], graphJudge: 'graph-judge' }).stream('hi', mockContext),
+    );
+    expect(runJudges).toHaveBeenCalled();
+    expect(events.at(-1)).toMatchObject({ type: 'done', judgeResults: judgeData });
+  });
+
+  it('omits judgeResults on done when judges return empty', async () => {
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['final']);
+    const events = await collectStream(
+      graph('graph-flag', { handlers: [handler], graphJudge: 'graph-judge' }).stream('hi', mockContext),
+    );
+    const done = events.at(-1) as { judgeResults?: unknown };
+    expect(done.judgeResults).toBeUndefined();
+  });
+
+  it('multi-edge route: model pick emits handoff_success from the route branch', async () => {
+    setupBranchingGraph();
+    const handler = makeBranchPickingStreamHandler('agent-b');
+    await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+
+    // Multi-edge fires once in streamRoute and again in streamNode(opts.from) on the leaf —
+    // two events with the same source/target. Linear graphs only fire once from streamNode.
+    const handoffCalls = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:handoff_success');
+    expect(handoffCalls.length).toBe(2);
+    expect(handoffCalls[0]?.[2]).toMatchObject({ sourceKey: 'root-node', targetKey: 'agent-b' });
+  });
+
+  it('multi-edge route: tracks handoff_failure when the node throws after choosing', async () => {
+    setupBranchingGraph();
+    const handler = makeBranchPickingThenThrowStreamHandler('agent-a', 'boom after choice');
+    await expect(collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext))).rejects.toThrow(
+      'boom after choice',
+    );
+
+    const failureCall = mockTrack.mock.calls.find((c: unknown[]) => c[0] === '$ld:ai:graph:handoff_failure');
+    expect(failureCall).toBeDefined();
+    expect(failureCall?.[2]).toMatchObject({ sourceKey: 'root-node', targetKey: 'agent-a' });
+  });
+
+  it('multi-edge route: judges receive the original node config, not handoff-augmented tools', async () => {
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    setupBranchingGraph();
+    const handler = makeBranchPickingStreamHandler('agent-b');
+    await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+
+    const rootJudgeCall = (runJudges as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) => (c[0] as { config?: { instructions?: string } })?.config?.instructions === 'I am root',
+    );
+    expect(rootJudgeCall).toBeDefined();
+    const judgedConfig = (rootJudgeCall?.[0] as { config: { tools?: Record<string, unknown>; instructions: string } })
+      .config;
+    expect(judgedConfig.instructions).toBe('I am root');
+    expect(Object.keys(judgedConfig.tools ?? {}).some((k) => k.startsWith('__handoff_'))).toBe(false);
+  });
+
+  it('multi-edge route: handoff tools and routing instructions match the blocking path', async () => {
+    setupBranchingGraph();
+    const handler = makeBranchPickingStreamHandler('agent-b');
+    await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+
+    const streamMock = handler.stream as ReturnType<typeof vi.fn>;
+    const [rootConfig, , rootToolHandlers] = streamMock.mock.calls[0] as [
+      { instructions: string; tools: Record<string, { description: string }> },
+      unknown,
+      Record<string, () => unknown>,
+    ];
+
+    // Tuned in #59: the prefix is unconditional, so a description sourced from the target's
+    // own instructions cannot read as a tool that does the target's work.
+    expect(rootConfig.tools.__handoff_agent_a.description).toBe('Transfer control to agent-a. I am A');
+    expect(rootConfig.tools.__handoff_agent_b.description).toBe('Transfer control to agent-b. I am B');
+    expect(rootConfig.instructions).toContain('Complete your task using your available tools first.');
+    expect(rootToolHandlers.__handoff_agent_b()).toBe(
+      'Handoff to agent-b recorded. Finish your own work and provide your final response.',
+    );
   });
 });

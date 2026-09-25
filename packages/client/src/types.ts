@@ -375,6 +375,23 @@ export type StreamEvent =
       judgeResults?: ProviderResponse['judgeResults'];
     };
 
+/**
+ * Public stream event emitted by {@link graph}.stream(). Extends the single-config
+ * chunk/done flow with node-boundary metadata so callers can render per-node UI
+ * while the graph router still owns handoffs and graph-level telemetry.
+ */
+export type GraphStreamEvent =
+  | { type: 'node_start'; nodeKey: string }
+  | { type: 'chunk'; text: string; nodeKey: string }
+  | { type: 'node_done'; nodeKey: string; response: string; usage: TokenUsage }
+  | { type: 'handoff'; sourceKey: string; targetKey: string }
+  | {
+      type: 'done';
+      response: string;
+      usage: TokenUsage;
+      judgeResults?: ProviderResponse['judgeResults'];
+    };
+
 export type ProviderHandler = ((
   config: AiConfigRep,
   userInput?: string,

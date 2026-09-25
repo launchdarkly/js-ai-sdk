@@ -113,7 +113,7 @@ Handlers may return any of these — the client normalizes them before emitting 
 
 ## Conversation grouping
 
-LaunchDarkly's conversation view groups spans on `gen_ai.conversation.id`. Bind a caller-supplied id around any `invoke()` / `stream()` / `graph().invoke()` call:
+LaunchDarkly's conversation view groups spans on `gen_ai.conversation.id`. Bind a caller-supplied id around any `invoke()` / `stream()` / `graph().invoke()` / `graph().stream()` call:
 
 ```ts
 import { withConversationId, config } from '@launchdarkly/ai-node';

@@ -1,8 +1,10 @@
-import { SpanStatusCode, trace } from '@opentelemetry/api';
+import type { Context, Span } from '@opentelemetry/api';
+import { context as otelContext, SpanStatusCode, trace } from '@opentelemetry/api';
+import { bindConversationId, bindSpanContext } from './conversation.js';
 import { runJudges } from './judges.js';
 import { extractVariation, getClient, initClient } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
-import { executeAndTrack, modelStampsFromMeta } from './tracking.js';
+import { executeAndStream, modelStampsFromMeta } from './tracking.js';
 import type { LDContext, Message, ToolHandlerFn } from './types.js';
 import {
   type AiConfigRep,
@@ -11,6 +13,7 @@ import {
   type GraphEdge,
   type GraphNode,
   type GraphOptions,
+  type GraphStreamEvent,
   type GraphTopology,
   GraphTopologySchema,
   type ProviderGraphResponse,
@@ -23,13 +26,20 @@ import {
   type TraverseVisitor,
   type VariationMeta,
 } from './types.js';
-import { normalizeMode } from './utils.js';
+import { endSpanOnce, normalizeMode } from './utils.js';
 
 // Cycle protection: cap how many BFS layers a traversal will expand.
 const MAX_TRAVERSAL_DEPTH = 100;
 
 // Provider tool/function names allow only a restricted character set.
 const sanitizeName = (key: string): string => key.replace(/[^a-zA-Z0-9_]/g, '_');
+
+/** Reads a generator to completion and returns its completion value. Yielded events are discarded. */
+const drain = async <T, TReturn>(generator: AsyncGenerator<T, TReturn>): Promise<TReturn> => {
+  let step = await generator.next();
+  while (!step.done) step = await generator.next();
+  return step.value;
+};
 
 /**
  * Selects the handler responsible for a node from the candidate `handlers`,
@@ -109,7 +119,15 @@ const buildGraph = async (
   key: string,
   context: LDContext,
   options: GraphOptions,
-): Promise<{ def: GraphDefinition; graphTrackData: TrackData }> => {
+): Promise<{
+  def: GraphDefinition;
+  graphTrackData: TrackData;
+  streamRoute: (
+    node: GraphNode,
+    input?: string,
+    opts?: RunNodeOptions,
+  ) => AsyncGenerator<GraphStreamEvent, RouteResult>;
+}> => {
   const { enabled, topology, meta } = await fetchGraphVariation(key, context);
 
   const graphTrackData: TrackData = {
@@ -123,8 +141,16 @@ const buildGraph = async (
     graphKey: key,
   };
 
+  const disabledStreamRoute = (): AsyncGenerator<GraphStreamEvent, RouteResult> => {
+    throw new Error(`Agent graph "${key}" is disabled`);
+  };
+
   if (!enabled || !topology) {
-    return { def: disabledDefinition(key), graphTrackData };
+    return {
+      def: disabledDefinition(key),
+      graphTrackData,
+      streamRoute: disabledStreamRoute,
+    };
   }
 
   const edges: GraphEdge[] = [];
@@ -165,7 +191,11 @@ const buildGraph = async (
     // the whole graph (parity with the Python SDK).
     // biome-ignore lint/suspicious/noConsole: intentional error logging
     console.error(err);
-    return { def: disabledDefinition(key), graphTrackData };
+    return {
+      def: disabledDefinition(key),
+      graphTrackData,
+      streamRoute: disabledStreamRoute,
+    };
   }
 
   const getNode = (nodeKey: string): GraphNode | undefined => nodes.get(nodeKey);
@@ -181,92 +211,26 @@ const buildGraph = async (
   const terminalNodes = (): GraphNode[] => [...nodes.values()].filter((n) => edgesFrom(n.key).length === 0);
   const rootNode = nodes.get(topology.root) ?? null;
 
-  const runNode = async (node: GraphNode, input = '', opts: RunNodeOptions = {}): Promise<ProviderResponse> => {
-    const resolvedHandlersForNode = resolveHandlers(options.registry, options.handlers);
-    if (!resolvedHandlersForNode?.length) {
-      throw new Error(
-        'runNode is not available when no handlers were provided — use a framework-native runner ' +
-          '(toOpenAIAgents, toLangGraph, toClaudeAgents) instead.',
-      );
-    }
-    const handler = selectHandler(node.config, node.meta, resolvedHandlersForNode);
-    const toolHandlers = opts.toolHandlers ?? options.toolHandlers;
-    try {
-      const {
-        response: rawResponse,
-        usage,
-        trackData,
-      } = await executeAndTrack({
-        configKey: node.key,
-        config: node.config,
-        meta: node.meta,
-        userContext: context,
-        handler,
-        userInput: input,
-        toolHandlers,
-        variables: opts.variables,
-        graphKey: key,
-        history: opts.history,
-      });
-      const response = typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse);
-
-      const judgeResults = await runJudges({
-        config: node.config,
-        userContext: context,
-        handler,
-        handlers: options.handlers,
-        userInput: input,
-        llmResponse: response,
-        baseTrackData: trackData,
-        toolHandlers,
-        graphKey: key,
-      });
-
-      if (opts.from) {
-        getClient().track(
-          '$ld:ai:graph:handoff_success',
-          context,
-          { ...graphTrackData, sourceKey: opts.from.key, targetKey: node.key },
-          1,
-        );
-      }
-
-      return { response, usage, judgeResults, trackData };
-    } catch (err) {
-      if (opts.from) {
-        getClient().track(
-          '$ld:ai:graph:handoff_failure',
-          context,
-          { ...graphTrackData, sourceKey: opts.from.key, targetKey: node.key },
-          1,
-        );
-      }
-      throw err;
-    }
-  };
-
-  const route = async (node: GraphNode, input = '', opts: RunNodeOptions = {}): Promise<RouteResult> => {
-    if (!options.handlers?.length) {
-      throw new Error(
-        'route is not available when no handlers were provided — use a framework-native runner ' +
-          '(toOpenAIAgents, toLangGraph, toClaudeAgents) instead.',
-      );
-    }
-
-    const outgoing = edgesFrom(node.key);
-
-    // Nothing to decide: run the node and report its sole child (if any) as next.
-    if (outgoing.length <= 1) {
-      const res = await runNode(node, input, opts);
-      const next = outgoing[0] ? nodes.get(outgoing[0].targetKey) : undefined;
-      return { ...res, next };
-    }
-
-    const handler = selectHandler(node.config, node.meta, options.handlers);
-    const toolHandlers = opts.toolHandlers ?? options.toolHandlers;
-
-    // Present each outgoing edge to the model as a synthetic handoff tool. The
-    // model picks one by "calling" it; our handler records the chosen target.
+  /**
+   * Builds the synthetic handoff-tool surface for a node with more than one outgoing edge:
+   * one `__handoff_*` tool per edge, the routing instruction suffix, and a recorder for the
+   * edge the model picks.
+   *
+   * Shared by {@link route} and {@link streamRoute} on purpose. These strings were tuned in
+   * #59 and a second copy silently reverted them on the streaming path — one copy is the only
+   * structural guarantee that the two entrypoints route identically.
+   *
+   * `chosen()` is a getter, not a value: the handoff handlers run inside the provider call,
+   * so the caller must read the choice *after* awaiting the model, not at build time.
+   */
+  const buildHandoffRouting = (
+    node: GraphNode,
+    outgoing: GraphEdge[],
+  ): {
+    routedConfig: AiConfigRep;
+    handoffHandlers: Record<string, ToolHandlerFn>;
+    chosen: () => string | undefined;
+  } => {
     let chosen: string | undefined;
     const handoffTools: Record<string, Tool> = {};
     const handoffHandlers: Record<string, ToolHandlerFn> = {};
@@ -303,26 +267,65 @@ const buildGraph = async (
       tools: { ...(node.config.tools ?? {}), ...handoffTools },
     };
 
+    return { routedConfig, handoffHandlers, chosen: () => chosen };
+  };
+
+  /**
+   * Streaming counterpart to {@link runNode}. Yields node_start / chunk / node_done
+   * events; the generator's return value is the same {@link ProviderResponse} shape
+   * as the blocking path so the outer router can accumulate usage and follow edges.
+   */
+  const streamNode = async function* (
+    node: GraphNode,
+    input = '',
+    opts: RunNodeOptions = {},
+  ): AsyncGenerator<GraphStreamEvent, ProviderResponse> {
+    const resolvedHandlersForNode = resolveHandlers(options.registry, options.handlers);
+    if (!resolvedHandlersForNode?.length) {
+      throw new Error(
+        'streamNode is not available when no handlers were provided — use a framework-native runner ' +
+          '(toOpenAIAgents, toLangGraph, toClaudeAgents) instead.',
+      );
+    }
+    const handler = selectHandler(node.config, node.meta, resolvedHandlersForNode);
+    const toolHandlers = opts.toolHandlers ?? options.toolHandlers;
+
+    yield { type: 'node_start', nodeKey: node.key };
+
     try {
-      const {
-        response: rawRouteResponse,
-        usage,
-        trackData,
-      } = await executeAndTrack({
+      let response = '';
+      let usage: ProviderResponse['usage'] = { input: 0, output: 0, total: 0 };
+      let trackData: TrackData = {
+        runId: crypto.randomUUID(),
         configKey: node.key,
-        config: routedConfig,
+        variationKey: node.meta.variationKey ?? '',
+        version: node.meta.version ?? 1,
+        modelName: node.config.model.name ?? '',
+        providerName: node.config.provider?.name ?? '',
+        graphKey: key,
+      };
+
+      for await (const event of executeAndStream({
+        configKey: node.key,
+        config: node.config,
         meta: node.meta,
         userContext: context,
         handler,
         userInput: input,
-        toolHandlers: { ...(toolHandlers ?? {}), ...handoffHandlers },
+        toolHandlers,
         variables: opts.variables,
         graphKey: key,
         history: opts.history,
-      });
-      const response = typeof rawRouteResponse === 'string' ? rawRouteResponse : JSON.stringify(rawRouteResponse);
+      })) {
+        if (event.type === 'chunk') {
+          yield { type: 'chunk', text: event.text, nodeKey: node.key };
+        } else {
+          response = event.response;
+          usage = event.usage;
+          trackData = event.trackData;
+        }
+      }
 
-      // Judge against the node's original config, not the routing-augmented one.
       const judgeResults = await runJudges({
         config: node.config,
         userContext: context,
@@ -335,7 +338,109 @@ const buildGraph = async (
         graphKey: key,
       });
 
-      const next = chosen ? nodes.get(chosen) : undefined;
+      if (opts.from) {
+        getClient().track(
+          '$ld:ai:graph:handoff_success',
+          context,
+          { ...graphTrackData, sourceKey: opts.from.key, targetKey: node.key },
+          1,
+        );
+      }
+
+      yield { type: 'node_done', nodeKey: node.key, response, usage };
+      return { response, usage, judgeResults, trackData };
+    } catch (err) {
+      if (opts.from) {
+        getClient().track(
+          '$ld:ai:graph:handoff_failure',
+          context,
+          { ...graphTrackData, sourceKey: opts.from.key, targetKey: node.key },
+          1,
+        );
+      }
+      throw err;
+    }
+  };
+
+  /**
+   * Streaming counterpart to {@link route}. Same handoff-tool routing as the
+   * blocking path; yields {@link GraphStreamEvent}s and returns a {@link RouteResult}.
+   */
+  const streamRoute = async function* (
+    node: GraphNode,
+    input = '',
+    opts: RunNodeOptions = {},
+  ): AsyncGenerator<GraphStreamEvent, RouteResult> {
+    if (!options.handlers?.length) {
+      throw new Error(
+        'streamRoute is not available when no handlers were provided — use a framework-native runner ' +
+          '(toOpenAIAgents, toLangGraph, toClaudeAgents) instead.',
+      );
+    }
+
+    const outgoing = edgesFrom(node.key);
+
+    if (outgoing.length <= 1) {
+      const res = yield* streamNode(node, input, opts);
+      const next = outgoing[0] ? nodes.get(outgoing[0].targetKey) : undefined;
+      return { ...res, next };
+    }
+
+    const handler = selectHandler(node.config, node.meta, options.handlers);
+    const toolHandlers = opts.toolHandlers ?? options.toolHandlers;
+
+    const { routedConfig, handoffHandlers, chosen } = buildHandoffRouting(node, outgoing);
+
+    yield { type: 'node_start', nodeKey: node.key };
+
+    try {
+      let response = '';
+      let usage: ProviderResponse['usage'] = { input: 0, output: 0, total: 0 };
+      let trackData: TrackData = {
+        runId: crypto.randomUUID(),
+        configKey: node.key,
+        variationKey: node.meta.variationKey ?? '',
+        version: node.meta.version ?? 1,
+        modelName: node.config.model.name ?? '',
+        providerName: node.config.provider?.name ?? '',
+        graphKey: key,
+      };
+
+      for await (const event of executeAndStream({
+        configKey: node.key,
+        config: routedConfig,
+        meta: node.meta,
+        userContext: context,
+        handler,
+        userInput: input,
+        toolHandlers: { ...(toolHandlers ?? {}), ...handoffHandlers },
+        variables: opts.variables,
+        graphKey: key,
+        history: opts.history,
+      })) {
+        if (event.type === 'chunk') {
+          yield { type: 'chunk', text: event.text, nodeKey: node.key };
+        } else {
+          response = event.response;
+          usage = event.usage;
+          trackData = event.trackData;
+        }
+      }
+
+      const judgeResults = await runJudges({
+        config: node.config,
+        userContext: context,
+        handler,
+        handlers: options.handlers,
+        userInput: input,
+        llmResponse: response,
+        baseTrackData: trackData,
+        toolHandlers,
+        graphKey: key,
+      });
+
+      const chosenKey = chosen();
+      const next = chosenKey ? nodes.get(chosenKey) : undefined;
 
       if (next) {
         getClient().track(
@@ -346,18 +451,41 @@ const buildGraph = async (
         );
       }
 
+      yield { type: 'node_done', nodeKey: node.key, response, usage };
       return { response, usage, judgeResults, trackData, next };
     } catch (err) {
-      if (chosen) {
+      const chosenKey = chosen();
+      if (chosenKey) {
         getClient().track(
           '$ld:ai:graph:handoff_failure',
           context,
-          { ...graphTrackData, sourceKey: node.key, targetKey: chosen },
+          { ...graphTrackData, sourceKey: node.key, targetKey: chosenKey },
           1,
         );
       }
       throw err;
     }
+  };
+
+  const runNode = async (node: GraphNode, input = '', opts: RunNodeOptions = {}): Promise<ProviderResponse> => {
+    const resolvedHandlersForNode = resolveHandlers(options.registry, options.handlers);
+    if (!resolvedHandlersForNode?.length) {
+      throw new Error(
+        'runNode is not available when no handlers were provided — use a framework-native runner ' +
+          '(toOpenAIAgents, toLangGraph, toClaudeAgents) instead.',
+      );
+    }
+    return drain(streamNode(node, input, opts));
+  };
+
+  const route = async (node: GraphNode, input = '', opts: RunNodeOptions = {}): Promise<RouteResult> => {
+    if (!options.handlers?.length) {
+      throw new Error(
+        'route is not available when no handlers were provided — use a framework-native runner ' +
+          '(toOpenAIAgents, toLangGraph, toClaudeAgents) instead.',
+      );
+    }
+    return drain(streamRoute(node, input, opts));
   };
 
   // biome-ignore lint/suspicious/noExplicitAny: T = any default keeps existing call-sites working without type annotations
@@ -454,7 +582,7 @@ const buildGraph = async (
     reverseTraverse,
   };
 
-  return { def, graphTrackData };
+  return { def, graphTrackData, streamRoute };
 };
 
 /**
@@ -492,10 +620,26 @@ export const graph = (
     variables?: Record<string, unknown>,
     history?: Message[],
   ) => Promise<ProviderGraphResponse>;
+  stream: (
+    input: string | undefined,
+    context: LDContext,
+    variables?: Record<string, unknown>,
+    history?: Message[],
+  ) => AsyncGenerator<GraphStreamEvent>;
 } => {
-  // Resolution is cached per context reference so multiple invoke() invocations
-  // with the same context do not re-evaluate all node configurations from LD.
-  const nodeCache = new WeakMap<LDContext, Promise<{ def: GraphDefinition; graphTrackData: TrackData }>>();
+  // Resolution is cached per context reference so multiple invoke()/stream()
+  // invocations with the same context do not re-evaluate all node configurations from LD.
+  type BuiltGraph = Awaited<ReturnType<typeof buildGraph>>;
+  const nodeCache = new WeakMap<LDContext, Promise<BuiltGraph>>();
+
+  const resolveBuilt = async (context: LDContext, resolvedOptions: GraphOptions): Promise<BuiltGraph> => {
+    let buildPromise = nodeCache.get(context);
+    if (!buildPromise) {
+      buildPromise = buildGraph(key, context, resolvedOptions);
+      nodeCache.set(context, buildPromise);
+    }
+    return buildPromise;
+  };
 
   const invoke = async (
     input: string | undefined,
@@ -503,7 +647,6 @@ export const graph = (
     variables?: Record<string, unknown>,
     history?: Message[],
   ): Promise<ProviderGraphResponse> => {
-    const resolvedInput = input ?? '';
     const resolvedOptions: GraphOptions = {
       ...options,
       handlers: resolveHandlers(options.registry, options.handlers),
@@ -516,37 +659,84 @@ export const graph = (
       );
     }
 
-    let buildPromise = nodeCache.get(context);
-    if (!buildPromise) {
-      buildPromise = buildGraph(key, context, resolvedOptions);
-      nodeCache.set(context, buildPromise);
-    }
-    const { def, graphTrackData } = await buildPromise;
+    const { def } = await resolveBuilt(context, resolvedOptions);
     if (!def.enabled) {
       throw new Error(`Agent graph "${key}" is disabled`);
     }
 
-    return trace.getTracer('@launchdarkly/ai-server').startActiveSpan('launchdarkly.graph', async (span) => {
-      span.setAttribute('launchdarkly.graph.key', key);
-      const startTime = Date.now();
+    // Same walk as stream(). Events are discarded; the done payload is the blocking result.
+    let done: Extract<GraphStreamEvent, { type: 'done' }> | undefined;
+    for await (const event of stream(input, context, variables, history)) {
+      if (event.type === 'done') done = event;
+    }
+    if (!done) {
+      throw new Error(`Agent graph "${key}" ended without a result`);
+    }
+    return { response: done.response, usage: done.usage, judgeResults: done.judgeResults };
+  };
 
+  /**
+   * Not an `async function*` at this layer: the body of a generator does not run until
+   * the first `next()`, by which point a `withConversationId` scope wrapped around this
+   * call has already exited. Binding here — at call time — matches `config().stream()`.
+   * Both the conversation id and the OTel parent are captured at call time for the same
+   * reason.
+   */
+  function stream(
+    input: string | undefined,
+    context: LDContext,
+    variables?: Record<string, unknown>,
+    history?: Message[],
+  ): AsyncGenerator<GraphStreamEvent> {
+    // The OTel parent is captured here for the same reason the conversation id is: the generator
+    // body does not run until the first `next()`, by which point the caller's span scope may have
+    // exited, leaving `launchdarkly.graph` a disconnected root in its own trace.
+    return bindConversationId(streamEvents(input, context, variables, history, otelContext.active()));
+  }
+
+  async function* streamEvents(
+    input: string | undefined,
+    context: LDContext,
+    variables?: Record<string, unknown>,
+    history?: Message[],
+    callerContext: Context = otelContext.active(),
+  ): AsyncGenerator<GraphStreamEvent> {
+    const resolvedInput = input ?? '';
+    const resolvedOptions: GraphOptions = {
+      ...options,
+      handlers: resolveHandlers(options.registry, options.handlers),
+      toolHandlers: resolveTools(options.registry, options.toolHandlers),
+    };
+    if (!resolvedOptions.handlers?.length) {
+      throw new Error(
+        'graph().stream() requires handlers to be provided. Pass handlers in options, or use ' +
+          'resolveGraph() with a framework-native runner (toOpenAIAgents, toLangGraph, toClaudeAgents).',
+      );
+    }
+
+    const { def, graphTrackData, streamRoute } = await resolveBuilt(context, resolvedOptions);
+    if (!def.enabled) {
+      throw new Error(`Agent graph "${key}" is disabled`);
+    }
+
+    const span = trace.getTracer('@launchdarkly/ai-server').startSpan('launchdarkly.graph', undefined, callerContext);
+    span.setAttribute('launchdarkly.graph.key', key);
+    const spanContext = trace.setSpan(callerContext, span);
+    const ended = new Set<Span>();
+
+    async function* walk(): AsyncGenerator<GraphStreamEvent> {
+      const startTime = Date.now();
       const path: string[] = [];
-      const nodes: Record<string, ProviderResponse> = {};
       const totalUsage = { input: 0, output: 0, total: 0 };
 
       const accumulate = (node: GraphNode, res: ProviderResponse) => {
         path.push(node.key);
-        nodes[node.key] = res;
         totalUsage.input += res.usage.input;
         totalUsage.output += res.usage.output;
         totalUsage.total += res.usage.total;
       };
 
       try {
-        // Model-driven router: follow the path the model selects at each step.
-        // After the first node, each subsequent node receives both the original
-        // user request and the previous node's full response so it stays oriented
-        // without losing the original intent.
         let current: GraphNode | null = def.root;
         let previousNode: GraphNode | null = null;
         let currentInput = resolvedInput;
@@ -562,11 +752,14 @@ export const graph = (
           // After the root hop, nodes stay oriented through the string threading
           // built below, so history is not re-sent to downstream handlers.
           else if (history && history.length > 0) routeOpts.history = history;
-          const res: RouteResult = await def.route(current, currentInput, routeOpts);
+          const res: RouteResult = yield* streamRoute(current, currentInput, routeOpts);
           accumulate(current, res);
           last = res;
 
           if (!res.next || visited.has(res.next.key)) break;
+
+          yield { type: 'handoff', sourceKey: current.key, targetKey: res.next.key };
+
           visited.add(current.key);
           previousNode = current;
           current = res.next;
@@ -587,25 +780,33 @@ export const graph = (
         getClient().track('$ld:ai:graph:invocation_success', context, graphTrackData, 1);
 
         let judgeResults: ProviderResponse['judgeResults'] | undefined;
-        if (resolvedOptions.graphJudge && def.root && resolvedOptions.handlers) {
-          judgeResults = await runJudges({
+        const judgeRoot = def.root;
+        const judgeHandlers = resolvedOptions.handlers;
+        if (resolvedOptions.graphJudge && judgeRoot && judgeHandlers) {
+          const results = await runJudges({
             config: {
               judgeConfiguration: { judges: [{ key: resolvedOptions.graphJudge, samplingRate: 1 }] },
             } as unknown as AiConfigRep,
             userContext: context,
-            handler: selectHandler(def.root.config, def.root.meta, resolvedOptions.handlers),
+            handler: selectHandler(judgeRoot.config, judgeRoot.meta, judgeHandlers),
             userInput: resolvedInput,
             llmResponse: finalResponse,
             baseTrackData: graphTrackData,
             toolHandlers: resolvedOptions.toolHandlers,
             graphKey: key,
           });
+          if (Object.keys(results).length > 0) judgeResults = results;
         }
 
         span.setStatus({ code: SpanStatusCode.OK });
-        span.end();
+        endSpanOnce(span, ended);
 
-        return { response: finalResponse, usage: totalUsage, judgeResults };
+        yield {
+          type: 'done',
+          response: finalResponse,
+          usage: totalUsage,
+          judgeResults,
+        };
       } catch (err) {
         const elapsed = Date.now() - startTime;
         getClient().track('$ld:ai:graph:duration:total', context, graphTrackData, elapsed);
@@ -615,11 +816,17 @@ export const graph = (
           code: SpanStatusCode.ERROR,
           message: err instanceof Error ? err.message : String(err),
         });
-        span.end();
+        endSpanOnce(span, ended);
         throw err;
+      } finally {
+        endSpanOnce(span, ended, true);
       }
-    });
-  };
+    }
 
-  return { invoke };
+    // One re-entry covers every next() of the walk: handler spans opened inside a node,
+    // and the graph judge, which runs in this generator after the last node returns.
+    yield* bindSpanContext(walk(), spanContext);
+  }
+
+  return { invoke, stream };
 };

@@ -266,22 +266,30 @@ Because each node runs through the same path as `config()`, every node emits its
 | `options.graphJudge`   | `string`                                | No       | Optional judge config key evaluated against the final output |
 
 
-Returns `{ invoke(input: string | undefined, context: LDContext, variables?: Record<string, any>): Promise<ProviderGraphResponse> }`.
+Returns `{ invoke(...): Promise<ProviderGraphResponse>, stream(...): AsyncGenerator<GraphStreamEvent> }`.
 
 ```ts
 import 'dotenv/config';
 import { graph, shutdown } from '@launchdarkly/ai-server';
 import { createClaudeAgentsHandler } from '@launchdarkly/ai-claude-agents';
 
-const result = await graph('support-graph', {
+const g = graph('support-graph', {
   handlers: [createClaudeAgentsHandler()],
-}).invoke('I was double charged', { kind: 'user', key: 'user-123' }, { account_tier: 'pro' });
+});
+
+const result = await g.invoke('I was double charged', { kind: 'user', key: 'user-123' }, { account_tier: 'pro' });
 
 console.log(result.response); // final output
 console.log(result.usage);    // aggregate { input, output, total }
 
+for await (const event of g.stream('I was double charged', { kind: 'user', key: 'user-123' })) {
+  if (event.type === 'chunk') process.stdout.write(event.text);
+}
+
 await shutdown();
 ```
+
+`stream()` uses the same model-driven router and graph telemetry as `invoke()`, and yields `GraphStreamEvent` values (`node_start`, `chunk`+`nodeKey`, `node_done`, `handoff`, final `done`) so callers can render per-node UI.
 
 Provider packages also export single-provider conveniences (`claudeGraph`, `openaiGraph`, `langchainGraph`) that pre-bind their handler. For mixed-provider graphs, use the base `graph()` and pass multiple handlers.
 

@@ -188,6 +188,30 @@ export function bindConversationId<T, TReturn, TNext>(
 }
 
 /**
+ * Re-enters `ctx` around every step of `generator`, so spans opened while streaming are parented
+ * to the span that was active when iteration began.
+ *
+ * Sibling of {@link bindConversationId}, which deliberately carries only the conversation id and
+ * leaves span parenting alone. A generator body suspends at each `yield`, so the context has to be
+ * re-applied on every `next()` — wrapping the body once is not enough.
+ */
+export function bindSpanContext<T, TReturn, TNext>(
+  generator: AsyncGenerator<T, TReturn, TNext>,
+  ctx: Context,
+): AsyncGenerator<T, TReturn, TNext> {
+  const reenter = <R>(fn: () => R): R => context.with(ctx, fn);
+
+  return {
+    next: (...args: [] | [TNext]) => reenter(() => generator.next(...args)),
+    return: (value: TReturn | PromiseLike<TReturn>) => reenter(() => generator.return(value)),
+    throw: (err: unknown) => reenter(() => generator.throw(err)),
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+  } as AsyncGenerator<T, TReturn, TNext>;
+}
+
+/**
  * Holds the judge `invoke_agent` span open until `record` runs, then writes
  * `gen_ai.evaluation.result` on that span. The judge's reasoning is passed only when the judge's
  * own handler captures content — it is model prose about the user's conversation, so it follows
