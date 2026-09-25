@@ -370,9 +370,9 @@ describe('graph().invoke()', () => {
   });
 });
 
-// ─── conversation id on ld.ai.graph ───────────────────────────────────────────
+// ─── conversation id on launchdarkly.graph ────────────────────────────────────
 //
-// The telemetry contract claims the conversation id lands on `ld.ai.graph` spans. True by
+// The telemetry contract claims the conversation id lands on `launchdarkly.graph` spans. True by
 // construction — the shared processor stamps every span — but a graph span is created by
 // `startActiveSpan` deep inside `buildGraph`'s await chain, so this guards the claim directly.
 
@@ -401,7 +401,7 @@ describe('graph().invoke() conversation id', () => {
     (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack, variation: mockVariation });
   });
 
-  it('stamps gen_ai.conversation.id on the ld.ai.graph span', async () => {
+  it('stamps gen_ai.conversation.id on the launchdarkly.graph span', async () => {
     setupTwoNodeGraph();
     const handler = makeHandler();
 
@@ -409,18 +409,19 @@ describe('graph().invoke() conversation id', () => {
       graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext),
     );
 
-    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'ld.ai.graph');
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
     expect(graphSpan).toBeDefined();
     expect(graphSpan?.attributes[GEN_AI_CONVERSATION_ID]).toBe('thread-graph');
   });
 
-  it('leaves the ld.ai.graph span unstamped when no id is bound', async () => {
+  it('leaves the launchdarkly.graph span unstamped when no id is bound', async () => {
     setupTwoNodeGraph();
     const handler = makeHandler();
 
     await graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext);
 
-    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'ld.ai.graph');
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
+    expect(graphSpan).toBeDefined();
     expect(graphSpan?.attributes[GEN_AI_CONVERSATION_ID]).toBeUndefined();
   });
 });
