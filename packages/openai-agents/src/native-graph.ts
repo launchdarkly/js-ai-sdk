@@ -255,7 +255,7 @@ export const toOpenAIAgents = (
 
       span.setStatus({ code: SpanStatusCode.OK });
       span.end();
-      return { response: finalOutput, usage: totalUsage };
+      return { response: finalOutput, usage: totalUsage, path };
     });
   };
 
