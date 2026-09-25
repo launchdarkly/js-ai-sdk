@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-agents-0.3.0...@launchdarkly/ai-claude-agents-0.4.0) (2026-09-25)
+
+
+### Features
+
+* **build:** build the AI SDK like the other LaunchDarkly JS SDKs so CommonJS apps can load it (2/4) ([#77](https://github.com/launchdarkly/js-ai-sdk/issues/77)) ([2cda755](https://github.com/launchdarkly/js-ai-sdk/commit/2cda7551c8feb7e352040384befea2cd76cb5d94))
+
 ## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-agents-0.2.0...@launchdarkly/ai-claude-agents-0.3.0) (2026-09-18)
 
 

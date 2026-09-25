@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.3.0...@launchdarkly/ai-server-0.4.0) (2026-09-25)
+
+
+### Features
+
+* **build:** build the AI SDK like the other LaunchDarkly JS SDKs so CommonJS apps can load it (2/4) ([#77](https://github.com/launchdarkly/js-ai-sdk/issues/77)) ([2cda755](https://github.com/launchdarkly/js-ai-sdk/commit/2cda7551c8feb7e352040384befea2cd76cb5d94))
+
+
+### Bug Fixes
+
+* **judges:** a judge's own config must not fail the run it grades ([#17](https://github.com/launchdarkly/js-ai-sdk/issues/17)) ([6e85cac](https://github.com/launchdarkly/js-ai-sdk/commit/6e85cac54bb877954071b2f80d61f4359710c3ae))
+
 ## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.2.0...@launchdarkly/ai-server-0.3.0) (2026-09-18)
 
 
