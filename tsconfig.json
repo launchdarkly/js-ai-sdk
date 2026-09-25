@@ -10,7 +10,7 @@
     { "path": "packages/openai-messages/tsconfig.ref.json" },
     { "path": "packages/langchain-messages/tsconfig.ref.json" },
     { "path": "packages/langchain-agents/tsconfig.ref.json" },
-    { "path": "packages/vercel-messages" },
-    { "path": "packages/vercel-agents" }
+    { "path": "packages/vercel-messages/tsconfig.ref.json" },
+    { "path": "packages/vercel-agents/tsconfig.ref.json" }
   ]
 }
