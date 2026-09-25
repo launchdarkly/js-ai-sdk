@@ -32,6 +32,7 @@
     "@biomejs/biome": "2.5.2",
     "@launchdarkly/ai-claude-agents": "*",
     "@launchdarkly/ai-claude-messages": "*",
+    "@launchdarkly/ai-google-adk-agents": "*",
     "@launchdarkly/ai-langchain-agents": "*",
     "@launchdarkly/ai-langchain-messages": "*",
     "@launchdarkly/ai-node": "*",

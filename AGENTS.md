@@ -107,6 +107,7 @@ graph TD
  claude["ai-claude-agents"]
  openai["ai-openai-agents"]
  langchain["ai-langchain-agents"]
+ googleAdk["ai-google-adk-agents"]
  newHandler["ai-new-provider\n(future)"]
  end
  subgraph tier0 ["Tier 0 — Core"]
@@ -117,11 +118,13 @@ graph TD
  app --> claude
  app --> openai
  app --> langchain
+ app --> googleAdk
  app --> newHandler
  app --> ainode
  claude --> client
  openai --> client
  langchain --> client
+ googleAdk --> client
  newHandler --> client
  ainode --> client
 ```
@@ -130,7 +133,7 @@ graph TD
 
 - **Tier 0 — Core** (`@launchdarkly/ai-server`): The foundation. Owns all LaunchDarkly integration, telemetry orchestration, shared data types, and the primary entry points (`config()`, `graph()`, `resolveGraph()`). Has no dependency on any other `@launchdarkly/ai-server` package.
 - **Tier 0 — Convenience wrapper** (`@launchdarkly/ai-node`): A pure barrel that re-exports everything from `@launchdarkly/ai-server` and carries `@launchdarkly/node-server-sdk` as a hard dependency. No new logic — intended as the default install for Node.js applications so consumers do not need to manage the `node-server-sdk` peer dependency themselves.
-- **Tier 1 — Handler packages** (`@launchdarkly/ai-claude-agents`, `@launchdarkly/ai-claude-messages`, `@launchdarkly/ai-openai-agents`, `@launchdarkly/ai-openai-messages`, `@launchdarkly/ai-langchain-agents`, `@launchdarkly/ai-langchain-messages`, …): Each wraps a specific AI provider SDK. Depends on `@launchdarkly/ai-server` for shared types and utilities. Must not depend on other Tier 1 packages.
+- **Tier 1 — Handler packages** (`@launchdarkly/ai-claude-agents`, `@launchdarkly/ai-claude-messages`, `@launchdarkly/ai-openai-agents`, `@launchdarkly/ai-openai-messages`, `@launchdarkly/ai-langchain-agents`, `@launchdarkly/ai-langchain-messages`, `@launchdarkly/ai-google-adk-agents`, …): Each wraps a specific AI provider SDK. Depends on `@launchdarkly/ai-server` for shared types and utilities. Must not depend on other Tier 1 packages.
 - **Tier 2 — Consumer applications** (e.g. `main.ts`, downstream projects): Imports from one or more handler packages and either `@launchdarkly/ai-node` (standard Node.js) or `@launchdarkly/ai-server` (edge/custom runtime). Owns tool implementations and orchestration logic. No `@launchdarkly/ai` package should ever depend on Tier 2 code.
 
 ### Rules

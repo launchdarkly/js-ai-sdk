@@ -102,6 +102,19 @@
         "aiAgentGraph": { "introduced": "0.1" },
         "aiTrackMetrics": { "introduced": "0.1" }
       }
+    },
+    "js-ai-google-adk-agents": {
+      "name": "JavaScript AI SDK for Google ADK Agents",
+      "type": "ai-provider",
+      "path": "packages/google-adk-agents",
+      "languages": ["JavaScript", "TypeScript"],
+      "aiSdkNames": ["@launchdarkly/ai-google-adk-agents"],
+      "releases": { "tag-prefix": "@launchdarkly/ai-google-adk-agents-" },
+      "features": {
+        "aiAgentConfig": { "introduced": "0.1" },
+        "aiAgentGraph": { "introduced": "0.1" },
+        "aiTrackMetrics": { "introduced": "0.1" }
+      }
     }
   }
 }
