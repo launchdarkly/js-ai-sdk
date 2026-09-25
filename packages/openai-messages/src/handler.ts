@@ -122,16 +122,25 @@ type FunctionTool = {
 const buildTools = (
   configTools: Record<string, Tool>,
   toolHandlers: Record<string, (...args: unknown[]) => unknown>,
-): FunctionTool[] =>
-  Object.entries(configTools)
-    .filter(([name]) => typeof toolHandlers[name] === 'function')
-    .map(([name, toolConfig]) => ({
-      type: 'function',
-      name,
-      description: toolConfig.description ?? '',
-      parameters: toolConfig.parameters,
-      strict: false,
-    }));
+): { tools: FunctionTool[]; executableTools: Map<string, (...args: unknown[]) => unknown> } => {
+  const executableTools = new Map<string, (...args: unknown[]) => unknown>();
+  const tools = Object.entries(configTools).flatMap<FunctionTool>(([name, toolConfig]) => {
+    if (!Object.hasOwn(toolHandlers, name)) return [];
+    const handler = toolHandlers[name];
+    if (typeof handler !== 'function') return [];
+    executableTools.set(name, handler);
+    return [
+      {
+        type: 'function',
+        name,
+        description: toolConfig.description ?? '',
+        parameters: toolConfig.parameters,
+        strict: false,
+      },
+    ];
+  });
+  return { tools, executableTools };
+};
 
 function mapConversationTurn(turn: CanonicalTurn): OpenAI.Responses.ResponseInputItem {
   if (turn.role === 'assistant') {
@@ -391,7 +400,9 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
         };
 
         try {
-          const tools = config.tools ? buildTools(config.tools, toolHandlers) : [];
+          const { tools, executableTools } = config.tools
+            ? buildTools(config.tools, toolHandlers)
+            : { tools: [], executableTools: new Map() };
           const inputMessages = buildInputMessages(config, userInput, variables, history);
           const toolDefinitions = toToolDefinitions(tools);
 
@@ -429,7 +440,7 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
                 setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.arguments });
                 try {
                   const args = JSON.parse(tc.arguments) as Record<string, unknown>;
-                  const handler = toolHandlers[tc.name];
+                  const handler = executableTools.get(tc.name);
                   if (!handler) throw new Error(`No handler registered for tool "${tc.name}"`);
                   const result = await handler(args);
                   setToolCallContentAttributes(toolSpan, captureContent, { result });
@@ -498,7 +509,9 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
       let lastResponseModel = config.model.name;
 
       try {
-        const tools = config.tools ? buildTools(config.tools, toolHandlers) : [];
+        const { tools, executableTools } = config.tools
+          ? buildTools(config.tools, toolHandlers)
+          : { tools: [], executableTools: new Map() };
         const inputMessages = buildInputMessages(config, userInput, variables, history);
         const toolDefinitions = toToolDefinitions(tools);
         const rootInput = splitInputMessages(inputMessages);
@@ -573,7 +586,7 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
               setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.arguments });
               try {
                 const args = JSON.parse(tc.arguments) as Record<string, unknown>;
-                const handler = toolHandlers[tc.name];
+                const handler = executableTools.get(tc.name);
                 if (!handler) throw new Error(`No handler registered for tool "${tc.name}"`);
                 const result = await handler(args);
                 setToolCallContentAttributes(toolSpan, captureContent, { result });

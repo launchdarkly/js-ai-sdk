@@ -413,6 +413,64 @@ describe('createLangChainHandler', () => {
     await expect(createLangChainHandler(llm as any)(config as any, 'q', {})).rejects.toThrow(/unknownTool/);
   });
 
+  it('rejects a registered tool that is excluded from the active config', async () => {
+    const safe = vi.fn();
+    const dangerous = vi.fn();
+    const llm = makeMockLLM();
+    llm.invoke.mockResolvedValue(
+      new AIMessage({
+        content: '',
+        tool_calls: [{ name: 'dangerous', args: {}, id: 'tc1' }],
+        usage_metadata: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      }),
+    );
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(createLangChainHandler(llm as any)(config as any, 'q', { safe, dangerous })).rejects.toThrow(
+      /dangerous/,
+    );
+    expect(dangerous).not.toHaveBeenCalled();
+  });
+
+  it('rejects a returned tool when the active config has no tools', async () => {
+    const dangerous = vi.fn();
+    const llm = makeMockLLM();
+    llm.invoke.mockResolvedValue(
+      new AIMessage({
+        content: '',
+        tool_calls: [{ name: 'dangerous', args: {}, id: 'tc1' }],
+        usage_metadata: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      }),
+    );
+
+    await expect(createLangChainHandler(llm as any)(baseConfig as any, 'q', { dangerous })).rejects.toThrow(
+      /dangerous/,
+    );
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(llm.invoke).toHaveBeenCalledOnce();
+  });
+
+  it('rejects inherited callable names during invoke', async () => {
+    const llm = makeMockLLM();
+    llm.invoke.mockResolvedValue(
+      new AIMessage({
+        content: '',
+        tool_calls: [{ name: 'constructor', args: {}, id: 'tc1' }],
+        usage_metadata: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      }),
+    );
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(createLangChainHandler(llm as any)(config as any, 'q', {})).rejects.toThrow(/constructor/);
+    expect(llm.bindTools).not.toHaveBeenCalled();
+  });
+
   it('propagates errors thrown by tool handlers', async () => {
     const brokenTool = vi.fn().mockRejectedValue(new Error('tool explosion'));
     const llm = {
@@ -915,6 +973,72 @@ describe('createLangChainHandler', () => {
   });
 
   // ── 1.x.7 Streaming — tool loop ─────────────────────────────────────────────
+
+  it('rejects inherited callable names during streaming', async () => {
+    const stream = vi.fn().mockReturnValue(
+      (async function* () {
+        yield new AIMessage({
+          content: '',
+          tool_calls: [{ name: 'constructor', args: {}, id: 'tc1' }],
+          usage_metadata: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        });
+      })(),
+    );
+    const llm = { invoke: vi.fn(), stream, bindTools: vi.fn().mockReturnThis() };
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(
+      collectStream(createLangChainHandler(llm as any).stream?.(config as any, 'q', {}, {})),
+    ).rejects.toThrow(/constructor/);
+    expect(llm.bindTools).not.toHaveBeenCalled();
+  });
+
+  it('rejects an excluded registered tool during streaming', async () => {
+    const dangerous = vi.fn();
+    const stream = vi.fn().mockReturnValue(
+      (async function* () {
+        yield new AIMessage({
+          content: '',
+          tool_calls: [{ name: 'dangerous', args: {}, id: 'tc1' }],
+          usage_metadata: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        });
+      })(),
+    );
+    const llm = { invoke: vi.fn(), stream, bindTools: vi.fn().mockReturnThis() };
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(
+      collectStream(createLangChainHandler(llm as any).stream?.(config as any, 'q', { safe: vi.fn(), dangerous }, {})),
+    ).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(stream).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a returned tool during streaming when the active config has no tools', async () => {
+    const dangerous = vi.fn();
+    const stream = vi.fn().mockReturnValue(
+      (async function* () {
+        yield new AIMessage({
+          content: '',
+          tool_calls: [{ name: 'dangerous', args: {}, id: 'tc1' }],
+          usage_metadata: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        });
+      })(),
+    );
+    const llm = { invoke: vi.fn(), stream, bindTools: vi.fn().mockReturnThis() };
+
+    await expect(
+      collectStream(createLangChainHandler(llm as any).stream?.(baseConfig as any, 'q', { dangerous }, {})),
+    ).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(stream).toHaveBeenCalledOnce();
+  });
 
   it('streams chunks from both turns around a tool call', async () => {
     const myTool = vi.fn().mockReturnValue('tool-output');

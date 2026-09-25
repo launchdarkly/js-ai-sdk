@@ -516,9 +516,10 @@ The handler is responsible for translating `AiConfigRep` fields into the prompt 
 
 If `config.tools` is present, the handler must:
 
-1. Convert each `Tool` definition into the format the provider SDK accepts, using the tool's `name`, `description`, and `parameters` (JSON Schema).
-2. When the provider requests a tool call, look up the tool name in `toolHandlers` and invoke the matching function with the arguments the model provided.
-3. Submit the tool output back to the provider and continue — repeating until the provider produces a final text response (agentic loop).
+1. Select tools whose names are callable own properties of `toolHandlers`. This request-scoped selection is the authorization boundary; inherited properties and handlers not attached to the active config are excluded.
+2. Convert that selection into the format the provider SDK accepts, using each tool's `name`, `description`, and `parameters` (JSON Schema).
+3. When the provider requests a tool call, resolve it only from the same request-scoped selection and invoke the matching function with the arguments the model provided. Treat provider-returned names as untrusted and fail closed if a name was not offered for this request.
+4. Submit the tool output back to the provider and continue — repeating until the provider produces a final text response (agentic loop).
 
 If `config.tools` is absent or empty, tool handling should be skipped entirely.
 
