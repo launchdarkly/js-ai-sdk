@@ -31,6 +31,7 @@ That call is the whole integration. Everything it does is configured in LaunchDa
 - [What you get](#what-you-get)
 - [How It Works](#how-it-works)
 - [Packages](#packages)
+- [Module format support](#module-format-support)
 - [Quick Start](#quick-start)
   - [1. Install](#1-install)
   - [2. Configure environment](#2-configure-environment)
@@ -92,6 +93,20 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-vercel-messages](packages/vercel-messages/README.md)`       | `*` (any) | `messages` | AI SDK 7 `generateText` / `streamText` / `experimental_evaluate` via AI Gateway |
 | `[@launchdarkly/ai-vercel-agents](packages/vercel-agents/README.md)`           | `*` (any) | `agent`    | AI SDK 7 `ToolLoopAgent` and native graph runner      |
 
+
+## Module format support
+
+Every package publishes both formats. The `"exports"` map declares an `import` condition (`dist/index.js`, ESM) and a `require` condition (`dist/index.cjs`, CommonJS). Each condition has its own declaration file.
+
+| How you load the SDK                                                | Supported | Notes                                                                     |
+| ------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------- |
+| `import { config } from '@launchdarkly/ai-node'`                    | Yes       | Verified in CI on Node 22 and Node 24                                     |
+| `require('@launchdarkly/ai-node')`                                  | Yes       | Verified in CI on Node 22 and Node 24                                     |
+| `await import('@launchdarkly/ai-node')` from unbundled CommonJS     | Yes       | Node resolves the package at runtime                                      |
+| `await import(…)` from a Webpack CommonJS bundle, packages external | Yes       | Verified in CI on Node 22 and Node 24                                     |
+| `await import(…)` from a Webpack CommonJS bundle, packages inlined  | Yes       | Verified in CI on Node 22 and Node 24                                     |
+
+Optional dependencies stay behind a runtime `import()` in both formats. This covers `@launchdarkly/node-server-sdk`, the OpenTelemetry packages, and the LangChain provider packages. So you install them only when you need them.
 
 ## Quick Start
 
