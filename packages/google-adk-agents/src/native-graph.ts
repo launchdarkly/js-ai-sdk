@@ -51,8 +51,8 @@ export function toAdkAgents(definition: AdkGraphDefinition, options: AdkGraphOpt
       if (!definition.root) throw new Error('Graph has no root');
 
       const ldContext = callOptions.context;
-      const span = trace.getTracer(TRACER).startSpan('ld.ai.graph');
-      span.setAttribute('ld.ai.graph.key', definition.key);
+      const span = trace.getTracer(TRACER).startSpan('launchdarkly.graph');
+      span.setAttribute('launchdarkly.graph.key', definition.key);
       const started = Date.now();
       const runId = crypto.randomUUID();
       const handoff: { target?: string } = {};
@@ -88,7 +88,7 @@ export function toAdkAgents(definition: AdkGraphDefinition, options: AdkGraphOpt
           }
           current = target ? definition.getNode(target) : null;
         }
-        span.setAttribute('ld.ai.graph.path', path.join('->'));
+        span.setAttribute('launchdarkly.graph.path', path.join('->'));
         span.setStatus({ code: SpanStatusCode.OK });
         if (ldContext) trackSuccess(definition.root, definition.key, runId, ldContext, path, usage, started);
         return { response, usage };
