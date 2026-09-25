@@ -450,9 +450,9 @@ describe('graph().invoke()', () => {
   });
 });
 
-// ─── conversation id on ld.ai.graph ───────────────────────────────────────────
+// ─── conversation id on launchdarkly.graph ────────────────────────────────────
 //
-// The telemetry contract claims the conversation id lands on `ld.ai.graph` spans. True by
+// The telemetry contract claims the conversation id lands on `launchdarkly.graph` spans. True by
 // construction — the shared processor stamps every span — but a graph span is created by
 // `startActiveSpan` / `startSpan` deep inside the await / generator chain, so this guards the
 // claim directly. Both invoke and stream tests share one TracerProvider: OTel's
@@ -469,7 +469,7 @@ describe('graph() conversation id', () => {
 
   /**
    * Opens spans the way real handlers do: bare `startSpan` parents off `context.active()`,
-   * so a correctly activated `ld.ai.graph` span becomes the parent. Without that activation,
+   * so a correctly activated `launchdarkly.graph` span becomes the parent. Without that activation,
    * these land as disconnected roots.
    */
   function makeSpanCreatingStreamHandler(chunks: string[] = ['ok']): ProviderHandler {
@@ -522,7 +522,7 @@ describe('graph() conversation id', () => {
     (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
   });
 
-  it('stamps gen_ai.conversation.id on the ld.ai.graph span', async () => {
+  it('stamps gen_ai.conversation.id on the launchdarkly.graph span', async () => {
     setupTwoNodeGraph();
     const handler = makeHandler();
 
@@ -530,22 +530,23 @@ describe('graph() conversation id', () => {
       graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext),
     );
 
-    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'ld.ai.graph');
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
     expect(graphSpan).toBeDefined();
     expect(graphSpan?.attributes[GEN_AI_CONVERSATION_ID]).toBe('thread-graph');
   });
 
-  it('leaves the ld.ai.graph span unstamped when no id is bound', async () => {
+  it('leaves the launchdarkly.graph span unstamped when no id is bound', async () => {
     setupTwoNodeGraph();
     const handler = makeHandler();
 
     await graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext);
 
-    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'ld.ai.graph');
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
+    expect(graphSpan).toBeDefined();
     expect(graphSpan?.attributes[GEN_AI_CONVERSATION_ID]).toBeUndefined();
   });
 
-  it('stamps gen_ai.conversation.id on the ld.ai.graph span when stream is bound at call time', async () => {
+  it('stamps gen_ai.conversation.id on the launchdarkly.graph span when stream is bound at call time', async () => {
     setupTwoNodeGraph();
     const handler = makeStreamingHandler(['ok']);
 
@@ -554,25 +555,25 @@ describe('graph() conversation id', () => {
     );
     await collectStream(gen);
 
-    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'ld.ai.graph');
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
     expect(graphSpan).toBeDefined();
     expect(graphSpan?.attributes[GEN_AI_CONVERSATION_ID]).toBe('thread-graph-stream');
   });
 
-  it('nests handler spans under ld.ai.graph on the stream path (single trace)', async () => {
+  it('nests handler spans under launchdarkly.graph on the stream path (single trace)', async () => {
     setupTwoNodeGraph();
     const handler = makeSpanCreatingStreamHandler(['ok']);
     await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
 
     const spans = exporter.getFinishedSpans();
-    const graphSpan = spans.find((s) => s.name === 'ld.ai.graph');
+    const graphSpan = spans.find((s) => s.name === 'launchdarkly.graph');
     expect(graphSpan).toBeDefined();
     const graphId = graphSpan!.spanContext().spanId;
     const traceId = graphSpan!.spanContext().traceId;
 
     const byId = new Map(spans.map((s) => [s.spanContext().spanId, s]));
     const isUnderGraph = (span: (typeof spans)[number]): boolean => {
-      if (span.name === 'ld.ai.graph') return true;
+      if (span.name === 'launchdarkly.graph') return true;
       let parentId = span.parentSpanContext?.spanId;
       const seen = new Set<string>();
       while (parentId && !seen.has(parentId)) {
@@ -589,20 +590,20 @@ describe('graph() conversation id', () => {
     }
   });
 
-  it('nests handler spans under ld.ai.graph on the invoke path (single trace)', async () => {
+  it('nests handler spans under launchdarkly.graph on the invoke path (single trace)', async () => {
     setupTwoNodeGraph();
     const handler = makeSpanCreatingHandler();
     await graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext);
 
     const spans = exporter.getFinishedSpans();
-    const graphSpan = spans.find((s) => s.name === 'ld.ai.graph');
+    const graphSpan = spans.find((s) => s.name === 'launchdarkly.graph');
     expect(graphSpan).toBeDefined();
     const graphId = graphSpan!.spanContext().spanId;
     const traceId = graphSpan!.spanContext().traceId;
 
     const byId = new Map(spans.map((s) => [s.spanContext().spanId, s]));
     const isUnderGraph = (span: (typeof spans)[number]): boolean => {
-      if (span.name === 'ld.ai.graph') return true;
+      if (span.name === 'launchdarkly.graph') return true;
       let parentId = span.parentSpanContext?.spanId;
       const seen = new Set<string>();
       while (parentId && !seen.has(parentId)) {
@@ -619,7 +620,7 @@ describe('graph() conversation id', () => {
     }
   });
 
-  it('marks ld.ai.graph abandoned when the consumer breaks mid-stream', async () => {
+  it('marks launchdarkly.graph abandoned when the consumer breaks mid-stream', async () => {
     setupTwoNodeGraph();
     const handler = makeSpanCreatingStreamHandler(['a', 'b', 'c']);
     const gen = graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext);
@@ -628,14 +629,14 @@ describe('graph() conversation id', () => {
       if (event.type === 'chunk') break;
     }
 
-    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'ld.ai.graph');
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
     expect(graphSpan).toBeDefined();
     expect(graphSpan?.attributes['launchdarkly.stream.abandoned']).toBe(true);
     const eventNames = mockTrack.mock.calls.map((c: unknown[]) => c[0]);
     expect(eventNames).not.toContain('$ld:ai:graph:invocation_success');
   });
 
-  it('parents ld.ai.graph to the caller span when the generator is iterated later', async () => {
+  it('parents launchdarkly.graph to the caller span when the generator is iterated later', async () => {
     setupTwoNodeGraph();
     const handler = makeStreamingHandler(['ok']);
     const caller = tracer.startSpan('caller');
@@ -648,13 +649,13 @@ describe('graph() conversation id', () => {
     await collectStream(gen);
     caller.end();
 
-    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'ld.ai.graph');
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
     expect(graphSpan).toBeDefined();
     expect(graphSpan?.parentSpanContext?.spanId).toBe(caller.spanContext().spanId);
     expect(graphSpan?.spanContext().traceId).toBe(caller.spanContext().traceId);
   });
 
-  it('nests graph judge spans under ld.ai.graph on the stream path', async () => {
+  it('nests graph judge spans under launchdarkly.graph on the stream path', async () => {
     setupTwoNodeGraph();
     const { runJudges } = await import('../judges.js');
     (runJudges as ReturnType<typeof vi.fn>).mockImplementation(
@@ -675,7 +676,7 @@ describe('graph() conversation id', () => {
     );
 
     const spans = exporter.getFinishedSpans();
-    const graphSpan = spans.find((s) => s.name === 'ld.ai.graph');
+    const graphSpan = spans.find((s) => s.name === 'launchdarkly.graph');
     const judgeSpan = spans.find((s) => s.name === 'judge_graph');
     expect(graphSpan).toBeDefined();
     expect(judgeSpan).toBeDefined();

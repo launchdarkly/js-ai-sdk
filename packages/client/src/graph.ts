@@ -690,7 +690,7 @@ export const graph = (
   ): AsyncGenerator<GraphStreamEvent> {
     // The OTel parent is captured here for the same reason the conversation id is: the generator
     // body does not run until the first `next()`, by which point the caller's span scope may have
-    // exited, leaving `ld.ai.graph` a disconnected root in its own trace.
+    // exited, leaving `launchdarkly.graph` a disconnected root in its own trace.
     return bindConversationId(streamEvents(input, context, variables, history, otelContext.active()));
   }
 
@@ -719,8 +719,8 @@ export const graph = (
       throw new Error(`Agent graph "${key}" is disabled`);
     }
 
-    const span = trace.getTracer('@launchdarkly/ai-server').startSpan('ld.ai.graph', undefined, callerContext);
-    span.setAttribute('ld.ai.graph.key', key);
+    const span = trace.getTracer('@launchdarkly/ai-server').startSpan('launchdarkly.graph', undefined, callerContext);
+    span.setAttribute('launchdarkly.graph.key', key);
     const spanContext = trace.setSpan(callerContext, span);
     const ended = new Set<Span>();
 

@@ -9,7 +9,7 @@ import { newContext, newConversationId } from './utils';
  * Like `examples/streaming.ts`, the generator is built inside `withConversationId` and iterated
  * *outside* it. That is the shape a server produces when it hands a stream to a transport, and it
  * is what exercises call-time binding: an `async function*` body does not run until the first
- * `next()`, so both the conversation id and the `ld.ai.graph` span's OTel parent have to be
+ * `next()`, so both the conversation id and the `launchdarkly.graph` span's OTel parent have to be
  * captured when `stream()` is called, not when iteration starts.
  *
  * Writes no JSON output file, same as the single-config streaming example.
