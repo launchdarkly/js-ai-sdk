@@ -244,7 +244,7 @@ describe('toVercelAgents', () => {
       response: 'leaf answer',
       usage: { input: 6, output: 4, total: 10 },
     });
-    expect(telemetryMocks.span.setAttribute).toHaveBeenCalledWith('ld.ai.graph.path', 'root,leaf');
+    expect(telemetryMocks.span.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.path', 'root,leaf');
   });
 
   it('emits graph success, handoff, duration, and token telemetry when context is supplied', async () => {

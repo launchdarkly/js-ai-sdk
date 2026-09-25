@@ -125,8 +125,8 @@ export const toVercelAgents = (
     if (!def.root) throw new Error(`Graph "${def.key}" has no root node`);
     const root = def.root;
 
-    return trace.getTracer(TRACER_NAME).startActiveSpan('ld.ai.graph', async (span) => {
-      span.setAttribute('ld.ai.graph.key', def.key);
+    return trace.getTracer(TRACER_NAME).startActiveSpan('launchdarkly.graph', async (span) => {
+      span.setAttribute('launchdarkly.graph.key', def.key);
       const startedAt = Date.now();
       const runId = crypto.randomUUID();
       const context = options.context;
@@ -217,7 +217,7 @@ export const toVercelAgents = (
           messages = [{ role: 'user', content: response }];
         }
 
-        span.setAttribute('ld.ai.graph.path', path.join(','));
+        span.setAttribute('launchdarkly.graph.path', path.join(','));
         span.setAttribute('gen_ai.usage.input_tokens', total.input);
         span.setAttribute('gen_ai.usage.output_tokens', total.output);
         span.setAttribute('gen_ai.usage.total_tokens', total.total);
