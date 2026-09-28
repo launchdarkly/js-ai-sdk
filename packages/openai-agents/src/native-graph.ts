@@ -175,9 +175,14 @@ export const toOpenAIAgents = (
 
       runner.on('agent_start', (_runCtx: unknown, agent: { name: string }) => {
         const nodeKey = agentNameToKey.get(agent.name);
-        if (nodeKey && !path.includes(nodeKey)) {
-          path.push(nodeKey);
-        }
+        if (!nodeKey || path.includes(nodeKey)) return;
+        const index = path.length;
+        path.push(nodeKey);
+        if (!ldContext) return;
+        const node = def.getNode(nodeKey);
+        if (!node) return;
+        const trackData = makeNodeTrackData(node, def.key, runId);
+        getClient().track('$ld:ai:graph:node', ldContext, { ...trackData, nodeKey, index }, 1);
       });
 
       runner.on('agent_end', (_runCtx: unknown, agent: { name: string }, _output: string) => {
@@ -192,7 +197,7 @@ export const toOpenAIAgents = (
         }
       });
 
-      runner.on('agent_handoff', (_runCtx: unknown, fromAgent: { name: string }, toAgent: { name: string }) => {
+      runner.on('agent_handoff', (_runCtx: unknown, fromAgent: { name: string }, _toAgent: { name: string }) => {
         if (!ldContext) return;
         const fromKey = agentNameToKey.get(fromAgent.name);
         if (fromKey) {
@@ -201,11 +206,6 @@ export const toOpenAIAgents = (
             const trackData = makeNodeTrackData(fromNode, def.key, runId);
             getClient().track('$ld:ai:graph:handoff_success', ldContext, trackData, 1);
           }
-        }
-        // Ensure the target node appears in path if agent_start doesn't fire for it
-        const toKey = agentNameToKey.get(toAgent.name);
-        if (toKey && !path.includes(toKey)) {
-          path.push(toKey);
         }
       });
 
@@ -249,7 +249,6 @@ export const toOpenAIAgents = (
         const rootTrackData = makeNodeTrackData(root, def.key, runId);
         getClient().track('$ld:ai:graph:duration:total', ldContext, rootTrackData, duration);
         getClient().track('$ld:ai:graph:total_tokens', ldContext, rootTrackData, totalTokens);
-        getClient().track('$ld:ai:graph:path', ldContext, rootTrackData, path.length);
         getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
       }
 

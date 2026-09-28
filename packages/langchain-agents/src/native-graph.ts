@@ -194,7 +194,14 @@ export const toLangGraph = (
 
         // Node function: run the model, track LD events, return state update
         const nodeFunction = async (state: WorkflowState) => {
-          path.push(node.key);
+          if (!path.includes(node.key)) {
+            const index = path.length;
+            path.push(node.key);
+            if (ldContext) {
+              const nodeTrackData = makeNodeTrackData(node, def.key, runId);
+              getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: node.key, index }, 1);
+            }
+          }
           const nodeStartTime = Date.now();
 
           const systemPrompt = buildSystemPrompt(node, variables);
@@ -325,7 +332,6 @@ export const toLangGraph = (
         const rootTrackData = makeNodeTrackData(def.root!, def.key, runId);
         getClient().track('$ld:ai:graph:duration:total', ldContext, rootTrackData, duration);
         getClient().track('$ld:ai:graph:total_tokens', ldContext, rootTrackData, totalUsage.total);
-        getClient().track('$ld:ai:graph:path', ldContext, rootTrackData, path.length);
         getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
       }
 

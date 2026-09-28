@@ -336,12 +336,20 @@ describe('graph().invoke()', () => {
     expect(eventNames).toContain('$ld:ai:graph:duration:total');
   });
 
-  it('tracks $ld:ai:graph:path on success', async () => {
+  it('tracks $ld:ai:graph:node once per visited node on entry', async () => {
     setupTwoNodeGraph();
     const handler = makeHandler();
     await graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext);
-    const pathCall = mockTrack.mock.calls.find((c: any[]) => c[0] === '$ld:ai:graph:path');
-    expect(pathCall).toBeDefined();
+    const eventNames = mockTrack.mock.calls.map((c: any[]) => c[0]);
+    expect(eventNames).not.toContain('$ld:ai:graph:path');
+    const nodeCalls = mockTrack.mock.calls.filter((c: any[]) => c[0] === '$ld:ai:graph:node');
+    expect(nodeCalls).toHaveLength(2);
+    expect(nodeCalls[0][2]).toMatchObject({ nodeKey: 'root-node', index: 0, graphKey: 'graph-flag' });
+    expect(nodeCalls[0][3]).toBe(1);
+    expect(nodeCalls[1][2]).toMatchObject({ nodeKey: 'leaf-node', index: 1, graphKey: 'graph-flag' });
+    expect(nodeCalls[1][3]).toBe(1);
+    expect(nodeCalls[0][2].runId).toBe(nodeCalls[1][2].runId);
+    expect(nodeCalls[0][2].path).toBeUndefined();
   });
 
   it('tracks $ld:ai:graph:invocation_failure and re-throws on error', async () => {
@@ -353,6 +361,11 @@ describe('graph().invoke()', () => {
     );
     const eventNames = mockTrack.mock.calls.map((c: any[]) => c[0]);
     expect(eventNames).toContain('$ld:ai:graph:invocation_failure');
+    expect(eventNames).not.toContain('$ld:ai:graph:path');
+    const nodeCalls = mockTrack.mock.calls.filter((c: any[]) => c[0] === '$ld:ai:graph:node');
+    expect(nodeCalls).toHaveLength(1);
+    expect(nodeCalls[0][2]).toMatchObject({ nodeKey: 'root-node', index: 0, graphKey: 'graph-flag' });
+    expect(nodeCalls[0][3]).toBe(1);
   });
 
   it('does not revisit a node (cycle guard)', async () => {
@@ -634,6 +647,11 @@ describe('graph() conversation id', () => {
     expect(graphSpan?.attributes['launchdarkly.stream.abandoned']).toBe(true);
     const eventNames = mockTrack.mock.calls.map((c: unknown[]) => c[0]);
     expect(eventNames).not.toContain('$ld:ai:graph:invocation_success');
+    expect(eventNames).not.toContain('$ld:ai:graph:path');
+    const nodeCalls = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:node');
+    expect(nodeCalls).toHaveLength(1);
+    expect(nodeCalls[0][2]).toMatchObject({ nodeKey: 'root-node', index: 0, graphKey: 'graph-flag' });
+    expect(nodeCalls[0][3]).toBe(1);
   });
 
   it('parents launchdarkly.graph to the caller span when the generator is iterated later', async () => {
@@ -814,12 +832,20 @@ describe('graph().stream()', () => {
     expect(eventNames).toContain('$ld:ai:graph:duration:total');
   });
 
-  it('tracks $ld:ai:graph:path on success', async () => {
+  it('tracks $ld:ai:graph:node once per visited node on entry', async () => {
     setupTwoNodeGraph();
     const handler = makeStreamingHandler(['ok']);
     await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
-    const pathCall = mockTrack.mock.calls.find((c: unknown[]) => c[0] === '$ld:ai:graph:path');
-    expect(pathCall).toBeDefined();
+    const eventNames = mockTrack.mock.calls.map((c: unknown[]) => c[0]);
+    expect(eventNames).not.toContain('$ld:ai:graph:path');
+    const nodeCalls = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:node');
+    expect(nodeCalls).toHaveLength(2);
+    expect(nodeCalls[0][2]).toMatchObject({ nodeKey: 'root-node', index: 0, graphKey: 'graph-flag' });
+    expect(nodeCalls[0][3]).toBe(1);
+    expect(nodeCalls[1][2]).toMatchObject({ nodeKey: 'leaf-node', index: 1, graphKey: 'graph-flag' });
+    expect(nodeCalls[1][3]).toBe(1);
+    expect(nodeCalls[0][2].runId).toBe(nodeCalls[1][2].runId);
+    expect(nodeCalls[0][2].path).toBeUndefined();
   });
 
   it('tracks $ld:ai:graph:handoff_success when routing from root to leaf', async () => {
@@ -843,6 +869,11 @@ describe('graph().stream()', () => {
     );
     const eventNames = mockTrack.mock.calls.map((c: unknown[]) => c[0]);
     expect(eventNames).toContain('$ld:ai:graph:invocation_failure');
+    expect(eventNames).not.toContain('$ld:ai:graph:path');
+    const nodeCalls = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:node');
+    expect(nodeCalls).toHaveLength(1);
+    expect(nodeCalls[0][2]).toMatchObject({ nodeKey: 'root-node', index: 0, graphKey: 'graph-flag' });
+    expect(nodeCalls[0][3]).toBe(1);
   });
 
   it('emits per-node generation:success with graphKey on track data', async () => {
