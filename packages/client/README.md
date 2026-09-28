@@ -449,7 +449,8 @@ The line is a `[LaunchDarkly] ` prefix, the event name, a space, and a single JS
 | `reason` | yes | Human-readable detail, including byte counts. Wording may change between releases. |
 | `language` | yes | `typescript`. Distinguishes SDKs in a polyglot fleet; the Python SDK emits the same record with `python`. |
 | `served_key` | no | Only on `key_mismatch`: the key the store actually answered under, with the same redaction as `skill_key`. Omitted on every other failure mode. |
-| `version` | no | The skill version. Omitted when the delivered version was not an integer >= 1, and on `key_mismatch`. |
+| `served_version` | no | Only on `version_mismatch`: the version the store actually answered with, as an integer. Omitted on every other failure mode, and never on the same record as `served_key`. |
+| `version` | no | The skill version — the version **requested** on `version_mismatch`, the delivered one everywhere else. Always an integer. Omitted when the delivered version was not an integer >= 1, and on `key_mismatch`. |
 | `expected_hash` | no | The `contentHash` delivered with the content, or `<not-a-sha256-digest>` when it was not 64 lowercase hex characters. Omitted when the failure happened before any hash was read. |
 | `observed_hash` | no | The sha256 this SDK computed locally. Omitted when the failure happened before hashing. |
 
@@ -465,11 +466,14 @@ Optional fields are **omitted, never null** — the absence of `observed_hash` m
 | `not_utf8` | The content has no UTF-8 encoding (a lone surrogate), so there are no bytes LaunchDarkly could have hashed. |
 | `over_size_cap` | The content exceeds the internal `MAX_SKILL_CONTENT_BYTES` cap, so it is inauthentic whatever it hashes to. The reason string names the bound. |
 | `hash_mismatch` | The content does not hash to the `contentHash` delivered alongside it. |
-| `key_mismatch` | The store answered under a different key than the one requested. Carries an extra `served_key` field naming the key it answered under, and — uniquely — records **no** `AgentControl Skill Integrity Failure` signal. |
+| `key_mismatch` | The store answered under a different key than the one requested. Carries an extra `served_key` field naming the key it answered under, and records **no** `AgentControl Skill Integrity Failure` signal. |
+| `version_mismatch` | You pinned a version and the store answered with a different one. Carries an extra `served_version` field naming the version it answered with, alongside a `version` field carrying the one you asked for, and records **no** `AgentControl Skill Integrity Failure` signal. The caller-facing outcome for this condition is `wrong_version` — see the table below. |
 
-These nine tokens are the whole vocabulary, and the Python SDK emits the same nine for the same conditions — including identical JSON key order — so one parser and one alert rule cover a polyglot fleet.
+These ten tokens are the whole vocabulary, and the Python SDK emits the same ten for the same conditions — including identical JSON key order — so one parser and one alert rule cover a polyglot fleet.
 
-`key_mismatch` is the only code that reaches this log record without also reaching the product signal. It is decided after verification has passed, and its usual cause is a bug in a custom `SkillStore` adapter — a stale cache entry, a colliding key, a wrong index lookup — rather than tampering, so it does not inflate LaunchDarkly's own integrity counter. It still reaches this record, because a store substituting one skill for another is worth seeing, and your rule on `ld.skills.integrity_failure` catches it without modification.
+**`key_mismatch` and `version_mismatch` are the two codes that reach this log record without also reaching the product signal.** Both are decided after verification has passed, and the usual cause of either is a bug in a custom `SkillStore` adapter — a stale cache entry, a colliding key, a wrong index lookup — rather than tampering, so neither inflates LaunchDarkly's own integrity counter. Both still reach this record, because a store that answers with something other than what was asked for is worth seeing, and your rule on `ld.skills.integrity_failure` catches them without modification.
+
+**`version_mismatch` is worth alerting on even though `wrong_version` is already a `getSkillResult` outcome.** `getSkill` is the simpler default and collapses `wrong_version` to `null` exactly as it collapses an integrity failure, so this record is the only visibility an operator gets when the code calling `getSkill` treats a `null` as "no skill". Neither store shipped with this SDK can produce it — both answer a pin with exactly that version or with nothing at all, which reads as `absent` — so if you see this code, suspect whatever `SkillStore` implementation is in front of it.
 
 #### Fail closed on tampering: `getSkillResult`
 
@@ -493,7 +497,9 @@ switch (outcome.reason) {
     // Nobody configured this skill, or it was revoked. Ordinary; carry on.
     return null;
   case 'wrong_version':
-    // The pinned version is not what the store holds — a rollout skew, usually.
+    // The store answered the pin with a *different* version. Not a rollout
+    // skew — a pin the store cannot satisfy is `absent` — so this one also
+    // writes an `ld.skills.integrity_failure` record for your SIEM.
     return null;
   case 'store_unavailable':
     // The store could not answer. An outage, not an answer of "no" — retry or
@@ -507,7 +513,7 @@ switch (outcome.reason) {
 | `ok` | the skill | Retrieved and verified. |
 | `absent` | `null` | The store holds nothing under that key. Not configured, not yet delivered, or revoked. |
 | `integrity_failure` | `null` | Content was delivered and its identity did not verify, so it was withheld. Two cases reach this token, and both write the `ld.skills.integrity_failure` record above: content that failed hash/size/shape verification, which also records the product signal; and a store that answered under a **different key** than the one requested, which writes the record with `reason_code: key_mismatch` and a `served_key` field but records **no** signal (the check runs after verification has already passed, and a mismatch is usually a store-adapter bug rather than tampering). This is the outcome to fail closed on. |
-| `wrong_version` | `null` | A version was pinned and the store answered with a different one. Only a version mismatch — a key mismatch is `integrity_failure`, and there is deliberately no `wrong_key`. |
+| `wrong_version` | `null` | A version was pinned and the store answered with a different one. Writes the `ld.skills.integrity_failure` record above with `reason_code: version_mismatch` and a `served_version` field, and — like `key_mismatch` — records **no** product signal. Only a version mismatch reaches this token: a key mismatch is `integrity_failure`, and there is deliberately no `wrong_key`. |
 | `store_unavailable` | `null` | The store threw. Nothing was retrieved, so nothing is known either way. |
 
 `detail` carries the human-readable reason for every non-`ok` outcome and is `null` for `ok`. It is safe to log or surface: it names the key, the requested and held versions, and the failure category, and never skill content or a filesystem path.
@@ -516,7 +522,7 @@ switch (outcome.reason) {
 
 These five tokens are the whole vocabulary, and the Python SDK publishes the same five for the same conditions. There is deliberately no batch equivalent: `getSkills` and `allSkills` still omit entries they could not return, so call `getSkillResult` per key where the outcome matters.
 
-**`hash_mismatch` deserves a page, not a dashboard.** The other codes are consistent with a malformed store, a bad deployment, or a truncated response. `hash_mismatch` means content and its declared digest disagree, which is the shape of active tampering with skill delivery — in transit, in a cache, or in whatever backs your `SkillStore`. If you serve skill content only from LaunchDarkly, `over_size_cap` and `not_utf8` warrant alerts on the same reasoning: neither should ever occur. `key_mismatch` belongs in the same tier as `hash_mismatch` **if** you use the SDK's own `FDv2SkillStore` and nothing else, since it then also means delivery served the wrong skill; behind a custom store adapter, suspect the adapter first.
+**`hash_mismatch` deserves a page, not a dashboard.** The other codes are consistent with a malformed store, a bad deployment, or a truncated response. `hash_mismatch` means content and its declared digest disagree, which is the shape of active tampering with skill delivery — in transit, in a cache, or in whatever backs your `SkillStore`. If you serve skill content only from LaunchDarkly, `over_size_cap` and `not_utf8` warrant alerts on the same reasoning: neither should ever occur. `key_mismatch` and `version_mismatch` belong in the same tier as `hash_mismatch` **if** you use the SDK's own `FDv2SkillStore` and nothing else, since neither is reachable through it and both would then mean delivery served something other than what was asked for; behind a custom store adapter, suspect the adapter first.
 
 #### Privilege separation: the agent must not be able to rewrite its own skills
 

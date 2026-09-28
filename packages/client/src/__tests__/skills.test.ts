@@ -1022,6 +1022,148 @@ describe('getSkill', () => {
     expect(rest).toHaveLength(1);
     expect(rest[0]).toEqual(record);
   });
+
+  it('records the version mismatch on the log surface but not the product signal', async () => {
+    // The same split the key mismatch gets, made at the same boundary for the
+    // same population — a broken custom store adapter — so it is asserted in
+    // both directions here too.
+    //
+    // Asserted through `getSkill` specifically, which is the whole reason the
+    // record exists. `wrong_version` is a public `SkillOutcomeReason`, so a
+    // `getSkillResult` caller already learns the condition programmatically; but
+    // `getSkill` is the documented default and collapses it to `null` exactly as
+    // it collapses `integrity_failure`, so without this record an operator on
+    // the default accessor has zero visibility into a store answering pins with
+    // the wrong version.
+    //
+    // Neither shipped store can get here — both answer a pin with exactly that
+    // version or `null`, which is `absent` — so the store is hand-built.
+    const lying: SkillStore = {
+      getObject() {
+        return rawSkill({ key: 'pdf-extraction', version: 9 });
+      },
+      allObjects() {
+        return {};
+      },
+    };
+    _setStore(lying);
+
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let errorCalls: unknown[][] = [];
+    let collapsed: Skill | null;
+    try {
+      collapsed = await getSkill('pdf-extraction', { version: 2 });
+    } finally {
+      errorCalls = [...spy.mock.calls];
+      spy.mockRestore();
+    }
+
+    // The skill is withheld, and the default accessor says only `null`.
+    expect(collapsed).toBeNull();
+    // The signal surface saw nothing at all — not merely no integrity signal.
+    expect(emitter.records).toEqual([]);
+
+    const lines = errorCalls.filter(([first]) => String(first).includes('ld.skills.integrity_failure'));
+    expect(lines).toHaveLength(1);
+    const [first, ...rest] = lines[0];
+    const line = String(first);
+    const record = JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown>;
+
+    // The event identity is reused deliberately: an existing SIEM rule catches
+    // this case without being rewritten, and the code is what distinguishes it.
+    expect(record.event).toBe('ld.skills.integrity_failure');
+    expect(record.reason_code).toBe('version_mismatch');
+    expect(record.action).toBe('withheld');
+    expect(record.language).toBe('typescript');
+    expect(typeof record.reason).toBe('string');
+
+    // Both versions are named. `version` is the one requested — the meaning it
+    // carries on every other record — and `served_version` the one the store
+    // answered with, parseable rather than buried in prose.
+    expect(record.skill_key).toBe('pdf-extraction');
+    expect(record.version).toBe(2);
+    expect(record.served_version).toBe(9);
+
+    expect(rest).toHaveLength(1);
+    expect(rest[0]).toEqual(record);
+  });
+
+  it('records the same version mismatch through getSkillResult, once', async () => {
+    // The reporting accessor is the same code path, so it produces the same
+    // record — and only one of it. Recording twice would inflate a customer's
+    // alert count for one failure.
+    const lying: SkillStore = {
+      getObject() {
+        return rawSkill({ key: 'a', version: 9 });
+      },
+      allObjects() {
+        return {};
+      },
+    };
+    _setStore(lying);
+
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let errorCalls: unknown[][] = [];
+    let outcome: Awaited<ReturnType<typeof getSkillResult>>;
+    try {
+      outcome = await getSkillResult('a', { version: 2 });
+    } finally {
+      errorCalls = [...spy.mock.calls];
+      spy.mockRestore();
+    }
+
+    expect(outcome.reason).toBe('wrong_version');
+    expect(outcome.skill).toBeNull();
+
+    const lines = errorCalls.filter(([first]) => String(first).includes('ld.skills.integrity_failure'));
+    expect(lines).toHaveLength(1);
+    const line = String(lines[0][0]);
+    const record = JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown>;
+    expect(record.reason_code).toBe('version_mismatch');
+  });
+
+  it('reports the key mismatch, not the version mismatch, when a store disagrees on both', async () => {
+    // The two boundary checks can compete, and the order decides both the code
+    // *and* the caller-visible outcome — so it is fixed rather than left to
+    // whichever check the implementation happens to reach first. The key check
+    // runs first: an answer that is not the requested skill at all makes its
+    // version moot.
+    const doublyWrong: SkillStore = {
+      getObject() {
+        return rawSkill({ key: 'other-key', version: 9 });
+      },
+      allObjects() {
+        return {};
+      },
+    };
+    _setStore(doublyWrong);
+
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let errorCalls: unknown[][] = [];
+    let outcome: Awaited<ReturnType<typeof getSkillResult>>;
+    try {
+      outcome = await getSkillResult('asked-for', { version: 2 });
+    } finally {
+      errorCalls = [...spy.mock.calls];
+      spy.mockRestore();
+    }
+
+    // `integrity_failure`, not `wrong_version` — the outcome a caller is
+    // expected to fail closed on wins over the one it is invited to tolerate.
+    expect(outcome.reason).toBe('integrity_failure');
+
+    const lines = errorCalls.filter(([first]) => String(first).includes('ld.skills.integrity_failure'));
+    expect(lines).toHaveLength(1);
+    const line = String(lines[0][0]);
+    const record = JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown>;
+    expect(record.reason_code).toBe('key_mismatch');
+    expect(record.served_key).toBe('other-key');
+    // One record, not two: the first check to fire returns.
+    expect('served_version' in record).toBe(false);
+  });
 });
 
 // ─── getSkills ─────────────────────────────────────────────────────────
@@ -1140,6 +1282,37 @@ describe('allSkills', () => {
     }
 
     expect(found.map((s) => s.key)).toEqual(['its-own-key']);
+    // Neither surface fires: nothing failed.
+    expect(emitter.records).toEqual([]);
+    expect(errorCalls.filter(([first]) => String(first).includes('ld.skills.integrity_failure'))).toEqual([]);
+  });
+
+  it('files a listed object under its own version, with no version_mismatch for a disagreeing map key', async () => {
+    // The counterpart to the pinned path's `version_mismatch`, and the same
+    // asymmetry as the key-mismatch guard above. A listing carries no requested
+    // version, so there is nothing for the object's version to disagree *with*:
+    // `resolveFromStore`'s equality check is only reached with a pin.
+    //
+    // The map key is the thing that invites a "fix" here, because
+    // `FDv2SkillStore` spells it `key:version` — so a store whose map key says
+    // version 3 while the object says 5 looks like a disagreement and is not
+    // one. Pinned because a check added on the listing path would report a
+    // mismatch for every store that spells its map keys that way.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    _setStore(new DictStore({ 'a:3': rawSkill({ key: 'a', version: 5 }) }));
+
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let errorCalls: unknown[][] = [];
+    let found: Skill[];
+    try {
+      found = await allSkills();
+    } finally {
+      errorCalls = [...spy.mock.calls];
+      spy.mockRestore();
+    }
+
+    expect(found.map((sk) => [sk.key, sk.version])).toEqual([['a', 5]]);
     // Neither surface fires: nothing failed.
     expect(emitter.records).toEqual([]);
     expect(errorCalls.filter(([first]) => String(first).includes('ld.skills.integrity_failure'))).toEqual([]);
@@ -1691,9 +1864,31 @@ describe('integrity-failure log record', () => {
   // `allSkills` hands every raw value straight in.
   const GET = () => getSkill('a');
   const ALL = () => allSkills();
+  // The tenth code needs a *pinned* retrieval: without a wanted version there is
+  // nothing for the store's answer to disagree with.
+  const PINNED = () => getSkill('a', { version: 2 });
 
   /** A one-key store serving exactly what a hostile store might serve. */
   const serving = (raw: unknown) => () => new DictStore({ a: raw as RawSkillObject });
+
+  /**
+   * A store that answers a pin with a well-formed object at another version.
+   *
+   * Hand-built on purpose: neither shipped store can produce this outcome.
+   * `FDv2SkillStore` and `InMemorySkillStore` both answer a pin with exactly
+   * that version or with `null`, so a pin that misses reads as `absent` — a
+   * test that tried to provoke this from a shipped store would get `absent`
+   * instead and silently stop covering the case. Only `getObject` is
+   * implemented, since the rest of the seam is optional.
+   */
+  const versionLying = (served: number) => (): SkillStore => ({
+    getObject(_kind: string, key: string) {
+      return rawSkill({ key, version: served });
+    },
+    allObjects() {
+      return {};
+    },
+  });
 
   /** A store serving a wire-shaped object with fields spoiled or dropped. */
   const spoiled =
@@ -1721,6 +1916,12 @@ describe('integrity-failure log record', () => {
     // layer noticed. A store that serves a perfectly valid object under the
     // wrong key reaches it: everything `verifyRawSkill` checks passes.
     ['key_mismatch', spoiled({ key: 'served-under-this' }), GET],
+    // The tenth is the other boundary code, and the same kind of odd one out:
+    // everything `verifyRawSkill` checks passes, and the disagreement is between
+    // the object and the *request* rather than inside the object. Reachable only
+    // with a pin, and only through a store that lies about which version it
+    // served.
+    ['version_mismatch', versionLying(9), PINNED],
   ];
 
   it.each(cases)('logs one record carrying reason_code %s', async (code, makeStore, run) => {
@@ -1738,10 +1939,10 @@ describe('integrity-failure log record', () => {
   });
 
   it('covers the whole reason_code vocabulary and nothing else', () => {
-    // Eight of the nine are one per call site of `recordIntegrityFailure`; the
-    // ninth, `key_mismatch`, comes from `recordKeyMismatch` at the retrieval
-    // boundary. Every language implementation emits the same nine, so a tenth
-    // in one SDK only is the regression this test exists to catch.
+    // Eight of the ten are one per call site of `recordIntegrityFailure`; the
+    // other two, `key_mismatch` and `version_mismatch`, come from the two
+    // boundary recorders. Every language implementation emits the same ten, so
+    // an eleventh in one SDK only is the regression this test exists to catch.
     expect(cases.map(([code]) => code).sort()).toEqual([
       'hash_mismatch',
       'invalid_key',
@@ -1752,15 +1953,48 @@ describe('integrity-failure log record', () => {
       'not_an_object',
       'not_utf8',
       'over_size_cap',
+      'version_mismatch',
     ]);
   });
 
-  it('fires the record without the signal for key_mismatch, and never the reverse', async () => {
-    // The one-directional exception to "the two surfaces agree". Swept across
-    // the whole vocabulary rather than asserted on the one case, because what
-    // makes it safe is that *only* this code is signal-free: an implementation
-    // that dropped the signal for some other code would satisfy a single-case
-    // assertion.
+  it('keeps the reason_code and outcome vocabularies apart, spellings included', () => {
+    // One condition now has a token in each vocabulary, with *different*
+    // spellings: the code is `version_mismatch`, the outcome `wrong_version`.
+    // The split is deliberate — the code names which check failed, the outcome
+    // what the caller got — so a detection rule matching one string is never
+    // ambiguous about which surface it was written against. Asserting both
+    // closed sets in one place is what keeps a well-meaning "consistency" fix
+    // from collapsing them into one spelling.
+    const codes = cases.map(([code]) => code);
+    const outcomes: packageIndex.SkillOutcomeReason[] = [
+      'absent',
+      'integrity_failure',
+      'ok',
+      'store_unavailable',
+      'wrong_version',
+    ];
+
+    expect(codes).toContain('version_mismatch');
+    expect(codes).not.toContain('wrong_version');
+    expect(outcomes).toContain('wrong_version');
+    expect(outcomes).not.toContain('version_mismatch' as packageIndex.SkillOutcomeReason);
+    // Ten codes, five outcomes. The finer vocabulary grew; the public one did not.
+    expect(codes).toHaveLength(10);
+    expect(outcomes).toHaveLength(5);
+  });
+
+  it('fires the record without the signal for the two boundary codes, and never the reverse', async () => {
+    // The one-directional exception to "the two surfaces agree", and there are
+    // exactly two cases. Swept across the whole vocabulary rather than asserted
+    // on those two, because what makes it safe is that *only* they are
+    // signal-free: an implementation that dropped the signal for some other code
+    // would satisfy a two-case assertion.
+    //
+    // Each is asserted separately rather than as a group — an implementation
+    // that emitted the signal for either one would satisfy every other
+    // assertion in this block.
+    const recordOnly = new Set(['key_mismatch', 'version_mismatch']);
+
     for (const [code, makeStore, run] of cases) {
       _clearState();
       _setStore(makeStore());
@@ -1771,7 +2005,9 @@ describe('integrity-failure log record', () => {
       expect(records, code).toHaveLength(1);
 
       const signals = emitter.signals(INTEGRITY_SIGNAL);
-      if (code === 'key_mismatch') {
+      if (recordOnly.has(code)) {
+        // Not merely no integrity signal: the emitter saw nothing at all.
+        expect(emitter.records, code).toEqual([]);
         expect(signals, code).toHaveLength(0);
       } else {
         expect(signals, code).toHaveLength(1);
@@ -1866,6 +2102,56 @@ describe('integrity-failure log record', () => {
     // also mix the two frames in one record, and `served_key` already says what
     // came back.
     expect(keys).toEqual(['action', 'event', 'language', 'reason', 'reason_code', 'served_key', 'skill_key']);
+  });
+
+  it('sorts the version_mismatch record too, with served_version in its alphabetical place', async () => {
+    // The second record-only field, on a third construction path, so the sort
+    // that makes every other record byte-comparable across SDKs is asserted here
+    // independently as well. `served_key` and `served_version` sort adjacently,
+    // so a reader who knows one record's shape can predict the other's — even
+    // though the two fields never appear on the same record.
+    _setStore(versionLying(9)());
+
+    const [{ record }] = await logged(() => getSkill('a', { version: 2 }));
+
+    const keys = Object.keys(record);
+    expect(keys).toEqual([...keys].sort());
+    expect(keys).toEqual([
+      'action',
+      'event',
+      'language',
+      'reason',
+      'reason_code',
+      'served_version',
+      'skill_key',
+      'version',
+    ]);
+    // No `served_key` here, and no hash fields: verification passed, so the
+    // hashes are not what disqualified the answer, and the key agreed.
+    expect('served_key' in record).toBe(false);
+    expect('expected_hash' in record).toBe(false);
+    expect('observed_hash' in record).toBe(false);
+  });
+
+  it('records both versions as integers, not as strings', async () => {
+    // The type, not only the value. The sorted-key JSON is compared byte for
+    // byte across SDKs, and `"served_version":9` and `"served_version":"9"` are
+    // not the same line — so a language that stringified either number would
+    // pass a value assertion and still break a cross-language parser.
+    _setStore(versionLying(9)());
+
+    const [{ line, record }] = await logged(() => getSkill('a', { version: 2 }));
+
+    for (const field of ['version', 'served_version']) {
+      expect(typeof record[field], field).toBe('number');
+      expect(Number.isInteger(record[field]), field).toBe(true);
+    }
+    // `version` is the version **requested**, the meaning it carries on every
+    // other record; `served_version` is the one the store answered with.
+    expect(record.version).toBe(2);
+    expect(record.served_version).toBe(9);
+    expect(line).toContain('"served_version":9');
+    expect(line).toContain('"version":2');
   });
 
   it('redacts a hostile served_key', async () => {
@@ -2102,7 +2388,15 @@ describe('getSkillResult', () => {
   it.each(cases)('reports reason %s', async (reason, makeStore, run) => {
     _setStore(makeStore());
 
-    const outcome = (await run()) as Awaited<ReturnType<typeof getSkillResult>>;
+    // `wrong_version` writes its log record on the way through, like the
+    // integrity failures do; silenced here so the assertions below read cleanly.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let outcome: Awaited<ReturnType<typeof getSkillResult>>;
+    try {
+      outcome = (await run()) as Awaited<ReturnType<typeof getSkillResult>>;
+    } finally {
+      spy.mockRestore();
+    }
 
     expect(outcome.reason).toBe(reason);
     if (reason === 'ok') {
@@ -2236,7 +2530,13 @@ describe('getSkillResult', () => {
       },
     });
 
-    const outcome = await getSkillResult('a', { version: 1 });
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let outcome: Awaited<ReturnType<typeof getSkillResult>>;
+    try {
+      outcome = await getSkillResult('a', { version: 1 });
+    } finally {
+      spy.mockRestore();
+    }
 
     expect(outcome.reason).toBe('wrong_version');
     expect(outcome.skill).toBeNull();
@@ -2250,13 +2550,18 @@ describe('getSkillResult', () => {
     // "resolves to `null` — never rejects", and every existing caller treats
     // that `null` as "no skill". Reporting the reason is additive or it is a
     // silent breaking change.
-    for (const [reason, makeStore] of cases) {
-      if (reason === 'ok') continue;
-      _clearState();
-      _setStore(makeStore());
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const [reason, makeStore] of cases) {
+        if (reason === 'ok') continue;
+        _clearState();
+        _setStore(makeStore());
 
-      const wanted = reason === 'wrong_version' ? { version: 2 } : {};
-      await expect(getSkill('a', wanted)).resolves.toBeNull();
+        const wanted = reason === 'wrong_version' ? { version: 2 } : {};
+        await expect(getSkill('a', wanted)).resolves.toBeNull();
+      }
+    } finally {
+      spy.mockRestore();
     }
   });
 
@@ -2357,7 +2662,13 @@ describe('getSkillResult', () => {
   it('detail names the key and both versions on a mismatch, and no path', async () => {
     _setStore(wrongVersionStore(3));
 
-    const { detail } = await getSkillResult('pdf-extraction', { version: 2 });
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let detail: string | null;
+    try {
+      ({ detail } = await getSkillResult('pdf-extraction', { version: 2 }));
+    } finally {
+      spy.mockRestore();
+    }
 
     expect(detail).toContain('pdf-extraction');
     expect(detail).toContain('version 2');
