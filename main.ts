@@ -6,6 +6,7 @@ import * as claudeMessages from './examples/claude-messages';
 import * as conversation from './examples/conversation';
 import * as graph from './examples/graph';
 import * as graphHistory from './examples/graph-history';
+import * as graphStreaming from './examples/graph-streaming';
 import * as history from './examples/history';
 import * as judge from './examples/judge';
 import * as langchain from './examples/langchain';
@@ -25,6 +26,7 @@ type Example =
   | 'claude-messages'
   | 'graph'
   | 'graph-history'
+  | 'graph-streaming'
   | 'conversation'
   | 'history'
   | 'judge'
@@ -46,6 +48,7 @@ const EXAMPLES: Record<Example, { run: (key: string, userInput: string) => Promi
   conversation: conversation,
   graph: graph,
   'graph-history': graphHistory,
+  'graph-streaming': graphStreaming,
   history: history,
   judge: judge,
   langchain: langchain,

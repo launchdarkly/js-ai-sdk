@@ -683,7 +683,12 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
           if (event.type === 'raw_model_stream_event') {
             // biome-ignore lint/suspicious/noExplicitAny: OpenAI Agents SDK raw event data type does not expose delta field
             const rawEvent = (event as RunRawModelStreamEvent).data as any;
-            if (rawEvent?.type === 'response.output_text.delta' && typeof rawEvent?.delta === 'string') {
+            // The Agents SDK normalizes the Responses API wire event
+            // (`response.output_text.delta`) before Runner yields it. The text
+            // delta on this stream is `output_text_delta`. The same turn also
+            // arrives as a `{ type: 'model' }` companion; reading that too would
+            // emit the text twice.
+            if (rawEvent?.type === 'output_text_delta' && typeof rawEvent?.delta === 'string') {
               yield { type: 'chunk' as const, text: rawEvent.delta };
               fullOutput += rawEvent.delta;
             }
