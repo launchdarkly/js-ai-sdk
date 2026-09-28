@@ -350,6 +350,20 @@ describe('createVercelAgentsHandler', () => {
     expect(spanMocks.root.end).toHaveBeenCalledOnce();
   });
 
+  it('closes the root span when stream setup fails before the provider call', async () => {
+    const handler = createVercelAgentsHandler({
+      modelFactory: () => {
+        throw new Error('factory failed');
+      },
+    });
+    await expect(collect(handler.stream?.(baseConfig as any, 'q', {}, {}) as AsyncIterable<any>)).rejects.toThrow(
+      'factory failed',
+    );
+    expect(spanMocks.root.recordException).toHaveBeenCalledOnce();
+    expect(spanMocks.root.end).toHaveBeenCalledOnce();
+    expect(aiMocks.stream).not.toHaveBeenCalled();
+  });
+
   it('pre-wires vercelAgents through config()', async () => {
     const invoke = vi.fn().mockResolvedValue({ response: 'ok', usage: {} });
     serverMocks.config.mockReturnValue({ invoke });

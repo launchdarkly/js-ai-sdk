@@ -282,21 +282,22 @@ export function createVercelMessagesHandler(options: VercelMessagesOptions = {})
         rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
         setLdSpanAttributes(rootSpan, variables);
-        const system = systemInstructions(configRep, variables);
-        const messages = buildMessages(configRep, userInput, variables, history);
-        const { tools, definitions } = buildTools(configRep.tools, toolHandlers, rootSpan, captureContent);
-        setInputContentAttributes(rootSpan, captureContent, {
-          systemInstructions: system,
-          messages: spanMessages(messages),
-          toolDefinitions: definitions,
-        });
-        const chatSpan = startChatSpan(configRep, rootSpan);
-        setInputContentAttributes(chatSpan, captureContent, {
-          systemInstructions: system,
-          messages: spanMessages(messages),
-          toolDefinitions: definitions,
-        });
+        let chatSpan: Span | undefined;
         try {
+          const system = systemInstructions(configRep, variables);
+          const messages = buildMessages(configRep, userInput, variables, history);
+          const { tools, definitions } = buildTools(configRep.tools, toolHandlers, rootSpan, captureContent);
+          setInputContentAttributes(rootSpan, captureContent, {
+            systemInstructions: system,
+            messages: spanMessages(messages),
+            toolDefinitions: definitions,
+          });
+          chatSpan = startChatSpan(configRep, rootSpan);
+          setInputContentAttributes(chatSpan, captureContent, {
+            systemInstructions: system,
+            messages: spanMessages(messages),
+            toolDefinitions: definitions,
+          });
           const output = requestOutput(configRep.outputFormat);
           const result = await generateText({
             ...modelSettings(configRep),
@@ -321,7 +322,7 @@ export function createVercelMessagesHandler(options: VercelMessagesOptions = {})
           rootSpan.end();
           return { output: resultOutput, usage: returnedUsage(usage) };
         } catch (error) {
-          failSpan(chatSpan, error);
+          if (chatSpan) failSpan(chatSpan, error);
           failSpan(rootSpan, error);
           throw error;
         }
@@ -331,21 +332,22 @@ export function createVercelMessagesHandler(options: VercelMessagesOptions = {})
       rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
       setLdSpanAttributes(rootSpan, variables);
-      const system = systemInstructions(configRep, variables);
-      const messages = buildMessages(configRep, userInput, variables, history);
-      const { tools, definitions } = buildTools(configRep.tools, toolHandlers, rootSpan, captureContent);
-      setInputContentAttributes(rootSpan, captureContent, {
-        systemInstructions: system,
-        messages: spanMessages(messages),
-        toolDefinitions: definitions,
-      });
-      const chatSpan = startChatSpan(configRep, rootSpan);
+      let chatSpan: Span | undefined;
       let chatEnded = false;
       let rootEnded = false;
       let iterator: AsyncIterator<string> | undefined;
       let completed = false;
       let fullOutput = '';
       try {
+        const system = systemInstructions(configRep, variables);
+        const messages = buildMessages(configRep, userInput, variables, history);
+        const { tools, definitions } = buildTools(configRep.tools, toolHandlers, rootSpan, captureContent);
+        setInputContentAttributes(rootSpan, captureContent, {
+          systemInstructions: system,
+          messages: spanMessages(messages),
+          toolDefinitions: definitions,
+        });
+        chatSpan = startChatSpan(configRep, rootSpan);
         const result = streamText({
           ...modelSettings(configRep),
           model: await resolveModel(configRep, options),
@@ -374,7 +376,7 @@ export function createVercelMessagesHandler(options: VercelMessagesOptions = {})
         rootEnded = true;
         yield { type: 'done' as const, output: fullOutput, usage: returnedUsage(usage) };
       } catch (error) {
-        if (!chatEnded) {
+        if (chatSpan && !chatEnded) {
           failSpan(chatSpan, error);
           chatEnded = true;
         }
@@ -385,7 +387,7 @@ export function createVercelMessagesHandler(options: VercelMessagesOptions = {})
         throw error;
       } finally {
         if (!completed) await iterator?.return?.();
-        if (!chatEnded) chatSpan.end();
+        if (chatSpan && !chatEnded) chatSpan.end();
         if (!rootEnded) rootSpan.end();
       }
     },

@@ -217,7 +217,7 @@ export const toVercelAgents = (
           messages = [{ role: 'user', content: response }];
         }
 
-        span.setAttribute('launchdarkly.graph.path', path.join(','));
+        span.setAttribute('launchdarkly.graph.path', path.join('->'));
         span.setAttribute('gen_ai.usage.input_tokens', total.input);
         span.setAttribute('gen_ai.usage.output_tokens', total.output);
         span.setAttribute('gen_ai.usage.total_tokens', total.total);

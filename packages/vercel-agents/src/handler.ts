@@ -289,15 +289,22 @@ export function createVercelAgentsHandler(options: VercelAgentsOptions = {}): Pr
         rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
         setLdSpanAttributes(rootSpan, variables);
-        const messages = buildMessages(configRep, userInput, variables, history);
-        const { agent, definitions, system } = await buildAgent(configRep, variables, toolHandlers, rootSpan, options);
-        setInputContentAttributes(rootSpan, captureContent, {
-          systemInstructions: system,
-          messages: spanMessages(messages),
-          toolDefinitions: definitions,
-        });
-        const chatSpan = startChatSpan(configRep, rootSpan);
+        let chatSpan: Span | undefined;
         try {
+          const messages = buildMessages(configRep, userInput, variables, history);
+          const { agent, definitions, system } = await buildAgent(
+            configRep,
+            variables,
+            toolHandlers,
+            rootSpan,
+            options,
+          );
+          setInputContentAttributes(rootSpan, captureContent, {
+            systemInstructions: system,
+            messages: spanMessages(messages),
+            toolDefinitions: definitions,
+          });
+          chatSpan = startChatSpan(configRep, rootSpan);
           const result = await agent.generate({ messages });
           const usage = resultUsage(result);
           const resultOutput = configRep.outputFormat ? JSON.stringify(result.output) : result.text;
@@ -314,7 +321,7 @@ export function createVercelAgentsHandler(options: VercelAgentsOptions = {}): Pr
           rootSpan.end();
           return { output: resultOutput, usage: returnedUsage(usage) };
         } catch (error) {
-          failSpan(chatSpan, error);
+          if (chatSpan) failSpan(chatSpan, error);
           failSpan(rootSpan, error);
           throw error;
         }
@@ -324,27 +331,28 @@ export function createVercelAgentsHandler(options: VercelAgentsOptions = {}): Pr
       rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
       setLdSpanAttributes(rootSpan, variables);
-      const messages = buildMessages(configRep, userInput, variables, history);
-      const { agent, definitions, system } = await buildAgent(
-        configRep,
-        variables,
-        toolHandlers,
-        rootSpan,
-        options,
-        false,
-      );
-      setInputContentAttributes(rootSpan, captureContent, {
-        systemInstructions: system,
-        messages: spanMessages(messages),
-        toolDefinitions: definitions,
-      });
-      const chatSpan = startChatSpan(configRep, rootSpan);
+      let chatSpan: Span | undefined;
       let iterator: AsyncIterator<string> | undefined;
       let completed = false;
       let chatEnded = false;
       let rootEnded = false;
       let fullOutput = '';
       try {
+        const messages = buildMessages(configRep, userInput, variables, history);
+        const { agent, definitions, system } = await buildAgent(
+          configRep,
+          variables,
+          toolHandlers,
+          rootSpan,
+          options,
+          false,
+        );
+        setInputContentAttributes(rootSpan, captureContent, {
+          systemInstructions: system,
+          messages: spanMessages(messages),
+          toolDefinitions: definitions,
+        });
+        chatSpan = startChatSpan(configRep, rootSpan);
         const result = await agent.stream({ messages });
         iterator = result.textStream[Symbol.asyncIterator]();
         while (true) {
@@ -367,7 +375,7 @@ export function createVercelAgentsHandler(options: VercelAgentsOptions = {}): Pr
         rootEnded = true;
         yield { type: 'done' as const, output: fullOutput, usage: returnedUsage(usage) };
       } catch (error) {
-        if (!chatEnded) {
+        if (chatSpan && !chatEnded) {
           failSpan(chatSpan, error);
           chatEnded = true;
         }
@@ -378,7 +386,7 @@ export function createVercelAgentsHandler(options: VercelAgentsOptions = {}): Pr
         throw error;
       } finally {
         if (!completed) await iterator?.return?.();
-        if (!chatEnded) chatSpan.end();
+        if (chatSpan && !chatEnded) chatSpan.end();
         if (!rootEnded) rootSpan.end();
       }
     },

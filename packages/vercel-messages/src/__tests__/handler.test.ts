@@ -389,6 +389,31 @@ describe('createVercelMessagesHandler', () => {
     expect(spanMocks.root.end).toHaveBeenCalledOnce();
   });
 
+  it('closes the root span when stream tool setup fails before the provider call', async () => {
+    aiMocks.jsonSchema.mockImplementationOnce(() => {
+      throw new Error('bad schema');
+    });
+    const config = {
+      ...baseConfig,
+      tools: {
+        weather: {
+          name: 'weather',
+          type: 'function',
+          description: 'Get weather',
+          parameters: { type: 'object', properties: { city: { type: 'string' } } },
+        },
+      },
+    };
+    await expect(
+      collect(
+        createVercelMessagesHandler().stream?.(config as any, 'q', { weather: () => 'ok' }, {}) as AsyncIterable<any>,
+      ),
+    ).rejects.toThrow('bad schema');
+    expect(spanMocks.root.recordException).toHaveBeenCalledOnce();
+    expect(spanMocks.root.end).toHaveBeenCalledOnce();
+    expect(aiMocks.streamText).not.toHaveBeenCalled();
+  });
+
   it('uses evaluated provider telemetry while preserving the gateway model id', async () => {
     await createVercelMessagesHandler()(baseConfig as any, 'q');
     const chat = spanMocks.children.find(({ name }) => name === `chat ${baseConfig.model.name}`)?.span;
