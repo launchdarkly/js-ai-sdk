@@ -348,6 +348,39 @@ describe('createOpenAIHandler', () => {
     await expect(createOpenAIHandler()(config as any, 'q', {})).rejects.toThrow(/unknownTool/);
   });
 
+  it('rejects a registered tool that is excluded from the active config', async () => {
+    const safe = vi.fn();
+    const dangerous = vi.fn();
+    mockResponsesCreate.mockResolvedValueOnce(mockToolCallResponse('dangerous'));
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(createOpenAIHandler()(config as any, 'q', { safe, dangerous })).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+  });
+
+  it('rejects a returned tool when the active config has no tools', async () => {
+    const dangerous = vi.fn();
+    mockResponsesCreate.mockResolvedValueOnce(mockToolCallResponse('dangerous'));
+
+    await expect(createOpenAIHandler()(baseConfig as any, 'q', { dangerous })).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(mockResponsesCreate).toHaveBeenCalledOnce();
+  });
+
+  it('rejects inherited callable names during invoke', async () => {
+    mockResponsesCreate.mockResolvedValueOnce(mockToolCallResponse('constructor'));
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(createOpenAIHandler()(config as any, 'q', {})).rejects.toThrow(/constructor/);
+    expect(mockResponsesCreate.mock.calls[0][0].tools ?? []).toHaveLength(0);
+  });
+
   it('propagates errors thrown by a tool handler', async () => {
     const boom = vi.fn().mockRejectedValue(new Error('tool exploded'));
     mockResponsesCreate.mockResolvedValueOnce(mockToolCallResponse('boom'));
@@ -837,6 +870,66 @@ describe('createOpenAIHandler', () => {
     expect(mockSpan.recordException).toHaveBeenCalled();
     expect(mockSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
     expect(mockSpan.end).toHaveBeenCalled();
+  });
+
+  it('rejects inherited callable names during streaming', async () => {
+    const toolFinalResponse = {
+      id: 'resp-tool',
+      model: 'gpt-4o',
+      usage: { input_tokens: 2, output_tokens: 1 },
+      output: [{ type: 'function_call', name: 'constructor', call_id: 'c1', arguments: '{}' }],
+      output_text: '',
+    };
+    mockResponsesStream.mockReturnValue(makeResponseStreamMock([], toolFinalResponse));
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(collectStream(createOpenAIHandler().stream?.(config as any, 'q', {}, {}))).rejects.toThrow(
+      /constructor/,
+    );
+    expect(mockResponsesStream.mock.calls[0][0].tools ?? []).toHaveLength(0);
+  });
+
+  it('rejects an excluded registered tool during streaming', async () => {
+    const dangerous = vi.fn();
+    const toolFinalResponse = {
+      id: 'resp-tool',
+      model: 'gpt-4o',
+      usage: { input_tokens: 2, output_tokens: 1 },
+      output: [{ type: 'function_call', name: 'dangerous', call_id: 'c1', arguments: '{}' }],
+      output_text: '',
+    };
+    mockResponsesStream.mockReturnValue(makeResponseStreamMock([], toolFinalResponse));
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(
+      collectStream(createOpenAIHandler().stream?.(config as any, 'q', { safe: vi.fn(), dangerous }, {})),
+    ).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(mockResponsesStream).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a returned tool during streaming when the active config has no tools', async () => {
+    const dangerous = vi.fn();
+    const toolFinalResponse = {
+      id: 'resp-tool',
+      model: 'gpt-4o',
+      usage: { input_tokens: 2, output_tokens: 1 },
+      output: [{ type: 'function_call', name: 'dangerous', call_id: 'c1', arguments: '{}' }],
+      output_text: '',
+    };
+    mockResponsesStream.mockReturnValue(makeResponseStreamMock([], toolFinalResponse));
+
+    await expect(
+      collectStream(createOpenAIHandler().stream?.(baseConfig as any, 'q', { dangerous }, {})),
+    ).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(mockResponsesStream).toHaveBeenCalledOnce();
   });
 
   it('throws and records error when tool handler rejects during streaming', async () => {

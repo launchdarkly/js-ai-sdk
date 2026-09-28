@@ -226,17 +226,26 @@ async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource)
 const buildTools = (
   configTools: Record<string, Tool>,
   toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
-): LangChainToolDef[] =>
-  Object.entries(configTools)
-    .filter(([name]) => typeof toolHandlers[name] === 'function')
-    .map(([name, toolConfig]) => ({
-      type: 'function',
-      function: {
-        name,
-        description: toolConfig.description ?? '',
-        parameters: toolConfig.parameters as Record<string, unknown>,
+): { tools: LangChainToolDef[]; executableTools: Map<string, ToolHandlerFn> } => {
+  const executableTools = new Map<string, ToolHandlerFn>();
+  const tools = Object.entries(configTools).flatMap<LangChainToolDef>(([name, toolConfig]) => {
+    if (!Object.hasOwn(toolHandlers, name)) return [];
+    const handler = toolHandlers[name];
+    if (typeof handler !== 'function') return [];
+    executableTools.set(name, handler);
+    return [
+      {
+        type: 'function',
+        function: {
+          name,
+          description: toolConfig.description ?? '',
+          parameters: toolConfig.parameters as Record<string, unknown>,
+        },
       },
-    }));
+    ];
+  });
+  return { tools, executableTools };
+};
 
 const buildMessages = (
   config: AiConfigRep,
@@ -349,7 +358,9 @@ export function createLangChainHandler(
           // Resolved per-request so the correct provider/model from the AI config is used.
           const baseModel = await resolveBaseModel(config, llm);
 
-          const toolDefs = config.tools ? buildTools(config.tools, toolHandlers) : [];
+          const { tools: toolDefs, executableTools } = config.tools
+            ? buildTools(config.tools, toolHandlers)
+            : { tools: [], executableTools: new Map() };
           const outputFormat = config.outputFormat;
           const normalizedSchema = outputFormat ? normalizeOutputSchema(outputFormat) : undefined;
 
@@ -460,11 +471,11 @@ export function createLangChainHandler(
                 const toolSpan = startToolSpan(tc.name, tc.id ?? tc.name, parentContext);
                 setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.args });
                 try {
-                  const handlerFn = toolHandlers[tc.name];
-                  if (!handlerFn || typeof handlerFn !== 'function') {
+                  const handlerFn = executableTools.get(tc.name);
+                  if (!handlerFn) {
                     throw new Error(`No handler registered for tool "${tc.name}"`);
                   }
-                  const result = await (handlerFn as (...args: unknown[]) => unknown)(tc.args);
+                  const result = await handlerFn(tc.args);
                   setToolCallContentAttributes(toolSpan, captureContent, { result });
                   toolSpan.setStatus({ code: SpanStatusCode.OK });
                   toolSpan.end();
@@ -529,7 +540,9 @@ export function createLangChainHandler(
         // Resolved per-request so the correct provider/model from the AI config is used.
         const baseModel = await resolveBaseModel(config, llm);
 
-        const toolDefs = config.tools ? buildTools(config.tools, toolHandlers) : [];
+        const { tools: toolDefs, executableTools } = config.tools
+          ? buildTools(config.tools, toolHandlers)
+          : { tools: [], executableTools: new Map() };
         const outputFormat = config.outputFormat;
         const normalizedSchema = outputFormat ? normalizeOutputSchema(outputFormat) : undefined;
 
@@ -662,11 +675,11 @@ export function createLangChainHandler(
               const toolSpan = startToolSpan(tc.name, tc.id ?? tc.name, parentContext);
               setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.args });
               try {
-                const handlerFn = toolHandlers[tc.name];
-                if (!handlerFn || typeof handlerFn !== 'function') {
+                const handlerFn = executableTools.get(tc.name);
+                if (!handlerFn) {
                   throw new Error(`No handler registered for tool "${tc.name}"`);
                 }
-                const result = await (handlerFn as (...args: unknown[]) => unknown)(tc.args);
+                const result = await handlerFn(tc.args);
                 setToolCallContentAttributes(toolSpan, captureContent, { result });
                 toolSpan.setStatus({ code: SpanStatusCode.OK });
                 toolSpan.end();

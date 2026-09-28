@@ -51,6 +51,7 @@ export type {
   GraphEdge,
   GraphNode,
   GraphOptions,
+  GraphStreamEvent,
   GraphTopology,
   HandlerStreamEvent,
   ImageContentBlock,

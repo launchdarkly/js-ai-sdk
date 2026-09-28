@@ -216,14 +216,23 @@ function createRawRunUsage(): RawRunUsage {
 const buildTools = (
   configTools: Record<string, Tool>,
   toolHandlers: Record<string, ((...args: unknown[]) => unknown) | NativeTool>,
-): AnthropicTool[] =>
-  Object.entries(configTools)
-    .filter(([name]) => typeof toolHandlers[name] === 'function')
-    .map(([name, toolConfig]) => ({
-      name,
-      description: toolConfig.description ?? '',
-      input_schema: toolConfig.parameters as Anthropic.Tool.InputSchema,
-    }));
+): { tools: AnthropicTool[]; executableTools: Map<string, (...args: unknown[]) => unknown> } => {
+  const executableTools = new Map<string, (...args: unknown[]) => unknown>();
+  const tools = Object.entries(configTools).flatMap(([name, toolConfig]) => {
+    if (!Object.hasOwn(toolHandlers, name)) return [];
+    const handler = toolHandlers[name];
+    if (typeof handler !== 'function') return [];
+    executableTools.set(name, handler);
+    return [
+      {
+        name,
+        description: toolConfig.description ?? '',
+        input_schema: toolConfig.parameters as Anthropic.Tool.InputSchema,
+      },
+    ];
+  });
+  return { tools, executableTools };
+};
 
 type MessageParam = Anthropic.MessageParam;
 
@@ -342,7 +351,9 @@ export function createClaudeMessagesHandler({ captureContent = false }: ContentC
     parentContext: Context,
     runUsage: RawRunUsage,
   ) {
-    const tools = config.tools ? buildTools(config.tools, toolHandlers) : [];
+    const { tools, executableTools } = config.tools
+      ? buildTools(config.tools, toolHandlers)
+      : { tools: [], executableTools: new Map() };
     const maxTokens = (config.model.parameters?.max_tokens as number | undefined) ?? 1024;
     const conversation: MessageParam[] = [...messages];
     // Owned by the caller, not by this loop, so a throw does not take the run's spend with it.
@@ -409,8 +420,8 @@ export function createClaudeMessagesHandler({ captureContent = false }: ContentC
             const toolSpan = startToolSpan(toolUse.name, toolUse.id, parentContext);
             setToolCallContentAttributes(toolSpan, captureContent, { arguments: toolUse.input });
             try {
-              const handlerFn = toolHandlers[toolUse.name];
-              if (!handlerFn || typeof handlerFn !== 'function') {
+              const handlerFn = executableTools.get(toolUse.name);
+              if (!handlerFn) {
                 throw new Error(`No handler registered for tool "${toolUse.name}"`);
               }
               const result = await handlerFn(toolUse.input);
@@ -503,7 +514,9 @@ export function createClaudeMessagesHandler({ captureContent = false }: ContentC
       });
 
       try {
-        const tools = config.tools ? buildTools(config.tools, toolHandlers) : [];
+        const { tools, executableTools } = config.tools
+          ? buildTools(config.tools, toolHandlers)
+          : { tools: [], executableTools: new Map() };
         const maxTokens = (config.model.parameters?.max_tokens as number | undefined) ?? 1024;
         const conversation: MessageParam[] = [...messages];
         // Accumulated per category and yielded unfolded — see the note on RawRunUsage.
@@ -574,8 +587,8 @@ export function createClaudeMessagesHandler({ captureContent = false }: ContentC
                 const toolSpan = startToolSpan(toolUse.name, toolUse.id, parentContext);
                 setToolCallContentAttributes(toolSpan, captureContent, { arguments: toolUse.input });
                 try {
-                  const handlerFn = toolHandlers[toolUse.name];
-                  if (!handlerFn || typeof handlerFn !== 'function') {
+                  const handlerFn = executableTools.get(toolUse.name);
+                  if (!handlerFn) {
                     throw new Error(`No handler registered for tool "${toolUse.name}"`);
                   }
                   const result = await handlerFn(toolUse.input);

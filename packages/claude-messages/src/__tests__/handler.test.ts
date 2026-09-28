@@ -401,6 +401,39 @@ describe('createClaudeMessagesHandler', () => {
     await expect(handler(config as any, 'q', {})).rejects.toThrow(/unknownTool/);
   });
 
+  it('rejects a registered tool that is excluded from the active config', async () => {
+    const safe = vi.fn();
+    const dangerous = vi.fn();
+    mockMessagesCreate.mockResolvedValueOnce(mockToolUseResponse('dangerous', {}));
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(createClaudeMessagesHandler()(config as any, 'q', { safe, dangerous })).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+  });
+
+  it('rejects a returned tool when the active config has no tools', async () => {
+    const dangerous = vi.fn();
+    mockMessagesCreate.mockResolvedValueOnce(mockToolUseResponse('dangerous', {}));
+
+    await expect(createClaudeMessagesHandler()(baseConfig as any, 'q', { dangerous })).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(mockMessagesCreate).toHaveBeenCalledOnce();
+  });
+
+  it('rejects inherited callable names during invoke', async () => {
+    mockMessagesCreate.mockResolvedValueOnce(mockToolUseResponse('constructor', {}));
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(createClaudeMessagesHandler()(config as any, 'q', {})).rejects.toThrow(/constructor/);
+    expect(mockMessagesCreate.mock.calls[0][0].tools ?? []).toHaveLength(0);
+  });
+
   // ── 1.5 Telemetry ───────────────────────────────────────────────────────────
 
   it('uses invoke_agent as the root span name', async () => {
@@ -887,6 +920,63 @@ describe('createClaudeMessagesHandler', () => {
     const chunks = events.filter((e: any) => e.type === 'chunk').map((e: any) => e.text);
     expect(chunks).toContain('post-tool');
     expect(toolFn).toHaveBeenCalledWith({ q: 'hello' });
+  });
+
+  it('rejects inherited callable names during streaming', async () => {
+    mockMessagesStream.mockReturnValue(
+      makeStreamMock([], {
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'constructor', input: {} }],
+      }),
+    );
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(collectStream(createClaudeMessagesHandler().stream?.(config as any, 'q', {}, {}))).rejects.toThrow(
+      /constructor/,
+    );
+    expect(mockMessagesStream.mock.calls[0][0].tools ?? []).toHaveLength(0);
+  });
+
+  it('rejects an excluded registered tool during streaming', async () => {
+    const dangerous = vi.fn();
+    mockMessagesStream.mockReturnValue(
+      makeStreamMock([], {
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'dangerous', input: {} }],
+      }),
+    );
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(
+      collectStream(createClaudeMessagesHandler().stream?.(config as any, 'q', { safe: vi.fn(), dangerous }, {})),
+    ).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(mockMessagesStream).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a returned tool during streaming when the active config has no tools', async () => {
+    const dangerous = vi.fn();
+    mockMessagesStream.mockReturnValue(
+      makeStreamMock([], {
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'dangerous', input: {} }],
+      }),
+    );
+
+    await expect(
+      collectStream(createClaudeMessagesHandler().stream?.(baseConfig as any, 'q', { dangerous }, {})),
+    ).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(mockMessagesStream).toHaveBeenCalledOnce();
   });
 
   it('sets gen_ai span attributes and puts content on attributes when enabled', async () => {
