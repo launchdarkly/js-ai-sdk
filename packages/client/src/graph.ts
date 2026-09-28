@@ -726,11 +726,9 @@ export const graph = (
 
     async function* walk(): AsyncGenerator<GraphStreamEvent> {
       const startTime = Date.now();
-      const path: string[] = [];
       const totalUsage = { input: 0, output: 0, total: 0 };
 
-      const accumulate = (node: GraphNode, res: ProviderResponse) => {
-        path.push(node.key);
+      const accumulate = (res: ProviderResponse) => {
         totalUsage.input += res.usage.input;
         totalUsage.output += res.usage.output;
         totalUsage.total += res.usage.total;
@@ -743,9 +741,19 @@ export const graph = (
         let last: ProviderResponse | undefined;
         const visited = new Set<string>();
         let steps = 0;
+        let entered = 0;
 
         while (current && steps < MAX_TRAVERSAL_DEPTH) {
           steps += 1;
+          // Record the node as it is entered, so a later failure or an abandoned
+          // stream still has this step. The path is the ordered series of these events.
+          getClient().track(
+            '$ld:ai:graph:node',
+            context,
+            { ...graphTrackData, nodeKey: current.key, index: entered },
+            1,
+          );
+          entered += 1;
           const routeOpts: RunNodeOptions = { variables };
           if (previousNode) routeOpts.from = previousNode;
           // History provides prior conversation context to the entry point only.
@@ -753,7 +761,7 @@ export const graph = (
           // built below, so history is not re-sent to downstream handlers.
           else if (history && history.length > 0) routeOpts.history = history;
           const res: RouteResult = yield* streamRoute(current, currentInput, routeOpts);
-          accumulate(current, res);
+          accumulate(res);
           last = res;
 
           if (!res.next || visited.has(res.next.key)) break;
@@ -776,7 +784,6 @@ export const graph = (
         if (totalUsage.total > 0) {
           getClient().track('$ld:ai:graph:total_tokens', context, graphTrackData, totalUsage.total);
         }
-        getClient().track('$ld:ai:graph:path', context, { ...graphTrackData, path }, path.length);
         getClient().track('$ld:ai:graph:invocation_success', context, graphTrackData, 1);
 
         let judgeResults: ProviderResponse['judgeResults'] | undefined;

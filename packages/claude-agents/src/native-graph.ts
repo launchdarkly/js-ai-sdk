@@ -245,7 +245,14 @@ export const toClaudeAgents = (
               getClient().track('$ld:ai:graph:handoff_success', ldContext, trackData, 1);
             }
 
-            path.push(node.key);
+            if (!path.includes(node.key)) {
+              const index = path.length;
+              path.push(node.key);
+              if (ldContext) {
+                const nodeTrackData = makeNodeTrackData(node, def.key, runId);
+                getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: node.key, index }, 1);
+              }
+            }
             const nodeStartTime = Date.now();
 
             const { output, usage } = await runForNode(node, subInput, childSubAgentTools);
@@ -277,7 +284,14 @@ export const toClaudeAgents = (
       // Run the root with its direct children available as sub-agent tools
       const rootChildSubAgentTools = root.edges.map((e) => subAgentToolCtx[e.targetKey]).filter(Boolean);
 
-      path.push(root.key);
+      if (!path.includes(root.key)) {
+        const index = path.length;
+        path.push(root.key);
+        if (ldContext) {
+          const nodeTrackData = makeNodeTrackData(root, def.key, runId);
+          getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: root.key, index }, 1);
+        }
+      }
       const rootStartTime = Date.now();
 
       let finalOutput = '';
@@ -324,7 +338,6 @@ export const toClaudeAgents = (
         const rootTrackData = makeNodeTrackData(root, def.key, runId);
         getClient().track('$ld:ai:graph:duration:total', ldContext, rootTrackData, graphDuration);
         getClient().track('$ld:ai:graph:total_tokens', ldContext, rootTrackData, totalUsage.total);
-        getClient().track('$ld:ai:graph:path', ldContext, rootTrackData, path.length);
         getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
       }
 
