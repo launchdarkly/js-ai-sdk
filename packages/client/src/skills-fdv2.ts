@@ -440,9 +440,11 @@ export type Tombstone = { readonly key: string; readonly objectVersion: number |
 /**
  * Whether one `put-object` / `delete-object` payload is a skill.
  *
- * The kind alone decides it. Every other kind is **ignored, not rejected**,
- * because flag and segment objects share the connection and erroring on them
- * would turn a normal payload into a reconnect loop.
+ * The kind alone decides it. Every other kind is **ignored, not rejected**. The
+ * `kinds` declaration means a flag or segment object should no longer arrive at
+ * all, but the skip stays: erroring on an unrecognised kind would turn a payload
+ * that gained one into a reconnect loop, which is the outage this feature must
+ * not cause.
  */
 export function isSkillEvent(data: unknown): boolean {
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return false;
@@ -2038,10 +2040,10 @@ export class FDv2SkillStore implements SkillStore {
    * swallowed, because a broken listener must not be able to kill delivery.
    *
    * Throws for any `kind` but `'skill'`. This store notifies skill changes and
-   * nothing else — flag and segment objects on the same connection are skipped,
-   * never dispatched — so accepting a listener on another kind would hand back a
-   * watcher that silently never fires, which is indistinguishable from one whose
-   * objects never changed.
+   * nothing else — anything else on the connection is skipped, never dispatched
+   * — so accepting a listener on another kind would hand back a watcher that
+   * silently never fires, which is indistinguishable from one whose objects
+   * never changed.
    */
   addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void {
     if (kind !== SKILL_OBJECT_KIND) {
