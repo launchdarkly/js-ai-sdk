@@ -1205,23 +1205,12 @@ export function classifyStatus(status: number, headers?: Headers | null): Error 
   // be one the server no longer accepts. Recoverable so the selector can be
   // dropped and a full transfer requested; fatal once that has been tried.
   if (status === 400) return new StaleRequestStateError(`LaunchDarkly returned HTTP 400. ${REQUEST_ADVICE}`);
-  // Its own branch rather than the generic fatal list below, because the
-  // message has to name the two configurations that produce it. LaunchDarkly
-  // chose 422 *to be* terminal — the streamer says so at both places that emit
-  // it — so retrying is the one reading the platform ruled out.
-  //
-  // The key's scoping leads because it is the only one of the two a reader can
-  // act on. Skill delivery is not enabled per account as a customer-facing
-  // step, so a closed gate is a LaunchDarkly-side condition — a kill switch, or
-  // a rollout that has not reached them — and telling someone to go enable it
-  // would send them looking for a setting they will not find.
+
+  // View-scoped SDK keys can't carry skills payloads yet, so that is the most likely cause of a 422
   if (status === 422) {
     return new FatalTransportError(
       'LaunchDarkly will not deliver Agent Skills on this connection (HTTP 422). The usual cause is a view-scoped ' +
-        'SDK key: a key restricted to a view cannot be assigned a skill payload, so check whether this key is ' +
-        'view-scoped and use one that is not. Failing that, Agent Skills delivery is not enabled for this account, ' +
-        'which is not something you can turn on yourself — contact LaunchDarkly support. Retrying fixes neither, so ' +
-        'delivery has stopped; the process must be restarted once the cause is resolved.',
+        'SDK key. Check your SDK key or contact LaunchDarkly support.',
     );
   }
   if ([405, 406, 414, 501].includes(status)) {
