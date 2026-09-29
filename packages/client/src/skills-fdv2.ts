@@ -275,9 +275,10 @@ export type StoreDiagnostics = {
   /** `put-object` events identified as skills, across all payloads. */
   readonly skillObjectsReceived: number;
   /**
-   * Objects skipped because they were not skills — flags, segments, and any
-   * future kind. Skipping is the contract, not a failure; the count exists so a
-   * mixed payload is visibly mixed.
+   * Objects skipped because they were not skills. With the skill payload
+   * declared on every request, this counts an object kind this version does not
+   * recognise rather than the environment's flags. Skipping is the contract,
+   * not a failure.
    */
   readonly objectsIgnored: number;
   /**
@@ -1132,8 +1133,9 @@ export class RecoverableTransportError extends Error {
 export class StaleRequestStateError extends RecoverableTransportError {}
 
 const REQUEST_ADVICE =
-  'The request this adapter sent was not understood. It carries only the SDK key and, after the first payload, ' +
-  "a 'basis' selector, so check the base URI and that the endpoint speaks FDv2.";
+  'The request this adapter sent was not understood. It carries only the SDK key, a ' +
+  "'kinds' parameter declaring the skill payload, and, after the first payload, a 'basis' selector, so check " +
+  'the base URI and that the endpoint speaks FDv2.';
 
 const FORBIDDEN_ADVICE =
   'The FDv2 protocol is opt-in per LaunchDarkly account and is served as HTTP 403 while it is off. Skill ' +
