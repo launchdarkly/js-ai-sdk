@@ -52,7 +52,6 @@ import {
   isSkillEvent,
   iterSse,
   MAX_RESPONSE_CHARS,
-  NoSkillPayloadError,
   type PollResult,
   ProtocolReader,
   RecoverableTransportError,
@@ -2172,89 +2171,139 @@ describe('failure handling', () => {
     expect(classifyStatus(400)).toBeInstanceOf(StaleRequestStateError);
     expect(classifyStatus(400)).toBeInstanceOf(RecoverableTransportError);
     expect(classifyStatus(400).message).toContain('base URI');
-    // 422 is the third class: recoverable enough to be retried, but its own
-    // type so the loop can keep it off the failure budget.
-    expect(classifyStatus(422)).toBeInstanceOf(NoSkillPayloadError);
-    expect(classifyStatus(422)).toBeInstanceOf(RecoverableTransportError);
-    expect(classifyStatus(422)).not.toBeInstanceOf(FatalTransportError);
-    // The message explains the state rather than reciting the status: this is
-    // the line a user reads when their skills never show up.
-    expect(classifyStatus(422).message).toContain('no Agent Skills payload');
+    // 422 is fatal, and LaunchDarkly chose the status to be terminal rather
+    // than the SDK inferring it: a connection whose declared kinds exclude
+    // every payload it is assigned will never be assigned one.
+    expect(classifyStatus(422)).toBeInstanceOf(FatalTransportError);
+    expect(classifyStatus(422)).not.toBeInstanceOf(RecoverableTransportError);
   });
 
-  it('never stops delivery on a 422, and never counts it as a failure', async () => {
-    // A 422 means the credential is assigned no agent-skill payload, which is
-    // every project in which no skill has ever been created. Counting it as a
-    // failure would spend the budget and report an ordinary configuration as
-    // "gave up after N consecutive failures"; so it is counted, said once, and
-    // retried for as long as the store is open.
-    endpoint.defaultPollStatus = 422;
-    const store = pollStore({ maxConsecutiveFailures: 1 });
-    store.start();
-    // Well past a bound of one, and still asking.
-    expect(await waitUntil(() => store.diagnostics.payloadUnavailable >= 4)).toBe(true);
-    expect(store.failed).toBeNull();
-    // None of it reads as a failure, because none of it is one.
-    expect(store.diagnostics.connectionFailures).toBe(0);
-    expect(store.diagnostics.lastError).toBeNull();
-    // Said once, not once per attempt.
-    expect(logged(warnSpy).match(/Skill delivery is idle/g)).toHaveLength(1);
-    expect(logged(warnSpy)).toMatch(/no Agent Skills payload/);
-    expect(logged(warnSpy)).not.toMatch(/Skill delivery failed/);
-    expect(consoleErrors()).not.toMatch(/gave up/);
+  it('answers every status with exactly one of the two classes', () => {
+    // There is no third class. A status handled as neither recoverable nor
+    // fatal is a retry loop with no bound and no budget, invisible to both
+    // `failed` and `connectionFailures` — the shape this suite forbids, not
+    // just the name it used to go by.
+    const statuses = [
+      301, 302, 307, 308, 400, 401, 402, 403, 404, 405, 406, 408, 409, 410, 413, 414, 418, 422, 425, 429, 431, 451, 500,
+      501, 502, 503, 504, 507, 599,
+    ];
+    for (const status of statuses) {
+      const err = classifyStatus(status);
+      const recoverable = err instanceof RecoverableTransportError;
+      const fatal = err instanceof FatalTransportError;
+      // Exactly one, for every status: not neither, and not both.
+      expect([recoverable, fatal].filter(Boolean), `HTTP ${status}`).toHaveLength(1);
+    }
   });
 
-  it('waits the backoff cap rather than the initial delay before asking again', async () => {
-    // The exponential schedule is a function of the failure count, which this
-    // case deliberately never advances — so reusing it would hold a store
-    // waiting for its first skill at the *initial* delay forever, reconnecting
-    // as fast as a fresh connection retries. Asserted by counting requests in a
-    // window rather than by timing one: at the 5ms initial delay this window
-    // holds dozens of them, at the cap it holds the one.
+  it('names the account enablement and the key scoping in the 422 message', () => {
+    // The message is a contract: it is what a customer pastes into a support
+    // ticket, so it has to name both real causes without them reading platform
+    // source. Asserted on substance rather than prose, so the wording can be
+    // improved without rotting this test.
+    const message = classifyStatus(422).message;
+    expect(message).toMatch(/422/);
+    expect(message).toMatch(/view-scoped/i);
+    expect(message).toMatch(/not enabled for this account/i);
+    // Of the two causes only the key's scoping is the reader's to fix, so that
+    // is the one carrying an instruction. A closed account gate is a
+    // LaunchDarkly-side condition, so it routes to support rather than sending
+    // someone to look for a setting they do not have.
+    expect(message).toMatch(/check whether this key is view-scoped/i);
+    expect(message).toMatch(/contact LaunchDarkly support/i);
+    // Not an instruction to go enable it for their own account: skill delivery
+    // is not enabled per account as a customer-facing step.
+    expect(message).not.toMatch(/(?:once|after) Agent Skills is enabled for (?:the|your) account/i);
+    expect(message).not.toMatch(/enable Agent Skills for (?:the|your) account/i);
+    // And the two things it must not say. Neither is true: the payload row is
+    // created lazily, so an environment with zero skills commits an empty
+    // payload normally — and nothing reopens delivery short of a restart.
+    expect(message).not.toMatch(/no skills|first skill|has no Agent Skills payload/i);
+    expect(message).not.toMatch(/without a restart|keeps asking|picks (?:one|it) up/i);
+  });
+
+  it('stops delivery on a 422 answering the first request', async () => {
+    // LaunchDarkly picked a non-400 4xx precisely so an SDK asking for a
+    // payload it will never be assigned stops instead of hammering the fleet.
+    // So the first response is enough: no retry, and nothing committed.
     endpoint.defaultPollStatus = 422;
-    const store = pollStore({ initialBackoffMs: 5, maxBackoffMs: 3000, pollIntervalMs: 5 });
+    // A bound well above one, so what stops the loop is provably the
+    // classification and not an exhausted budget.
+    const store = pollStore({ maxConsecutiveFailures: 10 });
     store.start();
-    expect(await waitUntil(() => store.diagnostics.payloadUnavailable >= 1)).toBe(true);
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    expect(store.failed).toMatch(/422/);
+    expect(store.isInitialized()).toBe(false);
+    // One request, and it was not retried. Asserted after a window that would
+    // comfortably hold several retries at this store's 5ms initial backoff.
     await new Promise((resolve) => setTimeout(resolve, 250));
     expect(endpoint.requests).toHaveLength(1);
+    expect(consoleErrors()).toMatch(/will not retry/);
   });
 
-  it('picks up a skill payload that appears after a 422', async () => {
-    // The reason this is not fatal: a skill created after the store started is
-    // delivered to the store that is already running, with nothing restarted.
-    endpoint.queuePoll([], { status: 422 });
-    endpoint.queuePoll([], { status: 422 });
-    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
-    const store = pollStore({ maxConsecutiveFailures: 1 });
+  it('accounts a fatal 422 on failed and lastError, and not on connectionFailures', async () => {
+    // `connectionFailures` measures consecutive *recoverable* failures against
+    // the retry bound. A fatal never retries, so moving it would put a number
+    // against a budget nothing will spend and make a store that gave up on its
+    // first response look like one that exhausted its attempts. This is how the
+    // give-up path already accounts 401 and 404; 422 is not a special case.
+    endpoint.defaultPollStatus = 422;
+    const store = pollStore();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
-    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
-    // Both readings, in the order they happened.
-    expect(store.diagnostics.payloadUnavailable).toBe(2);
-    expect(store.diagnostics.payloadsTransferred).toBe(1);
-    expect(store.failed).toBeNull();
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    expect(store.diagnostics.lastError).not.toBeNull();
+    expect(store.diagnostics.lastError).toMatch(/422/);
+    expect(store.diagnostics.connectionFailures).toBe(0);
+    // And no per-attempt retry warning, because there was no retry.
+    expect(logged(warnSpy)).not.toMatch(/Skill delivery failed/);
   });
 
-  it('leaves the store uninitialized on a 422, so a wildcard reconcile prunes nothing', async () => {
-    // "LaunchDarkly has no skill payload for this environment" and "this
-    // environment's every skill was revoked" are the two readings of an empty
-    // answer, and only the second may delete a customer's files. A 422 commits
-    // no payload, so the readiness probe stays false and the prune is withheld.
+  it('resolves waitForSkills false immediately on a fatal 422, not at the timeout', async () => {
+    // The observable difference from treating the status as recoverable, and as
+    // much the point of the classification as the stopped retries are: a boot
+    // gated on skills behind a long wait would otherwise pay that wait on every
+    // start against a store that knew the answer on its first response.
+    endpoint.defaultPollStatus = 422;
+    const store = pollStore();
+    store.start();
+    const timeoutMs = 10_000;
+    const began = performance.now();
+    // Waiting this out would take ten seconds; returning early takes the one
+    // round trip to the loopback endpoint.
+    expect(await store.waitForSkills(timeoutMs)).toBe(false);
+    const elapsed = performance.now() - began;
+    expect(elapsed).toBeLessThan(timeoutMs / 4);
+    expect(store.failed).not.toBeNull();
+  });
+
+  it('leaves a store that gave up on a 422 uninitialized, so a wildcard reconcile prunes nothing', async () => {
+    // Composed with §3.22: "delivery gave up, therefore the store is empty,
+    // therefore prune" is exactly the inference an implementation assembles
+    // from two sections, and it deletes a customer's files. The readiness gate
+    // is what stops it, and this is the path a filesystem-agent deployment
+    // takes when Agent Skills is not enabled for the account.
     const root = await scratchRoot();
     const stale = path.join(root, 'left-behind');
     await mkdir(stale, { recursive: true });
     await writeFile(path.join(stale, 'SKILL.md'), 'not ours to delete', 'utf8');
 
     endpoint.defaultPollStatus = 422;
-    const store = pollStore({ maxConsecutiveFailures: 1 });
+    const store = pollStore();
     store.start();
-    expect(await waitUntil(() => store.diagnostics.payloadUnavailable >= 3)).toBe(true);
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    // A store that gave up before any payload committed never initialized, and
+    // neither wait parks: both answers have already arrived.
     expect(store.isInitialized()).toBe(false);
     expect(await store.waitForSkills(100)).toBe(false);
     _setStore(store);
     const report = await writeSkills('*', root);
-    expect(existsSync(path.join(stale, 'SKILL.md'))).toBe(true);
+    // Retrieval is reported unavailable rather than answered as "no skills".
+    expect(report.ok).toBe(false);
+    expect(report.errors.map((action) => action.error).join('\n')).toMatch(/skill retrieval unavailable/);
+    // Pruning is suppressed for the whole run, and nothing on disk moved.
     expect(report.actions.some((action) => action.action === 'removed')).toBe(false);
+    expect(existsSync(path.join(stale, 'SKILL.md'))).toBe(true);
+    expect(await readFile(path.join(stale, 'SKILL.md'), 'utf8')).toBe('not ours to delete');
   });
 
   it('makes backoff exponential and capped', () => {
@@ -3694,6 +3743,32 @@ describe('transport contract', () => {
     expect(source).not.toMatch(/FDV2_OBJECT_KIND\s*=\s*FDV2_PAYLOAD_KIND/);
     expect(FDV2_PAYLOAD_KIND).toBe('agent-skill');
     expect(FDV2_PAYLOAD_KIND).not.toBe(FDV2_OBJECT_KIND);
+  });
+
+  it('declares no payloadUnavailable field and no NoSkillPayloadError, by source text', () => {
+    // `StoreDiagnostics` is public API from the moment it ships, and a
+    // type-level removal is invisible at runtime — so the absence is asserted
+    // against the source, the way the kind constants above are. A field still
+    // declared but never incremented would fail the spec's absence assertion,
+    // and would pass a test that only looked at a snapshot.
+    expect(source).not.toMatch(/payloadUnavailable/);
+    // The expected-recoverable class is specified out of existence, not merely
+    // unexported: a status handled as neither recoverable nor fatal is a retry
+    // loop with no bound and no budget.
+    expect(source).not.toMatch(/NoSkillPayloadError/);
+    // And nothing left of the shape it carried: no idle warning, no retry
+    // parked at the cap instead of on the backoff schedule.
+    expect(source).not.toMatch(/delivery is idle/i);
+    expect(source).not.toMatch(/warnedNoSkillPayload/);
+  });
+
+  it('carries no payloadUnavailable key on a real diagnostics snapshot', () => {
+    // The runtime half of the assertion above: the source check would pass a
+    // field added dynamically, and this one would pass a field declared and
+    // never written. Both, because neither alone is the whole fact.
+    const store = pollStore();
+    expect(Object.keys(store.diagnostics)).not.toContain('payloadUnavailable');
+    expect('payloadUnavailable' in store.diagnostics).toBe(false);
   });
 
   it('the 401 message names the SDK key', () => {
