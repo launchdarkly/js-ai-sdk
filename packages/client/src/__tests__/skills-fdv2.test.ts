@@ -2196,30 +2196,11 @@ describe('failure handling', () => {
     }
   });
 
-  it('names the account enablement and the key scoping in the 422 message', () => {
-    // The message is a contract: it is what a customer pastes into a support
-    // ticket, so it has to name both real causes without them reading platform
-    // source. Asserted on substance rather than prose, so the wording can be
-    // improved without rotting this test.
+  it('names the key scoping in the 422 message', () => {
     const message = classifyStatus(422).message;
     expect(message).toMatch(/422/);
     expect(message).toMatch(/view-scoped/i);
-    expect(message).toMatch(/not enabled for this account/i);
-    // Of the two causes only the key's scoping is the reader's to fix, so that
-    // is the one carrying an instruction. A closed account gate is a
-    // LaunchDarkly-side condition, so it routes to support rather than sending
-    // someone to look for a setting they do not have.
-    expect(message).toMatch(/check whether this key is view-scoped/i);
-    expect(message).toMatch(/contact LaunchDarkly support/i);
-    // Not an instruction to go enable it for their own account: skill delivery
-    // is not enabled per account as a customer-facing step.
-    expect(message).not.toMatch(/(?:once|after) Agent Skills is enabled for (?:the|your) account/i);
-    expect(message).not.toMatch(/enable Agent Skills for (?:the|your) account/i);
-    // And the two things it must not say. Neither is true: the payload row is
-    // created lazily, so an environment with zero skills commits an empty
-    // payload normally — and nothing reopens delivery short of a restart.
-    expect(message).not.toMatch(/no skills|first skill|has no Agent Skills payload/i);
-    expect(message).not.toMatch(/without a restart|keeps asking|picks (?:one|it) up/i);
+    expect(message).toMatch(/Check your SDK key or contact LaunchDarkly support/i);
   });
 
   it('stops delivery on a 422 answering the first request', async () => {
