@@ -2,6 +2,58 @@
 # yarn lockfile v1
 
 
+"@ai-sdk/gateway@4.0.88":
+  version "4.0.88"
+  resolved "https://registry.yarnpkg.com/@ai-sdk/gateway/-/gateway-4.0.88.tgz#cd00ba928d021928b007a6b495e1257767541f4b"
+  integrity sha512-hpEdOAqrp3FOShSytk6n8BZVZ/xrCV7L9hqYA6Q55h7sQknvh99QfC0uQAIbQWjh+66tmo1Fo6ndQla8uCJGyA==
+  dependencies:
+    "@ai-sdk/provider" "4.0.17"
+    "@ai-sdk/provider-utils" "5.0.45"
+    "@vercel/oidc" "3.2.0"
+
+"@ai-sdk/openai@^3.0.41":
+  version "3.0.115"
+  resolved "https://registry.yarnpkg.com/@ai-sdk/openai/-/openai-3.0.115.tgz#f7d0b55457c141c0dc3a7730c81fa9d1f30ed12c"
+  integrity sha512-4gNoCKEcr+nAtL/w/ZZl2fi4dXiicbJUK9qsoXGkhhJfbWWtOBXcH/xpmau6aZf+yaKqBtwm9SpCM8F5mk2Jsg==
+  dependencies:
+    "@ai-sdk/provider" "3.0.16"
+    "@ai-sdk/provider-utils" "4.0.52"
+
+"@ai-sdk/provider-utils@4.0.52":
+  version "4.0.52"
+  resolved "https://registry.yarnpkg.com/@ai-sdk/provider-utils/-/provider-utils-4.0.52.tgz#a1fbdd01f33ffb30d304232e7ad100eeeec07fa9"
+  integrity sha512-cUimyIz1jjwYoF9n6HO7sU+UBW7Nu3T4lW7562yRvEhM9/8JqlW4cecxSpkiafjRzAphZG2NfJ3/Ch5cHoCIhg==
+  dependencies:
+    "@ai-sdk/provider" "3.0.16"
+    "@standard-schema/spec" "^1.1.0"
+    eventsource-parser "^3.0.8"
+    undici "^6.28.0"
+
+"@ai-sdk/provider-utils@5.0.45":
+  version "5.0.45"
+  resolved "https://registry.yarnpkg.com/@ai-sdk/provider-utils/-/provider-utils-5.0.45.tgz#b029b2fd948124aceed11a56699753de5c6ecee2"
+  integrity sha512-gLuaCups8OCIRz3eO6WWz5op7VLYNNtFzyH0sWUr0FE9v7cTxR0qxDpQdrKnGcql+9WWttobjnZsJVsuEbsPQQ==
+  dependencies:
+    "@ai-sdk/provider" "4.0.17"
+    "@standard-schema/spec" "^1.1.0"
+    "@workflow/serde" "4.1.0"
+    eventsource-parser "^3.0.8"
+    undici "^7.29.0"
+
+"@ai-sdk/provider@3.0.16":
+  version "3.0.16"
+  resolved "https://registry.yarnpkg.com/@ai-sdk/provider/-/provider-3.0.16.tgz#f267ea7e9df9ee2aa782c0e50651dd3ac2d145f8"
+  integrity sha512-9Av6kg0t/IN/dcYAAmEJ4B9OPhcEJqwSR+GfHEA8olRkindXpUHadc3p3cyvgFUQFTVm1G5thtsmgZ9yVb2w3A==
+  dependencies:
+    json-schema "^0.4.0"
+
+"@ai-sdk/provider@4.0.17":
+  version "4.0.17"
+  resolved "https://registry.yarnpkg.com/@ai-sdk/provider/-/provider-4.0.17.tgz#23c55190cdc3c52c94ea5fbf50ac2072593feab1"
+  integrity sha512-VYMBxIQdcHqbIf1j+YZlI9Ati6LZ4wJe0GGd4z4a5H/KxTggjeOiyaVYTnfF7LHZK5jMQ+rofmzz4QPqf++NUw==
+  dependencies:
+    json-schema "^0.4.0"
+
 "@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.220":
   version "0.3.220"
   resolved "https://registry.yarnpkg.com/@anthropic-ai/claude-agent-sdk-darwin-arm64/-/claude-agent-sdk-darwin-arm64-0.3.220.tgz#4d98dfda998603d3c32c61c2ebfb4b393f6a9aa2"
@@ -1313,6 +1365,11 @@
   dependencies:
     "@types/node" "*"
 
+"@vercel/oidc@3.2.0":
+  version "3.2.0"
+  resolved "https://registry.yarnpkg.com/@vercel/oidc/-/oidc-3.2.0.tgz#5782a4d4904443f015808705b5537cf9c3b68528"
+  integrity sha512-UycprH3T6n3jH0k44NHMa7pnFHGu/N05MjojYr+Mc6I7obkoLIJujSWwin1pCvdy/eOxrI/l3uDLQsmcrOb4ug==
+
 "@vitest/expect@4.1.9":
   version "4.1.9"
   resolved "https://registry.yarnpkg.com/@vitest/expect/-/expect-4.1.9.tgz#ba1af73ae53262e3dc9b518cb7b76fb614e0ef53"
@@ -1373,6 +1430,11 @@
     convert-source-map "^2.0.0"
     tinyrainbow "^3.1.0"
 
+"@workflow/serde@4.1.0":
+  version "4.1.0"
+  resolved "https://registry.yarnpkg.com/@workflow/serde/-/serde-4.1.0.tgz#82dbbaf2370f7b8ae46d9a9a4ab0917258f8db62"
+  integrity sha512-pav4F2BoirECWR7Nf1TKt+2eETcBj7jj4cBefQ8VXQCA6NPkaKeLfj/zMgi+3zYV5ZIBT4GuUiphsj0/b9hPQQ==
+
 accepts@^2.0.0:
   version "2.0.0"
   resolved "https://registry.yarnpkg.com/accepts/-/accepts-2.0.0.tgz#bbcf4ba5075467f3f2131eab3cffc73c2f5d7895"
@@ -1390,6 +1452,15 @@ agent-base@^7.1.2:
   version "7.1.4"
   resolved "https://registry.yarnpkg.com/agent-base/-/agent-base-7.1.4.tgz#e3cd76d4c548ee895d3c3fd8dc1f6c5b9032e7a8"
   integrity sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==
+
+ai@^7.0.108:
+  version "7.0.108"
+  resolved "https://registry.yarnpkg.com/ai/-/ai-7.0.108.tgz#fd0d211a2ebb0804a963d42bc26a544daec5a00c"
+  integrity sha512-rYFuWl4H4Ki3hclcLm0UFxNQStooBkXMo5KCgFl6S/Snp/PxBEUa4c8XwgKIVHsQp1A6ZTyLAbRKolUIGJ10SQ==
+  dependencies:
+    "@ai-sdk/gateway" "4.0.88"
+    "@ai-sdk/provider" "4.0.17"
+    "@ai-sdk/provider-utils" "5.0.45"
 
 ajv-formats@^3.0.1:
   version "3.0.1"
@@ -1709,6 +1780,11 @@ eventsource-parser@^3.0.0, eventsource-parser@^3.0.1:
   resolved "https://registry.yarnpkg.com/eventsource-parser/-/eventsource-parser-3.1.0.tgz#4e198eb91cd333d0a8ddcc036502b3618a25f449"
   integrity sha512-kJezFj9YFAMLeORyi7aCLxLbD5/qWMQnoMVlVPyHIll7lgRJCc3JVln9Vgl9nwQi0YkMnhdGTMNn7CkRRAptMg==
 
+eventsource-parser@^3.0.8:
+  version "3.1.1"
+  resolved "https://registry.yarnpkg.com/eventsource-parser/-/eventsource-parser-3.1.1.tgz#b96cbb7dace4f3774f58a9e3b1ae9a4a524872e2"
+  integrity sha512-EKN1vKAMcZ8MlYMpaNuxN6R9yakzH6uajHcHVTqWJzvu5pWw9DyhbP35HH8MVBQ+dZjAfDxk+A8NiR9KWaXiyQ==
+
 eventsource@^3.0.2:
   version "3.0.7"
   resolved "https://registry.yarnpkg.com/eventsource/-/eventsource-3.0.7.tgz#1157622e2f5377bb6aef2114372728ba0c156989"
@@ -1959,6 +2035,11 @@ json-schema-typed@^8.0.2:
   version "8.0.2"
   resolved "https://registry.yarnpkg.com/json-schema-typed/-/json-schema-typed-8.0.2.tgz#e98ee7b1899ff4a184534d1f167c288c66bbeff4"
   integrity sha512-fQhoXdcvc3V28x7C7BMs4P5+kNlgUURe2jmUT1T//oBRMDrqy1QPelJimwZGo7Hg9VPV3EQV5Bnq4hbFy2vetA==
+
+json-schema@^0.4.0:
+  version "0.4.0"
+  resolved "https://registry.yarnpkg.com/json-schema/-/json-schema-0.4.0.tgz#f7de4cf6efab838ebaeb3236474cbba5a1930ab5"
+  integrity sha512-es94M3nTIfsEPisRafak+HDLfHXnKBhV3vU5eqPcS3flIWqcxJWgXHXiey3YrpaNsanY5ei1VoYEbOzijuq9BA==
 
 langchain@^1.0.0:
   version "1.4.5"
@@ -2799,6 +2880,16 @@ undici-types@~6.21.0:
   version "6.21.0"
   resolved "https://registry.yarnpkg.com/undici-types/-/undici-types-6.21.0.tgz#691d00af3909be93a7faa13be61b3a5b50ef12cb"
   integrity sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==
+
+undici@^6.28.0:
+  version "6.28.1"
+  resolved "https://registry.yarnpkg.com/undici/-/undici-6.28.1.tgz#aa9d2c44aef3840bef80216f2a50f337543a3fbd"
+  integrity sha512-zWpdTVD54H48CIybL0rWQ3ukpb9d23wM7eH5RtfdmeP70cWHNjtfo7P4vZX+5CoDcO53J4Pu5uXp7lNfjc6DRA==
+
+undici@^7.29.0:
+  version "7.29.1"
+  resolved "https://registry.yarnpkg.com/undici/-/undici-7.29.1.tgz#7741c6fc8b3e1a48e30323833642bfbe841443ad"
+  integrity sha512-RYONW2MeafgYlkVOKYKkA/Ag7BmXqgIWCa8t1m0JcxrQg9pI9lEqRhAOruOBCbAohOa/gkCF+iPi9hrgvTzu6Q==
 
 unpipe@~1.0.0:
   version "1.0.0"
