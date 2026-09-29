@@ -321,16 +321,6 @@ export type StoreDiagnostics = {
    * there delivered nothing either, and does raise it.
    */
   readonly connectionFailures: number;
-  /**
-   * Requests answered with "no payload of the kind you asked for"
-   * ({@link NoSkillPayloadError}). Cumulative, and never reset.
-   *
-   * It is deliberately not a `connectionFailures`: nothing is wrong, there is
-   * nothing to deliver. Nonzero and rising alongside an empty store is the
-   * difference between "this environment has no skills" and "delivery is
-   * broken", which is the pair this whole type exists to separate.
-   */
-  readonly payloadUnavailable: number;
   /** The most recent transport error, if any. Human-readable; do not parse. */
   readonly lastError: string | null;
 };
@@ -798,7 +788,6 @@ function freshDiagnostics(): MutableDiagnostics {
     payloadsIgnored: 0,
     hashlessObjects: 0,
     connectionFailures: 0,
-    payloadUnavailable: 0,
     lastError: null,
   };
 }
@@ -1142,28 +1131,6 @@ export class RecoverableTransportError extends Error {
  */
 export class StaleRequestStateError extends RecoverableTransportError {}
 
-/**
- * An HTTP 422: delivery has no payload of the kind this store declared.
- *
- * That is the answer for every project in which no skill has ever been created,
- * since the agent-skill payload row is created with the first one. Neither of
- * the two obvious classifications is right, which is why this is its own class:
- *
- * - as a failure it would spend `maxConsecutiveFailures` and then give up
- *   permanently — "gave up after N consecutive failures" — on a configuration
- *   that is merely waiting for its first skill;
- * - as fatal, the skill created a minute later would never arrive, because
- *   nothing reopens delivery short of a process restart.
- *
- * `expected` is what keeps it off `connectionFailures`, `lastError` and the
- * per-attempt warning; the rest is in the delivery loop.
- */
-export class NoSkillPayloadError extends RecoverableTransportError {
-  constructor(message: string) {
-    super(message, null, true);
-  }
-}
-
 const REQUEST_ADVICE =
   'The request this adapter sent was not understood. It carries only the SDK key and, after the first payload, ' +
   "a 'basis' selector, so check the base URI and that the endpoint speaks FDv2.";
@@ -1238,11 +1205,23 @@ export function classifyStatus(status: number, headers?: Headers | null): Error 
   // be one the server no longer accepts. Recoverable so the selector can be
   // dropped and a full transfer requested; fatal once that has been tried.
   if (status === 400) return new StaleRequestStateError(`LaunchDarkly returned HTTP 400. ${REQUEST_ADVICE}`);
+  // Its own branch rather than the generic fatal list below, because the
+  // message has to name the two configurations that produce it. LaunchDarkly
+  // chose 422 *to be* terminal — the streamer says so at both places that emit
+  // it — so retrying is the one reading the platform ruled out.
+  //
+  // The key's scoping leads because it is the only one of the two a reader can
+  // act on. Skill delivery is not enabled per account as a customer-facing
+  // step, so a closed gate is a LaunchDarkly-side condition — a kill switch, or
+  // a rollout that has not reached them — and telling someone to go enable it
+  // would send them looking for a setting they will not find.
   if (status === 422) {
-    return new NoSkillPayloadError(
-      'LaunchDarkly has no Agent Skills payload for this environment (HTTP 422). This is what it answers until the ' +
-        'first skill is created in this project, so delivery keeps asking and picks one up without a restart. If ' +
-        'this environment does have skills, check that this SDK key belongs to it.',
+    return new FatalTransportError(
+      'LaunchDarkly will not deliver Agent Skills on this connection (HTTP 422). The usual cause is a view-scoped ' +
+        'SDK key: a key restricted to a view cannot be assigned a skill payload, so check whether this key is ' +
+        'view-scoped and use one that is not. Failing that, Agent Skills delivery is not enabled for this account, ' +
+        'which is not something you can turn on yourself — contact LaunchDarkly support. Retrying fixes neither, so ' +
+        'delivery has stopped; the process must be restarted once the cause is resolved.',
     );
   }
   if ([405, 406, 414, 501].includes(status)) {
@@ -1871,9 +1850,6 @@ export class FDv2SkillStore implements SkillStore {
   // one that says goodbye having delivered nothing, and only the former escapes
   // the bound.
   private reachedServer = false;
-  // Said once per store rather than once per attempt: the condition holds until
-  // somebody creates a skill, and delivery keeps asking throughout.
-  private warnedNoSkillPayload = false;
 
   constructor(sdkKey: string, options: FDv2SkillStoreOptions = {}) {
     const key = requireServerSideCredential(sdkKey);
@@ -2171,16 +2147,6 @@ export class FDv2SkillStore implements SkillStore {
           this.etagBasis = null;
           repairingState = true;
         }
-        if (cause instanceof NoSkillPayloadError) {
-          this.reader.diagnostics.payloadUnavailable += 1;
-          if (!this.warnedNoSkillPayload) {
-            this.warnedNoSkillPayload = true;
-            warn(
-              `Skill delivery is idle: ${cause.message} Retrying every ${Math.round(this.maxBackoffMs)}ms; this is ` +
-                'the only time it will be said.',
-            );
-          }
-        }
         // A connection the server closed while serving it normally ended
         // without being a failure — see `dispatch` for which ones qualify. It
         // reconnects like one, but it neither counts against
@@ -2203,22 +2169,16 @@ export class FDv2SkillStore implements SkillStore {
           }
         }
         const requested = cause.retryAfterMs;
-        const delay =
-          cause instanceof NoSkillPayloadError
-            ? // At the cap rather than on the backoff schedule: `failures`
-              // deliberately never moves, so the schedule would hold this at
-              // the *initial* delay forever.
-              this.maxBackoffMs
-            : Math.min(
-                requested !== null && Number.isFinite(requested)
-                  ? // A server asking for no delay still gets one: honouring
-                    // `Retry-After: 0` literally would reconnect in a loop and burn
-                    // the whole retry bound in milliseconds.
-                    Math.max(requested, this.initialBackoffMs)
-                  : backoffDelayMs(this.failures, this.initialBackoffMs, this.maxBackoffMs),
-                // `Retry-After` is a request and `maxBackoffMs` is a promise.
-                this.maxBackoffMs,
-              );
+        const delay = Math.min(
+          requested !== null && Number.isFinite(requested)
+            ? // A server asking for no delay still gets one: honouring
+              // `Retry-After: 0` literally would reconnect in a loop and burn
+              // the whole retry bound in milliseconds.
+              Math.max(requested, this.initialBackoffMs)
+            : backoffDelayMs(this.failures, this.initialBackoffMs, this.maxBackoffMs),
+          // `Retry-After` is a request and `maxBackoffMs` is a promise.
+          this.maxBackoffMs,
+        );
         if (!cause.expected) {
           warn(`Skill delivery failed (${cause.message}); retrying in ${Math.round(delay)}ms`);
         }
