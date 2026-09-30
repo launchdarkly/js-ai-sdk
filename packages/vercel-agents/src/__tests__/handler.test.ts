@@ -196,7 +196,7 @@ describe('createVercelAgentsHandler', () => {
     expect(JSON.stringify(aiMocks.agentArguments[0].instructions)).not.toContain('Conversation History');
   });
 
-  it('maps multimodal root history to native AI SDK image parts', async () => {
+  it('maps multimodal root history to native AI SDK file parts', async () => {
     const history = [
       {
         role: 'user' as const,
@@ -209,8 +209,8 @@ describe('createVercelAgentsHandler', () => {
     await createVercelAgentsHandler()(baseConfig as any, '', {}, {}, history);
     const content = aiMocks.generate.mock.calls[0][0].messages[0].content;
     expect(content[0]).toEqual({ type: 'text', text: 'Describe this.' });
-    expect(content[1]).toMatchObject({ type: 'image', mediaType: 'image/jpeg' });
-    expect(content[1].image).toBeInstanceOf(Uint8Array);
+    expect(content[1]).toMatchObject({ type: 'file', mediaType: 'image/jpeg' });
+    expect(content[1].data).toBeInstanceOf(Uint8Array);
     expect(aiMocks.generate.mock.calls[0][0].messages).toHaveLength(1);
   });
 
