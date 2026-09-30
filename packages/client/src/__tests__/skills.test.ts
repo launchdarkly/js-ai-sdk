@@ -2154,6 +2154,36 @@ describe('integrity-failure log record', () => {
     expect(line).toContain('"version":2');
   });
 
+  it('replaces a served_version that is not a valid version', async () => {
+    // Unreachable today — `verifyRawSkill`'s `invalid_version` check accepts the
+    // served version before this path runs, so it is an integer by
+    // construction. Asserted anyway, for the two reasons `served_key`'s guard
+    // is: that is a property of the current call order rather than of the
+    // recorder, and the check is what keeps the field an integer the
+    // cross-language byte comparison can rely on. The Python SDK emits the same
+    // placeholder for the same input.
+    const body = 'UNIQUE-SERVED-VERSION-BODY';
+    const { recordVersionMismatch } = await import('../skills-core.js');
+
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let calls: unknown[][] = [];
+    try {
+      recordVersionMismatch('asked-for', 2, body as unknown as number);
+    } finally {
+      calls = [...spy.mock.calls];
+      spy.mockRestore();
+    }
+
+    const line = String(calls[0][0]);
+    const record = JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown>;
+    expect(record.served_version).toBe('<invalid-version>');
+    expect(line).not.toContain(body);
+    // The requested version is the caller's own pin, not a store-controlled
+    // value, so it is reported as given rather than coerced — hiding a caller's
+    // mistyped pin from their own log would be the worse failure.
+    expect(record.version).toBe(2);
+  });
+
   it('redacts a hostile served_key', async () => {
     // Unreachable today — verification accepts the served key before this path
     // runs, so it is well-formed by construction. Asserted anyway, because that

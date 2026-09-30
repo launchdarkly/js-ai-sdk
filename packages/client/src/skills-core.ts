@@ -413,14 +413,18 @@ export function recordKeyMismatch(requested: unknown, served: unknown): void {
  * Lives here, beside `recordKeyMismatch`, so the single-emission-site rule still
  * holds by reading one module.
  *
- * `requested` and `served` are both integers by construction rather than by
- * redaction — the first is the typed `version` a caller pinned, the second has
- * already passed `verifyRawSkill`'s `invalid_version` check — so neither can
- * carry a skill body the way a wire *string* can, and both are recorded as
- * numbers. The key gets the same shape-check-then-redact as every other key
- * that reaches a surface, because a caller can pass anything as a key.
+ * The key and `served` are shape-checked and redacted on the same rule as every
+ * other value that reaches a surface; `requested` is not, and the asymmetry is
+ * deliberate. `served` cannot actually be hostile on the path that calls this —
+ * `verifyRawSkill`'s `invalid_version` check accepted it first — but that is a
+ * property of the current call order rather than of this function, exactly as it
+ * is for `recordKeyMismatch`'s `served_key`. The check is also what keeps the
+ * field an **integer**, which the sorted-key JSON needs to stay byte-comparable
+ * across SDKs: `3` and `"3"` are not the same line. `requested` is the caller's
+ * own pin rather than a store-controlled value, so it cannot carry skill content,
+ * and coercing a mistyped one would hide the caller's own mistake from their log.
  */
-export function recordVersionMismatch(key: unknown, requested: number, served: number): void {
+export function recordVersionMismatch(key: unknown, requested: number, served: unknown): void {
   const record: Record<string, unknown> = {
     action: 'withheld',
     event: EVENT_INTEGRITY_FAILURE,
@@ -432,8 +436,9 @@ export function recordVersionMismatch(key: unknown, requested: number, served: n
     // The version the store answered with: record-only, paralleling
     // `served_key`, and never added to the signal's allowlist. Burying it in the
     // prose `reason` would leave the one datum that makes a broken adapter
-    // diagnosable unparseable.
-    served_version: served,
+    // diagnosable unparseable. Shape-checked for the reason the doc comment
+    // gives — and the Python SDK emits the same placeholder for the same input.
+    served_version: isValidSkillVersion(served) ? served : '<invalid-version>',
     // `skill_key` keeps the meaning it has on every other record — the key the
     // *caller asked for*. Here it is not what disagreed, but the record still
     // has to name the skill it is about.

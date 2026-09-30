@@ -449,7 +449,7 @@ The line is a `[LaunchDarkly] ` prefix, the event name, a space, and a single JS
 | `reason` | yes | Human-readable detail, including byte counts. Wording may change between releases. |
 | `language` | yes | `typescript`. Distinguishes SDKs in a polyglot fleet; the Python SDK emits the same record with `python`. |
 | `served_key` | no | Only on `key_mismatch`: the key the store actually answered under, with the same redaction as `skill_key`. Omitted on every other failure mode. |
-| `served_version` | no | Only on `version_mismatch`: the version the store actually answered with, as an integer. Omitted on every other failure mode, and never on the same record as `served_key`. |
+| `served_version` | no | Only on `version_mismatch`: the version the store actually answered with, as an integer — or `<invalid-version>` when it was not one. Omitted on every other failure mode, and never on the same record as `served_key`. |
 | `version` | no | The skill version — the version **requested** on `version_mismatch`, the delivered one everywhere else. Always an integer. Omitted when the delivered version was not an integer >= 1, and on `key_mismatch`. |
 | `expected_hash` | no | The `contentHash` delivered with the content, or `<not-a-sha256-digest>` when it was not 64 lowercase hex characters. Omitted when the failure happened before any hash was read. |
 | `observed_hash` | no | The sha256 this SDK computed locally. Omitted when the failure happened before hashing. |
