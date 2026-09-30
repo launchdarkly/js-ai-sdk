@@ -444,6 +444,21 @@ describe('toLangGraph', () => {
     expect(mockSpan.recordException).toHaveBeenCalledWith(expect.any(Error));
   });
 
+  it('ends the span once on success so it gets exported', async () => {
+    const root = makeNode('root', '', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+    expect(mockSpan.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('ends the span once when compiled.invoke throws', async () => {
+    mockCompiledInvoke.mockRejectedValue(new Error('boom'));
+    const root = makeNode('root', '', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await expect(toLangGraph(Promise.resolve(def)).invoke('hi')).rejects.toThrow('boom');
+    expect(mockSpan.end).toHaveBeenCalledTimes(1);
+  });
+
   // ── Root null guard ──────────────────────────────────────────────────────────
 
   it('throws when def.root is null', async () => {
