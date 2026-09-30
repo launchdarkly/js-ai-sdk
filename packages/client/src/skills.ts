@@ -92,7 +92,9 @@ export class InMemorySkillStore implements SkillStore {
     const { key } = raw;
     if (typeof key !== 'string') throw new Error("a raw skill object must carry a string 'key'");
     this.objects[key] = raw;
-    for (const listener of this.listeners.get(SKILL_OBJECT_KIND) ?? []) listener(raw);
+    // A copy, so a listener that removes itself mid-notification does not
+    // shift its neighbours out from under the iteration.
+    for (const listener of [...(this.listeners.get(SKILL_OBJECT_KIND) ?? [])]) listener(raw);
   }
 
   /**
@@ -121,14 +123,36 @@ export class InMemorySkillStore implements SkillStore {
   /**
    * Registers `fn` to be called with each raw object `put` under `kind`.
    *
-   * Only `kind === SKILL_OBJECT_KIND` is ever notified, because `put` only
-   * accepts skill objects; a listener registered under any other kind is recorded
-   * and never fires.
+   * Throws for any `kind` but `'skill'`. `put` accepts skill objects and nothing
+   * else, so this store has no other kind to notify, and a listener it accepted
+   * on one would silently never fire — indistinguishable from a store whose
+   * objects never changed. `FDv2SkillStore.addListener` refuses the same way.
    */
   addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void {
+    if (kind !== SKILL_OBJECT_KIND) {
+      throw new Error(
+        `InMemorySkillStore notifies only '${SKILL_OBJECT_KIND}' changes, so a listener on ${JSON.stringify(kind)} ` +
+          `would never fire. Register it on '${SKILL_OBJECT_KIND}'.`,
+      );
+    }
     const existing = this.listeners.get(kind);
     if (existing) existing.push(fn);
     else this.listeners.set(kind, [fn]);
+  }
+
+  /**
+   * Unregisters `fn` from `kind`, so a subsequent `put` no longer calls it.
+   *
+   * Removes one occurrence: a callable registered twice must be removed twice.
+   * Removing a callable that is not registered is a no-op, not an error, so a
+   * consumer that detaches on close can do so unconditionally. Unlike
+   * `addListener` this tolerates any `kind`, for the same reason.
+   */
+  removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void {
+    const listeners = this.listeners.get(kind);
+    if (!listeners) return;
+    const index = listeners.indexOf(fn);
+    if (index !== -1) listeners.splice(index, 1);
   }
 }
 
