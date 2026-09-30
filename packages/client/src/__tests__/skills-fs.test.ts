@@ -45,6 +45,9 @@ const MANIFEST_NAME = '.launchdarkly-skills.json';
 const SKILL_BODY = '---\nname: Test Skill\n---\nDo the thing.\n';
 const INJECTED = 'simulated crash between write and rename';
 
+/** One over-cap string for the whole file: 10 MiB costs real time to allocate and hash. */
+const OVERSIZE = 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1);
+
 const INTEGRITY_SIGNAL = 'AgentControl Skill Integrity Failure';
 const MATERIALIZED_SIGNAL = 'AgentControl Skill Materialized';
 const REVOKED_SIGNAL = 'AgentControl Skill Revoked Received';
@@ -634,8 +637,19 @@ describe('writeSkills bare-string guard', () => {
     await expect(writeSkills([skill('a')], root, { onUnavailable: 'explode' as 'keep' })).rejects.toThrow();
   });
 
-  it('rejects a negative timeout', async () => {
-    await expect(writeSkills([skill('a')], root, { timeout: -1 })).rejects.toThrow();
+  it('rejects a negative timeout as a caller value error — the same class an unusable root raises', async () => {
+    const error = await writeSkills([skill('a')], root, { timeout: -1 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(TypeError);
+    expect((error as Error).message).toContain('timeout');
+  });
+
+  it('validates the request shape before creating the root directory', async () => {
+    // A bare string is refused before `resolveRoot` runs, so a mistaken call
+    // does not leave an empty directory behind as a side effect of failing.
+    const absent = path.join(scratch, 'never-created');
+    await expect(writeSkills('pdf-extraction' as unknown as Skill[], absent)).rejects.toThrow(/"\*"/);
+    expect(await exists(absent)).toBe(false);
   });
 });
 
@@ -1040,8 +1054,29 @@ describe('writeSkills verify-then-write', () => {
     expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
   });
 
+  it('truncates a hostile key echoed into the error to 32 characters', async () => {
+    // A key is attacker-reachable input, and a rejected one is echoed into
+    // `ReconcileAction.error`. The byte-limit branch already truncates; the
+    // grammar branch must too, or a 100 KB "key" becomes a 100 KB error string.
+    const hostile = 'A'.repeat(300);
+    const bad = createSkill({
+      key: hostile,
+      version: 1,
+      content: new TextEncoder().encode('x'),
+      contentHash: hash('x'),
+    });
+
+    const report = await writeSkills([bad], root);
+
+    expect(report.ok).toBe(false);
+    const message = report.errors[0].error ?? '';
+    expect(message).toContain('A'.repeat(32));
+    expect(message).not.toContain('A'.repeat(33));
+    expect(message).toContain('...');
+  });
+
   it('rejects an oversize Skill', async () => {
-    const oversize = 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1);
+    const oversize = OVERSIZE;
     const bad = createSkill({
       key: 'a',
       version: 1,
@@ -1515,6 +1550,41 @@ describe('writeSkills crash-mid-reconcile recovery', () => {
     // Refused means refused all the way: no entry is created for it either, so
     // the next run cannot mistake the file for one this SDK manages.
     expect(await readManifest(root)).toMatchObject({ entries: {} });
+  });
+
+  it('bounds the adoption comparison read at content.byteLength + 1 (§3.22)', async () => {
+    // The read reaches arbitrary foreign files at a managed path, so a planted
+    // multi-GB file must not be pulled into memory before the hash is compared.
+    // One byte past the resolved content's length is all that is needed to
+    // prove inequality.
+    const planted = Buffer.byteLength(SKILL_BODY, 'utf-8') + 2 * 1024 * 1024;
+    const target = await placeOrphaned('a', `${SKILL_BODY}${'p'.repeat(2 * 1024 * 1024)}`);
+    const { open } = await import('node:fs/promises');
+    const probe = await open(target, 'r');
+    const prototype = Object.getPrototypeOf(probe) as { read: (...args: unknown[]) => Promise<{ bytesRead: number }> };
+    await probe.close();
+    const consumed: number[] = [];
+    const realRead = prototype.read;
+    const spy = vi.spyOn(prototype, 'read').mockImplementation(async function (this: unknown, ...args: unknown[]) {
+      const result = await realRead.apply(this, args);
+      consumed.push(result.bytesRead);
+      return result;
+    });
+
+    const report = await writeSkills([skill('a')], root);
+
+    // `mockRestore` also resets the recorded history, so read it out first.
+    const reads = spy.mock.calls.length;
+    spy.mockRestore();
+    expect(report.ok).toBe(false);
+    expect(actionsByKey(report).a.action).toBe('error');
+    expect(actionsByKey(report).a.error).toMatch(/does not record it as managed/);
+    expect(reads).toBeGreaterThan(0);
+    const total = consumed.reduce((sum, n) => sum + n, 0);
+    expect(total).toBeGreaterThan(0);
+    expect(total).toBeLessThanOrEqual(Buffer.byteLength(SKILL_BODY, 'utf-8') + 1);
+    // Refused and untouched.
+    expect((await stat(target)).size).toBe(planted);
   });
 
   it('an adopted file is prunable afterwards', async () => {
@@ -2534,7 +2604,7 @@ describe('writeSkills telemetry', () => {
     // case reachable from both layers with the expected hash in hand throughout.
     const emitter = new RecordingEmitter();
     _setEmitterForTesting(emitter);
-    const oversize = 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1);
+    const oversize = OVERSIZE;
     const contentHash = hash(oversize);
 
     // Layer 1 — the accessor boundary.

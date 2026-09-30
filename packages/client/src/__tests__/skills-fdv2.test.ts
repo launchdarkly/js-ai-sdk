@@ -2918,7 +2918,103 @@ describe('watchSkills', () => {
       getObject: () => null,
       allObjects: () => ({}),
     });
-    await expect(watchSkills('*', await scratchRoot())).rejects.toThrow(/addListener/);
+    // The message names both remedies: the one-shot reconcile, and the store
+    // that does implement the listener half of the seam.
+    await expect(watchSkills('*', await scratchRoot())).rejects.toThrow(/writeSkills[\s\S]*FDv2SkillStore/);
+  });
+
+  it('passes prune and timeout straight through to writeSkills (§3.26)', async () => {
+    // Driven behaviourally rather than by spying on the import: a `prune: false`
+    // that reached `writeSkills` leaves a stale managed skill alone on the
+    // initial reconcile *and* on a re-reconcile, and a `timeout: 0` that reached
+    // it exhausts before retrieval — both are §3.22 outcomes only `writeSkills`
+    // produces.
+    const seed = new InMemorySkillStore();
+    seed.put({ key: 'a', version: 1, content: 'first', contentHash: hash('first') });
+    seed.put({ key: 'stale', version: 1, content: 'old', contentHash: hash('old') });
+    _setStore(seed);
+    const root = path.join(await scratchRoot(), 'skills');
+    expect((await writeSkills('*', root)).ok).toBe(true);
+    // Now a store that no longer holds `stale`: with pruning on it would be removed.
+    const store = new InMemorySkillStore();
+    store.put({ key: 'a', version: 1, content: 'first', contentHash: hash('first') });
+    _setStore(store);
+
+    const { report, watcher } = await watchSkills('*', root, { debounceMs: 10, prune: false });
+    try {
+      expect(report.ok).toBe(true);
+      expect(report.actions.some((a) => a.action === 'removed')).toBe(false);
+      expect(await readFile(path.join(root, 'stale', 'SKILL.md'), 'utf8')).toBe('old');
+
+      store.put({ key: 'a', version: 2, content: 'second', contentHash: hash('second') });
+      expect(await waitUntil(() => watcher.reconciles === 1, 10_000)).toBe(true);
+      expect(await readFile(path.join(root, 'stale', 'SKILL.md'), 'utf8')).toBe('old');
+    } finally {
+      await watcher.close();
+    }
+
+    const timed = await watchSkills([{ key: 'a', version: 2 }], root, { debounceMs: 10, timeout: 0 });
+    try {
+      expect(timed.report.ok).toBe(false);
+      expect(timed.report.errors.map((a) => a.error).join('\n')).toMatch(/timeout was exhausted/);
+    } finally {
+      await timed.watcher.close();
+    }
+  });
+
+  it('close() survives a store whose removeListener throws, and stays closed', async () => {
+    // Detaching is best effort: a store that cannot detach must not leave the
+    // watcher half-closed with its timer armed, and a second close is a no-op.
+    let notify: (() => void) | null = null;
+    _setStore({
+      getObject: () => null,
+      allObjects: () => ({}),
+      addListener: (_kind: string, fn: () => void) => {
+        notify = fn;
+      },
+      removeListener: () => {
+        throw new Error('cannot detach');
+      },
+    });
+    const { watcher } = await watchSkills('*', path.join(await scratchRoot(), 'skills'), { debounceMs: 10 });
+    await watcher.close();
+    expect(consoleErrors()).toContain('cannot detach');
+    const errorsAfterClose = errorSpy.mock.calls.length;
+    await watcher.close();
+    expect(errorSpy.mock.calls.length).toBe(errorsAfterClose);
+    // Closed: a notification that still reaches it schedules nothing.
+    (notify as unknown as () => void)();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(watcher.reconciles).toBe(0);
+  });
+
+  it('logs an async onReconcile that rejects, and the next commit still reconciles', async () => {
+    // `onReconcile` may be async. A rejection must be caught and logged like a
+    // synchronous throw — not left as an unhandled rejection — and must not
+    // stop the watcher.
+    const store = new InMemorySkillStore();
+    store.put({ key: 'a', version: 1, content: 'first', contentHash: hash('first') });
+    _setStore(store);
+    let calls = 0;
+    const root = path.join(await scratchRoot(), 'skills');
+    const { watcher } = await watchSkills('*', root, {
+      debounceMs: 10,
+      onReconcile: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('async callback exploded');
+      },
+    });
+    try {
+      store.put({ key: 'a', version: 2, content: 'second', contentHash: hash('second') });
+      expect(await waitUntil(() => /async callback exploded/.test(consoleErrors()), 10_000)).toBe(true);
+      expect(consoleErrors()).toContain('callback threw');
+      store.put({ key: 'a', version: 3, content: 'third', contentHash: hash('third') });
+      expect(await waitUntil(() => watcher.reconciles === 2, 10_000)).toBe(true);
+      expect(calls).toBe(2);
+      expect(await readFile(path.join(root, 'a', 'SKILL.md'), 'utf8')).toBe('third');
+    } finally {
+      await watcher.close();
+    }
   });
 
   it('throws when no store is configured', async () => {
@@ -3466,6 +3562,7 @@ describe('transport contract', () => {
   it('the 401 message names the SDK key', () => {
     expect(classifyStatus(401).message).toMatch(/SDK key/);
   });
+
   it('a goodbye on a store holding committed content keeps it', () => {
     const held = new SkillObjectSet();
     const reader = new ProtocolReader(held);
@@ -3490,6 +3587,7 @@ describe('transport contract', () => {
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
     expect(store.allObjects(SKILL_OBJECT_KIND)).toHaveProperty('pdf-extraction');
   });
+
   it('holds a tampered object while the accessor reports integrity_failure', async () => {
     // Verification is the accessor's job, not the transport's: the store keeps
     // what arrived, and the reported outcome is what tells a caller to fail closed.
@@ -3504,6 +3602,7 @@ describe('transport contract', () => {
     expect(outcome.skill).toBeNull();
     expect(store.getObject(SKILL_OBJECT_KIND, 'tampered')).not.toBeNull();
   });
+
   it.each([
     0,
     -1,
@@ -3523,6 +3622,7 @@ describe('transport contract', () => {
     expect(() => new FDv2SkillStore('mob-00000000-0000-4000-8000-000000000000')).toThrow(/server-side/);
     expect(() => new FDv2SkillStore('0123456789abcdef01234567')).toThrow(/server-side/);
   });
+
   it.each([
     Number.NaN,
     Number.NEGATIVE_INFINITY,
@@ -3548,6 +3648,7 @@ describe('transport contract', () => {
     expect(store.diagnostics.connectionFailures).toBe(0);
     expect(store.diagnostics.lastError).toBeNull();
   });
+
   it('a stream interrupted by close does not count as a success', async () => {
     // `streamOnce` returning because the signal aborted is the store closing,
     // not the server answering — so the row of failures must not be reset by it.
@@ -3771,6 +3872,7 @@ describe('transport contract', () => {
     });
   });
 });
+
 describe('listeners', () => {
   it('logs an async listener whose promise rejects rather than leaving it unhandled', async () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));

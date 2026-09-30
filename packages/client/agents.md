@@ -320,7 +320,7 @@ When `enabled` is `false`, `config` is always `null`. When `enabled` is `true` b
 
 - **Lazy initialization.** Importing the package does not initialize the LD client. The first API call that needs LaunchDarkly (`extractVariation`, graph resolution, etc.) calls `initClient()` internally, provided `LD_SDK_KEY` is set.
 - **Explicit initialization — Node SDK path.** `initClient(options?)` dynamically imports `@launchdarkly/node-server-sdk` at runtime (optional peer dep). If the package is not installed it throws with a clear message.
-- **Explicit initialization — BYOC path.** `initClient(client, options?)` accepts any pre-initialized object that satisfies `LDClientInterface` — this is the path for Vercel, Cloudflare, or other edge runtimes whose SDK has different init semantics. No `@launchdarkly/node-server-sdk` is required. The optional second argument carries the same options bag as the other overload, which is how a BYOC caller configures `skillStore`.
+- **Explicit initialization — BYOC path.** `initClient(client, options?)` accepts any pre-initialized object that satisfies `LDClientInterface` — this is the path for Vercel, Cloudflare, or other edge runtimes whose SDK has different init semantics. No `@launchdarkly/node-server-sdk` is required. The optional second argument carries the same options bag as the other overload and is passed through to telemetry setup whole, so `otlpEndpoint`, `serviceName` and `environment` mean the same thing here — and it is how a BYOC caller configures `skillStore`.
 - **`skillStore` is the one option applied on every call.** Every other option is ignored once the client singleton exists. `skillStore` is applied *before* the idempotency check, so a client that initialized lazily — or without a store — can be given one afterwards. A nullish `skillStore` never clears a configured store; only `shutdown()` does that, and it clears the skills state unconditionally, ahead of its own early return, because that state can exist without a client.
 - **Return value.** `initClient()` returns `Promise<LDClientInterface>`. Callers that don't need the instance may discard the return value — this is a non-breaking change from the previous `Promise<void>` signature.
 - `getClient()` throws if `initClient()` has not resolved — any code that calls `getClient()` directly must ensure initialization has occurred.
@@ -373,6 +373,22 @@ Tier 0, so the runtime surface is deliberately tiny: two hard dependencies, and 
 ### 4. Assuming `writeSkills`'s `timeout` is in milliseconds
 
 It is in **seconds**, defaulting to `10`. The signature is a cross-language contract that must match the Python SDK exactly, so the usual TypeScript `timeoutMs` instinct is wrong here.
+
+### 4a. Passing `debounceMs` and `timeout` in the same unit
+
+`WatchSkillsOptions` is `WriteSkillsOptions` plus two fields, so one options bag carries `debounceMs` in **milliseconds** (the TypeScript convention) beside `timeout` in **seconds** (the cross-language contract from pitfall 4). `{ debounceMs: 500, timeout: 10 }` is the sane pair; `{ debounceMs: 0.5, timeout: 10_000 }` is a 1 ms coalescing window and a nearly three-hour reconcile budget. Both are guarded for sign and finiteness, not for plausibility.
+
+### 4b. Reading "no `removed` action" as "nothing is stale"
+
+Prune is **suppressed** — not merely empty — whenever the run cannot tell what is still current: an incomplete retrieval (a reference that did not resolve, a store that threw, an exhausted timeout), a store whose `isInitialized()` answers `false` (delivery has not sent a payload yet), a withholding that could not be attributed to a key (the `'*'` form's run-level `error`), or a corrupt manifest. In every one of those cases the report carries an `error` action and `ok` is `false`, and nothing has been pruned — including skills that genuinely were revoked. A caller that wants to know whether revocation has taken effect reads `ok` and `errors` first, not the absence of `removed`.
+
+### 4c. Two watchers on one root, or `writeSkills` on a watched root
+
+A reconcile's contract is one root, one reconcile at a time: two interleaved runs read the same manifest, each writes it back from its own picture, and the loser's entries vanish while the files it wrote stay on disk unmanaged. `SkillWatcher` chains its own reconciles so they never overlap, but it cannot see a second watcher on the same root or a caller's own `writeSkills` against it. Do neither.
+
+### 4d. Expecting revocation to reach a boot-only `writeSkills` deployment
+
+Without `watchSkills`, the revocation bound is process lifetime: a skill revoked after boot stays on disk until the process reconciles again, so a restart (or an explicit re-run of `writeSkills`) is the incident-response action — and content an agent has already read into a conversation is out of reach at this layer either way.
 
 ### 5. Relaxing a path or manifest check in `skills-fs.ts`
 

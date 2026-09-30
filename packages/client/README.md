@@ -326,10 +326,12 @@ example above, materializes only what the resolved variation actually asked for.
 | `allSkills()` | Every verified skill the store holds, newest version per key. |
 | `writeSkills(skills, root, options?)` | Materialize to `<root>/<key>/SKILL.md`. Accepts `Skill` / `SkillReference` / key strings, or the literal `'*'`. Returns a `ReconcileReport`. Throws for a caller error — an unusable `root`, a bare string other than `'*'` — as distinct from the per-skill `error` actions in the report. |
 | `InMemorySkillStore` | A `SkillStore` backed by in-memory maps. `put(raw)`, `getObject(kind, key, version?)`, `allObjects(kind)`, `addListener(kind, fn)`, `removeListener(kind, fn)`. Several versions of one key coexist, as they do in a real payload: `getObject` answers a pin with exactly that version and an omitted version with the newest held, and `allObjects` returns one entry per `(key, version)` under keys opaque to callers. `addListener` throws for any kind but `'skill'`. |
-| `FDv2SkillStore(sdkKey, options?)` | The delivery transport: a `SkillStore` fed by LaunchDarkly over the SDK-facing FDv2 channel. `start()`, `waitForSkills(timeoutMs)`, `isInitialized()`, `close()`, `diagnostics`, `failed`, `addListener` / `removeListener`. `close()` is final — `start()` throws afterwards — and `addListener` throws for any kind but `'skill'`. Options: `mode` (`'stream'` default, or `'poll'`), `baseUri`, `streamUri`, `pollIntervalMs`, `readTimeoutMs`, `initialBackoffMs`, `maxBackoffMs`, `maxConsecutiveFailures`. **Server-side only** — a mobile key or client-side environment ID throws. See [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly). |
-| `watchSkills(skills, root, options?)` | `writeSkills` plus a re-reconcile on every delivery change. Resolves to `{ report, watcher }`; `await watcher.close()` when done, which also detaches the watcher from the store. Revocation then takes effect within `debounceMs` of arriving rather than at the next restart. |
+| `FDv2SkillStore(sdkKey, options?)` | The delivery transport: a `SkillStore` fed by LaunchDarkly over the SDK-facing FDv2 channel. `start()`, `waitForSkills(timeoutMs)`, `isInitialized()`, `close()`, `diagnostics`, `failed`, `addListener` / `removeListener`. `close()` is final — `start()` throws afterwards — and `addListener` throws for any kind but `'skill'`. Options (`FDv2SkillStoreOptions`): `mode` (`'stream'` default, or `'poll'`), `baseUri`, `streamUri`, `pollIntervalMs`, `readTimeoutMs`, `initialBackoffMs`, `maxBackoffMs`, `maxConsecutiveFailures`. **Server-side only** — a mobile key or client-side environment ID throws. See [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly). |
+| `watchSkills(skills, root, options?)` | `writeSkills` plus a re-reconcile on every delivery change. Resolves to `{ report, watcher }` — the initial reconcile's report and a `SkillWatcher`; `await watcher.close()` when done, which also detaches the watcher from the store. Options (`WatchSkillsOptions`): everything `writeSkills` takes, plus `debounceMs` (milliseconds, default `DEFAULT_DEBOUNCE_MS`) and `onReconcile`, called with each delivery-triggered report. Requires a store that implements `addListener`; one watcher per root. Revocation then takes effect within `debounceMs` of arriving rather than at the next restart. |
+| `SkillWatcher` | What `watchSkills` returns alongside the report: `reconciles` (re-reconciles completed, excluding the initial one), `notify` (the registered change listener), `close()` (idempotent; detaches and awaits any reconcile in flight). |
 | `StoreDiagnostics` | What the transport has seen: `payloadsTransferred`, `skillObjectsReceived`, `objectsIgnored`, `objectsRevoked` (each `delete-object` that removed something, plus each key a full transfer dropped altogether — a version bump is a move, not a revocation, and a tombstone for a key never held is reported but not counted), `payloadsIgnored`, `hashlessObjects`, `connectionFailures`, `lastError`. |
 | `DEFAULT_BASE_URI` / `DEFAULT_STREAM_URI` | `'https://sdk.launchdarkly.com'` and `'https://stream.launchdarkly.com'` — where `GET /sdk/poll` and `GET /sdk/stream` go by default. Overrides must be `https://` (plain `http://` only to a loopback host), and redirects from either are refused as a fatal failure. |
+| `DEFAULT_DEBOUNCE_MS` | `500` — the `watchSkills` coalescing window in milliseconds. |
 | `createSkill(init)` / `createSkillReference(init)` | Build frozen `Skill` / `SkillReference` values. Use `createSkill` to hand `writeSkills` content you already have. |
 | `createSkillOutcome(init)` | Build a frozen `SkillOutcome`. Exported for tests and for wrapping your own retrieval in the same shape. |
 | `SKILL_FILENAME` | `'SKILL.md'`. |
@@ -370,11 +372,20 @@ So on those two platforms, write permission on the managed root **and on its anc
 import { FDv2SkillStore, initClient, watchSkills } from '@launchdarkly/ai-server';
 
 const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
-await store.waitForSkills(10_000);
+if (!(await store.waitForSkills(10_000))) {
+  // No payload arrived. Reconciling now would find an empty store; see below.
+  console.warn(`skill delivery has not answered yet: ${store.failed ?? 'still waiting'}`);
+}
 await initClient({ skillStore: store });
 
-// Materialize now, and re-materialize whenever delivery changes.
-const { report, watcher } = await watchSkills('*', '.claude/skills');
+// Materialize now, and re-materialize whenever delivery changes. The report is
+// the initial reconcile's; `onReconcile` sees the delivery-triggered ones.
+const { report, watcher } = await watchSkills('*', '.claude/skills', {
+  debounceMs: 500, // the default: how long a burst of changes waits before one reconcile runs
+  onReconcile: (next) => {
+    if (!next.ok) for (const action of next.errors) console.error(`skill ${action.key}: ${action.error}`);
+  },
+});
 try {
   // ...
 } finally {
@@ -402,6 +413,8 @@ try {
 **Polling and streaming have separate hosts.** LaunchDarkly serves `/sdk/poll` from `https://sdk.launchdarkly.com` and `/sdk/stream` from `https://stream.launchdarkly.com`, so the defaults are a pair. Pass `baseUri` on its own and it applies to both — what a relay or a private instance serving both endpoints from one host needs — or pass `streamUri` as well to override them independently.
 
 **Streaming is the default, and it is what makes revocation fast.** A `delete-object` reaches a live stream in seconds; with `mode: 'poll'` it arrives within one `pollIntervalMs`. Paired with `watchSkills`, a revoked skill's `SKILL.md` leaves the disk without a restart. During an outage the store keeps serving the last content it received and `writeSkills`' default `onUnavailable: 'keep'` leaves managed files alone — an outage must not read as "everything was revoked".
+
+**Without the watcher, the revocation bound is process lifetime.** A deployment that calls `writeSkills` once at boot and never runs `watchSkills` reconciles exactly once, so a skill revoked in LaunchDarkly after boot stays on disk — and in the agent's context — until the process reconciles again. For such a deployment, a restart (or an explicit re-run of `writeSkills`) is the incident-response action when a skill must be pulled immediately. Neither path closes the already-loaded window: content an agent has already read stays in that conversation regardless, and no layer of this SDK can recall it.
 
 **One network timeout, and its default depends on the mode.** `readTimeoutMs` bounds every step of a request, connecting included. In `mode: 'poll'` it bounds the whole request and defaults to 10 seconds; in `mode: 'stream'` it bounds each wait for the next bytes and defaults to 300 seconds, well beyond LaunchDarkly's heartbeat interval. A stream that goes quiet past it reconnects rather than hanging, and a stream that dies mid-body — a reset, a truncated chunk — reconnects the same way. Every delay between retries, including one the server asks for with `Retry-After`, is capped at `maxBackoffMs`.
 

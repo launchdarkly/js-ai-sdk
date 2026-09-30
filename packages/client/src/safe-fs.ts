@@ -75,9 +75,12 @@ const AT_FAMILY = ['renameat', 'unlinkat', 'openat'] as const;
  * `unlinkat`, or `openat`, and `FileHandle` has no `rename` or `unlink` — a
  * descriptor can be held, but nothing destructive can be addressed relative to
  * it. So this is `false` on every Node release to date, and a residual exposure
- * follows: an attacker with write permission on the managed root can still swap a
- * validated directory for a symlink between the identity check below and the
- * path-based operation.
+ * follows **off {@link SUPPORTS_PROC_FD}** — that is, everywhere but Linux with
+ * procfs mounted: an attacker with write permission on the managed root can
+ * still swap a validated directory for a symlink between the identity check
+ * below and the path-based operation. On the procfs fast path the kernel
+ * resolves from the pinned inode and that window is closed; the module docblock
+ * lays out which platform gets which.
  *
  * Probed rather than hardcoded so the descriptor-relative path can be added behind
  * it if Node ever ships the family.
@@ -155,9 +158,41 @@ export function directoryAddress(handle: FileHandle, realPath: string): string {
   return SUPPORTS_PROC_FD ? `${PROC_SELF_FD}/${handle.fd}` : realPath;
 }
 
-/** Whether `directory` is a descriptor address rather than an ordinary path. */
-function isDescriptorAddressed(directory: string): boolean {
-  return directory === PROC_SELF_FD || directory.startsWith(`${PROC_SELF_FD}/`);
+/**
+ * Whether `directory` is the descriptor address {@link directoryAddress} built
+ * for `handle` — exactly `/proc/self/fd/<handle.fd>` — rather than an ordinary
+ * path.
+ *
+ * Exact equality, deliberately. This decides whether the identity re-check in
+ * {@link assertUnswapped} is *skipped*, so anything that merely looks like a
+ * procfs address — a different descriptor's, a child under it, a trailing
+ * slash, `..` traversal — must not be taken for one. Such a string cannot come
+ * from this module's own addressing, so it is a caller error and throws rather
+ * than quietly running the check (which would fail on procfs's magic symlink
+ * anyway) or quietly skipping it. Exported for its test; not API.
+ */
+export function isDescriptorAddressed(directory: string, handle: FileHandle): boolean {
+  if (directory === `${PROC_SELF_FD}/${handle.fd}`) return true;
+  if (directory === PROC_SELF_FD || directory.startsWith(`${PROC_SELF_FD}/`)) {
+    throw new Error(
+      `a descriptor address must be exactly ${PROC_SELF_FD}/<fd> for the pinned handle; got ${JSON.stringify(directory)}`,
+    );
+  }
+  return false;
+}
+
+/**
+ * Refuses a `name` that is not a single path component.
+ *
+ * `name` becomes the final component of a path this module writes or unlinks
+ * under a pinned directory. A separator, `.` or `..` would address somewhere
+ * else — up or out of the pinned inode — and every caller in this package
+ * passes a literal, so a violation is a bug rather than an input to tolerate.
+ */
+function assertSingleComponent(name: string): void {
+  if (name === '' || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+    throw new Error(`name must be a single path component, got ${JSON.stringify(name)}`);
+  }
 }
 
 /**
@@ -251,7 +286,7 @@ export async function openOrCreateDirectory(directory: string): Promise<FileHand
  * symlink, not a directory.
  */
 async function assertUnswapped(directory: string, handle: FileHandle): Promise<void> {
-  if (isDescriptorAddressed(directory)) return;
+  if (isDescriptorAddressed(directory, handle)) return;
   const pinned = await identityOf(handle);
   const onDisk = await lstat(directory, { bigint: true });
   if (!onDisk.isDirectory() || Number(onDisk.dev) !== pinned.dev || onDisk.ino !== pinned.ino) {
@@ -293,6 +328,12 @@ export function tempNamePattern(target: string): RegExp {
  * rename itself survives a crash. Mode is set on the *handle* rather than the
  * path, so it cannot be redirected by anything swapping the temp path underneath
  * us, and it is independent of the process umask.
+ *
+ * On the `lstat` floor the pinned directory's identity is re-checked **twice**:
+ * once before the temp file is opened, so content is never written through a
+ * directory name that has already been swapped for a link, and once again
+ * before the rename. Neither closes the window (see {@link assertUnswapped});
+ * the first narrows what an attacker who wins the race gets to see written.
  */
 export async function atomicWrite(
   directory: string,
@@ -300,8 +341,11 @@ export async function atomicWrite(
   data: Uint8Array,
   pinned: FileHandle,
 ): Promise<void> {
+  assertSingleComponent(name);
   const target = path.join(directory, name);
   const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0);
+
+  await assertUnswapped(directory, pinned);
 
   let temp = '';
   let handle: FileHandle | null = null;
@@ -352,6 +396,7 @@ export async function atomicWrite(
  * can intercept it.
  */
 export async function unlinkNoFollow(directory: string, name: string, pinned: FileHandle): Promise<void> {
+  assertSingleComponent(name);
   const target = path.join(directory, name);
   if ((await lstat(target)).isSymbolicLink()) throw new Error('the target file is a symlink');
   await assertUnswapped(directory, pinned);
