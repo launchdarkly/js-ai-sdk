@@ -169,7 +169,7 @@ const WINDOWS_RESERVED_NAMES: ReadonlySet<string> = new Set([
 export type WriteSkillsOptions = {
   /** Remove formerly-managed skills no longer in the requested set. Default `true`. */
   prune?: boolean;
-  /** Bound on the whole call, in **seconds** (not milliseconds). Default `10`. */
+  /** Bound on the whole call, in **seconds** (not milliseconds). Finite. Default `10`. */
   timeout?: number;
   /** How to react to content that could not be retrieved. Default `'keep'`. */
   onUnavailable?: OnUnavailable;
@@ -220,8 +220,18 @@ export async function writeSkills(
   if (onUnavailable !== 'keep' && onUnavailable !== 'raise') {
     throw new Error(`onUnavailable must be "keep" or "raise", got ${JSON.stringify(onUnavailable)}`);
   }
-  if (typeof timeout !== 'number' || Number.isNaN(timeout) || timeout < 0) {
-    throw new Error(`timeout must be a non-negative number of seconds, got ${JSON.stringify(timeout)}`);
+  // `Infinity` and `NaN` both pass a bare `< 0` check, and either one makes the
+  // deadline below non-finite — which voids the bound this option promises and
+  // lets the call run unbounded. `NaN` is the worse of the two, because what it
+  // voids depends on the *shape* of the comparison: `now > deadline` reads as
+  // never expiring, and `deadline - now > 0` reads as already expired. So the
+  // guard is finiteness, the way `debounceMs` and the store's timeouts are.
+  if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout < 0) {
+    // `String` rather than `JSON.stringify` for the number case: the latter
+    // serializes both `NaN` and `Infinity` as `null`, which names the wrong
+    // mistake.
+    const shown = typeof timeout === 'number' ? String(timeout) : JSON.stringify(timeout);
+    throw new Error(`timeout must be a non-negative, finite number of seconds, got ${shown}`);
   }
 
   // The request shape is validated before the root is resolved, so a mistaken

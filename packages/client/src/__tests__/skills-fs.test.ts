@@ -644,6 +644,24 @@ describe('writeSkills bare-string guard', () => {
     expect((error as Error).message).toContain('timeout');
   });
 
+  it('rejects a non-finite timeout, which would void the bound rather than shorten it', async () => {
+    // Both values pass the `< 0` half of the guard and make the deadline
+    // non-finite, so the option's whole promise — "bounds the entire call,
+    // including content retrieval" — goes silently away and the call runs
+    // unbounded. `NaN` is the worse one: `now > deadline` reads as never
+    // expiring while `deadline - now > 0` reads as already expired, so the same
+    // input can push two implementations in opposite directions.
+    for (const timeout of [Number.POSITIVE_INFINITY, Number.NaN]) {
+      const error = await writeSkills([skill('a')], root, { timeout }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Error);
+      // The value is named as itself: `JSON.stringify` renders both of these as
+      // `null`, which would report a mistake the caller did not make.
+      expect((error as Error).message).toContain(String(timeout));
+    }
+    // Refused before the root was touched, like every other caller value error.
+    expect(await entryNames(root)).toEqual([]);
+  });
+
   it('validates the request shape before creating the root directory', async () => {
     // A bare string is refused before `resolveRoot` runs, so a mistaken call
     // does not leave an empty directory behind as a side effect of failing.
