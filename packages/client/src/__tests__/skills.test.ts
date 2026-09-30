@@ -76,6 +76,16 @@ const APPROVED_SIGNALS = new Set([INTEGRITY_SIGNAL, MATERIALIZED_SIGNAL, REVOKED
  */
 const REMOVED_SIGNALS = ['AgentControl Skill SDK Reference Returned', 'AgentControl Skill Content Retrieved'];
 
+/**
+ * Convenience for building fixtures whose `contentHash` is correct.
+ *
+ * Deliberately the same expression the implementation hashes with, which is
+ * what makes it useless as an oracle: a change to the hashing rule moves every
+ * fixture built here along with it, and nothing in this file would fail. The
+ * rule is pinned independently, against the digests LaunchDarkly's delivery
+ * service computes, in the `contentHash contract` suite below — whose literal digests must
+ * never be replaced by a call to this helper.
+ */
 function hash(content: string | Uint8Array): string {
   return createHash('sha256')
     .update(typeof content === 'string' ? Buffer.from(content, 'utf-8') : content)
