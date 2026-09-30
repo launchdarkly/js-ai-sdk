@@ -1655,6 +1655,24 @@ export class FDv2SkillStore implements SkillStore {
     this.releaseWaiters();
   }
 
+  /**
+   * Whether a payload has arrived, so reads reflect delivery rather than an
+   * empty store still waiting for its first one.
+   *
+   * The optional half of the `SkillStore` seam, and the same fact
+   * `waitForSkills` resolves to — without the wait. `writeSkills('*')` consults
+   * it so a reconcile that runs before delivery reports the retrieval
+   * unavailable rather than pruning every managed skill as though the
+   * environment had revoked it.
+   *
+   * Stays `true` once a payload has arrived, including after `close`: a closed
+   * store still answers from what it received, and a later reconcile against
+   * that content is a reconcile against real delivery.
+   */
+  isInitialized(): boolean {
+    return this.firstPayload;
+  }
+
   /** Why delivery stopped for good, or `null` while it is running. */
   get failed(): string | null {
     return this.failedReason;

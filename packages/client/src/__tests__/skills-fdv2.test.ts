@@ -1407,21 +1407,33 @@ class ScriptedRequester implements Requester {
 
   constructor(private readonly outcomes: unknown[] = []) {}
 
-  private async next(): Promise<Array<[string, unknown]>> {
+  /**
+   * Honours the store's abort signal the way the real requester does: a
+   * scripted promise that never settles still lets `close()` return, since the
+   * store aborts the signal and awaits the delivery loop.
+   */
+  private async next(signal: AbortSignal): Promise<Array<[string, unknown]>> {
     const outcome = this.outcomes.length > 0 ? this.outcomes.shift() : new RecoverableTransportError('x');
     if (outcome instanceof Error) throw outcome;
-    if (outcome instanceof Promise) return outcome as Promise<Array<[string, unknown]>>;
+    if (outcome instanceof Promise) {
+      const aborted = new Promise<never>((_, reject) => {
+        const onAbort = (): void => reject(signal.reason ?? new Error('aborted'));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+      return Promise.race([outcome as Promise<Array<[string, unknown]>>, aborted]);
+    }
     return outcome as Array<[string, unknown]>;
   }
 
-  async poll(basis: string | null, etag: string | null): Promise<PollResult> {
+  async poll(basis: string | null, etag: string | null, signal: AbortSignal): Promise<PollResult> {
     this.calls.push([basis, etag]);
-    return { notModified: false, events: await this.next(), etag: null };
+    return { notModified: false, events: await this.next(signal), etag: null };
   }
 
-  async stream(basis: string | null): Promise<AsyncIterable<[string, unknown]>> {
+  async stream(basis: string | null, signal: AbortSignal): Promise<AsyncIterable<[string, unknown]>> {
     this.calls.push([basis, null]);
-    const scripted = await this.next();
+    const scripted = await this.next(signal);
     return (async function* () {
       yield* scripted;
     })();
@@ -2746,6 +2758,39 @@ describe('lifecycle', () => {
     await store.waitForSkills(5000);
     await store.close();
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+  });
+
+  it('isInitialized tracks the first payload, and stays true after close (§3.25)', async () => {
+    // The probe `writeSkills('*')` reads to decide whether it may prune. Before
+    // the first payload, an empty store and an environment with no skills are
+    // the same answer through `allObjects`; this is what tells them apart.
+    const silent = new FDv2SkillStore(SDK_KEY, {
+      mode: 'poll',
+      pollIntervalMs: 60_000,
+      requester: new ScriptedRequester([new Promise(() => {})]),
+    });
+    openStores.push(silent);
+    expect(silent.isInitialized()).toBe(false);
+    silent.start();
+    expect(await silent.waitForSkills(50)).toBe(false);
+    expect(silent.isInitialized()).toBe(false);
+
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+    const delivering = pollStore();
+    delivering.start();
+    expect(await delivering.waitForSkills(5000)).toBe(true);
+    expect(delivering.isInitialized()).toBe(true);
+    await delivering.close();
+    // Content outlives the connection, so the fact about it does too.
+    expect(delivering.isInitialized()).toBe(true);
+  });
+
+  it('a 304 counts as initialized — the payload held is confirmed current', async () => {
+    endpoint.queuePoll([], { status: 304 });
+    const store = pollStore();
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(store.isInitialized()).toBe(true);
   });
 
   it('times out waitForSkills rather than hanging', async () => {

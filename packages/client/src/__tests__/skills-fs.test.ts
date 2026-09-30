@@ -869,15 +869,26 @@ describe('writeSkills resilience', () => {
     expect(entries[`stale/${SKILL_MD}`]).toMatchObject({ key: 'stale', version: 3 });
   });
 
-  it('an exhausted timeout behaves as unavailable', async () => {
+  it('an exhausted timeout behaves as unavailable, and retrieves nothing', async () => {
     const store = new InMemorySkillStore();
     store.put(rawSkill('a'));
-    _setStore(store);
+    // `timeout` bounds the whole call *including* retrieval: with the budget
+    // already spent, the store must not be consulted at all.
+    let lookups = 0;
+    _setStore(
+      new Proxy(store, {
+        get(target, property, receiver) {
+          if (property === 'getObject') lookups += 1;
+          return Reflect.get(target, property, receiver);
+        },
+      }),
+    );
     const calls = interceptRename();
 
     const report = await writeSkills([{ key: 'a', version: 1 }], root, { timeout: 0 });
 
     expect(report.ok).toBe(false);
+    expect(lookups).toBe(0);
     expect(calls).toEqual([]);
     expect(await exists(path.join(root, 'a', SKILL_MD))).toBe(false);
   });
@@ -1859,6 +1870,11 @@ const CORRUPT_MANIFESTS: Array<[string, unknown]> = [
   ['version_not_int', { manifestVersion: '1', entries: {} }],
   ['future_version_live_entries', { manifestVersion: 2, entries: liveEntries() }],
   ['version_not_int_live_entries', { manifestVersion: '1', entries: liveEntries() }],
+  // §3.22: the version gate is bounded below as well as above. No release ever
+  // wrote a version under 1, so these are not older schemas this release can
+  // still read — they are schemas that never existed.
+  ['version_zero_live_entries', { manifestVersion: 0, entries: liveEntries() }],
+  ['version_negative_live_entries', { manifestVersion: -1, entries: liveEntries() }],
 ];
 
 const LIVE_ENTRY_MANIFESTS = CORRUPT_MANIFESTS.filter(([name]) => name.endsWith('_live_entries'));
@@ -1880,6 +1896,30 @@ describe('writeSkills corrupt manifest', () => {
     const errors = errorMessages(report);
     expect(errors.some((e) => e.toLowerCase().includes('manifest'))).toBe(true);
     expect(await readFile(target, 'utf-8')).toBe(DIVERGENT_CONTENT);
+  });
+
+  it.each([0, -1])('treats manifestVersion %s as corrupt, not as an older readable schema', async (declared) => {
+    // Python parity: `test_manifest_version_below_one_is_corrupt`. Before the
+    // lower bound existed, `manifestVersion: 0` pruned a managed file and
+    // reported `ok` true — the destructive steps ran against entries of a
+    // schema that never existed.
+    const target = await placeManaged(root, 'a', SKILL_BODY);
+    await writeManifest(root, {
+      manifestVersion: declared,
+      entries: { [`a/${SKILL_MD}`]: manifestEntry('a', 1, SKILL_BODY) },
+    });
+    const unlinks = interceptUnlink();
+
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(false);
+    const messages = errorMessages(report);
+    expect(messages.some((m) => m.includes('manifestVersion') && m.includes(MANIFEST_NAME))).toBe(true);
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(unlinks).toEqual([]);
+    expect(await exists(target)).toBe(true);
+    // The manifest itself is left alone, as with any other corruption.
+    expect((await readManifest(root)).manifestVersion).toBe(declared);
   });
 
   it('a run-level error carries the empty-key sentinel', async () => {
@@ -2516,6 +2556,165 @@ describe('writeSkills telemetry', () => {
     const [accessorKeys, writeKeys] = failures.map((props) => Object.keys(props).sort());
     expect(accessorKeys).toEqual(writeKeys);
     expect(accessorKeys).toContain('expected_hash');
+  });
+});
+
+// ─── Readiness: a store that has not heard yet must not authorize a prune ────
+
+/**
+ * §3.21 "`isInitialized()` is the optional readiness half of the seam" and
+ * §3.22 "Pruning is suppressed whenever the run cannot tell what is still
+ * current" — the third of the four conditions.
+ *
+ * Through `allObjects` there is no difference between "this environment holds
+ * no skills" and "delivery has not answered yet": both are an empty result.
+ * `writeSkills('*')` reads the first as every skill having been revoked, so
+ * without the probe a reconcile racing a slow boot deletes every managed file
+ * and reports success. Mirrors Python's `TestUninitializedStore`.
+ */
+describe('writeSkills uninitialized store', () => {
+  /** A delivery store whose first payload has not arrived. */
+  function waiting(initialized: boolean): SkillStore & { isInitialized(): boolean } {
+    return {
+      isInitialized: () => initialized,
+      getObject: () => null,
+      allObjects: () => ({}),
+    };
+  }
+
+  it('"*" does not prune before the first payload', async () => {
+    const existing = await placeManaged(root, 'a', SKILL_BODY);
+    const unlinks = interceptUnlink();
+    _setStore(waiting(false));
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(false);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(unlinks).toEqual([]);
+    // The entry survives, so a later reconcile still knows it owns the file.
+    expect((await readManifest(root)).entries).toHaveProperty(`a/${SKILL_MD}`);
+    // The error is run-level, is worded as a retrieval-unavailable failure, and
+    // names the remedy: wait for delivery.
+    const messages = errorMessages(report);
+    expect(messages.some((m) => m.includes('initial data'))).toBe(true);
+    expect(messages.some((m) => m.includes('skill retrieval unavailable'))).toBe(true);
+    expect(messages.some((m) => m.includes('waitForSkills'))).toBe(true);
+    expect(report.errors.every((a) => a.key === '')).toBe(true);
+  });
+
+  it('a reference resolve against an uninitialized store is unavailable too, and suppresses prune', async () => {
+    // The check lives in the single gate both forms go through, so the
+    // reference form reports the same unavailability and holds prune off the
+    // unrelated managed entry.
+    const stale = await placeManaged(root, 'stale', SKILL_BODY);
+    _setStore(waiting(false));
+
+    const report = await writeSkills([{ key: 'a', version: 1 }], root);
+
+    expect(report.ok).toBe(false);
+    expect(actionsByKey(report).a.action).toBe('error');
+    expect(actionsByKey(report).a.error).toContain('initial data');
+    expect(actionsByKey(report).stale).toBeUndefined();
+    expect(await readFile(stale, 'utf-8')).toBe(SKILL_BODY);
+  });
+
+  it('"*" throws in raise mode before the first payload', async () => {
+    _setStore(waiting(false));
+    await expect(writeSkills('*', root, { onUnavailable: 'raise' })).rejects.toThrow(/initial data/);
+  });
+
+  it('an initialized store prunes as before — the positive control', async () => {
+    await placeManaged(root, 'a', SKILL_BODY);
+    _setStore(waiting(true));
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    expect(actionsByKey(report).a.action).toBe('removed');
+    expect(await exists(path.join(root, 'a'))).toBe(false);
+  });
+
+  it('a store without the probe is treated as initialized', async () => {
+    // `isInitialized` is optional; absent means initialized. A hand-populated
+    // store is never waiting for anything, so requiring the probe would break
+    // every InMemorySkillStore caller.
+    const store = new InMemorySkillStore();
+    expect('isInitialized' in store).toBe(false);
+    _setStore(store);
+    await placeManaged(root, 'a', SKILL_BODY);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    expect(actionsByKey(report).a.action).toBe('removed');
+  });
+
+  it('a probe that throws counts as uninitialized, and warns', async () => {
+    // A store that cannot say whether it is ready does not get to delete.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const existing = await placeManaged(root, 'a', SKILL_BODY);
+    _setStore({
+      isInitialized: () => {
+        throw new Error('cannot tell');
+      },
+      getObject: () => null,
+      allObjects: () => ({}),
+    });
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(false);
+    expect(await exists(existing)).toBe(true);
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/isInitialized/);
+  });
+});
+
+// ─── The "*" form's own hole: a withholding with no key to protect anything ──
+
+describe('writeSkills unattributed withholding', () => {
+  it('an unattributable failure never prunes (§3.22: the run is reported incomplete)', async () => {
+    // Every per-object failure the wildcard resolve can attribute to a key
+    // keeps that key in the requested set, which is what holds prune off the
+    // copy on disk. When neither the object's own `key` nor the store's map key
+    // is usable the failure is run-level, so there is no key to hold the
+    // on-disk copy with — reporting the run incomplete is the only thing left
+    // that stops prune reading an unreadable object as a revocation.
+    const seed = new InMemorySkillStore();
+    seed.put(rawSkill('pdf-extraction'));
+    seed.put(rawSkill('other'));
+    _setStore(seed);
+    const first = await writeSkills('*', root);
+    expect(first.ok).toBe(true);
+    const existing = path.join(root, 'pdf-extraction', SKILL_MD);
+
+    // The shipped store keys `allObjects` as `<key>:<version>`, which is never a
+    // valid skill key, so a mangled `key` field leaves no fallback. The good
+    // skill is still served alongside it.
+    const mangled: RawSkillObject = {
+      key: 'PDF Extraction!',
+      version: 1,
+      content: SKILL_BODY,
+      contentHash: hash(SKILL_BODY),
+    };
+    _setStore({
+      getObject: () => null,
+      allObjects: () => ({ 'other:1': rawSkill('other'), 'pdf-extraction:1': mangled }),
+    });
+    const unlinks = interceptUnlink();
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(false);
+    expect(report.errors.some((a) => a.key === '' && /invalid key/.test(a.error ?? ''))).toBe(true);
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(unlinks).toEqual([]);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+    expect((await readManifest(root)).entries).toHaveProperty(`pdf-extraction/${SKILL_MD}`);
+    // The good skill still reconciled — the run is incomplete, not abandoned.
+    expect(actionsByKey(report).other.action).toBe('skipped_current');
   });
 });
 

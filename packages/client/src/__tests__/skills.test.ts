@@ -332,6 +332,18 @@ describe('package exports', () => {
     expect(Object.keys(exhaustive).sort()).toEqual(['keep', 'raise']);
   });
 
+  it('exports the delivery transport, the watcher, and their defaults from the package root', () => {
+    // §3.25 / §3.26: the transport and the watcher are root exports in both
+    // languages; the base-URI and debounce defaults are TypeScript-only root
+    // exports (A.12).
+    expect(typeof packageIndex.FDv2SkillStore).toBe('function');
+    expect(typeof packageIndex.watchSkills).toBe('function');
+    expect(typeof packageIndex.SkillWatcher).toBe('function');
+    expect(packageIndex.DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
+    expect(packageIndex.DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
+    expect(packageIndex.DEFAULT_DEBOUNCE_MS).toBe(500);
+  });
+
   it('exports getSkillResult and the outcome factory from the package root', () => {
     expect(typeof packageIndex.getSkillResult).toBe('function');
     expect(typeof packageIndex.createSkillOutcome).toBe('function');
@@ -489,6 +501,10 @@ describe('InMemorySkillStore', () => {
 
   it('returns null for an unknown key', () => {
     expect(new InMemorySkillStore().getObject('skill', 'nope')).toBeNull();
+  });
+
+  it('implements no isInitialized probe — a hand-populated store is never waiting (§3.21)', () => {
+    expect('isInitialized' in new InMemorySkillStore()).toBe(false);
   });
 
   it('put then get', () => {
@@ -1167,6 +1183,26 @@ describe('integrity verification', () => {
     expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
   });
 
+  it('reports over_size_cap, not not_utf8, for over-cap content that also carries a lone surrogate (§3.21)', async () => {
+    // The checks run in a fixed order — shape, size, encoding, hash — and size
+    // precedes encoding deliberately: running an encoding pass over a 10 MiB
+    // body before rejecting it for being 10 MiB is a DoS foothold. This is the
+    // one boundary where the order is observable.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    errorSpy.mockClear();
+    const content = `\ud800${OVERSIZE}`;
+    _setStore(new DictStore({ a: rawSkill({ key: 'a', content, contentHash: hash(Buffer.from(content, 'utf-8')) }) }));
+
+    expect(await getSkill('a')).toBeNull();
+
+    const logged = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logged).toContain('"reason_code":"over_size_cap"');
+    expect(logged).not.toContain('not_utf8');
+    expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
+  });
+
   it('accepts content at exactly the size cap', async () => {
     const atCap = 'x'.repeat(MAX_SKILL_CONTENT_BYTES);
     const store = new InMemorySkillStore();
@@ -1235,9 +1271,33 @@ describe('integrity verification', () => {
     expect(await getSkill('a')).toBeNull();
   });
 
-  it('rejects a non-object raw entry', async () => {
+  it('rejects a non-object raw entry — absent when pinned, not_an_object when listed (§3.21)', async () => {
+    // The asymmetry is the contract. A pinned lookup that comes back as a
+    // non-object is a broken store adapter answering "nothing", reported as
+    // `absent` with no signal and no log record — firing a tampering signal on
+    // every broken adapter would drown the real ones. The listing path hands
+    // every raw value straight to verification, which is where `not_an_object`
+    // fires.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    // `spyOn` on an already-spied method hands back the existing spy with its
+    // history, so clear it: only what *this* test logs may count.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    errorSpy.mockClear();
     _setStore(new DictStore({ a: 'not an object' as unknown as RawSkillObject }));
+
     expect(await getSkill('a')).toBeNull();
+    const outcome = await getSkillResult('a');
+    expect(outcome.reason).toBe('absent');
+    expect(emitter.records).toEqual([]);
+    expect(errorSpy).not.toHaveBeenCalled();
+
+    expect(await allSkills()).toEqual([]);
+    const signals = emitter.signals(INTEGRITY_SIGNAL);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].skill_key).toBe('<invalid-key>');
+    const logged = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logged).toContain('"reason_code":"not_an_object"');
   });
 
   it('rejects an uppercase hash — hashes are lowercase hex', async () => {
@@ -2140,6 +2200,9 @@ describe('getSkillResult', () => {
     expect(detail).toContain('pdf-extraction');
     expect(detail).toContain('version 2');
     expect(detail).toContain('version 3');
+    // Safe to log: no path separator and no root path of any kind.
+    expect(detail).not.toMatch(/[\\/]/);
+    expect(detail).not.toContain(process.cwd());
   });
 });
 
