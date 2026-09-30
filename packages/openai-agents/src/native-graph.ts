@@ -8,10 +8,12 @@ import {
   imageBlockToUrl,
   type Message,
   type MessageContent,
+  makeGraphTrackData,
   makeNodeTrackData,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
+  setLdSpanAttributes,
   type ToolHandlerFn,
 } from '@launchdarkly/ai-server';
 import { Agent, handoff, Runner, tool } from '@openai/agents';
@@ -128,6 +130,7 @@ export const toOpenAIAgents = (
       span.setAttribute('launchdarkly.graph.key', def.key);
       const startTime = Date.now();
       const runId = crypto.randomUUID();
+      setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext });
 
       const path: string[] = [];
       // Map from sanitized agent name → original node key (for hook callbacks)

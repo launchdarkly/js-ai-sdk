@@ -5,10 +5,12 @@ import {
   type GraphNode,
   getClient,
   type Message,
+  makeGraphTrackData,
   makeNodeTrackData,
   NATIVE_TOOL_KEY,
   NativeTool,
   type ProviderGraphResponse,
+  setLdSpanAttributes,
   type ToolHandlerFn,
   type TrackData,
 } from '@launchdarkly/ai-server';
@@ -185,6 +187,7 @@ export const toClaudeAgents = (
       span.setAttribute('launchdarkly.graph.key', def.key);
       const startTime = Date.now();
       const runId = crypto.randomUUID();
+      setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext });
 
       const path: string[] = [];
       const totalUsage = { input: 0, output: 0, total: 0 };

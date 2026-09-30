@@ -6,10 +6,12 @@ import {
   type LDContext,
   type Message,
   type MessageContent,
+  makeGraphTrackData,
   makeNodeTrackData,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
+  setLdSpanAttributes,
   type ToolHandlerFn,
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
@@ -132,6 +134,7 @@ export const toVercelAgents = (
       const startedAt = Date.now();
       const runId = crypto.randomUUID();
       const context = options.context;
+      setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext: context });
       const handlers = options.toolHandlers ?? {};
       const selectedTargets = new Map<string, string>();
       const nodes = new Map<string, GraphNode>();

@@ -11,10 +11,12 @@ import {
   type GraphNode,
   getClient,
   type Message,
+  makeGraphTrackData,
   makeNodeTrackData,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
+  setLdSpanAttributes,
   type ToolHandlerFn,
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
@@ -155,6 +157,7 @@ export const toLangGraph = (
       span.setAttribute('launchdarkly.graph.key', def.key);
       const startTime = Date.now();
       const runId = crypto.randomUUID();
+      setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext });
 
       const path: string[] = [];
       const totalUsage = { input: 0, output: 0, total: 0 };
