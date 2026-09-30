@@ -147,10 +147,12 @@ function toAiContent(content: MessageContent): ModelMessage['content'] {
   if (typeof content === 'string') return content;
   return content.map((block) => {
     if (block.type === 'text') return { type: 'text' as const, text: block.text };
-    if (block.source.type === 'url') return { type: 'image' as const, image: new URL(block.source.url) };
+    if (block.source.type === 'url') {
+      return { type: 'file' as const, data: new URL(block.source.url), mediaType: 'image' };
+    }
     return {
-      type: 'image' as const,
-      image: Uint8Array.from(Buffer.from(block.source.data, 'base64')),
+      type: 'file' as const,
+      data: Uint8Array.from(Buffer.from(block.source.data, 'base64')),
       mediaType: block.source.media_type,
     };
   });

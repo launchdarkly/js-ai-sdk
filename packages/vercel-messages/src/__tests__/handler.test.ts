@@ -224,7 +224,7 @@ describe('createVercelMessagesHandler', () => {
     ]);
   });
 
-  it('maps base64 and URL image history to native AI SDK image parts', async () => {
+  it('maps base64 and URL image history to native AI SDK file parts', async () => {
     const history = [
       {
         role: 'user' as const,
@@ -238,9 +238,9 @@ describe('createVercelMessagesHandler', () => {
     await createVercelMessagesHandler()(baseConfig as any, '', {}, {}, history);
     const content = aiMocks.generateText.mock.calls[0][0].messages[0].content;
     expect(content[0]).toEqual({ type: 'text', text: 'Compare these.' });
-    expect(content[1]).toMatchObject({ type: 'image', mediaType: 'image/png' });
-    expect(content[1].image).toBeInstanceOf(Uint8Array);
-    expect(content[2]).toEqual({ type: 'image', image: new URL('https://example.com/image.png') });
+    expect(content[1]).toMatchObject({ type: 'file', mediaType: 'image/png' });
+    expect(content[1].data).toBeInstanceOf(Uint8Array);
+    expect(content[2]).toEqual({ type: 'file', data: new URL('https://example.com/image.png'), mediaType: 'image' });
   });
 
   it('offers only tools with callable handlers and preserves JSON Schema', async () => {
