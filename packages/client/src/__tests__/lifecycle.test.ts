@@ -68,7 +68,13 @@ vi.mock('@opentelemetry/api', () => ({
   },
 }));
 
-vi.mock('dotenv/config', () => ({}));
+// Guard: the library must never load `.env` as an import side effect. If lifecycle.ts
+// (or anything it imports) pulls in `dotenv/config`, this factory runs and the test below fails.
+const { dotenvLoaded } = vi.hoisted(() => ({ dotenvLoaded: vi.fn() }));
+vi.mock('dotenv/config', () => {
+  dotenvLoaded();
+  return {};
+});
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -100,6 +106,11 @@ describe('lifecycle', () => {
   afterEach(() => {
     clearSingleton();
     delete process.env.LD_SDK_KEY;
+  });
+
+  it('does not load dotenv as an import side effect', async () => {
+    await import('../lifecycle.js');
+    expect(dotenvLoaded).not.toHaveBeenCalled();
   });
 
   describe('getClient', () => {

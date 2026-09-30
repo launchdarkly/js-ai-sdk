@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { trace } from '@opentelemetry/api';
 import { ConversationIdSpanProcessor } from './conversation.js';
 import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';

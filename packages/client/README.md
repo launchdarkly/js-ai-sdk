@@ -47,6 +47,8 @@ No code changes are required — `initClient()` detects the packages at runtime 
 | `LD_ENVIRONMENT` | No | `deployment.environment` resource attribute attached to telemetry |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OTLP endpoint override (default: LaunchDarkly Observability backend) |
 
+The SDK reads these from `process.env` and never loads a `.env` file itself. If you want `.env` loading, add `import 'dotenv/config';` to your own entrypoint before importing the SDK.
+
 The client uses **lazy initialization**: importing the package does not connect to LaunchDarkly. The singleton is created automatically on the first API call that needs it (`config().invoke()`, `graph().invoke()`, `resolveGraph()`, etc.), as long as `LD_SDK_KEY` is set in the environment.
 
 Call `initClient()` explicitly when you want to:
