@@ -165,6 +165,9 @@ class FakeFDv2Endpoint {
   readonly requests: RecordedRequest[] = [];
   holdStreamOpen = false;
   dropStreams = false;
+  /** When set alongside `holdStreamOpen`, a `heart-beat` is sent on this interval. */
+  heartbeatMs: number | null = null;
+  private readonly heartbeats = new Set<ReturnType<typeof setInterval>>();
   private readonly polls: Array<{
     status: number;
     events: WireEvent[];
@@ -255,12 +258,22 @@ class FakeFDv2Endpoint {
       // Held so a test can assert on the store's state without racing the
       // reconnect path; released on `close`.
       this.held.add(res);
+      if (this.heartbeatMs !== null) {
+        const timer = setInterval(() => res.write('event: heart-beat\ndata: {}\n\n'), this.heartbeatMs);
+        this.heartbeats.add(timer);
+        res.on('close', () => {
+          clearInterval(timer);
+          this.heartbeats.delete(timer);
+        });
+      }
       return;
     }
     res.end();
   }
 
   async close(): Promise<void> {
+    for (const timer of this.heartbeats) clearInterval(timer);
+    this.heartbeats.clear();
     for (const res of this.held) res.end();
     this.held.clear();
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
@@ -1396,6 +1409,40 @@ describe('SSE framing', () => {
 
   it('dispatches a named block with no data as a null payload', async () => {
     expect(await framed('event: heart-beat\n\n')).toEqual([['heart-beat', null]]);
+  });
+
+  it('bounds an unterminated line and fails recoverably rather than buffering it without limit', async () => {
+    // A server (or a proxy) that never sends a newline would otherwise grow the
+    // line buffer until the process ran out of memory. Recoverable, so the
+    // connection is dropped and retried rather than the store giving up.
+    const chunks = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const chunk = new TextEncoder().encode('x'.repeat(256 * 1024));
+        for (let i = 0; i < 6; i += 1) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    const drain = async (): Promise<void> => {
+      for await (const _ of iterSse(chunks)) {
+        // nothing is expected to dispatch
+      }
+    };
+    await expect(drain()).rejects.toBeInstanceOf(RecoverableTransportError);
+  });
+
+  it('bounds the accumulated data lines of one event the same way', async () => {
+    const line = `data: ${'y'.repeat(128 * 1024)}\n`;
+    const drain = async (): Promise<void> => {
+      for await (const _ of iterSse(sseBody(`event: put-object\n${line.repeat(10)}`))) {
+        // nothing is expected to dispatch
+      }
+    };
+    await expect(drain()).rejects.toBeInstanceOf(RecoverableTransportError);
+  });
+
+  it('still dispatches an event well inside the bound', async () => {
+    const big = JSON.stringify({ content: 'z'.repeat(64 * 1024) });
+    expect(await framed(`event: put-object\ndata: ${big}\n\n`)).toEqual([['put-object', JSON.parse(big)]]);
   });
 });
 
@@ -3274,6 +3321,10 @@ describe('transport contract', () => {
     expect(source).not.toMatch(/FDV2_OBJECT_KIND\s*=\s*SKILL_OBJECT_KIND/);
     expect(FDV2_OBJECT_KIND).toBe(SKILL_OBJECT_KIND);
   });
+
+  it('the 401 message names the SDK key', () => {
+    expect(classifyStatus(401).message).toMatch(/SDK key/);
+  });
   it('a goodbye on a store holding committed content keeps it', () => {
     const held = new SkillObjectSet();
     const reader = new ProtocolReader(held);
@@ -3285,6 +3336,18 @@ describe('transport contract', () => {
     drive(reader, events(['server-intent', serverIntent('xfer-full')], ['put-object', putSkill('other')]));
     reader.handle('goodbye', { reason: 'recycle', silent: true });
     expect(held.size).toBe(1);
+  });
+
+  it('bound exhaustion logs the error and keeps serving last known good, in one test', async () => {
+    const requester = new ScriptedRequester([asPairs(fullPayload([['put-object', putSkill()]]))]);
+    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 2 });
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await waitUntil(() => store.failed !== null, 5000)).toBe(true);
+    expect(consoleErrors()).toMatch(/will not retry/);
+    expect(consoleErrors()).toMatch(/gave up after 3 consecutive failures/);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+    expect(store.allObjects(SKILL_OBJECT_KIND)).toHaveProperty('pdf-extraction');
   });
   it('holds a tampered object while the accessor reports integrity_failure', async () => {
     // Verification is the accessor's job, not the transport's: the store keeps
@@ -3309,6 +3372,16 @@ describe('transport contract', () => {
     // `NaN` is the case a `<= 0` guard misses.
     expect(() => new FDv2SkillStore(SDK_KEY, { mode: 'poll', pollIntervalMs: value })).toThrow(/pollIntervalMs/);
   });
+
+  it('rejects a non-string credential', () => {
+    expect(() => new FDv2SkillStore(42 as never)).toThrow(/server-side SDK key/);
+    expect(() => new FDv2SkillStore(undefined as never)).toThrow(/server-side SDK key/);
+  });
+
+  it('refusal messages for mobile and client-side credentials say skills are server-side', () => {
+    expect(() => new FDv2SkillStore('mob-00000000-0000-4000-8000-000000000000')).toThrow(/server-side/);
+    expect(() => new FDv2SkillStore('0123456789abcdef01234567')).toThrow(/server-side/);
+  });
   it.each([
     Number.NaN,
     Number.NEGATIVE_INFINITY,
@@ -3316,6 +3389,23 @@ describe('transport contract', () => {
   ])('waitForSkills rejects a non-finite or negative timeoutMs (%s)', async (value) => {
     const store = pollStore();
     await expect(store.waitForSkills(value)).rejects.toThrow(/timeoutMs/);
+  });
+
+  it('an idle stream carrying heartbeats stays connected past what the read timeout alone would allow', async () => {
+    // The read deadline bounds the gap between reads, not the connection's
+    // life. Heartbeats well inside `readTimeoutMs` keep one connection open for
+    // several multiples of it, with no reconnect.
+    endpoint.holdStreamOpen = true;
+    endpoint.heartbeatMs = 20;
+    endpoint.queueStream(fullPayload([['put-object', putSkill()]]));
+    const store = streamStore({ readTimeoutMs: 100 });
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(endpoint.requests).toHaveLength(1);
+    expect(store.failed).toBeNull();
+    expect(store.diagnostics.connectionFailures).toBe(0);
+    expect(store.diagnostics.lastError).toBeNull();
   });
   it('a stream interrupted by close does not count as a success', async () => {
     // `streamOnce` returning because the signal aborted is the store closing,

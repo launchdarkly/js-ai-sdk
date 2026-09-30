@@ -1230,11 +1230,24 @@ function readFailure(cause: unknown, what: string, deadline: ReadDeadline | unde
 }
 
 /**
+ * Bound on what the SSE decoder will hold for one event: the unterminated tail
+ * of the current line plus the accumulated `data:` lines, in UTF-16 code units.
+ *
+ * A skill object is a few kilobytes and the cap on content is 10 MiB after
+ * decoding, so a legitimate event is well inside this; a server or proxy that
+ * never sends a newline, or one event whose data never ends, would otherwise
+ * grow memory without limit. Exceeding it is a recoverable transport failure,
+ * so the connection is dropped and retried rather than the store giving up.
+ */
+export const MAX_SSE_EVENT_CHARS = 1024 * 1024;
+
+/**
  * Decodes an SSE byte stream into `[event name, data]` pairs.
  *
  * Minimal on purpose — this consumes one LaunchDarkly endpoint, not the whole
  * spec: `event:`/`data:` fields, multi-line `data` joined with newlines, a blank
- * line dispatching, and `:` comments skipped.
+ * line dispatching, and `:` comments skipped. Bounded by
+ * {@link MAX_SSE_EVENT_CHARS} per event.
  *
  * Only the read itself is wrapped as recoverable (see {@link readFailure}).
  * Whatever the consumer's loop body throws while this generator is suspended at
@@ -1250,6 +1263,9 @@ export async function* iterSse(
   let buffer = '';
   let name: string | null = null;
   let dataLines: string[] = [];
+  let dataChars = 0;
+
+  const overBound = (): boolean => buffer.length + dataChars > MAX_SSE_EVENT_CHARS;
 
   // Every block that ends clears the buffered fields, whether or not it turns
   // into an event: a block with no `event:` field is the default `message`
@@ -1260,6 +1276,7 @@ export async function* iterSse(
     const payload = dataLines.join('\n');
     name = null;
     dataLines = [];
+    dataChars = 0;
     if (eventName === null) return null;
     if (payload === '') return [eventName, null];
     try {
@@ -1282,6 +1299,11 @@ export async function* iterSse(
       const { done, value } = chunk;
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+      if (overBound()) {
+        throw new RecoverableTransportError(
+          `the FDv2 stream sent more than ${MAX_SSE_EVENT_CHARS} characters without completing an event`,
+        );
+      }
       let newline = buffer.indexOf('\n');
       while (newline !== -1) {
         const line = buffer.slice(0, newline).replace(/\r$/, '');
@@ -1295,7 +1317,15 @@ export async function* iterSse(
           let value2 = colon === -1 ? '' : line.slice(colon + 1);
           if (value2.startsWith(' ')) value2 = value2.slice(1);
           if (field === 'event') name = value2;
-          else if (field === 'data') dataLines.push(value2);
+          else if (field === 'data') {
+            dataLines.push(value2);
+            dataChars += value2.length + 1;
+            if (overBound()) {
+              throw new RecoverableTransportError(
+                `the FDv2 stream sent more than ${MAX_SSE_EVENT_CHARS} characters of data for one event`,
+              );
+            }
+          }
         }
         newline = buffer.indexOf('\n');
       }
