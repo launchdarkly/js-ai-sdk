@@ -336,6 +336,19 @@ describe('graph().invoke()', () => {
     expect(eventNames).toContain('$ld:ai:graph:duration:total');
   });
 
+  it('puts the environment id on graph-level events', async () => {
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({
+      track: mockTrack,
+      variation: mockVariation,
+      _featureStore: { getInitMetaData: () => ({ environmentId: 'env-abc' }) },
+    });
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+    await graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext);
+    const graphCall = mockTrack.mock.calls.find((c: any[]) => c[0] === '$ld:ai:graph:invocation_success');
+    expect(graphCall?.[2]).toEqual(expect.objectContaining({ environmentId: 'env-abc' }));
+  });
+
   it('tracks $ld:ai:graph:node once per visited node on entry', async () => {
     setupTwoNodeGraph();
     const handler = makeHandler();

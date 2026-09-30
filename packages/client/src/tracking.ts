@@ -109,6 +109,28 @@ export const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: stri
   providerName: node.config.provider.name,
   ...modelStampsFromMeta(node.meta),
   graphKey,
+  environmentId: tryGetEnvironmentId(),
+});
+
+/**
+ * Builds the tracking payload for a native graph run as a whole. The graph flag
+ * is itself the AI Config the trace belongs to, so its key is both the config
+ * key and the graph key — the same choice the client's own graph runner makes in
+ * `graph.ts`. There is no model or variation to report: a graph flag carries a
+ * topology, and `GraphDefinition` does not expose its `_ldMeta`.
+ *
+ * Native graph adapters pass this to `setLdSpanAttributes` so the
+ * `launchdarkly.graph` span can be found by an AI Config Monitoring query.
+ */
+export const makeGraphTrackData = (graphKey: string, runId: string): TrackData => ({
+  runId,
+  configKey: graphKey,
+  variationKey: '',
+  version: 1,
+  modelName: '',
+  providerName: '',
+  graphKey,
+  environmentId: tryGetEnvironmentId(),
 });
 
 /**
@@ -119,8 +141,11 @@ export const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: stri
  *
  * Uses a private API that is stable across minor SDK versions. Returns
  * `undefined` gracefully on any failure (edge runtimes, custom clients, etc.).
+ *
+ * @internal Exported for this package's own modules (`graph.ts`); not part of
+ * the public API.
  */
-function tryGetEnvironmentId(): string | undefined {
+export function tryGetEnvironmentId(): string | undefined {
   try {
     // biome-ignore lint/suspicious/noExplicitAny: private LD SDK internals mirror what the SDK's own OTel hook accesses
     const featureStore = (getClient() as any)._featureStore;

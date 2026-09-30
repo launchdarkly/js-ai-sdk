@@ -4,7 +4,7 @@ import { bindConversationId, bindSpanContext } from './conversation.js';
 import { runJudges } from './judges.js';
 import { extractVariation, getClient, initClient } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
-import { executeAndStream, modelStampsFromMeta } from './tracking.js';
+import { executeAndStream, modelStampsFromMeta, tryGetEnvironmentId } from './tracking.js';
 import type { LDContext, Message, ToolHandlerFn } from './types.js';
 import {
   type AiConfigRep,
@@ -139,6 +139,7 @@ const buildGraph = async (
     providerName: '',
     ...modelStampsFromMeta(meta),
     graphKey: key,
+    environmentId: tryGetEnvironmentId(),
   };
 
   const disabledStreamRoute = (): AsyncGenerator<GraphStreamEvent, RouteResult> => {
