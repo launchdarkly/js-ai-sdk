@@ -169,7 +169,7 @@ const WINDOWS_RESERVED_NAMES: ReadonlySet<string> = new Set([
 export type WriteSkillsOptions = {
   /** Remove formerly-managed skills no longer in the requested set. Default `true`. */
   prune?: boolean;
-  /** Bound on the whole call, in **seconds** (not milliseconds). Default `10`. */
+  /** Bound on the whole call, in **seconds** (not milliseconds). Finite. Default `10`. */
   timeout?: number;
   /** How to react to content that could not be retrieved. Default `'keep'`. */
   onUnavailable?: OnUnavailable;
@@ -220,8 +220,25 @@ export async function writeSkills(
   if (onUnavailable !== 'keep' && onUnavailable !== 'raise') {
     throw new Error(`onUnavailable must be "keep" or "raise", got ${JSON.stringify(onUnavailable)}`);
   }
-  if (typeof timeout !== 'number' || Number.isNaN(timeout) || timeout < 0) {
-    throw new Error(`timeout must be a non-negative number of seconds, got ${JSON.stringify(timeout)}`);
+  // `Infinity` and `NaN` both pass a bare `< 0` check, and either one makes the
+  // deadline below non-finite — which voids the bound this option promises and
+  // lets the call run unbounded. `NaN` is the worse of the two, because what it
+  // voids depends on the *shape* of the comparison: `now > deadline` reads as
+  // never expiring, and `deadline - now > 0` reads as already expired. So the
+  // guard is finiteness, the way `debounceMs` and the store's timeouts are.
+  if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout < 0) {
+    // `String` rather than `JSON.stringify` for the number case: the latter
+    // serializes both `NaN` and `Infinity` as `null`, which names the wrong
+    // mistake.
+    const shown = typeof timeout === 'number' ? String(timeout) : JSON.stringify(timeout);
+    throw new Error(`timeout must be a non-negative, finite number of seconds, got ${shown}`);
+  }
+
+  // The request shape is validated before the root is resolved, so a mistaken
+  // call — a bare key string where an array was meant — does not leave a freshly
+  // created root directory behind as a side effect of failing.
+  if (typeof skills === 'string' && skills !== '*') {
+    throw new Error(`writeSkills takes an array of skills or the literal "*"; got ${JSON.stringify(skills)}`);
   }
 
   const deadline = performance.now() + timeout * 1000;
@@ -354,7 +371,7 @@ async function writeAll(
         createReconcileAction({
           key: request.key,
           action: 'error',
-          error: request.error ?? `skill '${request.key}' could not be resolved`,
+          error: request.error ?? `skill ${shownKey(request.key)} could not be resolved`,
         }),
       );
       continue;
@@ -491,6 +508,8 @@ async function resolveRequests(
   onUnavailable: OnUnavailable,
 ): Promise<{ requests: PendingWrite[]; incomplete: boolean }> {
   if (typeof skills === 'string') {
+    // `writeSkills` has already refused any string but '*', before the root
+    // was resolved; this is the same guard as a type narrowing.
     if (skills !== '*') {
       throw new Error(`writeSkills takes an array of skills or the literal "*"; got ${JSON.stringify(skills)}`);
     }
@@ -793,6 +812,21 @@ async function loadManifest(
 // Per-skill reconcile
 // -------------------------------------------------------------------------
 
+/** How much of an attacker-reachable key an error message echoes. */
+const SHOWN_KEY_CHARS = 32;
+
+/**
+ * A key as it may appear in an error message: truncated to
+ * {@link SHOWN_KEY_CHARS}, because a key is attacker-reachable input and a
+ * rejected one is echoed into `ReconcileAction.error` — a 100 KB "key" must not
+ * become a 100 KB error string. Quoted with `JSON.stringify` so control
+ * characters are escaped rather than written into the log.
+ */
+function shownKey(key: unknown): string {
+  if (typeof key !== 'string') return JSON.stringify(key) ?? String(key);
+  return key.length > SHOWN_KEY_CHARS ? `${JSON.stringify(key.slice(0, SHOWN_KEY_CHARS))}...` : JSON.stringify(key);
+}
+
 /**
  * Why `key` must not become a directory name under the managed root, or `null`.
  *
@@ -804,14 +838,14 @@ async function loadManifest(
  */
 function keyRejectionReason(key: unknown): string | null {
   if (!isValidSkillKey(key)) {
-    return `${JSON.stringify(key)} is not a valid skill key (^[a-z0-9][a-z0-9-]*$, at most ${SKILL_KEY_MAX_LENGTH} characters)`;
+    return `${shownKey(key)} is not a valid skill key (^[a-z0-9][a-z0-9-]*$, at most ${SKILL_KEY_MAX_LENGTH} characters)`;
   }
   // The data model allows 256 characters; no mainstream filesystem allows a
   // 256-byte path component. Catch it here so it is a reported action rather than
   // an ENAMETOOLONG thrown from the first stat in the caller.
   const keyBytes = Buffer.byteLength(key, 'utf-8');
   if (keyBytes > MAX_PATH_COMPONENT_BYTES) {
-    return `skill key '${key.slice(0, 32)}...' is ${keyBytes} bytes, over the ${MAX_PATH_COMPONENT_BYTES}-byte limit for a single directory name`;
+    return `skill key ${shownKey(key)} is ${keyBytes} bytes, over the ${MAX_PATH_COMPONENT_BYTES}-byte limit for a single directory name`;
   }
   // Same argument one step further: the grammar admits names Windows resolves as
   // devices instead of as paths. This layer is the right place for it — see
