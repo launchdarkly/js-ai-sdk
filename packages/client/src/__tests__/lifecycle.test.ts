@@ -15,9 +15,16 @@ vi.mock('@launchdarkly/node-server-sdk', () => ({
 const mockTracerProviderShutdown = vi.fn().mockResolvedValue(undefined);
 const mockTracerProviderRegister = vi.fn();
 
+// Mirrors OTel's global registration: first caller wins, later ones are refused
+// and the delegate stays whoever got there first. `otel.delegate` is that global.
+const { otel } = vi.hoisted(() => ({ otel: { delegate: null as unknown } }));
+
 vi.mock('@opentelemetry/sdk-trace-node', () => ({
   NodeTracerProvider: class {
-    register = mockTracerProviderRegister;
+    register = (...args: unknown[]) => {
+      mockTracerProviderRegister(...args);
+      if (otel.delegate === null) otel.delegate = this;
+    };
     shutdown = mockTracerProviderShutdown;
   },
 }));
@@ -62,8 +69,14 @@ const mockContextDisable = vi.fn();
 const mockPropagationDisable = vi.fn();
 vi.mock('@opentelemetry/api', () => ({
   trace: {
-    getTracerProvider: vi.fn().mockReturnValue({ _delegate: {} }),
-    disable: () => mockTraceDisable(),
+    // Unregistered, the real API hands back a noop provider with no `_delegate`
+    // at all — which is what waitForTelemetry treats as "ready". Only a
+    // registered provider is wrapped in a proxy carrying one.
+    getTracerProvider: () => (otel.delegate === null ? {} : { _delegate: otel.delegate }),
+    disable: () => {
+      mockTraceDisable();
+      otel.delegate = null;
+    },
   },
   context: {
     disable: () => mockContextDisable(),
@@ -108,11 +121,16 @@ describe('lifecycle', () => {
   beforeEach(() => {
     clearSingleton();
     vi.clearAllMocks();
+    // No provider registered yet, so the next register() wins — without this a
+    // prior test's provider stays the global owner and every later setup is
+    // refused, quietly turning the ownership assertions below inside out.
+    otel.delegate = null;
     delete process.env.LD_SDK_KEY;
   });
 
   afterEach(() => {
     clearSingleton();
+    otel.delegate = null;
     delete process.env.LD_SDK_KEY;
   });
 
@@ -343,6 +361,32 @@ describe('lifecycle', () => {
       expect(mockTracerProviderShutdown).toHaveBeenCalled();
       expect(mockFlush).toHaveBeenCalled();
       expect(mockClose).toHaveBeenCalled();
+    });
+
+    it('does not release OTel registrations another library owns', async () => {
+      // Building a provider is not owning the globals. When something else in
+      // the process registered first, our register() is refused and the globals
+      // stay theirs — releasing them here would tear down the host
+      // application's tracing and leave a noop provider behind.
+      const foreign = { name: 'foreign-provider' };
+      otel.delegate = foreign;
+
+      const mockClient = makeMockClient();
+      mockLdInit.mockReturnValue(mockClient);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      await initClient();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('already registered'));
+      await shutdown();
+
+      expect(mockTracerProviderShutdown).toHaveBeenCalled();
+      expect(mockTraceDisable).not.toHaveBeenCalled();
+      expect(mockContextDisable).not.toHaveBeenCalled();
+      expect(mockPropagationDisable).not.toHaveBeenCalled();
+      expect(otel.delegate).toBe(foreign);
+      warnSpy.mockRestore();
     });
 
     it('releases the global OTel registrations so a later init can register again', async () => {

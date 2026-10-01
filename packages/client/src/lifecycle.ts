@@ -19,6 +19,11 @@ function env(name: string): string | undefined {
 
 // biome-ignore lint/suspicious/noExplicitAny: OTel tracer provider loaded via dynamic import with no static type
 let tracerProvider: any | null = null;
+// True only when *this* SDK's `register()` actually took the global OTel
+// registrations. Having built a provider is not the same as owning them: the
+// registration is one-shot, so when another library registered first ours is
+// refused and the globals stay theirs. Only the owner may release them.
+let ownsOtelGlobals = false;
 
 const LD_OTEL_PEER_DEPS = [
   '@opentelemetry/sdk-trace-node',
@@ -100,6 +105,22 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
       propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()],
     }),
   });
+  // `register()` discards whether the global set succeeded — it is refused, with
+  // a diag error, when another library got there first. Read the delegate back
+  // to find out: shutdownTelemetry must not release globals it never owned, and
+  // the caller's telemetry options are moot when someone else's provider is the
+  // one handing out tracers.
+  // biome-ignore lint/suspicious/noExplicitAny: reading _delegate, not in OTel's public API
+  const globalProvider = trace.getTracerProvider() as any;
+  ownsOtelGlobals = globalProvider?._delegate === tracerProvider;
+  if (!ownsOtelGlobals) {
+    // biome-ignore lint/suspicious/noConsole: intentional warning for a telemetry config that cannot take effect
+    console.warn(
+      '[LaunchDarkly] An OpenTelemetry tracer provider was already registered by ' +
+        "something else in this process, so LaunchDarkly's telemetry configuration " +
+        'is not in effect; spans will go wherever that provider sends them.',
+    );
+  }
 }
 
 /**
@@ -135,7 +156,11 @@ export async function shutdownTelemetry(): Promise<void> {
   // Release the handle before teardown so a failure mid-flight still leaves a
   // second shutdownTelemetry() call a no-op, as shutdown() does for the client.
   tracerProvider = null;
+  const owned = ownsOtelGlobals;
+  ownsOtelGlobals = false;
   try {
+    // Shut the provider down either way — we built it, and it owns an exporter
+    // and a batch timer — but only release the globals when they were ours.
     await provider.shutdown();
   } finally {
     // OTel's global registration is one-shot: `register()` logs a duplicate-
@@ -143,12 +168,14 @@ export async function shutdownTelemetry(): Promise<void> {
     // globals set would make the *next* initClient() build a provider whose
     // register() is refused, routing every later span to the provider we just
     // shut down — an init/shutdown/init cycle would export nothing. `disable()`
-    // is the only public way to release them. Guarded by the early return above
-    // so we clear these only when setupTelemetry actually registered them, and
-    // never tear down globals some other library owns.
-    trace.disable();
-    context.disable();
-    propagation.disable();
+    // is the only public way to release them. Gated on ownership so a provider
+    // another library registered — ours refused, theirs still live — is never
+    // torn down, which would leave the host application's tracing a no-op.
+    if (owned) {
+      trace.disable();
+      context.disable();
+      propagation.disable();
+    }
   }
 }
 

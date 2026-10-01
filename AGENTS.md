@@ -153,7 +153,7 @@ The client manages a singleton connection to LaunchDarkly and the associated tel
 | `getClient()` | Returns the initialized `LDClientInterface`. Throws if initialization has not completed. |
 | `shutdown()` | Flushes all pending events and telemetry, then closes the client. Must be called before the process exits. |
 | `waitForTelemetry()` | Waits for the OTel provider to be ready. Useful when spans must not be dropped at startup. |
-| `shutdownTelemetry()` | Flushes and stops the OTel exporter independently of the LD client, and releases the global OTel trace/context/propagation registrations so a later `initClient()` can register its own provider. Only touches those globals when `setupTelemetry` actually took them. |
+| `shutdownTelemetry()` | Flushes and stops the OTel exporter independently of the LD client, and releases the global OTel trace/context/propagation registrations so a later `initClient()` can register its own provider. Only touches those globals when this SDK's own `register()` actually took them — the registration is one-shot, so when another library registered first ours is refused (a warning is emitted) and that provider is left alone rather than torn down. |
 
 ### Core Data Types
 
