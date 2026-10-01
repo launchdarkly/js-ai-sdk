@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.3.0...@launchdarkly/ai-server-0.4.0) (2026-10-01)
+
+
+### Features
+
+* **AIC-3210:** support streaming responses from agent graph nodes ([#84](https://github.com/launchdarkly/js-ai-sdk/issues/84)) ([24671e8](https://github.com/launchdarkly/js-ai-sdk/commit/24671e84d802c233109a409a7f0fce9034490c7d))
+* **AIC-3211:** record each graph node as its own tracking event ([#91](https://github.com/launchdarkly/js-ai-sdk/issues/91)) ([2df2923](https://github.com/launchdarkly/js-ai-sdk/commit/2df2923cd6f831a6583c9747b0d17626189d292c))
+* **build:** build the AI SDK like the other LaunchDarkly JS SDKs so CommonJS apps can load it (2/4) ([#77](https://github.com/launchdarkly/js-ai-sdk/issues/77)) ([2cda755](https://github.com/launchdarkly/js-ai-sdk/commit/2cda7551c8feb7e352040384befea2cd76cb5d94))
+
+
+### Bug Fixes
+
+* **judges:** a judge's own config must not fail the run it grades ([#17](https://github.com/launchdarkly/js-ai-sdk/issues/17)) ([6e85cac](https://github.com/launchdarkly/js-ai-sdk/commit/6e85cac54bb877954071b2f80d61f4359710c3ae))
+* **vercel:** tag vercelEvaluate spans with run identity ([#100](https://github.com/launchdarkly/js-ai-sdk/issues/100)) ([d32bede](https://github.com/launchdarkly/js-ai-sdk/commit/d32bedefc6d0693dad9b4e5a734f4c29f7859c12))
+
 ## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.2.0...@launchdarkly/ai-server-0.3.0) (2026-09-18)
 
 
