@@ -28,7 +28,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { fsOps, SUPPORTS_DIR_FD, SUPPORTS_PROC_FD } from '../safe-fs.js';
 import { _clearState, _setEmitterForTesting, _setStore, InMemorySkillStore, skillRefs } from '../skills.js';
-import { MAX_SKILL_CONTENT_BYTES } from '../skills-core.js';
+import { MAX_SKILL_CONTENT_BYTES, recordRevoked } from '../skills-core.js';
 import { writeSkills } from '../skills-fs.js';
 import type { RawSkillObject, ReconcileAction, ReconcileReport, Skill, SkillStore } from '../types.js';
 import { createSkill, isValidSkillKey, parseAiConfig } from '../types.js';
@@ -289,6 +289,67 @@ describe('writeSkills basic writes', () => {
 
     expect(report.ok).toBe(true);
     expect(report.actions.filter((a) => a.action !== 'error')).toHaveLength(3);
+  });
+
+  it('"*" collapses several versions of one key to the newest', async () => {
+    // <root>/<key>/SKILL.md is a single path, so two versions of one key is not
+    // a duplicate report but a write race against itself, resolved by whichever
+    // version iteration happened to reach last. A store holding one version per
+    // key cannot distinguish this from "write everything", so the two-version
+    // seed is the whole test. Newer seeded first, so insertion order cannot pass
+    // for ordering.
+    const newer = 'newer body\n';
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a', 5, newer));
+    store.put(rawSkill('a', 2, 'older body\n'));
+    _setStore(store);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    const written = report.actions.filter((a) => a.action !== 'error');
+    expect(written).toHaveLength(1);
+    expect(written[0].key).toBe('a');
+    expect(written[0].version).toBe(5);
+    expect(await readFile(path.join(root, 'a', SKILL_MD), 'utf-8')).toBe(newer);
+  });
+
+  it('"*" reports no error for a key a malformed sibling did not stop writing', async () => {
+    // A malformed object beside a good version of the same key. The good one
+    // resolves and materializes, so the run succeeded for that key: reporting
+    // the sibling as well would flip `report.ok` for a skill that is correctly
+    // on disk, and claim the copy there "was left alone" when this very run had
+    // just written it.
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a', 1));
+    store.put(rawSkill('a', 'nope' as unknown as number));
+    _setStore(store);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    expect(report.actions.map((a) => [a.key, a.action])).toEqual([['a', 'written']]);
+    expect(await readFile(path.join(root, 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+  });
+
+  it('"*" still reports a key nothing could resolve, and prunes nothing', async () => {
+    // The converse, and the reason a malformed object is kept at all. No
+    // version of 'b' is usable, so it stays in the requested set: the failure is
+    // reported, and prune leaves the copy already on disk alone rather than
+    // reading the key as revoked.
+    const existing = await placeManaged(root, 'b', SKILL_BODY);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a', 1));
+    store.put(rawSkill('b', 'nope' as unknown as number));
+    _setStore(store);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(false);
+    expect(actionsByKey(report).a.action).toBe('written');
+    expect(actionsByKey(report).b.action).toBe('error');
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
   });
 
   it('reports one action per requested skill — no silent skips', async () => {
@@ -711,6 +772,101 @@ describe('writeSkills resilience', () => {
 
     expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
     expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+  });
+
+  it('does not prune when one of two references resolved and the other failed', async () => {
+    // The spec-mandated shape for the second suppression condition, and the one
+    // the whole-store-outage case above cannot stand in for: here the run *did*
+    // retrieve something, so an implementation that gated pruning on "did we get
+    // anything at all" passes that test and fails this one. One reference
+    // resolves, one does not, and a third manifest-listed skill that nobody
+    // asked for this run has to survive — because "revoked" and "did not arrive
+    // this time" are indistinguishable from here, and guessing is data loss.
+    const stale = path.join(root, 'stale', SKILL_MD);
+    await mkdir(path.dirname(stale), { recursive: true });
+    await writeFile(stale, SKILL_BODY, 'utf-8');
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: { [`stale/${SKILL_MD}`]: manifestEntry('stale', 3, SKILL_BODY) },
+    });
+
+    _setStore({
+      getObject(_kind: string, key: string) {
+        if (key === 'resolves') return rawSkill('resolves');
+        throw new Error('transport failure');
+      },
+      allObjects() {
+        return { resolves: rawSkill('resolves') };
+      },
+    });
+
+    const report = await writeSkills(
+      [
+        { key: 'resolves', version: 1 },
+        { key: 'fails', version: 1 },
+      ],
+      root,
+    );
+
+    const byKey = actionsByKey(report);
+    // The run genuinely half-succeeded: one skill is on disk, the other is an
+    // error. That is what makes this shape different from a total outage.
+    expect(byKey.resolves.action).toBe('written');
+    expect(await readFile(path.join(root, 'resolves', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+    expect(byKey.fails.action).toBe('error');
+
+    // And the unrequested third skill was left alone, entry and all.
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(byKey.stale).toBeUndefined();
+    expect(await readFile(stale, 'utf-8')).toBe(SKILL_BODY);
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(entries[`stale/${SKILL_MD}`]).toMatchObject({ key: 'stale', version: 3 });
+  });
+
+  it('does not prune when the deadline expired partway through the writes', async () => {
+    // The third shape of the same rule: retrieval was fine and the manifest was
+    // fine, but the budget ran out before every requested skill was written — so
+    // the run still does not know what is current. A caller must not read "no
+    // `removed` actions" as "nothing is stale".
+    const stale = path.join(root, 'stale', SKILL_MD);
+    await mkdir(path.dirname(stale), { recursive: true });
+    await writeFile(stale, SKILL_BODY, 'utf-8');
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: { [`stale/${SKILL_MD}`]: manifestEntry('stale', 3, SKILL_BODY) },
+    });
+
+    // A fake monotonic clock the first rename pushes past the deadline, so the
+    // second skill's write is on the wrong side of it.
+    let nowMs = performance.now();
+    vi.spyOn(performance, 'now').mockImplementation(() => nowMs);
+    const real = fsOps.rename.bind(fsOps);
+    vi.spyOn(fsOps, 'rename').mockImplementation(async (src: string, dst: string) => {
+      const result = await real(src, dst);
+      if (dst.endsWith(SKILL_MD)) nowMs += 5_000;
+      return result;
+    });
+
+    const report = await writeSkills([skill('first'), skill('second')], root, { timeout: 1 });
+
+    const byKey = actionsByKey(report);
+    expect(byKey.first.action).toBe('written');
+    // The injected expiry is what stopped the second write, rather than some
+    // unrelated refusal.
+    expect(byKey.second.action).toBe('error');
+    expect(byKey.second.error).toMatch(/timeout was exhausted/);
+
+    // So nothing was pruned, and the stale entry survives for the next run.
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    // Not *reached*, rather than reached and refused: the prune phase was
+    // suppressed outright, so `stale` carries no action at all. This is the
+    // assertion that separates the suppression gate from the per-entry deadline
+    // check inside the prune loop (§3.22 resilience), which would have reported
+    // a timeout error for the same entry and left the same file on disk.
+    expect(byKey.stale).toBeUndefined();
+    expect(await readFile(stale, 'utf-8')).toBe(SKILL_BODY);
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(entries[`stale/${SKILL_MD}`]).toMatchObject({ key: 'stale', version: 3 });
   });
 
   it('an exhausted timeout behaves as unavailable', async () => {
@@ -1226,6 +1382,38 @@ describe('writeSkills clobber protection', () => {
     expect(await readFile(target, 'utf-8')).toBe('user authored\n');
   });
 
+  it('distinguishes the adoption carve-out from an unmanaged file it must refuse', async () => {
+    // Adoption (§3.22) is the one carve-out in this row, and it does not weaken
+    // it: the only file ever claimed is one whose bytes *already are* the
+    // LaunchDarkly-resolved content. So the two have to be asserted against the
+    // same setup — the same root, the same absent manifest, the same
+    // `writeSkills` call — because byte equality is the entry condition, and an
+    // implementation that simply ignored the missing manifest entry would adopt
+    // both. This is the assertion that says the check is the bytes and not the
+    // absence.
+    const identical = path.join(root, 'same', SKILL_MD);
+    const divergent = path.join(root, 'differs', SKILL_MD);
+    await mkdir(path.dirname(identical), { recursive: true });
+    await mkdir(path.dirname(divergent), { recursive: true });
+    await writeFile(identical, SKILL_BODY, 'utf-8');
+    // One byte longer, and otherwise the resolved content exactly.
+    await writeFile(divergent, `${SKILL_BODY} `, 'utf-8');
+    expect(await exists(manifestPath(root))).toBe(false);
+
+    const report = await writeSkills([skill('same'), skill('differs')], root);
+
+    const byKey = actionsByKey(report);
+    // Identical bytes: adopted, and recorded as managed from now on.
+    expect(byKey.same.action).toBe('skipped_current');
+    expect(await readFile(identical, 'utf-8')).toBe(SKILL_BODY);
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(entries[`same/${SKILL_MD}`]).toMatchObject({ key: 'same' });
+    // One byte different: still refused, still untouched, still unclaimed.
+    expect(byKey.differs.action).toBe('error');
+    expect(await readFile(divergent, 'utf-8')).toBe(`${SKILL_BODY} `);
+    expect(entries[`differs/${SKILL_MD}`]).toBeUndefined();
+  });
+
   it('a manifest entry with a mismatched key does not authorize destruction', async () => {
     const target = path.join(root, 'a', SKILL_MD);
     await mkdir(path.dirname(target));
@@ -1315,6 +1503,27 @@ describe('writeSkills crash-mid-reconcile recovery', () => {
     expect(await readFile(target, 'utf-8')).toBe(divergent);
     // Refused means refused all the way: no entry is created for it either, so
     // the next run cannot mistake the file for one this SDK manages.
+    expect(await readManifest(root)).toMatchObject({ entries: {} });
+  });
+
+  it('an adopted file is prunable afterwards', async () => {
+    // Adoption is a full claim, not a one-run exemption — and this is the test
+    // that says so. Without it, "adopted" is indistinguishable from "tolerated
+    // once": an implementation that reported `skipped_current` without ever
+    // writing the manifest entry would pass every other case in this block, and
+    // then leave the file behind forever on the run that revoked it.
+    const target = await placeOrphaned('a', SKILL_BODY);
+    const first = await writeSkills([skill('a')], root);
+    expect(actionsByKey(first).a.action).toBe('skipped_current');
+
+    const second = await writeSkills([], root);
+
+    // Removed exactly as a file this SDK wrote would have been: the action, the
+    // file, the now-empty directory, and the manifest entry.
+    expect(second.ok).toBe(true);
+    expect(actionsByKey(second).a.action).toBe('removed');
+    expect(await exists(target)).toBe(false);
+    expect(await entryNames(root)).toEqual([MANIFEST_NAME]);
     expect(await readManifest(root)).toMatchObject({ entries: {} });
   });
 
@@ -1905,6 +2114,139 @@ describe('writeSkills hostile manifest prune', () => {
   });
 });
 
+// ─── The prune deadline ────────────────────────────────────────────────
+
+/**
+ * The `timeout` bounds the whole call, and the prune loop is inside it.
+ *
+ * Checking the deadline once before pruning begins satisfies that in the letter
+ * only: a manifest with many entries is an unbounded number of `unlink` and
+ * `rmdir` calls after that check, each of which can block on a slow or hostile
+ * filesystem, so the call overruns the budget it promised by an amount the caller
+ * cannot predict. The check therefore belongs inside the loop, once per entry.
+ *
+ * Stopping partway is safe by construction rather than by luck, and the second
+ * test is what proves it: the manifest is rewritten from what actually happened,
+ * so an entry this run never reached stays listed and the next reconcile prunes
+ * it. That is also why an exhausted entry is reported and the loop *continues* —
+ * the report names every skill left in place, not just the first.
+ *
+ * `performance.now` is stubbed rather than slept through: the contract is about
+ * which side of the deadline each entry falls on, and a test that raced a real
+ * clock would assert that flakily instead of exactly.
+ */
+describe('writeSkills prune deadline', () => {
+  /** A fake monotonic clock, in the same units `performance.now` reports. */
+  let nowMs: number;
+
+  /** Installs the clock and hands back a knob to push it past the deadline. */
+  function stubClock(): (byMs: number) => void {
+    nowMs = performance.now();
+    vi.spyOn(performance, 'now').mockImplementation(() => nowMs);
+    return (byMs: number) => {
+      nowMs += byMs;
+    };
+  }
+
+  /** Four managed skills in one manifest, all files present on disk. */
+  async function placeFour(): Promise<string[]> {
+    const keys = ['a', 'b', 'c', 'd'];
+    const entries: Record<string, unknown> = {};
+    for (const key of keys) {
+      const target = path.join(root, key, SKILL_MD);
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, SKILL_BODY, 'utf-8');
+      entries[`${key}/${SKILL_MD}`] = manifestEntry(key, 1, SKILL_BODY);
+    }
+    await writeManifest(root, { manifestVersion: 1, entries });
+    return keys;
+  }
+
+  it('stops pruning when the deadline expires partway and reports what it left', async () => {
+    const keys = await placeFour();
+    const advance = stubClock();
+    // The first unlink burns the whole budget. Every entry after it is on the
+    // wrong side of the deadline.
+    const real = fsOps.unlink.bind(fsOps);
+    vi.spyOn(fsOps, 'unlink').mockImplementation(async (target: string) => {
+      await real(target);
+      advance(5_000);
+    });
+
+    const report = await writeSkills([], root, { timeout: 1 });
+
+    // Exactly one entry was pruned — the one whose check ran before the budget
+    // was gone — and the rest are reported rather than silently skipped.
+    const removed = report.actions.filter((a) => a.action === 'removed');
+    expect(removed).toHaveLength(1);
+    const timedOut = report.errors.filter((a) => /timeout was exhausted/.test(a.error ?? ''));
+    expect(timedOut).toHaveLength(keys.length - 1);
+    // Every key is accounted for: the loop continued instead of breaking, so the
+    // report names all three it left in place.
+    expect(new Set([...removed, ...timedOut].map((a) => a.key))).toEqual(new Set(keys));
+    expect(report.ok).toBe(false);
+
+    // The unreached files are still there...
+    const survivors = keys.filter((key) => key !== removed[0].key);
+    for (const key of survivors) {
+      expect(await readFile(path.join(root, key, SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+    }
+    // ...and so are their manifest entries, which is what makes stopping safe:
+    // the rewrite records what happened, so the next run picks these up.
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(Object.keys(entries).sort()).toEqual(survivors.map((key) => `${key}/${SKILL_MD}`).sort());
+  });
+
+  it('the next reconcile prunes what the expired one left behind', async () => {
+    // The other half of "stopping mid-prune is safe": the entries that survived
+    // are still entries, so a run with a budget finishes the job. Without this,
+    // the test above would also pass against an implementation that stopped and
+    // lost track.
+    await placeFour();
+    const advance = stubClock();
+    const real = fsOps.unlink.bind(fsOps);
+    const spy = vi.spyOn(fsOps, 'unlink').mockImplementation(async (target: string) => {
+      await real(target);
+      advance(5_000);
+    });
+
+    const first = await writeSkills([], root, { timeout: 1 });
+    expect(first.actions.filter((a) => a.action === 'removed')).toHaveLength(1);
+
+    // A fresh budget, and no more clock sabotage.
+    spy.mockRestore();
+    nowMs = performance.now();
+    vi.spyOn(performance, 'now').mockImplementation(() => nowMs);
+
+    const second = await writeSkills([], root, { timeout: 10 });
+
+    expect(second.ok).toBe(true);
+    expect(second.actions.filter((a) => a.action === 'removed')).toHaveLength(3);
+    expect(await readManifest(root)).toMatchObject({ entries: {} });
+    expect(await entryNames(root)).toEqual([MANIFEST_NAME]);
+  });
+
+  it('an already-expired deadline prunes nothing at all', async () => {
+    // The boundary case, and the one that says the check is not merely
+    // *somewhere* in the loop: with the budget gone before the first entry, the
+    // first entry is refused too.
+    const keys = await placeFour();
+    const unlinked = recordUnlinks();
+
+    const report = await writeSkills([], root, { timeout: 0 });
+
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(report.errors.filter((a) => /timeout was exhausted/.test(a.error ?? ''))).toHaveLength(keys.length);
+    // Not attempted, rather than attempted and failed.
+    expect(unlinked).toEqual([]);
+    for (const key of keys) {
+      expect(await readFile(path.join(root, key, SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+    }
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(Object.keys(entries).sort()).toEqual(keys.map((key) => `${key}/${SKILL_MD}`).sort());
+  });
+});
+
 // ─── Telemetry seam (write half) ───────────────────────────────────────
 
 describe('writeSkills telemetry', () => {
@@ -1994,6 +2336,97 @@ describe('writeSkills telemetry', () => {
     expect(props.version).toBe(3);
     expect(props.removed_from_disk).toBe(true);
     expect(props.language).toBe('typescript');
+  });
+
+  it('omits version from the Revoked signal when the manifest entry is malformed', async () => {
+    // The absent half of the bullet above, and the one that needs asserting:
+    // `version` is *omitted*, not recorded as null. The manifest is a file on
+    // disk, so the value in hand here is whatever was written there — a caller
+    // reads "no usable version was recorded" off the key's absence rather than
+    // off a null, and the signal never carries a null for a field that was not
+    // known. `toHaveProperty` is the assertion that distinguishes the two;
+    // reading `props.version` and comparing to undefined would pass either way.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    await mkdir(path.join(root, 'gone'), { recursive: true });
+    await writeFile(path.join(root, 'gone', SKILL_MD), SKILL_BODY, 'utf-8');
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: {
+        [`gone/${SKILL_MD}`]: {
+          key: 'gone',
+          version: 'seven',
+          sha256: hash(SKILL_BODY),
+          writtenAt: '2026-08-14T19:00:00Z',
+        },
+      },
+    });
+
+    await writeSkills([], root);
+
+    const [props] = emitter.signals(REVOKED_SIGNAL);
+    expect(props).toBeDefined();
+    expect(props.skill_key).toBe('gone');
+    expect(props.removed_from_disk).toBe(true);
+    expect(props).not.toHaveProperty('version');
+    expect(Object.keys(props).sort()).toEqual(['language', 'removed_from_disk', 'skill_key']);
+  });
+
+  it('publishes no skill body when a manifest entry carries the body as its key', async () => {
+    // The manifest is as attacker-controlled as a wire object — anything with
+    // write access to the root can author it — so the key it carries gets the
+    // same shape check the wire key does before it reaches a signal.
+    //
+    // Note where this is actually stopped today: `pruneEntries` rejects an entry
+    // whose key fails validation before `pruneOne` runs, so the run reports a
+    // prune `error` and no Revoked signal is emitted at all. Either way the body
+    // stays out of telemetry, which is what this asserts. The redaction inside
+    // `recordRevoked` is the second line of defense behind that guard, and it is
+    // pinned directly below — an end-to-end test cannot reach it.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const hostileKey = SKILL_BODY;
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: {
+        [`${hostileKey}/${SKILL_MD}`]: {
+          key: hostileKey,
+          version: 1,
+          sha256: hash(SKILL_BODY),
+          writtenAt: '2026-08-14T19:00:00Z',
+        },
+      },
+    });
+
+    const report = await writeSkills([], root);
+
+    for (const [, props] of emitter.records) {
+      for (const value of Object.values(props)) {
+        expect(String(value)).not.toContain('Do the thing.');
+      }
+    }
+    // The entry is reported rather than silently ignored: a manifest path this
+    // SDK could not have written is left in place and surfaced as an error.
+    expect(report.ok).toBe(false);
+    expect(emitter.signals(REVOKED_SIGNAL)).toEqual([]);
+  });
+
+  it('redacts a manifest-supplied key that is not a valid skill key', async () => {
+    // Called directly because the prune path's own key validation refuses the
+    // entry first (see the test above), so this branch is unreachable end to
+    // end. It is still the parity requirement and the defense that holds if that
+    // guard is ever relaxed — and it asserts the placeholder's *effect*, the
+    // body being absent, rather than its exact spelling, which no spec fixes.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+
+    recordRevoked(SKILL_BODY, 3);
+
+    const [props] = emitter.signals(REVOKED_SIGNAL);
+    expect(props.skill_key).not.toContain('Do the thing.');
+    expect(isValidSkillKey(props.skill_key)).toBe(false);
+    expect(props.version).toBe(3);
+    expect(props.removed_from_disk).toBe(true);
   });
 
   it('records no Revoked signal when pruning is disabled', async () => {

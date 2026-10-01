@@ -46,8 +46,8 @@ import {
   InMemorySkillStore,
   skillRefs,
 } from '../skills.js';
-import { allRawObjects, MAX_SKILL_CONTENT_BYTES, requireStore } from '../skills-core.js';
-import type { RawSkillObject, Skill, SkillOutcomeReason, SkillStore } from '../types.js';
+import { allRawObjects, MAX_SKILL_CONTENT_BYTES, requireStore, SKILL_OBJECT_KIND } from '../skills-core.js';
+import type { RawSkillObject, Skill, SkillStore } from '../types.js';
 import {
   createReconcileAction,
   createReconcileReport,
@@ -95,6 +95,15 @@ function rawSkill(overrides: Partial<RawSkillObject> & { key?: unknown } = {}): 
     ...overrides,
   } as RawSkillObject;
 }
+
+/**
+ * One over-cap string for the whole file.
+ *
+ * At 10 MiB this costs real time and memory to allocate and to hash, and §3.21
+ * asks for one true over-cap case rather than one per test — so the cases that
+ * need it share this.
+ */
+const OVERSIZE = 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1);
 
 function skill(content: Uint8Array = SKILL_BODY_BYTES, key = 'test-skill', version = 1): Skill {
   return createSkill({ key, version, content, contentHash: hash(content) });
@@ -263,14 +272,34 @@ describe('ReconcileReport ok and errors', () => {
 // ─── Package exports ───────────────────────────────────────────────────
 
 describe('package exports', () => {
-  it('exports the five fixed values from the package root with exact values', () => {
-    // These are API, not implementation detail: a caller needs MANIFEST_FILENAME
-    // to gitignore the manifest and MAX_SKILL_CONTENT_BYTES to pre-check content.
-    expect(packageIndex.SKILL_OBJECT_KIND).toBe('skill');
+  it('exports the three fixed values from the package root with exact values', () => {
+    // These three are API, not implementation detail: a caller needs
+    // MANIFEST_FILENAME to gitignore the manifest, and all three describe an
+    // on-disk layout this SDK defines and a caller may have to agree with.
     expect(packageIndex.SKILL_FILENAME).toBe('SKILL.md');
     expect(packageIndex.MANIFEST_FILENAME).toBe('.launchdarkly-skills.json');
     expect(packageIndex.MANIFEST_VERSION).toBe(1);
-    expect(packageIndex.MAX_SKILL_CONTENT_BYTES).toBe(10 * 1024 * 1024);
+  });
+
+  it('does not export the object kind or the content cap from the package root', () => {
+    // The absence is itself the contract, so it gets an assertion — an
+    // accidental re-export from index.ts is caught here rather than shipping.
+    //
+    // SKILL_OBJECT_KIND is an SDK-side seam string rather than the wire format:
+    // it is what the accessors hand SkillStore.getObject, and an adapter is free
+    // to map it onto whatever its transport actually uses. MAX_SKILL_CONTENT_BYTES
+    // is a local enforcement bound on content the platform produces, set well
+    // above the platform's own limit precisely so that limit can move without
+    // this constant following — a caller pre-flighting "will my skill fit?"
+    // against it would be reading the backstop, not the real bound.
+    expect('SKILL_OBJECT_KIND' in packageIndex).toBe(false);
+    expect('MAX_SKILL_CONTENT_BYTES' in packageIndex).toBe(false);
+
+    // Still reachable through the implementation module, for the store
+    // implementer who has to agree with them. Asserted here rather than left
+    // implicit so the absence above reads as "not published" rather than "gone".
+    expect(SKILL_OBJECT_KIND).toBe('skill');
+    expect(MAX_SKILL_CONTENT_BYTES).toBe(10 * 1024 * 1024);
   });
 
   it('exports the skills functions and the in-memory store from the package root', () => {
@@ -301,6 +330,35 @@ describe('package exports', () => {
   it('the OnUnavailable union admits exactly keep and raise', () => {
     const exhaustive: Record<packageIndex.OnUnavailable, true> = { keep: true, raise: true };
     expect(Object.keys(exhaustive).sort()).toEqual(['keep', 'raise']);
+  });
+
+  it('exports getSkillResult and the outcome factory from the package root', () => {
+    expect(typeof packageIndex.getSkillResult).toBe('function');
+    expect(typeof packageIndex.createSkillOutcome).toBe('function');
+  });
+
+  it('the SkillOutcomeReason union admits exactly the five reason tokens', () => {
+    // The five tokens are API — customers branch on them, and every SDK
+    // publishes the same five for the same conditions. Adding a sixth here
+    // should force a matching change in the other SDKs, not just a green test.
+    //
+    // Named through the package index rather than through types.js: it is the
+    // *root* export that is fixed, and a union reachable only from the
+    // implementation module is not reachable by a supported import.
+    const exhaustive: Record<packageIndex.SkillOutcomeReason, true> = {
+      absent: true,
+      integrity_failure: true,
+      ok: true,
+      store_unavailable: true,
+      wrong_version: true,
+    };
+    expect(Object.keys(exhaustive).sort()).toEqual([
+      'absent',
+      'integrity_failure',
+      'ok',
+      'store_unavailable',
+      'wrong_version',
+    ]);
   });
 });
 
@@ -334,6 +392,60 @@ describe('skillRefs', () => {
   it('returns an empty list for a null or undefined config', () => {
     expect(skillRefs(null)).toEqual([]);
     expect(skillRefs(undefined)).toEqual([]);
+  });
+
+  it('drops a malformed entry and logs one warning per drop', async () => {
+    // The silence is what makes this load-bearing rather than cosmetic. The
+    // projection's output is what a caller hands `writeSkills`, and a shortened
+    // list is indistinguishable there from "that skill is no longer requested" —
+    // so with `prune: true` (the default) a silently dropped entry *deletes the
+    // skill's files*. One warning per drop, each naming the position, is what
+    // lets an operator find the offending entry.
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const refs = skillRefs({
+        ...base,
+        skills: [
+          { key: 'ok', version: 1 },
+          // Not an object at all.
+          'nope' as unknown as { key: string; version: number },
+          // An invalid key.
+          { key: 'Not/A/Key', version: 1 },
+          // An invalid version.
+          { key: 'also-ok', version: 0 },
+          { key: 'also-ok', version: 2 },
+        ],
+      });
+
+      // The usable entries survive, in order.
+      expect(refs).toEqual([
+        { key: 'ok', version: 1 },
+        { key: 'also-ok', version: 2 },
+      ]);
+
+      const lines = spy.mock.calls.map(([line]) => String(line));
+      expect(lines).toHaveLength(3);
+      // Each names its own position, so three drops are three distinct reports
+      // rather than one summary an operator cannot act on.
+      expect(lines[0]).toContain('skills[1]');
+      expect(lines[1]).toContain('skills[2]');
+      expect(lines[2]).toContain('skills[3]');
+      for (const line of lines) expect(line).toContain('dropped from the projection');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('warns about nothing when every entry is usable', async () => {
+    // The positive control: a suite in which the warning never fires at all
+    // cannot tell a per-drop warning from an unconditional one.
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(skillRefs({ ...base, skills: [{ key: 'a', version: 1 }] })).toHaveLength(1);
+      expect(spy.mock.calls).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('emits no telemetry', () => {
@@ -386,11 +498,130 @@ describe('InMemorySkillStore', () => {
     expect(store.getObject('skill', 'a')).toEqual(raw);
   });
 
-  it('allObjects returns everything held, keyed by skill key', () => {
+  it("allObjects returns everything held, identified by each object's own key", () => {
     const store = new InMemorySkillStore();
     store.put(rawSkill({ key: 'a' }));
     store.put(rawSkill({ key: 'b' }));
-    expect(Object.keys(store.allObjects('skill')).sort()).toEqual(['a', 'b']);
+
+    const held = Object.values(store.allObjects('skill'));
+
+    // Deliberately not `Object.keys`: the record's keys are opaque
+    // store-internal identifiers, and `SkillStore` says identity is read off
+    // each object's own `key` and `version`. A test that asserted the spelling
+    // would be pinning an implementation detail the interface disclaims.
+    expect(held).toHaveLength(2);
+    expect(held.map((raw) => raw.key).sort()).toEqual(['a', 'b']);
+  });
+
+  it('allObjects returns one entry per (key, version), not per key', () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 2 }));
+    store.put(rawSkill({ key: 'a', version: 5 }));
+
+    const held = Object.values(store.allObjects('skill'));
+
+    expect(held).toHaveLength(2);
+    expect(held.map((raw) => raw.version).sort()).toEqual([2, 5]);
+  });
+
+  it('replaces an object put twice under the same (key, version)', () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 2, content: 'first' }));
+    store.put(rawSkill({ key: 'a', version: 2, content: 'second' }));
+
+    const held = Object.values(store.allObjects('skill'));
+
+    expect(held).toHaveLength(1);
+    expect(held[0].content).toBe('second');
+  });
+
+  it('getObject with no version answers with the newest version held', () => {
+    const store = new InMemorySkillStore();
+    // Put the newer one first, so insertion order cannot pass for ordering.
+    store.put(rawSkill({ key: 'a', version: 5 }));
+    store.put(rawSkill({ key: 'a', version: 2 }));
+
+    expect(store.getObject('skill', 'a')?.version).toBe(5);
+    expect(store.getObject('skill', 'a', null)?.version).toBe(5);
+  });
+
+  it('getObject with a version answers with exactly that version', () => {
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 2 }));
+    store.put(rawSkill({ key: 'a', version: 5 }));
+
+    expect(store.getObject('skill', 'a', 2)?.version).toBe(2);
+    expect(store.getObject('skill', 'a', 5)?.version).toBe(5);
+  });
+
+  it('getObject returns null for a pin that misses while well-formed versions exist', () => {
+    // A plain miss. Answering it with some other version the store happens to
+    // hold would record an integrity failure for a skill whose integrity is not
+    // in question.
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 2 }));
+    store.put(rawSkill({ key: 'a', version: 5 }));
+
+    expect(store.getObject('skill', 'a', 3)).toBeNull();
+  });
+
+  it('serves a malformed object for a pinned request when nothing well-formed is held', () => {
+    // An object too malformed to carry a usable version is still served, so
+    // verification is what withholds it — with a signal. Reading it as simply
+    // absent would let a tampered object look like a deleted one, and would let
+    // a prune delete the last known-good copy on disk.
+    const store = new InMemorySkillStore();
+    const malformed = rawSkill({ key: 'a', version: 'not-a-version' as unknown as number });
+    store.put(malformed);
+
+    expect(store.getObject('skill', 'a', 4)).toBe(malformed);
+    expect(store.getObject('skill', 'a')).toBe(malformed);
+    expect(Object.values(store.allObjects('skill'))).toEqual([malformed]);
+  });
+
+  it('cannot be reached through the prototype', () => {
+    // `constructor` satisfies the skill-key pattern, so it arrives as an
+    // ordinary lookup. Backed by a plain object, an empty store would answer it
+    // with the `Object` function. Asserted on the store's own answer rather than
+    // an accessor's: verification already refuses a function as a non-object, so
+    // this is about the store's semantics being right, not a content-integrity
+    // hole.
+    const empty = new InMemorySkillStore();
+    expect(empty.getObject('skill', 'constructor')).toBeNull();
+    expect(empty.getObject('skill', '__proto__')).toBeNull();
+    expect(empty.getObject('skill', 'toString')).toBeNull();
+    expect(Object.values(empty.allObjects('skill'))).toEqual([]);
+  });
+
+  it('cannot be corrupted by a put of an inherited name', () => {
+    // Backed by a plain object, this `put` writes the *prototype*, and every
+    // later lookup whose key happens to name a field of the planted object —
+    // `name` and `description` both satisfy the skill-key pattern — answers with
+    // that field's value instead of null.
+    const store = new InMemorySkillStore();
+    const planted = rawSkill({ key: '__proto__', version: 1 });
+    store.put(planted);
+
+    expect(store.getObject('skill', 'name')).toBeNull();
+    expect(store.getObject('skill', 'description')).toBeNull();
+    expect(store.getObject('skill', 'content')).toBeNull();
+
+    store.put(rawSkill({ key: 'a', version: 1 }));
+    expect(store.getObject('skill', 'a')?.key).toBe('a');
+
+    // And the planted object is held under its own key rather than lost, so the
+    // listing does not silently shrink.
+    expect(store.getObject('skill', '__proto__')).toBe(planted);
+    expect(Object.values(store.allObjects('skill'))).toHaveLength(2);
+  });
+
+  it('cannot be corrupted by an inherited name in the constructor map', () => {
+    const planted = rawSkill({ key: '__proto__', version: 1 });
+    const store = new InMemorySkillStore({ ['__proto__']: planted });
+
+    expect(store.getObject('skill', 'name')).toBeNull();
+    expect(store.getObject('skill', 'description')).toBeNull();
+    expect(store.getObject('skill', '__proto__')).toBe(planted);
   });
 
   it('returns nothing for a kind other than skill', () => {
@@ -627,6 +858,10 @@ describe('getSkill', () => {
     expect(found).not.toBeNull();
     expect(found?.key).toBe('pdf-extraction');
     expect(found?.version).toBe(2);
+    // The declared type, asserted before the value: `content` is an opaque byte
+    // buffer and never a string, and `toEqual` alone passes for any
+    // structurally-equal value — including a plain array of the same numbers.
+    expect(found?.content).toBeInstanceOf(Uint8Array);
     expect(found?.content).toEqual(SKILL_BODY_BYTES);
     expect(found?.contentHash).toBe(hash(SKILL_BODY));
     expect(found?.name).toBe('Test Skill');
@@ -634,7 +869,11 @@ describe('getSkill', () => {
   });
 
   it('an omitted version means the newest available', async () => {
+    // Two versions, newer one seeded first: a store holding one version cannot
+    // distinguish "newest" from "the only one", and insertion order must not
+    // pass for ordering.
     store.put(rawSkill({ key: 'a', version: 7 }));
+    store.put(rawSkill({ key: 'a', version: 4 }));
     expect((await getSkill('a'))?.version).toBe(7);
   });
 
@@ -653,11 +892,25 @@ describe('getSkill', () => {
     expect(await getSkill('nope')).toBeNull();
   });
 
-  it('withholds a store answering under a different key', async () => {
+  it('withholds a store answering under a different key as integrity_failure, silently', async () => {
     // The key needs the same post-fetch defense the version already has.
     // Identity is read off the object itself, and the store is untrusted. An
     // answer served under a different key would otherwise be handed back under
     // the key the caller asked for while carrying its own.
+    //
+    // The token is `integrity_failure`, not `wrong_version`: content was
+    // delivered and its identity did not verify, which is the one outcome a
+    // caller is expected to fail closed on. `wrong_version` names a version
+    // mismatch specifically and there is deliberately no `wrong_key`, so a
+    // substituting store filed under it would be invisible to a caller
+    // branching on the token. Pinned here because the choice is not recoverable
+    // from the message.
+    //
+    // The silence is the other half, and it is asserted in both directions: the
+    // check runs *after* verifyRawSkill has already passed, so neither §3.24
+    // detection surface fires. A recorded signal or a logged record here would
+    // mean the check had migrated into verification — a real change, not a
+    // cosmetic one, since it would need a ninth reason_code to go with it.
     const aliasing: SkillStore = {
       getObject() {
         return rawSkill({ key: 'other-key' });
@@ -668,12 +921,34 @@ describe('getSkill', () => {
     };
     _setStore(aliasing);
 
-    expect(await getSkill('asked-for')).toBeNull();
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
 
-    const outcome = await getSkillResult('asked-for');
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let errorCalls: unknown[][] = [];
+    let collapsed: Skill | null;
+    let outcome: Awaited<ReturnType<typeof getSkillResult>>;
+    try {
+      collapsed = await getSkill('asked-for');
+      outcome = await getSkillResult('asked-for');
+    } finally {
+      // Read the calls out before restoring: `mockRestore` also resets the
+      // recorded history, so a read afterwards sees nothing.
+      errorCalls = [...spy.mock.calls];
+      spy.mockRestore();
+    }
+
+    expect(collapsed).toBeNull();
     expect(outcome.skill).toBeNull();
-    expect(outcome.reason).toBe('wrong_version');
-    expect(outcome.detail).toBe("skill 'asked-for' is not available: the store answered under key 'other-key'");
+    expect(outcome.reason).toBe('integrity_failure');
+    // Branch on the token, not on the message: `detail` is for a human. Assert
+    // only that it is present and carries no skill body.
+    expect(outcome.detail).toBeTruthy();
+    expect(outcome.detail).not.toContain('Do the thing.');
+
+    expect(emitter.records).toEqual([]);
+    const lines = errorCalls.map(([first]) => String(first));
+    expect(lines.filter((line) => line.includes('ld.skills.integrity_failure'))).toEqual([]);
   });
 });
 
@@ -746,6 +1021,61 @@ describe('allSkills', () => {
     store.put(rawSkill({ key: 'bad', contentHash: '0'.repeat(64) }));
     _setStore(store);
     expect((await allSkills()).map((s) => s.key)).toEqual(['good']);
+  });
+
+  it('returns the newest version per key', async () => {
+    // A list carrying two versions of one key is not a set of skills, and
+    // downstream `<root>/<key>/SKILL.md` is a single path. The store holds both,
+    // so the collapse has to happen here. Newer seeded first, so insertion order
+    // cannot pass for ordering.
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 5 }));
+    store.put(rawSkill({ key: 'a', version: 2 }));
+    store.put(rawSkill({ key: 'b', version: 1 }));
+    _setStore(store);
+
+    const found = await allSkills();
+
+    expect(found.filter((s) => s.key === 'a')).toHaveLength(1);
+    expect(found.find((s) => s.key === 'a')?.version).toBe(5);
+    expect(found.map((s) => s.key).sort()).toEqual(['a', 'b']);
+  });
+
+  it('keeps an unusable object in the set so verification withholds it with a signal', async () => {
+    // Filtering it here instead would silently shrink the resolved set, which on
+    // the materialization path is indistinguishable from a revocation and would
+    // let prune delete a live skill's last good copy. The recorded signal is
+    // what proves the object reached verification rather than being dropped.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'good', version: 1 }));
+    store.put(rawSkill({ key: 'unusable', version: 'nope' as unknown as number }));
+    _setStore(store);
+
+    const found = await allSkills();
+
+    expect(found.map((s) => s.key)).toEqual(['good']);
+    expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
+  });
+
+  it('records no signal for a key an unusable sibling did not stop resolving', async () => {
+    // The other side of the rule above. A store may hold a malformed object
+    // beside a well-formed version of the same key; the well-formed one
+    // resolves, so the key was never withheld and must not be reported as
+    // though it were. Keeping the sibling could only add an integrity failure
+    // for a skill whose integrity is not in question.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a', version: 1 }));
+    store.put(rawSkill({ key: 'a', version: 'nope' as unknown as number }));
+    _setStore(store);
+
+    const found = await allSkills();
+
+    expect(found.map((s) => s.key)).toEqual(['a']);
+    expect(emitter.signals(INTEGRITY_SIGNAL)).toEqual([]);
   });
 
   it('returns an empty list for an empty store', async () => {
@@ -829,9 +1159,8 @@ describe('integrity verification', () => {
   it('rejects content one byte over the size cap even when its hash matches', async () => {
     const emitter = new RecordingEmitter();
     _setEmitterForTesting(emitter);
-    const oversize = 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1);
     const store = new InMemorySkillStore();
-    store.put(rawSkill({ key: 'a', content: oversize }));
+    store.put(rawSkill({ key: 'a', content: OVERSIZE }));
     _setStore(store);
 
     expect(await getSkill('a')).toBeNull();
@@ -1024,6 +1353,33 @@ describe('telemetry seam, accessor half', () => {
     expect(props.expected_hash).toBe('b'.repeat(64));
     expect(props.observed_hash).toBe(hash(SKILL_BODY));
     expect(props.language).toBe('typescript');
+    // Exactly those five and no more: the signal's property set is a documented
+    // allowlist, so the assertion is on the whole set rather than on each
+    // member. The five present is half a test.
+    expect(Object.keys(props).sort()).toEqual(['expected_hash', 'language', 'observed_hash', 'skill_key', 'version']);
+  });
+
+  it('keeps the four record-only fields out of the signal', async () => {
+    // The log record is the larger of the two surfaces and carries four fields
+    // the signal must not: a stable `event` identity, the `action` taken, the
+    // human-readable `reason`, and the machine-parseable `reason_code`. Letting
+    // them leak into the signal is the regression this guards — the signal's
+    // property set is an allowlist that does not grow, and the two surfaces are
+    // deliberately different sizes.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    _setStore(new DictStore({ a: rawSkill({ key: 'a', contentHash: 'b'.repeat(64) }) }));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await getSkill('a');
+    } finally {
+      spy.mockRestore();
+    }
+
+    const [props] = emitter.signals(INTEGRITY_SIGNAL);
+    for (const field of ['event', 'action', 'reason', 'reason_code']) {
+      expect(field in props, field).toBe(false);
+    }
   });
 
   it('never puts the skill body in a signal', async () => {
@@ -1151,7 +1507,14 @@ describe('integrity-failure log record', () => {
   // text, and they cover the field set, not just the fact that something logged.
   const EVENT = 'ld.skills.integrity_failure';
 
-  type LoggedRecord = { line: string; record: Record<string, unknown> };
+  type LoggedRecord = {
+    /** The message text — the first argument. */
+    line: string;
+    /** The mapping parsed back out of the message text. */
+    record: Record<string, unknown>;
+    /** The structured attachment — every argument after the first. */
+    rest: unknown[];
+  };
 
   async function logged(run: () => Promise<unknown>): Promise<LoggedRecord[]> {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -1165,9 +1528,11 @@ describe('integrity-failure log record', () => {
       spy.mockRestore();
     }
     return calls
-      .map(([first]) => String(first))
-      .filter((line) => line.includes(EVENT))
-      .map((line) => ({ line, record: JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown> }));
+      .filter(([first]) => String(first).includes(EVENT))
+      .map(([first, ...rest]) => {
+        const line = String(first);
+        return { line, record: JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown>, rest };
+      });
   }
 
   const surrogate = 'hi \ud800 there';
@@ -1199,7 +1564,7 @@ describe('integrity-failure log record', () => {
     ['missing_content', spoiled({}, ['content']), GET],
     ['missing_content_hash', spoiled({}, ['contentHash']), GET],
     ['not_utf8', spoiled({ content: surrogate, contentHash: hash(Buffer.from(surrogate, 'utf-8')) }), GET],
-    ['over_size_cap', spoiled({ content: 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1) }), GET],
+    ['over_size_cap', spoiled({ content: OVERSIZE }), GET],
     ['hash_mismatch', spoiled({ contentHash: 'd'.repeat(64) }), GET],
   ];
 
@@ -1240,6 +1605,48 @@ describe('integrity-failure log record', () => {
     const [{ line, record }] = await logged(() => getSkill('a'));
 
     expect(line).toBe(`[LaunchDarkly] ${EVENT} ${JSON.stringify(record)}`);
+  });
+
+  it('emits the record twice over: in the message text and as structured data', async () => {
+    // Both forms are required, and neither is sufficient alone. A default
+    // `console.error` transport shows only the message text, so a
+    // structured-only record is invisible under the setup most customers have —
+    // and severity cannot stand in for it, because other store-failure paths in
+    // this module also log at error level. A structured pipeline, conversely,
+    // wants the mapping as *data* rather than as text it has to re-parse out of
+    // a prefixed line. Python's half of this is `extra={"ld_skills": record}`.
+    _setStore(new DictStore({ a: rawSkill({ key: 'a', version: 7, contentHash: 'd'.repeat(64) }) }));
+
+    const [{ line, record, rest }] = await logged(() => getSkill('a'));
+
+    // Form one: the event identity verbatim in the text, followed by the JSON.
+    expect(line.startsWith(`[LaunchDarkly] ${EVENT} `)).toBe(true);
+    // Form two: the same mapping, attached rather than serialized.
+    expect(rest).toHaveLength(1);
+    const attached = rest[0] as Record<string, unknown>;
+    expect(typeof attached).toBe('object');
+    expect(attached).not.toBeNull();
+    // The *same* mapping — asserted field-for-field, because an attachment that
+    // had drifted from the text would defeat the point of having both.
+    expect(attached).toEqual(record);
+    // And key order agrees too, which is what keeps the two halves from
+    // diverging the day someone reorders one of them.
+    expect(Object.keys(attached)).toEqual(Object.keys(record));
+  });
+
+  it('attaches the record on every reason_code, not just one path', async () => {
+    // The attachment is added at the single `console.error` call site, so one
+    // case would nearly prove it — but "nearly" is how a second call site gets
+    // added later without one. Sweep the vocabulary.
+    for (const [code, makeStore, run] of cases) {
+      _clearState();
+      _setStore(makeStore());
+
+      const [{ record, rest }] = await logged(run);
+
+      expect(rest, code).toHaveLength(1);
+      expect(rest[0], code).toEqual(record);
+    }
   });
 
   it('orders keys alphabetically, so the JSON is byte-identical across SDKs', async () => {
@@ -1341,6 +1748,57 @@ describe('integrity-failure log record', () => {
     expect(line).not.toContain(secret);
   });
 
+  it('agrees with the signal on every key the two surfaces share', async () => {
+    // The record's fields are *spread* from the signal's rather than rebuilt,
+    // and that is the property worth pinning: two independently assembled
+    // mappings would drift, and the ones most likely to drift are exactly the
+    // ones that matter — which fields are redacted and which are omitted. So
+    // this captures both surfaces from one failure and compares them key by key.
+    //
+    // A *redacting* failure on purpose: `contentHash` is not a digest, so
+    // `expected_hash` goes through the replacement branch on its way into both
+    // surfaces. A well-formed failure would compare equal even against an
+    // implementation that rebuilt the record by hand.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    _setStore(new DictStore({ a: rawSkill({ key: 'a', version: 7, contentHash: 'not-a-digest' }) }));
+
+    const [{ record }] = await logged(() => getSkill('a'));
+    const [props] = emitter.signals(INTEGRITY_SIGNAL);
+
+    // Every key the signal carries is a key the record carries — the overlap is
+    // the signal's whole property set, not an incidental one or two.
+    expect(Object.keys(props).sort()).toEqual(['expected_hash', 'language', 'observed_hash', 'skill_key', 'version']);
+    for (const key of Object.keys(props)) expect(record[key], key).toEqual(props[key]);
+    // Including the redaction, which is the half a rebuilt record loses.
+    expect(props.expected_hash).toBe('<not-a-sha256-digest>');
+  });
+
+  it('agrees with the signal on which fields are omitted, not only on values', async () => {
+    // The other half of "spread, not rebuilt": a field neither surface knows has
+    // to be missing from both. A record assembled separately is exactly where an
+    // explicit `null` or a stale default creeps in on one side only.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const raw = rawSkill({ key: 'a' });
+    // No content and an unusable version: nothing was hashed, so neither hash is
+    // known, and the version cannot be reported either.
+    delete raw.content;
+    raw.version = 0;
+    _setStore(new DictStore({ a: raw }));
+
+    const [{ record }] = await logged(() => getSkill('a'));
+    const [props] = emitter.signals(INTEGRITY_SIGNAL);
+
+    for (const key of ['version', 'expected_hash', 'observed_hash']) {
+      expect(key in props, `signal ${key}`).toBe(false);
+      expect(key in record, `record ${key}`).toBe(false);
+    }
+    // And what is left still agrees.
+    expect(Object.keys(props).sort()).toEqual(['language', 'skill_key']);
+    for (const key of Object.keys(props)) expect(record[key], key).toEqual(props[key]);
+  });
+
   it('is logged with no emitter configured — telemetry off is not detection off', async () => {
     // The reason this record exists: it is the whole detection story for a
     // customer whose telemetry is switched off, or who has no destination.
@@ -1382,11 +1840,32 @@ describe('getSkillResult', () => {
   }
 
   /**
+   * A store that answers a pinned lookup with some other version.
+   *
+   * `wrong_version` is not reachable through `InMemorySkillStore`, which honours
+   * the pin and answers a miss with `null` — that is `absent`, correctly, because
+   * the store said it holds nothing for that pin. The reason exists for a store
+   * that *does* answer and answers with the wrong thing, so the test needs one:
+   * `resolveFromStore`'s equality check is a defense against an untrusted store,
+   * not the selection mechanism.
+   */
+  function wrongVersionStore(answeredVersion = 99): SkillStore {
+    return {
+      getObject(_kind: string, key: string) {
+        return rawSkill({ key, version: answeredVersion });
+      },
+      allObjects() {
+        return {};
+      },
+    };
+  }
+
+  /**
    * One store per reason token. The stores are shaped so each reaches a
    * different construction site in `resolveFromStore`, which is what makes the
    * mapping — not just the union — the thing under test.
    */
-  const cases: Array<[SkillOutcomeReason, () => SkillStore, () => Promise<unknown>]> = [
+  const cases: Array<[packageIndex.SkillOutcomeReason, () => SkillStore, () => Promise<unknown>]> = [
     ['ok', () => storeHolding(rawSkill({ key: 'a' })), () => getSkillResult('a')],
     ['absent', () => new InMemorySkillStore(), () => getSkillResult('a')],
     [
@@ -1395,11 +1874,7 @@ describe('getSkillResult', () => {
       () => getSkillResult('a'),
     ],
     ['store_unavailable', throwingStore, () => getSkillResult('a')],
-    [
-      'wrong_version',
-      () => storeHolding(rawSkill({ key: 'a', version: 3 })),
-      () => getSkillResult('a', { version: 2 }),
-    ],
+    ['wrong_version', () => wrongVersionStore(3), () => getSkillResult('a', { version: 2 })],
   ];
 
   it.each(cases)('reports reason %s', async (reason, makeStore, run) => {
@@ -1643,8 +2118,22 @@ describe('getSkillResult', () => {
     }
   });
 
+  it('reports absent, not wrong_version, for a pin a multi-version store does not hold', async () => {
+    // The store honours the pin and answers `null`: it has told us it holds
+    // nothing at that version, which is an absence. `wrong_version` is for a
+    // store that answers *and answers wrongly* — the two are not the same
+    // report, and a caller tolerating `absent` should not be handed a
+    // tampering-shaped token for a version nobody published.
+    _setStore(storeHolding(rawSkill({ key: 'a', version: 2 }), rawSkill({ key: 'a', version: 5 })));
+
+    const outcome = await getSkillResult('a', { version: 3 });
+
+    expect(outcome.reason).toBe('absent');
+    expect(outcome.skill).toBeNull();
+  });
+
   it('detail names the key and both versions on a mismatch, and no path', async () => {
-    _setStore(storeHolding(rawSkill({ key: 'pdf-extraction', version: 3 })));
+    _setStore(wrongVersionStore(3));
 
     const { detail } = await getSkillResult('pdf-extraction', { version: 2 });
 
@@ -1680,37 +2169,5 @@ describe('createSkillOutcome', () => {
 
     expect(outcome.skill).toBe(built);
     expect(outcome.reason).toBe('ok');
-  });
-});
-
-// ─── Package exports ───────────────────────────────────────────────────
-
-describe('getSkillResult package exports', () => {
-  it('exports the accessor and the outcome factory from the package root', async () => {
-    // Imported here rather than at the top of the file so this stays a
-    // self-contained check of the barrel.
-    const pkg = await import('../index.js');
-    expect(typeof pkg.getSkillResult).toBe('function');
-    expect(typeof pkg.createSkillOutcome).toBe('function');
-  });
-
-  it('the SkillOutcomeReason union admits exactly the five reason tokens', () => {
-    // The five tokens are API — customers branch on them, and every SDK
-    // publishes the same five for the same conditions. Adding a sixth here
-    // should force a matching change in the other SDKs, not just a green test.
-    const exhaustive: Record<SkillOutcomeReason, true> = {
-      absent: true,
-      integrity_failure: true,
-      ok: true,
-      store_unavailable: true,
-      wrong_version: true,
-    };
-    expect(Object.keys(exhaustive).sort()).toEqual([
-      'absent',
-      'integrity_failure',
-      'ok',
-      'store_unavailable',
-      'wrong_version',
-    ]);
   });
 });

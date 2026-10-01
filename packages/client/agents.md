@@ -67,7 +67,7 @@ The `3` after the delimiter is what a `{key, version}` reference pins and what b
 
 **A hashless object is held, not dropped.** Verification withholds it with `missing_content_hash`; the transport's job is to make that loud (an error per object, a summary each time the held store becomes wholly hashless or its withheld set changes, `diagnostics.hashlessObjects`) rather than to work around it. Neither error repeats for a payload re-delivered unchanged, which matters most in polling mode, where the same payload arrives on every interval; `_warnedHashless` remembers what has been said and is capped, so a frequently versioned environment cannot accumulate an entry per version. Dropping it at the transport would report `absent` — indistinguishable from "no such skill" — and would let a prune delete the last known-good copy on disk. Never synthesize a hash from the delivered content: that certifies the content against itself and verifies nothing.
 
-**`SkillObjectSet.snapshot` collapses to one object per key, keyed by the bare skill key.** `<root>/<key>/SKILL.md` is a single path, so a whole-store consumer must see one object per key or a `'*'` reconcile writes the same path twice and `allSkills` returns two versions of one skill. The keys must be skill keys, not wire `key:version` keys, because `writeSkills('*')` derives its prune keep-set from them. `getObject` still resolves a pinned version out of the full set.
+**`SkillObjectSet.snapshot` collapses to one object per key, keyed by the bare skill key.** `<root>/<key>/SKILL.md` is a single path, so a whole-store consumer must see one object per key or a `'*'` reconcile writes the same path twice and `allSkills` returns two versions of one skill. Both consumers also collapse for themselves through `newestByKey`, because the seam admits any store — this is the transport holding up its end, not the only guard. The keys must be skill keys, not wire `key:version` keys, because `writeSkills('*')` derives its prune keep-set from them. `getObject` still resolves a pinned version out of the full set.
 
 **There is one network timeout, not two.** `readTimeoutMs` is applied through a `ReadDeadline` composed with the store's own abort signal, so connect, headers and each body read share it. Its default is per mode: `DEFAULT_POLL_TIMEOUT_MS` bounds a whole poll request, `DEFAULT_STREAM_READ_TIMEOUT_MS` bounds the gap between reads on a stream, and tripping it on a stream that has gone quiet *reconnects* — the `timeouts` suite measures the bound against a socket that accepts and never answers. Do not add a separate connect timeout.
 
@@ -85,39 +85,113 @@ The `3` after the delimiter is what a `{key, version}` reference pins and what b
 
 ## Public Exports (`src/index.ts`)
 
+This block is **generated from `src/index.ts`, verbatim and in its order** — it is not a curated
+summary. Regenerate it rather than hand-editing, or it drifts: it has previously listed a
+`./tracking.js` re-export that `index.ts` does not have, while omitting a dozen names it does.
+
 ```ts
+export type { AiConfigRep } from './client.js';
+export { config } from './client.js';
+export type { ContentCaptureOptions, SpanMessage, SpanMessagePart, ToolDefinitionInput } from './content.js';
+export {
+  langChainFinishReasons,
+  langChainSpanMessages,
+  setInputContentAttributes,
+  setOutputContentAttributes,
+  setToolCallContentAttributes,
+  setToolDefinitionAttributes,
+  textMessage,
+  toSemconvFinishReason,
+} from './content.js';
+export { graph, resolveGraph } from './graph.js';
+export { buildJudgeTasks, runJudge } from './judges.js';
 export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
-export type { LDContext, LDClientInterface, LDSingleKindContext, LDMultiKindContext, LDUser } from './types.js';
-export { config } from './client.js';
-export type { AiConfigRep } from './client.js';
-export type {
-  Tool, VariationMeta as LDVariationMeta, ProviderHandler, ProviderSetupFn, ProviderResponse,
-  ConfigArgs, TrackData,
-  GraphTopology, GraphEdge, GraphNode, GraphDefinition, GraphOptions, GraphArgs,
-  HandlerStreamEvent, StreamEvent, ProviderGraphResponse,
-} from './types.js';
-export { GraphTopologySchema, NativeTool, NATIVE_TOOL_KEY } from './types.js';
-export { Registry, globalRegistry, compose } from './registry.js';
-export { parseTemplate, parseJSONWithPossibleFences, createHandler } from './utils.js';
-export { graph, resolveGraph } from './graph.js';
-export { parseUsage, normalizeMode, parseAiConfig } from './tracking.js';
-
-// Agent Skills
-export { skillRefs, getSkill, getSkillResult, getSkills, allSkills, InMemorySkillStore } from './skills.js';
-export { SKILL_OBJECT_KIND, MAX_SKILL_CONTENT_BYTES } from './skills-core.js';
-export { writeSkills, SKILL_FILENAME, MANIFEST_FILENAME, MANIFEST_VERSION } from './skills-fs.js';
-export { FDv2SkillStore, DEFAULT_BASE_URI, DEFAULT_STREAM_URI } from './skills-fdv2.js';
-export { watchSkills, SkillWatcher, DEFAULT_DEBOUNCE_MS } from './skills-watch.js';
+export { compose, globalRegistry, Registry } from './registry.js';
+export { allSkills, getSkill, getSkillResult, getSkills, InMemorySkillStore, skillRefs } from './skills.js';
+export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills-fdv2.js';
+export { DEFAULT_BASE_URI, DEFAULT_STREAM_URI, FDv2SkillStore } from './skills-fdv2.js';
 export type { WriteSkillsOptions } from './skills-fs.js';
-export { createSkill, createSkillOutcome, createSkillReference } from './types.js';
+export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
+export type { WatchSkillsOptions } from './skills-watch.js';
+export { DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
 export type {
-  Skill, SkillOutcome, SkillOutcomeReason, SkillReference, SkillStore, RawSkillObject,
-  ReconcileAction, ReconcileActionKind, ReconcileReport, OnUnavailable,
+  ConfigArgs,
+  GraphArgs,
+  GraphDefinition,
+  GraphEdge,
+  GraphNode,
+  GraphOptions,
+  GraphTopology,
+  HandlerStreamEvent,
+  JudgeCallResult,
+  JudgeRunResult,
+  JudgeTask,
+  LDClientInterface,
+  LDContext,
+  LDMultiKindContext,
+  LDSingleKindContext,
+  LDUser,
+  Message,
+  OnUnavailable,
+  ProviderGraphResponse,
+  ProviderHandler,
+  ProviderResponse,
+  ProviderSetupFn,
+  RawSkillObject,
+  ReconcileAction,
+  ReconcileActionKind,
+  ReconcileReport,
+  RegistryInput,
+  RouteResult,
+  RunNodeOptions,
+  Skill,
+  SkillOutcome,
+  SkillOutcomeReason,
+  SkillReference,
+  SkillStore,
+  StreamEvent,
+  TokenUsage,
+  Tool,
+  ToolHandlerFn,
+  TrackData,
+  TraverseVisitor,
+  VariationMeta as LDVariationMeta,
 } from './types.js';
+export {
+  createSkill,
+  createSkillOutcome,
+  createSkillReference,
+  GraphTopologySchema,
+  NATIVE_TOOL_KEY,
+  NativeTool,
+} from './types.js';
+export type { RunUsage, SpanUsage } from './utils.js';
+export {
+  addCachedTokensToInput,
+  collapseMessagesToInstructions,
+  createHandler,
+  createRunUsage,
+  endSpanOnce,
+  langChainSpanUsage,
+  parseJSONWithPossibleFences,
+  parseTemplate,
+  setLdSpanAttributes,
+  setModelIdentityAttributes,
+  setUsageSpanAttributes,
+} from './utils.js';
 ```
 
 When adding a new export, add it here. Handler packages must never import from sub-paths (e.g. `@launchdarkly/ai-server/dist/client`).
+
+`MAX_SKILL_CONTENT_BYTES` and `SKILL_OBJECT_KIND` are deliberately **not** among them, and that
+absence is a contract with an absence assertion behind it — do not re-export either from
+`index.ts`. The cap is a local enforcement bound on content the platform produces, not a value this
+SDK defines, so exporting it would semver-lock a number this side does not own; the `over_size_cap`
+reason string already reports the bound when it is what withheld content. The kind is the string
+this SDK hands a `SkillStore`, and an adapter maps whatever its transport calls a skill onto it, so
+publishing it would advertise an SDK-side seam as the wire format — a claim this side cannot make
+and could not walk back once a caller depended on it. Both stay internal to `skills-core.ts`.
 
 ---
 
@@ -304,13 +378,17 @@ It is in **seconds**, defaulting to `10`. The signature is a cross-language cont
 
 Three specifics inside those two functions that a later contributor is most likely to widen:
 
-- **The 22 Windows reserved device names** — `con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9` — are rejected by `keyRejectionReason`, unconditionally on every platform. Do not add a `process.platform === 'win32'` gate: a managed root written by a Linux container and read from a Windows host is an ordinary deployment, so the on-disk result must not depend on which OS ran the reconcile, and with no Windows CI runner in either repo a platform branch would be untestable. Do not move the check into `isValidSkillKey` or `SKILL_KEY_PATTERN` either. `parseAiConfig` fails closed on a bad `skills` entry, so a grammar-level rejection would invalidate the *whole* AI Config — model, provider, instructions, tools — for a customer who never touches Windows, and `skillRefs` would silently drop the reference, which lets `writeSkills` prune the skill's on-disk copy. That turns "fails to write on Windows" into "gets deleted on Linux". The 255-byte path-component bound lives in this layer for the same reason. The set is exactly the reserved names: `com0` and `lpt0` are not reserved, and no case folding or suffix stripping is needed because the key grammar admits no uppercase, no `.`, and no `$`.
+- **The 22 Windows reserved device names** — `con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9` — are rejected by `keyRejectionReason`, unconditionally on every platform. Do not add a `process.platform === 'win32'` gate: a managed root written by a Linux container and read from a Windows host is an ordinary deployment, so the on-disk result must not depend on which OS ran the reconcile, and with no Windows CI runner in either repo a platform branch would be untestable. Do not move the check into `isValidSkillKey` or `SKILL_KEY_PATTERN` either. `parseAiConfig` fails closed on a bad `skills` entry, so a grammar-level rejection would invalidate the *whole* AI Config — model, provider, instructions, tools — for a customer who never touches Windows, and `skillRefs` would drop the reference — with a warning, but still shortening the projection it hands `writeSkills`, which lets `prune` take the skill's on-disk copy with it. That turns "fails to write on Windows" into "gets deleted on Linux". The 255-byte path-component bound lives in this layer for the same reason. The set is exactly the reserved names: `com0` and `lpt0` are not reserved, and no case folding or suffix stripping is needed because the key grammar admits no uppercase, no `.`, and no `$`.
 - **The adoption rule is a narrowing of the clobber refusal, not a hole in it.** A file at a managed path with no manifest entry is adopted — recorded, and reported `skipped_current` — only when its on-disk sha256 equals the resolved content hash, which is what lets a reconcile killed between the content writes and the final manifest write heal itself instead of wedging those skills forever. Adopt on anything weaker than an exact hash match and the guarantee is gone. `skipped_current` is reused deliberately: adding a member to `ReconcileActionKind` would break every consumer with an exhaustive `switch`.
 - **`readRegularFile` is what makes that read safe**, and every part of it is load-bearing: `O_NONBLOCK`, because opening a FIFO with no writer blocks forever and would hang the reconcile along with the event loop; `O_NOFOLLOW`; and an `fstat` on the *handle* rather than a `stat` on the path, refusing anything that is not a regular file. A failed read is a refusal and never a fall-through to the write. There is no `O_BINARY` — Node does no CRLF translation — which is the one place this deliberately differs from the Python twin.
 
 ### 6. Bypassing `fsOps` for a destructive filesystem call
 
-`safe-fs.ts` routes the final rename and the managed-file unlink through the `fsOps` record so tests can intercept exactly those two operations. The orphaned-temp sweep goes through `unlinkNoFollow` for the same reason, and derives its filename pattern from `tempNamePattern` in `safe-fs.ts` rather than carrying a copy: that sweep is only entitled to unlink a file because the *name* identifies it as one this SDK created, so two spellings of the naming rule would eventually let it either miss orphans or remove something it did not write. Calling `fs.rename`/`fs.unlink` directly makes the operation invisible to the atomicity and "no operation was attempted" assertions, which then pass vacuously. Note also the limitation those tests document: Node exposes no `renameat`/`unlinkat`, so `SUPPORTS_DIR_FD` is `false` and the TOCTOU swap-race tests are skipped — the residual exposure is real and recorded, not fixed.
+`safe-fs.ts` routes the final rename and the managed-file unlink through the `fsOps` record so tests can intercept exactly those two operations. The orphaned-temp sweep goes through `unlinkNoFollow` for the same reason, and derives its filename pattern from `tempNamePattern` in `safe-fs.ts` rather than carrying a copy: that sweep is only entitled to unlink a file because the *name* identifies it as one this SDK created, so two spellings of the naming rule would eventually let it either miss orphans or remove something it did not write. Calling `fs.rename`/`fs.unlink` directly makes the operation invisible to the atomicity and "no operation was attempted" assertions, which then pass vacuously.
+
+There is a **third** hook, and it is deliberately not part of `fsOps`: the root-swap races mock `mkdir` and `open` through `vi.mock('node:fs/promises')`, because they have to fire *before* the root is pinned. Widening `fsOps` to cover those would blur what a "no filesystem operation was attempted" assertion means, so leave them separate.
+
+On the platform bound: Node exposes no `renameat`/`unlinkat`, so `SUPPORTS_DIR_FD` is `false` on every release to date — but that is **not** the end of the story, and an older version of this note said it was. `SUPPORTS_PROC_FD` addresses children through `/proc/self/fd/<fd>/<name>`, which the kernel resolves from the inode the descriptor holds rather than from the name it was opened under. That **closes** the swap window on Linux, so the swap-race tests *run* there and are skipped only where neither capability is present. Two consequences worth keeping straight: the `(dev, ino)` identity re-check is the macOS floor only and must not be attempted on the fast path (`lstat` of `/proc/self/fd/<fd>` reports procfs's magic symlink, not the directory); and a green macOS test run is not evidence about any of this, since all ten of those tests skip locally and execute on Linux CI alone.
 
 ### 7. "Fixing" the platform bound, or adding a writability field to `ReconcileReport`
 
@@ -347,12 +425,15 @@ Two decisions here look like unfinished work and are not. Neither should be reve
   | `resolveFromStore` — the store threw (also sets `unavailable`) | `store_unavailable` |
   | `resolveFromStore` — `raw` is not an object (null, an array, a scalar) | `absent` |
   | `resolveFromStore` — `verifyRawSkill` returned `null` | `integrity_failure` |
+  | `resolveFromStore` — `skill.key !== key` (the store answered under another key) | `integrity_failure` |
   | `resolveFromStore` — `skill.version !== wantedVersion` | `wrong_version` |
   | `resolveFromStore` — success | `ok` |
   | `skills-fs.ts` `resolveReference` — deadline exhausted, or no store configured (both set `unavailable`) | `store_unavailable` |
 
-  Adding a seventh row means answering "which of the five does a caller see?" before writing the code. `unavailable` stays a separate field rather than folding into `reason`: it is narrower, it is what suppresses pruning, and the two bottom rows above never reach an accessor at all.
-- `wantedVersion` is passed **into** `SkillStore.getObject(kind, key, version)`, and the post-hoc `skill.version !== wantedVersion` check is kept anyway. The parameter is there because a store may hold several versions of one key and only the store can pick between them; the equality check is a **defense**, not the selection mechanism, because the store is untrusted. Removing either one is wrong: without the parameter a satisfiable pin gets reported as `wrong_version`, and without the check a lying store gets its answer through. `InMemorySkillStore` holds one object per key and so ignores the parameter by design — it answers with what it has rather than with `null`, so a pin it cannot satisfy reports `wrong_version` rather than `absent`. Giving it real multi-version semantics is a separate change that pulls in `allObjects` and `allSkills`.
+  The two `integrity_failure` rows are **not** interchangeable, and the difference is the easy thing to get wrong. The `verifyRawSkill` row fires *inside* verification, so it records the `AgentControl Skill Integrity Failure` signal and writes the `ld.skills.integrity_failure` log record with one of the eight `IntegrityReasonCode` tokens. The key-mismatch row fires *after* verification has already passed, so it does neither — it is an outcome reason and nothing else, with no signal, no log record, and no `reason_code`. Do not "fix" that by adding an emission at the key check: the eight-token vocabulary does not cover it, so it would need a ninth token (`key_mismatch`) and a matching change in the Python SDK. A test asserts the silence in both directions.
+
+  Adding an eighth row means answering "which of the five does a caller see?" before writing the code. `unavailable` stays a separate field rather than folding into `reason`: it is narrower, it is what suppresses pruning, and the two bottom rows above never reach an accessor at all.
+- `wantedVersion` is passed **into** `SkillStore.getObject(kind, key, version)`, and the post-hoc `skill.version !== wantedVersion` check is kept anyway. The parameter is there because a store may hold several versions of one key and only the store can pick between them; the equality check is a **defense**, not the selection mechanism, because the store is untrusted. Removing either one is wrong: without the parameter a satisfiable pin gets reported as `wrong_version`, and without the check a lying store gets its answer through. Both shipped stores hold several versions of one key and honour the parameter: `getObject` answers a pin with exactly that version, and an omitted version with the newest held. A pin that misses while well-formed versions exist is `absent`; a pin that matches nothing well-formed falls through to the version-less entry, so a malformed object reaches verification and is withheld with a signal rather than reading as a deletion.
 - `getSkill`'s contract — "resolves to `null`, never rejects; throws only when no store is configured" — is **frozen**. It is documented in its JSDoc and in the README, and every existing caller treats that `null` as "no skill", so a reason must be added *alongside* it (as `getSkillResult` was) and never by changing what `getSkill` returns. `getSkillResult` is a projection of the same `Resolution` and shares the single throw; it records no telemetry and writes no log record of its own, because the integrity record already fired inside verification before the resolution returned and reporting it again would double-count one failure. `getSkills` and `allSkills` deliberately have no reporting equivalents yet.
 - This package has no logger abstraction — every `console.*` call site carries a `biome-ignore` saying so. Introducing a `logger` option is a package-wide API decision affecting unrelated call sites, not a skills change; until one exists, the integrity record has to be self-describing in the string it logs, which is why the event name appears both in the prefix and in the JSON.
 - Signal names, property keys, wire field names (`contentHash`), the manifest filename and format, and the exported constants are **identical strings** to the Python SDK. A polyglot fleet has to reconcile the same directory identically, so changing one of these is a cross-language breaking change.

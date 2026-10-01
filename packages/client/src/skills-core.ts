@@ -249,8 +249,18 @@ export function recordIntegrityFailure(
   record.skill_key = safeKey;
   if (isValidSkillVersion(extra.version)) record.version = extra.version;
 
+  // Emitted twice over, and both forms are required. The message text carries the
+  // event identity verbatim followed by the compact sorted-key JSON, which is the
+  // only form a plain `console.error` transport shows and what makes the line
+  // greppable and byte-comparable across SDKs. The same mapping goes out as a
+  // second argument, which is what a structured-console transport picks up as
+  // data rather than as text to re-parse — the counterpart to Python's
+  // `extra={"ld_skills": record}`. Neither alone is sufficient: a text-only
+  // record is invisible to a structured pipeline, and a structured-only one is
+  // invisible under the default setup, where severity cannot discriminate it from
+  // the other store-failure paths in this module that also log at error level.
   // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; integrity failures must be visible
-  console.error(`[LaunchDarkly] ${EVENT_INTEGRITY_FAILURE} ${JSON.stringify(record)}`);
+  console.error(`[LaunchDarkly] ${EVENT_INTEGRITY_FAILURE} ${JSON.stringify(record)}`, record);
   emit(SIGNAL_INTEGRITY_FAILURE, properties);
 }
 
@@ -282,13 +292,23 @@ export function recordMaterialized(
  * allowlist is maintained in one place: every signal this SDK can emit is visible
  * in this section of this module, and nothing outside it touches `emit`.
  */
-export function recordRevoked(skillKey: string, version: number | null): void {
-  emit(SIGNAL_REVOKED, {
-    skill_key: skillKey,
-    version,
+export function recordRevoked(skillKey: unknown, version: unknown): void {
+  // Both fields come off the manifest, which is a file on disk anything with
+  // write access to the root can author — exactly as attacker-controlled as a
+  // wire object. Same rule as `recordIntegrityFailure`: shape-check, then
+  // redact, so a hand-edited manifest cannot plant an arbitrary string in a
+  // signal that is otherwise body-free.
+  const safeKey = isValidSkillKey(skillKey) ? skillKey : '<invalid-key>';
+  const properties: Record<string, unknown> = {
+    skill_key: safeKey,
     removed_from_disk: true,
     language: LANGUAGE,
-  });
+  };
+  // Omitted rather than emitted as null: a consumer reads "the manifest entry
+  // recorded no usable version" off the key's absence, and the signal never
+  // carries a null for a field that was not known.
+  if (isValidSkillVersion(version)) properties.version = version;
+  emit(SIGNAL_REVOKED, properties);
 }
 
 // ---------------------------------------------------------------------------
@@ -316,8 +336,18 @@ export function isVerificationFailure(result: VerifiedContent | VerificationFail
  *
  * The wire object delivers `content` as a JSON string; this is the one place it
  * is encoded to UTF-8 bytes, and everything downstream — the hash, the `Skill`,
- * the file on disk — carries those bytes. A `Skill` already holds bytes, so the
- * pre-write pass hands them straight in and they are hashed as-is.
+ * the file on disk — carries those bytes. A `Skill` already holds bytes, and they
+ * are **snapshotted** here before being hashed, which is load-bearing rather than
+ * defensive copying for its own sake: `createSkill` freezes the wrapper but a
+ * TypedArray's elements cannot be frozen, so a `Skill` shares its buffer with
+ * whoever constructed it (`types.ts` says so). On the write path the hash is
+ * computed here and the rename happens several `await`s later — the existence
+ * check and the comparison read sit in between — so without the copy a caller
+ * mutating `skill.content` during that window writes bytes that were never
+ * hashed, which defeats verify-then-write entirely. The snapshot is what makes
+ * "the bytes that were hashed are the bytes that get written" true rather than
+ * merely likely. Python gets the same guarantee for free, its `bytes` being
+ * immutable.
  *
  * Returns the verbatim bytes and their locally computed sha256, or a
  * human-readable reason — having already recorded the integrity signal, so the
@@ -337,7 +367,17 @@ export function verifiedBytes(
   expectedHash: string,
   version: number,
 ): VerifiedContent | VerificationFailure {
-  const encoded = typeof content === 'string' ? new TextEncoder().encode(content) : content;
+  // A copy on the bytes path, not a bare reference: see the docblock. A string is
+  // already immutable and `encode` allocates, so that path needs no copy.
+  //
+  // `new Uint8Array(content)` rather than `content.slice()`, and the difference is
+  // not stylistic: `Buffer` is a `Uint8Array` subclass, a caller may perfectly
+  // legally hand one to `createSkill`, and `Buffer.prototype.slice` is the legacy
+  // spelling that returns a **view over the same memory** instead of a copy. So
+  // `slice()` would snapshot a plain `Uint8Array` and silently fail to snapshot a
+  // `Buffer` — the fix would look present and not be. The constructor copies for
+  // either, and normalizes a pooled `Buffer` view to a standalone buffer besides.
+  const encoded = typeof content === 'string' ? new TextEncoder().encode(content) : new Uint8Array(content);
 
   if (encoded.byteLength > MAX_SKILL_CONTENT_BYTES) {
     const reason = `content is ${encoded.byteLength} bytes, over the ${MAX_SKILL_CONTENT_BYTES} byte cap`;
@@ -469,6 +509,62 @@ export function allRawObjects(store: SkillStore): RawListing {
   return { objects: objects as Record<string, RawSkillObject>, error: null };
 }
 
+/** One raw object, paired with the store key it was served under. */
+export type ServedObject = {
+  /** The store's own map key — opaque, and only a fallback identity. */
+  readonly objectKey: string;
+  readonly raw: RawSkillObject;
+};
+
+/**
+ * One raw object per skill key — the highest version of each, paired with the
+ * store key it was served under.
+ *
+ * `allObjects` may hold several versions of one key, and both callers that
+ * consume the whole store want one skill per key: `allSkills` because a list
+ * holding two versions of one key is not a set of skills, and the `'*'`
+ * reconcile because `<root>/<key>/SKILL.md` is a single path and writing it twice
+ * in one run is a bug rather than a policy.
+ *
+ * The store key is carried through rather than discarded because the reconcile
+ * attributes a failure to it when the object's own key is unusable.
+ *
+ * An object too malformed to carry a usable key and version is **kept**, so
+ * verification is what withholds it: a silently dropped object falls out of the
+ * requested set, and prune would then delete the last known-good copy already on
+ * disk. The exception is an object whose skill key resolved anyway from another
+ * version — there the resolved object already holds the key in the requested
+ * set, so keeping the malformed one would only report a withholding for a key
+ * that in fact resolved.
+ */
+export function newestByKey(objects: Record<string, RawSkillObject>): ServedObject[] {
+  // The winning version is carried beside the object rather than re-read off it:
+  // `RawSkillObject.version` is `unknown`, and narrowing it once at the point it
+  // was validated is what keeps the comparison from needing a cast.
+  const best = new Map<string, { served: ServedObject; version: number }>();
+  const unusable: ServedObject[] = [];
+  for (const [objectKey, raw] of Object.entries(objects)) {
+    const key = typeof raw === 'object' && raw !== null ? raw.key : undefined;
+    const version = typeof raw === 'object' && raw !== null ? raw.version : undefined;
+    if (!isValidSkillKey(key) || !isValidSkillVersion(version)) {
+      unusable.push({ objectKey, raw });
+      continue;
+    }
+    const held = best.get(key);
+    if (held === undefined || version > held.version) best.set(key, { served: { objectKey, raw }, version });
+  }
+  // An unusable object whose own key resolved from another version is dropped
+  // here rather than passed on: the resolved object already holds that key in
+  // the requested set, so prune is already held off the copy on disk and the
+  // only thing the malformed sibling could still add is a withholding reported
+  // against a key that resolved.
+  const withheld = unusable.filter(({ raw }) => {
+    const key = typeof raw === 'object' && raw !== null ? raw.key : undefined;
+    return !(isValidSkillKey(key) && best.has(key));
+  });
+  return [...[...best.values()].map(({ served }) => served), ...withheld];
+}
+
 // ---------------------------------------------------------------------------
 // Resolution internals — shared with the materialization path
 // ---------------------------------------------------------------------------
@@ -538,9 +634,19 @@ export function resolveFromStore(store: SkillStore, key: string, wantedVersion: 
     return { error: `skill '${key}' failed integrity verification and was withheld`, reason: 'integrity_failure' };
   }
   if (skill.key !== key) {
+    // `integrity_failure` rather than `absent`: content was delivered and its
+    // identity did not verify, which is the one token a caller is expected to
+    // fail closed on. Reporting `absent` would file a store that substitutes one
+    // skill for another in the bucket the same caller is invited to tolerate. It
+    // is not `wrong_version` either — that token names a version mismatch
+    // specifically, and there is deliberately no `wrong_key` to parallel it.
+    //
+    // This path reports the outcome reason only: `verifyRawSkill` has already
+    // passed, so no integrity signal is recorded and no `ld.skills.integrity_failure`
+    // record is logged. That asymmetry is deliberate and pinned by a test.
     return {
       error: `skill '${key}' is not available: the store answered under key '${skill.key}'`,
-      reason: 'wrong_version',
+      reason: 'integrity_failure',
     };
   }
   if (wantedVersion !== null && skill.version !== wantedVersion) {
