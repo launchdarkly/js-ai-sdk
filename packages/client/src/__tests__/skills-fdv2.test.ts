@@ -18,7 +18,7 @@
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createServer as createTcpServer, type Socket, type Server as TcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -46,6 +46,7 @@ import {
   FatalTransportError,
   FDV2_KEY_DELIMITER,
   FDV2_OBJECT_KIND,
+  FDV2_PAYLOAD_KIND,
   FDv2SkillStore,
   FetchRequester,
   isSkillEvent,
@@ -165,6 +166,13 @@ type RecordedRequest = {
  */
 class FakeFDv2Endpoint {
   readonly requests: RecordedRequest[] = [];
+  /**
+   * What a poll is answered with once the queued script runs out. 304 —
+   * "nothing has changed" — is the right default for a healthy environment, but
+   * a standing 422 is what an environment with no skill payload answers *every*
+   * request with, and a queue cannot express "every".
+   */
+  defaultPollStatus = 304;
   holdStreamOpen = false;
   dropStreams = false;
   /** When set, `/sdk/stream` answers 307 with this `Location` instead of a body. */
@@ -230,7 +238,7 @@ class FakeFDv2Endpoint {
   }
 
   private servePoll(res: ServerResponse): void {
-    const queued = this.polls.shift() ?? { status: 304, events: [] };
+    const queued = this.polls.shift() ?? { status: this.defaultPollStatus, events: [] };
     const headers: Record<string, string> = {};
     if (queued.etag) headers.ETag = queued.etag;
     // Sent even when blank: a proxy that emits an empty `Retry-After` is a case
@@ -1218,10 +1226,10 @@ describe('polling against the endpoint', () => {
   });
 
   it('sends the SDK key and no data model version', async () => {
-    // No `mv`: that parameter selects the *flag* data model, the connection
-    // rejects any value but the flag default, and the generic agent-skill
-    // payload is served regardless of it. Sending `mv=1` — the skill payload's
-    // own model version — gets the whole connection refused.
+    // No `mv`: that parameter selects the *flag* data model, and delivery
+    // overrides whatever a request asks for with the payload's own default for
+    // any non-flagging payload. Sending it would state a preference that is
+    // ignored, so the store states none.
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     const store = pollStore();
     store.start();
@@ -1229,6 +1237,24 @@ describe('polling against the endpoint', () => {
     expect(endpoint.requests[0].path).toBe('/sdk/poll');
     expect(endpoint.requests[0].authorization).toBe(SDK_KEY);
     expect('mv' in endpoint.requests[0].query).toBe(false);
+  });
+
+  it('declares the agent-skill payload kind on every request', async () => {
+    // Delivery narrows a connection to the kinds it declares and defaults to
+    // flags, so a request without this is served the environment's flag payload
+    // and no skills at all. It is on the first request as well as the ones
+    // after it: the declaration selects what the connection is served rather
+    // than describing what it already holds, so there is no state to wait on.
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+    endpoint.queuePoll([], { status: 304 });
+    const store = pollStore();
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await waitUntil(() => endpoint.requests.length >= 2)).toBe(true);
+    expect(endpoint.requests[0].query.kinds).toBe('agent-skill');
+    expect(endpoint.requests[0].query.basis).toBeUndefined();
+    expect(endpoint.requests[1].query.kinds).toBe('agent-skill');
+    expect(endpoint.requests[1].query.basis).toBe('basis-1');
   });
 
   it('sends no basis on the first request', async () => {
@@ -1537,6 +1563,15 @@ describe('streaming against the endpoint', () => {
     await store.waitForSkills(5000);
     expect(endpoint.requests[0].path).toBe('/sdk/stream');
     expect(endpoint.requests[0].accept).toBe('text/event-stream');
+  });
+
+  it('declares the agent-skill payload kind on the stream request too', async () => {
+    endpoint.holdStreamOpen = true;
+    endpoint.queueStream(fullPayload([['put-object', putSkill()]]));
+    const store = streamStore();
+    store.start();
+    await store.waitForSkills(5000);
+    expect(endpoint.requests[0].query.kinds).toBe('agent-skill');
   });
 
   it('applies a streamed revocation without a restart', async () => {
@@ -2136,6 +2171,120 @@ describe('failure handling', () => {
     expect(classifyStatus(400)).toBeInstanceOf(StaleRequestStateError);
     expect(classifyStatus(400)).toBeInstanceOf(RecoverableTransportError);
     expect(classifyStatus(400).message).toContain('base URI');
+    // 422 is fatal, and LaunchDarkly chose the status to be terminal rather
+    // than the SDK inferring it: a connection whose declared kinds exclude
+    // every payload it is assigned will never be assigned one.
+    expect(classifyStatus(422)).toBeInstanceOf(FatalTransportError);
+    expect(classifyStatus(422)).not.toBeInstanceOf(RecoverableTransportError);
+  });
+
+  it('answers every status with exactly one of the two classes', () => {
+    // There is no third class. A status handled as neither recoverable nor
+    // fatal is a retry loop with no bound and no budget, invisible to both
+    // `failed` and `connectionFailures` — the shape this suite forbids, not
+    // just the name it used to go by.
+    const statuses = [
+      301, 302, 307, 308, 400, 401, 402, 403, 404, 405, 406, 408, 409, 410, 413, 414, 418, 422, 425, 429, 431, 451, 500,
+      501, 502, 503, 504, 507, 599,
+    ];
+    for (const status of statuses) {
+      const err = classifyStatus(status);
+      const recoverable = err instanceof RecoverableTransportError;
+      const fatal = err instanceof FatalTransportError;
+      // Exactly one, for every status: not neither, and not both.
+      expect([recoverable, fatal].filter(Boolean), `HTTP ${status}`).toHaveLength(1);
+    }
+  });
+
+  it('names the key scoping in the 422 message', () => {
+    const message = classifyStatus(422).message;
+    expect(message).toMatch(/422/);
+    expect(message).toMatch(/view-scoped/i);
+    expect(message).toMatch(/Check your SDK key or contact LaunchDarkly support/i);
+  });
+
+  it('stops delivery on a 422 answering the first request', async () => {
+    // LaunchDarkly picked a non-400 4xx precisely so an SDK asking for a
+    // payload it will never be assigned stops instead of hammering the fleet.
+    // So the first response is enough: no retry, and nothing committed.
+    endpoint.defaultPollStatus = 422;
+    // A bound well above one, so what stops the loop is provably the
+    // classification and not an exhausted budget.
+    const store = pollStore({ maxConsecutiveFailures: 10 });
+    store.start();
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    expect(store.failed).toMatch(/422/);
+    expect(store.isInitialized()).toBe(false);
+    // One request, and it was not retried. Asserted after a window that would
+    // comfortably hold several retries at this store's 5ms initial backoff.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(endpoint.requests).toHaveLength(1);
+    expect(consoleErrors()).toMatch(/will not retry/);
+  });
+
+  it('accounts a fatal 422 on failed and lastError, and not on connectionFailures', async () => {
+    // `connectionFailures` measures consecutive *recoverable* failures against
+    // the retry bound. A fatal never retries, so moving it would put a number
+    // against a budget nothing will spend and make a store that gave up on its
+    // first response look like one that exhausted its attempts. This is how the
+    // give-up path already accounts 401 and 404; 422 is not a special case.
+    endpoint.defaultPollStatus = 422;
+    const store = pollStore();
+    store.start();
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    expect(store.diagnostics.lastError).not.toBeNull();
+    expect(store.diagnostics.lastError).toMatch(/422/);
+    expect(store.diagnostics.connectionFailures).toBe(0);
+    // And no per-attempt retry warning, because there was no retry.
+    expect(logged(warnSpy)).not.toMatch(/Skill delivery failed/);
+  });
+
+  it('resolves waitForSkills false immediately on a fatal 422, not at the timeout', async () => {
+    // The observable difference from treating the status as recoverable, and as
+    // much the point of the classification as the stopped retries are: a boot
+    // gated on skills behind a long wait would otherwise pay that wait on every
+    // start against a store that knew the answer on its first response.
+    endpoint.defaultPollStatus = 422;
+    const store = pollStore();
+    store.start();
+    const timeoutMs = 10_000;
+    const began = performance.now();
+    // Waiting this out would take ten seconds; returning early takes the one
+    // round trip to the loopback endpoint.
+    expect(await store.waitForSkills(timeoutMs)).toBe(false);
+    const elapsed = performance.now() - began;
+    expect(elapsed).toBeLessThan(timeoutMs / 4);
+    expect(store.failed).not.toBeNull();
+  });
+
+  it('leaves a store that gave up on a 422 uninitialized, so a wildcard reconcile prunes nothing', async () => {
+    // Composed with §3.22: "delivery gave up, therefore the store is empty,
+    // therefore prune" is exactly the inference an implementation assembles
+    // from two sections, and it deletes a customer's files. The readiness gate
+    // is what stops it, and this is the path a filesystem-agent deployment
+    // takes when Agent Skills is not enabled for the account.
+    const root = await scratchRoot();
+    const stale = path.join(root, 'left-behind');
+    await mkdir(stale, { recursive: true });
+    await writeFile(path.join(stale, 'SKILL.md'), 'not ours to delete', 'utf8');
+
+    endpoint.defaultPollStatus = 422;
+    const store = pollStore();
+    store.start();
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    // A store that gave up before any payload committed never initialized, and
+    // neither wait parks: both answers have already arrived.
+    expect(store.isInitialized()).toBe(false);
+    expect(await store.waitForSkills(100)).toBe(false);
+    _setStore(store);
+    const report = await writeSkills('*', root);
+    // Retrieval is reported unavailable rather than answered as "no skills".
+    expect(report.ok).toBe(false);
+    expect(report.errors.map((action) => action.error).join('\n')).toMatch(/skill retrieval unavailable/);
+    // Pruning is suppressed for the whole run, and nothing on disk moved.
+    expect(report.actions.some((action) => action.action === 'removed')).toBe(false);
+    expect(existsSync(path.join(stale, 'SKILL.md'))).toBe(true);
+    expect(await readFile(path.join(stale, 'SKILL.md'), 'utf8')).toBe('not ours to delete');
   });
 
   it('makes backoff exponential and capped', () => {
@@ -2232,10 +2381,6 @@ describe('the missing contentHash', () => {
     // as a skill key drops out of the keep-set and prune deletes the last
     // known-good copy. Which is the outcome this transport was written to avoid.
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
-    endpoint.queuePoll(
-      fullPayload([['put-object', putSkill('pdf-extraction', { objectVersion: 4, omitHash: true })]], 'basis-2'),
-    );
-    endpoint.queuePoll([], { status: 304 });
 
     const store = pollStore({ pollIntervalMs: 20 });
     store.start();
@@ -2247,6 +2392,15 @@ describe('the missing contentHash', () => {
     await writeSkills('*', root);
     expect(readFileSync(written, 'utf8')).toBe(SKILL_BODY);
 
+    // Queued only now, and deliberately not up front. `waitForSkills` promises
+    // the *first* commit and nothing about the second, so a hashless payload
+    // waiting in the queue commits on the next poll — 20ms later — and a
+    // reconcile that has not run by then withholds every object and writes
+    // nothing. That is a real race the assertion above cannot survive, and it
+    // fails as an ENOENT on the read rather than as anything self-explanatory.
+    endpoint.queuePoll(
+      fullPayload([['put-object', putSkill('pdf-extraction', { objectVersion: 4, omitHash: true })]], 'basis-2'),
+    );
     expect(await waitUntil(() => store.diagnostics.hashlessObjects > 0, 5000)).toBe(true);
     const report = await writeSkills('*', root);
 
@@ -2918,7 +3072,103 @@ describe('watchSkills', () => {
       getObject: () => null,
       allObjects: () => ({}),
     });
-    await expect(watchSkills('*', await scratchRoot())).rejects.toThrow(/addListener/);
+    // The message names both remedies: the one-shot reconcile, and the store
+    // that does implement the listener half of the seam.
+    await expect(watchSkills('*', await scratchRoot())).rejects.toThrow(/writeSkills[\s\S]*FDv2SkillStore/);
+  });
+
+  it('passes prune and timeout straight through to writeSkills (§3.26)', async () => {
+    // Driven behaviourally rather than by spying on the import: a `prune: false`
+    // that reached `writeSkills` leaves a stale managed skill alone on the
+    // initial reconcile *and* on a re-reconcile, and a `timeout: 0` that reached
+    // it exhausts before retrieval — both are §3.22 outcomes only `writeSkills`
+    // produces.
+    const seed = new InMemorySkillStore();
+    seed.put({ key: 'a', version: 1, content: 'first', contentHash: hash('first') });
+    seed.put({ key: 'stale', version: 1, content: 'old', contentHash: hash('old') });
+    _setStore(seed);
+    const root = path.join(await scratchRoot(), 'skills');
+    expect((await writeSkills('*', root)).ok).toBe(true);
+    // Now a store that no longer holds `stale`: with pruning on it would be removed.
+    const store = new InMemorySkillStore();
+    store.put({ key: 'a', version: 1, content: 'first', contentHash: hash('first') });
+    _setStore(store);
+
+    const { report, watcher } = await watchSkills('*', root, { debounceMs: 10, prune: false });
+    try {
+      expect(report.ok).toBe(true);
+      expect(report.actions.some((a) => a.action === 'removed')).toBe(false);
+      expect(await readFile(path.join(root, 'stale', 'SKILL.md'), 'utf8')).toBe('old');
+
+      store.put({ key: 'a', version: 2, content: 'second', contentHash: hash('second') });
+      expect(await waitUntil(() => watcher.reconciles === 1, 10_000)).toBe(true);
+      expect(await readFile(path.join(root, 'stale', 'SKILL.md'), 'utf8')).toBe('old');
+    } finally {
+      await watcher.close();
+    }
+
+    const timed = await watchSkills([{ key: 'a', version: 2 }], root, { debounceMs: 10, timeout: 0 });
+    try {
+      expect(timed.report.ok).toBe(false);
+      expect(timed.report.errors.map((a) => a.error).join('\n')).toMatch(/timeout was exhausted/);
+    } finally {
+      await timed.watcher.close();
+    }
+  });
+
+  it('close() survives a store whose removeListener throws, and stays closed', async () => {
+    // Detaching is best effort: a store that cannot detach must not leave the
+    // watcher half-closed with its timer armed, and a second close is a no-op.
+    let notify: (() => void) | null = null;
+    _setStore({
+      getObject: () => null,
+      allObjects: () => ({}),
+      addListener: (_kind: string, fn: () => void) => {
+        notify = fn;
+      },
+      removeListener: () => {
+        throw new Error('cannot detach');
+      },
+    });
+    const { watcher } = await watchSkills('*', path.join(await scratchRoot(), 'skills'), { debounceMs: 10 });
+    await watcher.close();
+    expect(consoleErrors()).toContain('cannot detach');
+    const errorsAfterClose = errorSpy.mock.calls.length;
+    await watcher.close();
+    expect(errorSpy.mock.calls.length).toBe(errorsAfterClose);
+    // Closed: a notification that still reaches it schedules nothing.
+    (notify as unknown as () => void)();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(watcher.reconciles).toBe(0);
+  });
+
+  it('logs an async onReconcile that rejects, and the next commit still reconciles', async () => {
+    // `onReconcile` may be async. A rejection must be caught and logged like a
+    // synchronous throw — not left as an unhandled rejection — and must not
+    // stop the watcher.
+    const store = new InMemorySkillStore();
+    store.put({ key: 'a', version: 1, content: 'first', contentHash: hash('first') });
+    _setStore(store);
+    let calls = 0;
+    const root = path.join(await scratchRoot(), 'skills');
+    const { watcher } = await watchSkills('*', root, {
+      debounceMs: 10,
+      onReconcile: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('async callback exploded');
+      },
+    });
+    try {
+      store.put({ key: 'a', version: 2, content: 'second', contentHash: hash('second') });
+      expect(await waitUntil(() => /async callback exploded/.test(consoleErrors()), 10_000)).toBe(true);
+      expect(consoleErrors()).toContain('callback threw');
+      store.put({ key: 'a', version: 3, content: 'third', contentHash: hash('third') });
+      expect(await waitUntil(() => watcher.reconciles === 2, 10_000)).toBe(true);
+      expect(calls).toBe(2);
+      expect(await readFile(path.join(root, 'a', 'SKILL.md'), 'utf8')).toBe('third');
+    } finally {
+      await watcher.close();
+    }
   });
 
   it('throws when no store is configured', async () => {
@@ -3340,15 +3590,15 @@ describe('endpoints', () => {
     expect(requester.baseUri).toBe(DEFAULT_BASE_URI);
     expect(requester.streamUri).toBe(DEFAULT_STREAM_URI);
     const { poll, stream } = await requestedUrls(requester);
-    expect(poll).toBe('https://sdk.launchdarkly.com/sdk/poll');
-    expect(stream).toBe('https://stream.launchdarkly.com/sdk/stream');
+    expect(poll).toBe('https://sdk.launchdarkly.com/sdk/poll?kinds=agent-skill');
+    expect(stream).toBe('https://stream.launchdarkly.com/sdk/stream?kinds=agent-skill');
   });
 
   it('sends both endpoints to a custom baseUri when no streamUri is given', async () => {
     const requester = requesterOf(new FDv2SkillStore(SDK_KEY, { baseUri: 'https://relay.example.com/' }));
     const { poll, stream } = await requestedUrls(requester);
-    expect(poll).toBe('https://relay.example.com/sdk/poll');
-    expect(stream).toBe('https://relay.example.com/sdk/stream');
+    expect(poll).toBe('https://relay.example.com/sdk/poll?kinds=agent-skill');
+    expect(stream).toBe('https://relay.example.com/sdk/stream?kinds=agent-skill');
   });
 
   it('lets streamUri differ from baseUri', async () => {
@@ -3356,8 +3606,8 @@ describe('endpoints', () => {
       new FDv2SkillStore(SDK_KEY, { baseUri: 'https://sdk.example.com', streamUri: 'https://stream.example.com/' }),
     );
     const { poll, stream } = await requestedUrls(requester);
-    expect(poll).toBe('https://sdk.example.com/sdk/poll');
-    expect(stream).toBe('https://stream.example.com/sdk/stream');
+    expect(poll).toBe('https://sdk.example.com/sdk/poll?kinds=agent-skill');
+    expect(stream).toBe('https://stream.example.com/sdk/stream?kinds=agent-skill');
   });
 
   it('keeps the default poll host when only streamUri is given', () => {
@@ -3375,8 +3625,8 @@ describe('endpoints', () => {
     });
     await requester.poll('(p:a:1)', null, new AbortController().signal);
     await expect(requester.stream('(p:a:1)', new AbortController().signal)).rejects.toThrow();
-    expect(urls[0]).toBe('https://sdk.example.com/sdk/poll?basis=%28p%3Aa%3A1%29');
-    expect(urls[1]).toBe('https://stream.example.com/sdk/stream?basis=%28p%3Aa%3A1%29');
+    expect(urls[0]).toBe('https://sdk.example.com/sdk/poll?kinds=agent-skill&basis=%28p%3Aa%3A1%29');
+    expect(urls[1]).toBe('https://stream.example.com/sdk/stream?kinds=agent-skill&basis=%28p%3Aa%3A1%29');
   });
 
   /**
@@ -3463,9 +3713,49 @@ describe('transport contract', () => {
     expect(FDV2_OBJECT_KIND).toBe(SKILL_OBJECT_KIND);
   });
 
+  it('holds the payload kind apart from the object kind, by source text', () => {
+    // Two different things, and neither derived from the other: the store asks
+    // for a payload of kind `agent-skill` and reads objects of kind `skill` out
+    // of it. Held apart so a rename of either cannot silently move the other,
+    // and asserted against the source for the same reason the seam-kind test
+    // above is — an alias would satisfy the value assertions on its own.
+    expect(source).toMatch(/export const FDV2_PAYLOAD_KIND = 'agent-skill';/);
+    expect(source).not.toMatch(/FDV2_PAYLOAD_KIND\s*=\s*FDV2_OBJECT_KIND/);
+    expect(source).not.toMatch(/FDV2_OBJECT_KIND\s*=\s*FDV2_PAYLOAD_KIND/);
+    expect(FDV2_PAYLOAD_KIND).toBe('agent-skill');
+    expect(FDV2_PAYLOAD_KIND).not.toBe(FDV2_OBJECT_KIND);
+  });
+
+  it('declares no payloadUnavailable field and no NoSkillPayloadError, by source text', () => {
+    // `StoreDiagnostics` is public API from the moment it ships, and a
+    // type-level removal is invisible at runtime — so the absence is asserted
+    // against the source, the way the kind constants above are. A field still
+    // declared but never incremented would fail the spec's absence assertion,
+    // and would pass a test that only looked at a snapshot.
+    expect(source).not.toMatch(/payloadUnavailable/);
+    // The expected-recoverable class is specified out of existence, not merely
+    // unexported: a status handled as neither recoverable nor fatal is a retry
+    // loop with no bound and no budget.
+    expect(source).not.toMatch(/NoSkillPayloadError/);
+    // And nothing left of the shape it carried: no idle warning, no retry
+    // parked at the cap instead of on the backoff schedule.
+    expect(source).not.toMatch(/delivery is idle/i);
+    expect(source).not.toMatch(/warnedNoSkillPayload/);
+  });
+
+  it('carries no payloadUnavailable key on a real diagnostics snapshot', () => {
+    // The runtime half of the assertion above: the source check would pass a
+    // field added dynamically, and this one would pass a field declared and
+    // never written. Both, because neither alone is the whole fact.
+    const store = pollStore();
+    expect(Object.keys(store.diagnostics)).not.toContain('payloadUnavailable');
+    expect('payloadUnavailable' in store.diagnostics).toBe(false);
+  });
+
   it('the 401 message names the SDK key', () => {
     expect(classifyStatus(401).message).toMatch(/SDK key/);
   });
+
   it('a goodbye on a store holding committed content keeps it', () => {
     const held = new SkillObjectSet();
     const reader = new ProtocolReader(held);
@@ -3490,6 +3780,7 @@ describe('transport contract', () => {
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
     expect(store.allObjects(SKILL_OBJECT_KIND)).toHaveProperty('pdf-extraction');
   });
+
   it('holds a tampered object while the accessor reports integrity_failure', async () => {
     // Verification is the accessor's job, not the transport's: the store keeps
     // what arrived, and the reported outcome is what tells a caller to fail closed.
@@ -3504,6 +3795,7 @@ describe('transport contract', () => {
     expect(outcome.skill).toBeNull();
     expect(store.getObject(SKILL_OBJECT_KIND, 'tampered')).not.toBeNull();
   });
+
   it.each([
     0,
     -1,
@@ -3523,6 +3815,7 @@ describe('transport contract', () => {
     expect(() => new FDv2SkillStore('mob-00000000-0000-4000-8000-000000000000')).toThrow(/server-side/);
     expect(() => new FDv2SkillStore('0123456789abcdef01234567')).toThrow(/server-side/);
   });
+
   it.each([
     Number.NaN,
     Number.NEGATIVE_INFINITY,
@@ -3548,6 +3841,7 @@ describe('transport contract', () => {
     expect(store.diagnostics.connectionFailures).toBe(0);
     expect(store.diagnostics.lastError).toBeNull();
   });
+
   it('a stream interrupted by close does not count as a success', async () => {
     // `streamOnce` returning because the signal aborted is the store closing,
     // not the server answering — so the row of failures must not be reset by it.
@@ -3771,6 +4065,7 @@ describe('transport contract', () => {
     });
   });
 });
+
 describe('listeners', () => {
   it('logs an async listener whose promise rejects rather than leaving it unhandled', async () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
