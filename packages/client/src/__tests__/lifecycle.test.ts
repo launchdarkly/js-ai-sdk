@@ -57,12 +57,20 @@ vi.mock('@opentelemetry/core', () => ({
   W3CTraceContextPropagator: class {},
 }));
 
+const mockTraceDisable = vi.fn();
+const mockContextDisable = vi.fn();
+const mockPropagationDisable = vi.fn();
 vi.mock('@opentelemetry/api', () => ({
   trace: {
     getTracerProvider: vi.fn().mockReturnValue({ _delegate: {} }),
+    disable: () => mockTraceDisable(),
+  },
+  context: {
+    disable: () => mockContextDisable(),
   },
   propagation: {
     setGlobalPropagator: vi.fn(),
+    disable: () => mockPropagationDisable(),
   },
 }));
 
@@ -77,6 +85,15 @@ function makeMockClient() {
     close: mockClose,
     waitForInitialization: mockWaitForInitialization,
     variation: vi.fn(),
+  };
+}
+
+function makeByocClient() {
+  return {
+    variation: vi.fn(),
+    track: vi.fn(),
+    flush: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -264,6 +281,33 @@ describe('lifecycle', () => {
       );
     });
 
+    it('does not re-run telemetry setup on a repeat BYOC call', async () => {
+      // OTel's global registration is one-shot. A second setupTelemetry would
+      // build a provider whose register() is refused — it receives no spans, yet
+      // takes over the handle shutdownTelemetry() flushes, so everything the
+      // first provider buffered is silently dropped.
+      const { initClient } = await import('../lifecycle.js');
+      const byocClient = makeByocClient();
+      await initClient(byocClient, { serviceName: 'first', otlpEndpoint: 'https://first.test' });
+      await initClient(byocClient, {});
+      await initClient(byocClient);
+
+      expect(mockTracerProviderRegister).toHaveBeenCalledTimes(1);
+      expect(mockOTLPTraceExporter).toHaveBeenCalledTimes(1);
+      expect(mockOTLPTraceExporter).toHaveBeenCalledWith(
+        expect.objectContaining({ url: 'https://first.test/v1/traces' }),
+      );
+      expect(mockResourceFromAttributes).toHaveBeenCalledWith(expect.objectContaining({ 'service.name': 'first' }));
+    });
+
+    it('returns the first client on a repeat BYOC call rather than swapping it', async () => {
+      const { initClient } = await import('../lifecycle.js');
+      const first = makeByocClient();
+      const second = makeByocClient();
+      expect(await initClient(first)).toBe(first);
+      expect(await initClient(second)).toBe(first);
+    });
+
     it('is idempotent — calls init only once when called twice', async () => {
       const mockClient = makeMockClient();
       mockLdInit.mockReturnValue(mockClient);
@@ -299,6 +343,22 @@ describe('lifecycle', () => {
       expect(mockTracerProviderShutdown).toHaveBeenCalled();
       expect(mockFlush).toHaveBeenCalled();
       expect(mockClose).toHaveBeenCalled();
+    });
+
+    it('releases the global OTel registrations so a later init can register again', async () => {
+      // Without this, the next setupTelemetry's register() is refused and every
+      // span routes to the provider shutdown() just tore down.
+      const mockClient = makeMockClient();
+      mockLdInit.mockReturnValue(mockClient);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      await initClient();
+      await shutdown();
+
+      expect(mockTraceDisable).toHaveBeenCalledTimes(1);
+      expect(mockContextDisable).toHaveBeenCalledTimes(1);
+      expect(mockPropagationDisable).toHaveBeenCalledTimes(1);
     });
 
     it('allows re-initialization after shutdown', async () => {
@@ -404,6 +464,11 @@ describe('lifecycle', () => {
       await initClient();
       await expect(shutdown()).resolves.toBeUndefined();
       expect(mockTracerProviderShutdown).not.toHaveBeenCalled();
+      // The OTel globals were never ours to take here, so they are not ours to
+      // clear — another library in the process may own them.
+      expect(mockTraceDisable).not.toHaveBeenCalled();
+      expect(mockContextDisable).not.toHaveBeenCalled();
+      expect(mockPropagationDisable).not.toHaveBeenCalled();
 
       vi.restoreAllMocks();
       vi.doUnmock('@opentelemetry/sdk-trace-node');

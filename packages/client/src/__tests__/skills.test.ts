@@ -28,8 +28,9 @@ vi.mock('@opentelemetry/core', () => ({
   W3CTraceContextPropagator: class {},
 }));
 vi.mock('@opentelemetry/api', () => ({
-  trace: { getTracerProvider: () => ({ _delegate: {} }) },
-  propagation: { setGlobalPropagator: vi.fn() },
+  trace: { getTracerProvider: () => ({ _delegate: {} }), disable: vi.fn() },
+  context: { disable: vi.fn() },
+  propagation: { setGlobalPropagator: vi.fn(), disable: vi.fn() },
 }));
 vi.mock('dotenv/config', () => ({}));
 

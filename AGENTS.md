@@ -149,11 +149,11 @@ The client manages a singleton connection to LaunchDarkly and the associated tel
 | Export | Description |
 |---|---|
 | `initClient(options?)` | Auto-discovers and initializes `@launchdarkly/node-server-sdk` (optional peer dep, loaded via dynamic import). Optional — the first AI API call triggers lazy init when `LD_SDK_KEY` is set. Accepts optional overrides for SDK key, base URIs, service name, environment, and OTLP endpoint. Returns `Promise<LDClientInterface>`. |
-| `initClient(client)` | **BYOC overload** — accepts a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk`). Stores it directly without calling the node SDK. |
+| `initClient(client, options?)` | **BYOC overload** — accepts a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk`). Stores it directly without calling the node SDK. The optional second argument is the same options bag as the other overload. Idempotent like that overload: once a client is set, a second call returns it and ignores both a different client and the new telemetry options — `shutdown()` first to swap clients. |
 | `getClient()` | Returns the initialized `LDClientInterface`. Throws if initialization has not completed. |
 | `shutdown()` | Flushes all pending events and telemetry, then closes the client. Must be called before the process exits. |
 | `waitForTelemetry()` | Waits for the OTel provider to be ready. Useful when spans must not be dropped at startup. |
-| `shutdownTelemetry()` | Flushes and stops the OTel exporter independently of the LD client. |
+| `shutdownTelemetry()` | Flushes and stops the OTel exporter independently of the LD client, and releases the global OTel trace/context/propagation registrations so a later `initClient()` can register its own provider. Only touches those globals when `setupTelemetry` actually took them. |
 
 ### Core Data Types
 
