@@ -4,6 +4,7 @@ import {
   getClient,
   inspectConfig,
   type LDContext,
+  makeRunTrackData,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -59,18 +60,6 @@ function servingProvider(config: AiConfigRep): string {
   return (config.provider?.name || 'unknown').toLowerCase();
 }
 
-function modelStampsFromMeta(meta: InspectedMeta): Pick<TrackData, 'modelKey' | 'modelVersion'> {
-  const stamps: Pick<TrackData, 'modelKey' | 'modelVersion'> = {};
-  const modelKey: unknown = meta?.modelKey;
-  if (typeof modelKey === 'string' && modelKey.length > 0) stamps.modelKey = modelKey;
-  const raw: unknown = meta?.modelVersion;
-  if (typeof raw === 'number' || (typeof raw === 'string' && raw.trim().length > 0)) {
-    const version = Number(raw);
-    if (Number.isInteger(version)) stamps.modelVersion = version;
-  }
-  return stamps;
-}
-
 function assertQuestions(
   questions: Record<string, Experimental_EvaluationQuestion> | undefined,
 ): asserts questions is Record<string, Experimental_EvaluationQuestion> {
@@ -86,18 +75,6 @@ async function resolveModel(
   if (options.modelFactory) return options.modelFactory(config);
   if (options.model) return options.model;
   return gatewayModelId(config);
-}
-
-function makeTrackData(configKey: string, config: AiConfigRep, meta: InspectedMeta): TrackData {
-  return {
-    runId: crypto.randomUUID(),
-    configKey,
-    variationKey: meta?.variationKey ?? '',
-    version: meta?.version ?? 1,
-    modelName: config.model.name ?? '',
-    providerName: config.provider?.name ?? '',
-    ...modelStampsFromMeta(meta),
-  };
 }
 
 async function resolveConfig(
@@ -123,14 +100,14 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
   assertQuestions(options.questions);
   const { config, meta } = await resolveConfig(configKey, context);
   const captureContent = options.captureContent ?? false;
-  const trackData = makeTrackData(configKey, config, meta);
+  const trackData = makeRunTrackData({ configKey, config, meta });
   const model = await resolveModel(config, options);
   const startTime = Date.now();
 
   return trace.getTracer(TRACER_NAME).startActiveSpan('evaluate', async (span) => {
     span.setAttribute('gen_ai.operation.name', 'evaluate');
     setModelIdentityAttributes(span, servingProvider(config), config.model.name);
-    setLdSpanAttributes(span, {});
+    setLdSpanAttributes(span, { __ld: trackData, ldContext: { ...context } });
     const payload = JSON.stringify({ state, questions: options.questions });
     setInputContentAttributes(span, captureContent, {
       messages: [textMessage('user', payload)],
