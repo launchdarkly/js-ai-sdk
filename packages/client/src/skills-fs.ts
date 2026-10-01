@@ -13,15 +13,22 @@
  * key, a corrupt manifest suppresses every destructive action, and an incomplete
  * retrieval suppresses pruning. Content is re-verified immediately before the
  * write, because a `Skill` can also be constructed directly by a caller.
+ *
+ * The managed root is pinned to a descriptor once, at the top of `writeSkills`,
+ * and held for the whole reconcile. Every path below it is built from
+ * {@link PinnedDirectory.address} rather than from the root's name, so on Linux
+ * the kernel resolves each operation from the pinned inode and a root swapped for
+ * a symlink mid-reconcile cannot redirect one. See `safe-fs.ts` for the mechanism
+ * and for what the other platforms get instead.
  */
 
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { lstat, mkdir, open, readdir, realpath, rmdir, stat } from 'node:fs/promises';
+import { type FileHandle, lstat, mkdir, open, readdir, realpath, rmdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
   atomicWrite,
-  atomicWriteIn,
+  directoryAddress,
   openDirectoryNoFollow,
   openOrCreateDirectory,
   tempNamePattern,
@@ -32,21 +39,25 @@ import {
   getStore,
   isVerificationFailure,
   NO_STORE_MESSAGE,
+  newestByKey,
   type Resolution,
   recordMaterialized,
   recordRevoked,
   referenceTarget,
   resolveFromStore,
+  storeIsInitialized,
   verifiedBytes,
   verifyRawSkill,
 } from './skills-core.js';
 import type {
   OnUnavailable,
+  RawSkillObject,
   ReconcileAction,
   ReconcileActionKind,
   ReconcileReport,
   Skill,
   SkillReference,
+  SkillStore,
 } from './types.js';
 import {
   createReconcileAction,
@@ -64,6 +75,35 @@ export const MANIFEST_VERSION = 1;
 
 /** The single file each skill materializes to, under `<root>/<key>/`. */
 export const SKILL_FILENAME = 'SKILL.md';
+
+/**
+ * A directory held open for the duration of an operation, with both of the ways
+ * it needs to be named.
+ *
+ * The two are the same string off the Linux fast path, and the split exists
+ * because they answer different questions:
+ *
+ * - `path` is the real, `realpath`'d location. It is what containment checks
+ *   compare against, what the manifest records, and the only one of the two that
+ *   may ever reach a caller — in a `ReconcileAction.path` or an error message.
+ * - `address` is what filesystem calls are issued against. On Linux it is
+ *   `/proc/self/fd/<fd>`, which the kernel resolves from the pinned inode, so
+ *   nothing done to the directory's *name* afterwards can redirect the call.
+ *
+ * Mixing them up is the bug this type exists to make hard, in both directions:
+ * an operation issued against `path` is racy, and an `address` shown to a caller
+ * is meaningless.
+ */
+type PinnedDirectory = {
+  readonly path: string;
+  readonly address: string;
+  readonly handle: FileHandle;
+};
+
+/** Pairs a freshly opened directory handle with the two names for it. */
+function pin(realPath: string, handle: FileHandle): PinnedDirectory {
+  return { path: realPath, address: directoryAddress(handle, realPath), handle };
+}
 
 /**
  * Prefix on every error describing content that could not be retrieved. Tests
@@ -129,7 +169,7 @@ const WINDOWS_RESERVED_NAMES: ReadonlySet<string> = new Set([
 export type WriteSkillsOptions = {
   /** Remove formerly-managed skills no longer in the requested set. Default `true`. */
   prune?: boolean;
-  /** Bound on the whole call, in **seconds** (not milliseconds). Default `10`. */
+  /** Bound on the whole call, in **seconds** (not milliseconds). Finite. Default `10`. */
   timeout?: number;
   /** How to react to content that could not be retrieved. Default `'keep'`. */
   onUnavailable?: OnUnavailable;
@@ -180,13 +220,63 @@ export async function writeSkills(
   if (onUnavailable !== 'keep' && onUnavailable !== 'raise') {
     throw new Error(`onUnavailable must be "keep" or "raise", got ${JSON.stringify(onUnavailable)}`);
   }
-  if (typeof timeout !== 'number' || Number.isNaN(timeout) || timeout < 0) {
-    throw new Error(`timeout must be a non-negative number of seconds, got ${JSON.stringify(timeout)}`);
+  // `Infinity` and `NaN` both pass a bare `< 0` check, and either one makes the
+  // deadline below non-finite — which voids the bound this option promises and
+  // lets the call run unbounded. `NaN` is the worse of the two, because what it
+  // voids depends on the *shape* of the comparison: `now > deadline` reads as
+  // never expiring, and `deadline - now > 0` reads as already expired. So the
+  // guard is finiteness, the way `debounceMs` and the store's timeouts are.
+  if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout < 0) {
+    // `String` rather than `JSON.stringify` for the number case: the latter
+    // serializes both `NaN` and `Infinity` as `null`, which names the wrong
+    // mistake.
+    const shown = typeof timeout === 'number' ? String(timeout) : JSON.stringify(timeout);
+    throw new Error(`timeout must be a non-negative, finite number of seconds, got ${shown}`);
+  }
+
+  // The request shape is validated before the root is resolved, so a mistaken
+  // call — a bare key string where an array was meant — does not leave a freshly
+  // created root directory behind as a side effect of failing.
+  if (typeof skills === 'string' && skills !== '*') {
+    throw new Error(`writeSkills takes an array of skills or the literal "*"; got ${JSON.stringify(skills)}`);
   }
 
   const deadline = performance.now() + timeout * 1000;
   const rootPath = await resolveRoot(root);
-  const { manifest, error: manifestError } = await loadManifest(rootPath);
+
+  // Pin the root before anything reads or writes below it, and hold it until the
+  // reconcile is done. `resolveRoot` validated a *name*; from here on every path
+  // is built from the descriptor instead, so a root swapped for a symlink after
+  // that validation cannot redirect an operation into the attacker's directory.
+  //
+  // A swap that lands in the window before this open fails the open, and that is
+  // a run-level `error` action rather than a throw. The distinction is
+  // deliberate: `resolveRoot` throws because an unusable root is a caller
+  // mistake, whereas a root that was a real directory a moment ago and is a
+  // symlink now is an attack in flight, which belongs in the report next to
+  // every other refusal.
+  let rootHandle: FileHandle;
+  try {
+    rootHandle = await openDirectoryNoFollow(rootPath);
+  } catch (error) {
+    return createReconcileReport([runError(`the skills root could not be pinned: ${messageOf(error)}`)]);
+  }
+
+  try {
+    return await reconcile(pin(rootPath, rootHandle), skills, { prune, timeout, onUnavailable, deadline });
+  } finally {
+    await rootHandle.close().catch(() => undefined);
+  }
+}
+
+/** Everything `writeSkills` does once the managed root is pinned. */
+async function reconcile(
+  root: PinnedDirectory,
+  skills: ReadonlyArray<Skill | SkillReference | string> | '*',
+  options: { prune: boolean; timeout: number; onUnavailable: OnUnavailable; deadline: number },
+): Promise<ReconcileReport> {
+  const { prune, timeout, onUnavailable, deadline } = options;
+  const { manifest, error: manifestError } = await loadManifest(root);
   const entries: Record<string, unknown> = (manifest.entries as Record<string, unknown>) ?? {};
 
   const actions: ReconcileAction[] = [];
@@ -195,7 +285,7 @@ export async function writeSkills(
 
   const { requests, incomplete: retrievalIncomplete } = await resolveRequests(skills, deadline, onUnavailable);
 
-  const { actions: written, timedOut } = await writeAll(rootPath, requests, entries, deadline, timeout);
+  const { actions: written, timedOut } = await writeAll(root, requests, entries, deadline, timeout);
   actions.push(...written);
   const incomplete = retrievalIncomplete || timedOut;
 
@@ -208,7 +298,7 @@ export async function writeSkills(
   // other destructive action, and skipped once the deadline is gone: this is
   // hygiene, not part of converging on the requested set.
   if (manifestError === null && performance.now() < deadline) {
-    actions.push(...(await sweepOrphanTemps(rootPath, sweepableKeys(requests, entries))));
+    actions.push(...(await sweepOrphanTemps(root, sweepableKeys(requests, entries))));
   }
 
   // Pruning is destructive, so it needs a trustworthy picture of both sides: a
@@ -216,10 +306,10 @@ export async function writeSkills(
   // retrieval that failed, or a deadline that expired mid-write — means we do not
   // know what is still current. Either way, deleting would be a guess.
   if (prune && manifestError === null && !incomplete) {
-    actions.push(...(await pruneEntries(rootPath, entries, new Set(requests.map((r) => r.key)))));
+    actions.push(...(await pruneEntries(root, entries, new Set(requests.map((r) => r.key)), deadline, timeout)));
   }
 
-  if (manifestError === null) actions.push(...(await rewriteManifest(rootPath, manifest, entries)));
+  if (manifestError === null) actions.push(...(await rewriteManifest(root, manifest, entries)));
 
   return createReconcileReport(actions);
 }
@@ -234,8 +324,28 @@ function runError(message: string): ReconcileAction {
   return createReconcileAction({ key: '', action: 'error', error: message });
 }
 
+/**
+ * The descriptor addressing, as it appears quoted inside an `errno` message.
+ *
+ * Anchored on the literal procfs prefix and a run of digits, so it matches what
+ * {@link directoryAddress} builds and not a customer path that merely contains the
+ * words.
+ */
+const DESCRIPTOR_ADDRESS_IN_MESSAGE = /\/proc\/self\/fd\/\d+\//g;
+
+/**
+ * An error's message, with descriptor addressing stripped back out.
+ *
+ * On Linux a child is addressed as `/proc/self/fd/<fd>/<name>`, so a raw `errno`
+ * message quotes that instead of a path anyone recognizes. Removing the prefix
+ * leaves the name relative to whichever directory was pinned — `a/SKILL.md` for
+ * the root, `SKILL.md` for a skill directory — which is the form the rest of the
+ * messages in this file already use. How the write was made safe is not something
+ * an operator should have to decode out of an error string.
+ */
 function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.replace(DESCRIPTOR_ADDRESS_IN_MESSAGE, '');
 }
 
 /**
@@ -246,7 +356,7 @@ function messageOf(error: unknown): string {
  * manifest rewrite and orphan every file already written in this run.
  */
 async function writeAll(
-  root: string,
+  root: PinnedDirectory,
   requests: readonly PendingWrite[],
   entries: Record<string, unknown>,
   deadline: number,
@@ -261,7 +371,7 @@ async function writeAll(
         createReconcileAction({
           key: request.key,
           action: 'error',
-          error: request.error ?? `skill '${request.key}' could not be resolved`,
+          error: request.error ?? `skill ${shownKey(request.key)} could not be resolved`,
         }),
       );
       continue;
@@ -345,7 +455,7 @@ function serializeManifest(manifest: Record<string, unknown>): Buffer {
 
 /** Writes the updated manifest. Returns an error action, or nothing. */
 async function rewriteManifest(
-  root: string,
+  root: PinnedDirectory,
   manifest: Record<string, unknown>,
   entries: Record<string, unknown>,
 ): Promise<ReconcileAction[]> {
@@ -358,7 +468,7 @@ async function rewriteManifest(
     // Two-space indent, sorted keys, non-ASCII escaped, and no trailing newline —
     // byte-for-byte the shared on-disk form; see `serializeManifest`.
     const serialized = serializeManifest(updated);
-    await atomicWriteIn(root, MANIFEST_FILENAME, serialized);
+    await atomicWrite(root.address, MANIFEST_FILENAME, serialized, root.handle);
   } catch (error) {
     return [runError(`the skills manifest could not be written: ${messageOf(error)}`)];
   }
@@ -388,9 +498,9 @@ function isSkill(item: Skill | SkillReference | string): item is Skill {
  * Turns the caller's input into one request per skill.
  *
  * Also reports whether any retrieval was left incomplete — an absent store, a
- * throwing store, or an exhausted timeout. That flag suppresses pruning: deleting
- * managed files because retrieval failed would turn a transport outage into data
- * loss.
+ * store still waiting for its initial data, a throwing store, or an exhausted
+ * timeout. That flag suppresses pruning: deleting managed files because
+ * retrieval failed would turn a transport outage into data loss.
  */
 async function resolveRequests(
   skills: ReadonlyArray<Skill | SkillReference | string> | '*',
@@ -398,6 +508,8 @@ async function resolveRequests(
   onUnavailable: OnUnavailable,
 ): Promise<{ requests: PendingWrite[]; incomplete: boolean }> {
   if (typeof skills === 'string') {
+    // `writeSkills` has already refused any string but '*', before the root
+    // was resolved; this is the same guard as a type narrowing.
     if (skills !== '*') {
       throw new Error(`writeSkills takes an array of skills or the literal "*"; got ${JSON.stringify(skills)}`);
     }
@@ -424,29 +536,58 @@ async function resolveRequests(
   return { requests, incomplete };
 }
 
+/** Retrieval could not happen at all; `error` is already worded as unavailable. */
+type RetrievalBlocked = { readonly blocked: string };
+
+function isBlocked(result: SkillStore | RetrievalBlocked): result is RetrievalBlocked {
+  return 'blocked' in result;
+}
+
+/**
+ * The single gate that decides whether retrieval is available — for one
+ * reference and for the `'*'` form alike, so the two cannot disagree about
+ * what counts as "the store could not answer".
+ *
+ * Three conditions block it, and every one of them is `store_unavailable`
+ * rather than the store answering "no": an exhausted deadline, an absent store,
+ * and a store that has not received its initial data. Reporting any of them as
+ * an absence is what would let a prune delete working files over a non-answer.
+ *
+ * The readiness check is the one that is easy to leave out. A store still
+ * waiting for its first delivery answers every read with "nothing", which is
+ * indistinguishable through the seam from an environment that holds no skills —
+ * and the `'*'` form reads that as every skill having been revoked. Blocking
+ * here reports the run incomplete, which is what suppresses the prune.
+ *
+ * `subject` is what the message says could not be retrieved.
+ */
+function availableStore(deadline: number, subject: string): SkillStore | RetrievalBlocked {
+  if (performance.now() >= deadline) {
+    return { blocked: unavailable(`the timeout was exhausted before ${subject} could be retrieved`) };
+  }
+  const store = getStore();
+  if (store === null) return { blocked: unavailable(NO_STORE_MESSAGE) };
+  if (!storeIsInitialized(store)) {
+    return {
+      blocked: unavailable(
+        `the skill store has not received its initial data, so ${subject} could not be retrieved and nothing on ` +
+          'disk was changed. Wait for delivery before reconciling: FDv2SkillStore.waitForSkills(timeoutMs) ' +
+          'resolves true once the first payload has arrived.',
+      ),
+    };
+  }
+  return store;
+}
+
 /**
  * Resolves one reference for the materialization path.
  *
- * Same core as the accessors, plus the two conditions only this path treats as
- * data rather than as an exception: an exhausted deadline and an absent store.
+ * Same core as the accessors, plus the conditions only this path treats as data
+ * rather than as an exception — see {@link availableStore}.
  */
 function resolveReference(key: string, wantedVersion: number | null, deadline: number): Resolution {
-  // Both of this function's own outcomes are `store_unavailable`: neither is the
-  // store answering "no". An exhausted deadline and an absent store are reasons
-  // the retrieval could not happen, and reporting either as an absence is what
-  // would let a prune delete working files over a non-answer.
-  if (performance.now() >= deadline) {
-    return {
-      error: unavailable(`the timeout was exhausted before '${key}' could be retrieved`),
-      reason: 'store_unavailable',
-      unavailable: true,
-    };
-  }
-
-  const store = getStore();
-  if (store === null) {
-    return { error: unavailable(NO_STORE_MESSAGE), reason: 'store_unavailable', unavailable: true };
-  }
+  const store = availableStore(deadline, `'${key}'`);
+  if (isBlocked(store)) return { error: store.blocked, reason: 'store_unavailable', unavailable: true };
 
   const resolved = resolveFromStore(store, key, wantedVersion);
   if (resolved.unavailable && resolved.error) {
@@ -482,42 +623,49 @@ function unavailableRun(
 function pendingForRaw(objectKey: string, raw: unknown): PendingWrite {
   const skill = verifyRawSkill(raw);
   if (skill) return { key: skill.key, skill };
-  if (!isValidSkillKey(objectKey)) {
+
+  // The seam never promised a store's map key spells a skill key — a store
+  // holding several versions of one key has reason to spell it `key:version`.
+  // So the object's own `key` is the first answer and the map key the fallback,
+  // which keeps an unverifiable object inside the requested set.
+  const candidate = typeof raw === 'object' && raw !== null ? (raw as RawSkillObject).key : undefined;
+  const key = isValidSkillKey(candidate) ? candidate : objectKey;
+  if (!isValidSkillKey(key)) {
+    // Neither key is usable, so this failure cannot be attributed to a skill —
+    // the run-level sentinel is the honest report. `resolveAll` reads that
+    // sentinel back as an incomplete run, because a failure with no key cannot
+    // protect its copy on disk the way the branch below does.
     return { key: '', error: 'the skill store served an object under an invalid key; it was withheld' };
   }
   return {
-    key: objectKey,
-    error: `skill '${objectKey}' failed integrity verification and was withheld; the copy already on disk was left alone`,
+    key,
+    error: `skill '${key}' failed integrity verification and was withheld; the copy already on disk was left alone`,
   };
 }
 
 /** Resolves the `'*'` form — everything the store currently holds. */
 function resolveAll(deadline: number, onUnavailable: OnUnavailable): { requests: PendingWrite[]; incomplete: boolean } {
-  if (performance.now() >= deadline) {
-    return unavailableRun(
-      unavailable('the timeout was exhausted before the skill set could be retrieved'),
-      onUnavailable,
-    );
-  }
-
-  const store = getStore();
-  if (store === null) return unavailableRun(unavailable(NO_STORE_MESSAGE), onUnavailable);
+  const store = availableStore(deadline, 'the skill set');
+  if (isBlocked(store)) return unavailableRun(store.blocked, onUnavailable);
 
   // Deliberately not via allSkills(), which reports a throwing store as an empty
   // result — that would look like "every skill was revoked" and let prune delete
   // the lot.
-  let objects: Record<string, unknown>;
-  try {
-    objects = allRawObjects(store);
-  } catch (error) {
-    const name = error instanceof Error ? error.constructor.name : 'unknown error';
-    return unavailableRun(unavailable(`the skill store threw ${name}: ${messageOf(error)}`), onUnavailable);
-  }
+  const { objects, error } = allRawObjects(store);
+  if (error !== null) return unavailableRun(unavailable(error), onUnavailable);
 
-  return {
-    requests: Object.entries(objects).map(([key, raw]) => pendingForRaw(key, raw)),
-    incomplete: false,
-  };
+  // One object per key, at its newest version. `allObjects` may hold several
+  // versions of one key, and <root>/<key>/SKILL.md is a single path — writing it
+  // twice in one run is not a duplicate report but a write race against itself,
+  // resolved by whichever version iteration happened to reach last.
+  const requests = newestByKey(objects).map(({ objectKey, raw }) => pendingForRaw(objectKey, raw));
+  // A withholding that could not be attributed to a key leaves the run
+  // incomplete. Every other failure keeps its key in the requested set, which is
+  // what holds prune off the copy on disk; a run-level failure has no key to do
+  // that with, so suppressing prune wholesale is the only thing left that stops
+  // an unreadable object reading as a revocation.
+  const unattributed = requests.some((request) => !request.skill && request.key === '');
+  return { requests, incomplete: unattributed };
 }
 
 // -------------------------------------------------------------------------
@@ -530,6 +678,12 @@ function resolveAll(deadline: number, onUnavailable: OnUnavailable): { requests:
  * An unusable root is a caller error rather than a per-skill outcome, so this
  * throws. Only the leaf directory is ever created — recursively creating missing
  * ancestors would let a typo scatter a directory tree.
+ *
+ * What this establishes is that a *name* was usable at one instant. It is not a
+ * defense on its own and never was: the caller pins the returned path to a
+ * descriptor immediately and addresses everything below it from there, because
+ * between this function's last `realpath` and any later operation the name can be
+ * swapped for a symlink by anyone with write access to the root's parent.
  */
 async function resolveRoot(root: string): Promise<string> {
   if (typeof root !== 'string' || root.length === 0) {
@@ -580,7 +734,7 @@ async function resolveRoot(root: string): Promise<string> {
  * Loads the manifest.
  *
  * A manifest that cannot be read, cannot be parsed, is not an object, carries a
- * `manifestVersion` this release does not understand, or has a malformed `entries`
+ * `manifestVersion` outside `[1, MANIFEST_VERSION]`, or has a malformed `entries`
  * map is **corrupt**. The caller then performs no destructive action and leaves the
  * file itself alone: rewriting it would destroy the only record of what the SDK
  * owns, and acting on a manifest we cannot read would mean guessing at which of
@@ -588,18 +742,22 @@ async function resolveRoot(root: string): Promise<string> {
  *
  * An absent manifest is not corrupt — that is simply a fresh root.
  */
-async function loadManifest(root: string): Promise<{ manifest: Record<string, unknown>; error: string | null }> {
+async function loadManifest(
+  root: PinnedDirectory,
+): Promise<{ manifest: Record<string, unknown>; error: string | null }> {
   const fresh = { manifestVersion: MANIFEST_VERSION, entries: {} };
 
   let text: string;
   try {
-    // `readRegularFile` rather than a plain `readFile` for the same reason the
-    // skill files use it: the manifest lives in the skills root, so anyone able
-    // to swap a managed file for a FIFO can do it here too, and an open that
-    // blocks forever would hang the reconcile before the deadline is ever
-    // consulted. A non-regular file becomes the corrupt-manifest refusal below,
-    // which is the fail-closed outcome an unreadable manifest already had.
-    text = (await readRegularFile(path.join(root, MANIFEST_FILENAME))).toString('utf-8');
+    // `readRegularFile` rather than a plain `readFile`, for the same reason the
+    // skill files use it: the manifest lives in the skills root, so anyone able to
+    // swap a managed file for a FIFO can do it here too, and an open that blocks
+    // forever would hang the reconcile before the deadline is ever consulted.
+    // Addressing through `root.address` stops the *swap*; it does nothing about a
+    // FIFO already sitting at the resolved path, so both defenses are needed. A
+    // non-regular file becomes the corrupt-manifest refusal below, which is the
+    // fail-closed outcome an unreadable manifest already had.
+    text = (await readRegularFile(path.join(root.address, MANIFEST_FILENAME))).toString('utf-8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { manifest: fresh, error: null };
     return {
@@ -629,7 +787,10 @@ async function loadManifest(root: string): Promise<{ manifest: Record<string, un
 
   const manifest = data as Record<string, unknown>;
   const version = manifest.manifestVersion;
-  if (typeof version !== 'number' || !Number.isInteger(version) || version > MANIFEST_VERSION) {
+  // Bounded at both ends. No release ever wrote a version below 1, so 0 or a
+  // negative is not an older schema this release could still read — it is a
+  // schema that never existed, and acting on its entries would be a guess.
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > MANIFEST_VERSION) {
     return {
       manifest: {},
       error: `the skills manifest ${MANIFEST_FILENAME} declares manifestVersion ${JSON.stringify(version)}, which this SDK cannot read; refusing every destructive action`,
@@ -651,6 +812,21 @@ async function loadManifest(root: string): Promise<{ manifest: Record<string, un
 // Per-skill reconcile
 // -------------------------------------------------------------------------
 
+/** How much of an attacker-reachable key an error message echoes. */
+const SHOWN_KEY_CHARS = 32;
+
+/**
+ * A key as it may appear in an error message: truncated to
+ * {@link SHOWN_KEY_CHARS}, because a key is attacker-reachable input and a
+ * rejected one is echoed into `ReconcileAction.error` — a 100 KB "key" must not
+ * become a 100 KB error string. Quoted with `JSON.stringify` so control
+ * characters are escaped rather than written into the log.
+ */
+function shownKey(key: unknown): string {
+  if (typeof key !== 'string') return JSON.stringify(key) ?? String(key);
+  return key.length > SHOWN_KEY_CHARS ? `${JSON.stringify(key.slice(0, SHOWN_KEY_CHARS))}...` : JSON.stringify(key);
+}
+
 /**
  * Why `key` must not become a directory name under the managed root, or `null`.
  *
@@ -662,14 +838,14 @@ async function loadManifest(root: string): Promise<{ manifest: Record<string, un
  */
 function keyRejectionReason(key: unknown): string | null {
   if (!isValidSkillKey(key)) {
-    return `${JSON.stringify(key)} is not a valid skill key (^[a-z0-9][a-z0-9-]*$, at most ${SKILL_KEY_MAX_LENGTH} characters)`;
+    return `${shownKey(key)} is not a valid skill key (^[a-z0-9][a-z0-9-]*$, at most ${SKILL_KEY_MAX_LENGTH} characters)`;
   }
   // The data model allows 256 characters; no mainstream filesystem allows a
   // 256-byte path component. Catch it here so it is a reported action rather than
   // an ENAMETOOLONG thrown from the first stat in the caller.
   const keyBytes = Buffer.byteLength(key, 'utf-8');
   if (keyBytes > MAX_PATH_COMPONENT_BYTES) {
-    return `skill key '${key.slice(0, 32)}...' is ${keyBytes} bytes, over the ${MAX_PATH_COMPONENT_BYTES}-byte limit for a single directory name`;
+    return `skill key ${shownKey(key)} is ${keyBytes} bytes, over the ${MAX_PATH_COMPONENT_BYTES}-byte limit for a single directory name`;
   }
   // Same argument one step further: the grammar admits names Windows resolves as
   // devices instead of as paths. This layer is the right place for it — see
@@ -714,6 +890,14 @@ async function pathExists(target: string): Promise<boolean> {
  * The containment check runs even when `skillDir` does not exist yet: `realpath`
  * on the deepest existing ancestor plus the remainder is what a fresh key under a
  * valid root has to satisfy.
+ *
+ * `root` is the real path; `skillDir` and `target` are addresses, which on the
+ * Linux fast path resolve through the pinned root's descriptor. `realpath`
+ * collapses those to the real location, so the comparison against `root` reads
+ * the same on both paths. Kept as **defense in depth** rather than as the
+ * boundary: on Linux the descriptor addressing is what makes containment
+ * structural, and these checks now catch a misbehaving key or a symlink planted
+ * inside the root rather than a swap of the root itself.
  */
 async function unsafePathReason(
   root: string,
@@ -741,7 +925,11 @@ async function unsafePathReason(
 }
 
 /** Reconciles one verified skill against the managed root. */
-async function writeOne(root: string, skill: Skill, entries: Record<string, unknown>): Promise<ReconcileAction> {
+async function writeOne(
+  root: PinnedDirectory,
+  skill: Skill,
+  entries: Record<string, unknown>,
+): Promise<ReconcileAction> {
   const key = skill.key;
   const failed = (message: string): ReconcileAction =>
     createReconcileAction({ key, action: 'error', version: skill.version, error: message });
@@ -754,11 +942,14 @@ async function writeOne(root: string, skill: Skill, entries: Record<string, unkn
     );
   }
 
-  const skillDir = path.join(root, key);
+  // Addressed through the pinned root; `reportedPath` is the same location named
+  // the way a caller would recognize it.
+  const skillDir = path.join(root.address, key);
   const target = path.join(skillDir, SKILL_FILENAME);
+  const reportedPath = path.join(root.path, key, SKILL_FILENAME);
   const relative = `${key}/${SKILL_FILENAME}`;
 
-  const unsafe = await unsafePathReason(root, skillDir, target, key, true);
+  const unsafe = await unsafePathReason(root.path, skillDir, target, key, true);
   if (unsafe !== null) return failed(`'${relative}' was refused: ${unsafe}; nothing was written`);
 
   // Verify-then-write, through the same core the accessors use (the accessor
@@ -791,7 +982,13 @@ async function writeOne(root: string, skill: Skill, entries: Record<string, unkn
     // the skill is wedged until a human intervenes.
     let onDisk: Buffer;
     try {
-      onDisk = await readRegularFile(target);
+      // Bounded at the resolved content's length, because this read reaches
+      // *unmanaged* files — that is the whole point of the self-heal above — so
+      // the file it opens is one an attacker with write access to the root may
+      // have planted, at whatever size they chose. `readRegularFile` reads one
+      // byte past the bound, which is what keeps a longer file from comparing
+      // equal to a prefix of itself; see its docblock.
+      onDisk = await readRegularFile(target, encoded.byteLength);
     } catch (error) {
       // A read that failed must never become an overwrite: we do not know what
       // is on disk, so this is the fail-closed branch and not a fall-through to
@@ -818,7 +1015,7 @@ async function writeOne(root: string, skill: Skill, entries: Record<string, unkn
       // is only filled in when the entry does not have one yet.
       updateEntry(entries, relative, skill, contentHash, false);
       recordMaterialized(key, encoded.byteLength, contentHash, 'skipped_current');
-      return createReconcileAction({ key, action: 'skipped_current', version: skill.version, path: target });
+      return createReconcileAction({ key, action: 'skipped_current', version: skill.version, path: reportedPath });
     }
 
     if (!managed) {
@@ -835,7 +1032,7 @@ async function writeOne(root: string, skill: Skill, entries: Record<string, unkn
 
   updateEntry(entries, relative, skill, contentHash, true);
   recordMaterialized(key, encoded.byteLength, contentHash, action);
-  return createReconcileAction({ key, action, version: skill.version, path: target });
+  return createReconcileAction({ key, action, version: skill.version, path: reportedPath });
 }
 
 /**
@@ -861,14 +1058,43 @@ async function writeOne(root: string, skill: Skill, entries: Record<string, unkn
  * There is deliberately no `O_BINARY`: Node performs no CRLF translation on a
  * descriptor, so the bytes read back are already verbatim.
  *
+ * `maxBytes` bounds the read at `maxBytes + 1` bytes, and the `+ 1` is
+ * load-bearing rather than slack. The only consumer of a bounded read is the
+ * adoption comparison, which hashes what it gets: anything longer than the
+ * resolved content cannot match its digest, so one byte past the content's length
+ * is all that is needed to *prove* inequality — while bounding at exactly
+ * `maxBytes` would be a bug, because a file that is the content plus trailing
+ * bytes would read back as exactly the content, hash equal, and be adopted
+ * despite not being current. The bound matters because that read reaches
+ * arbitrary foreign files at a managed path rather than only files the manifest
+ * vouches for, so unbounded it pulls a planted multi-GB file into memory before
+ * the comparison ever runs.
+ *
+ * `undefined` reads to EOF, for the manifest — whose length no caller can predict
+ * and which is parsed rather than compared. The manifest is bounded differently,
+ * by being the one file under the root this SDK writes itself.
+ *
  * Throws for anything the caller must turn into a refusal.
  */
-async function readRegularFile(target: string): Promise<Buffer> {
+async function readRegularFile(target: string, maxBytes?: number): Promise<Buffer> {
   const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
   const handle = await open(target, flags);
   try {
     if (!(await handle.stat()).isFile()) throw new Error('the path is not a regular file');
-    return await handle.readFile();
+    if (maxBytes === undefined) return await handle.readFile();
+
+    // Read into a buffer sized to the bound, so the file's own size never
+    // determines the allocation. Looped because a single `read` is permitted to
+    // return short; it stops at the bound or at EOF, whichever comes first.
+    const limit = maxBytes + 1;
+    const buffer = Buffer.alloc(limit);
+    let filled = 0;
+    while (filled < limit) {
+      const { bytesRead } = await handle.read(buffer, filled, limit - filled, filled);
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    return buffer.subarray(0, filled);
   } finally {
     await handle.close().catch(() => undefined);
   }
@@ -878,9 +1104,15 @@ async function readRegularFile(target: string): Promise<Buffer> {
  * Performs the write itself. Returns a failure reason, or `null` on success.
  *
  * Decides nothing — `writeOne` above it has already decided *whether* to write.
- * The directory is pinned to a handle and its identity is re-checked immediately
- * before the rename, which is as much of the symlink-swap defense as Node permits
- * (see `safe-fs.ts`).
+ * The directory is pinned to a handle and the write is then addressed relative to
+ * that handle (see `safe-fs.ts`).
+ *
+ * `skillDir` already resolves through the pinned *root*, so it cannot have been
+ * redirected. The per-skill directory is pinned in turn and `SKILL.md` addressed
+ * relative to it, because the skill directory's own name is the next thing an
+ * attacker with write access can swap — and off the fast path `skillDir` is a
+ * plain path, where that swap is exactly the window the identity re-check inside
+ * `atomicWrite` is left to narrow.
  */
 async function writeThroughPinnedDirectory(
   skillDir: string,
@@ -896,7 +1128,7 @@ async function writeThroughPinnedDirectory(
   }
 
   try {
-    await atomicWrite(skillDir, SKILL_FILENAME, encoded, handle);
+    await atomicWrite(directoryAddress(handle, skillDir), SKILL_FILENAME, encoded, handle);
   } catch (error) {
     return `'${relative}' could not be written: ${messageOf(error)}`;
   } finally {
@@ -962,11 +1194,23 @@ function pruneError(key: string, message: string, version: unknown = null): Reco
  * This is also how revocation takes effect: a revoked skill is simply absent from
  * the resolved set, so the next reconcile removes it. There is deliberately no
  * opt-out.
+ *
+ * The deadline is checked **per entry**, not once before the loop. Checking once
+ * satisfies "the whole call is bounded" only in the letter: a long manifest is an
+ * unbounded number of `unlink` and `rmdir` calls after that check, each of which
+ * can block, so the call overruns the timeout it promised by an amount the caller
+ * cannot predict. Stopping partway is safe by construction — `rewriteManifest`
+ * rebuilds the manifest from what actually happened, so an entry this run never
+ * reached stays listed and the next reconcile prunes it. An exhausted entry is
+ * reported as an `error` and the loop continues rather than breaking, so the
+ * report names every skill that was left in place instead of only the first.
  */
 async function pruneEntries(
-  root: string,
+  root: PinnedDirectory,
   entries: Record<string, unknown>,
   requested: ReadonlySet<string>,
+  deadline: number,
+  timeout: number,
 ): Promise<ReconcileAction[]> {
   const actions: ReconcileAction[] = [];
 
@@ -975,6 +1219,17 @@ async function pruneEntries(
     const record = entry as Record<string, unknown>;
     const { key } = record;
     if (typeof key !== 'string' || requested.has(key)) continue;
+
+    if (performance.now() >= deadline) {
+      actions.push(
+        pruneError(
+          key,
+          `the ${timeout}s timeout was exhausted before '${relative}' could be pruned; it was left in place`,
+          record.version,
+        ),
+      );
+      continue;
+    }
 
     // Only a manifest path this SDK could have written is removable.
     if (keyRejectionReason(key) !== null || relative !== `${key}/${SKILL_FILENAME}`) {
@@ -1000,16 +1255,17 @@ async function pruneEntries(
 
 /** Removes one managed skill file, and its directory when that empties it. */
 async function pruneOne(
-  root: string,
+  root: PinnedDirectory,
   relative: string,
   key: string,
   entries: Record<string, unknown>,
 ): Promise<ReconcileAction> {
-  const skillDir = path.join(root, key);
+  const skillDir = path.join(root.address, key);
   const target = path.join(skillDir, SKILL_FILENAME);
+  const reportedPath = path.join(root.path, key, SKILL_FILENAME);
   const version = (entries[relative] as Record<string, unknown>).version;
 
-  const unsafe = await unsafePathReason(root, skillDir, target, key, false);
+  const unsafe = await unsafePathReason(root.path, skillDir, target, key, false);
   if (unsafe !== null) return pruneError(key, `'${relative}' was not removed: ${unsafe}`, version);
 
   let removedFromDisk = false;
@@ -1021,28 +1277,33 @@ async function pruneOne(
       return pruneError(key, `'${relative}' was not removed: ${messageOf(error)}`, version);
     }
     try {
-      await unlinkNoFollow(skillDir, SKILL_FILENAME, handle);
+      await unlinkNoFollow(directoryAddress(handle, skillDir), SKILL_FILENAME, handle);
     } catch (error) {
       return pruneError(key, `'${relative}' could not be removed: ${messageOf(error)}`, version);
     } finally {
       await handle.close().catch(() => undefined);
     }
     removedFromDisk = true;
-    // Path-based, and safe that way: rmdir never follows a trailing symlink (it
-    // fails ENOTDIR) and only ever succeeds on an empty directory. The customer
-    // keeps their own files here too, so a failure is expected and ignored.
+    // Addressed through the pinned root rather than the skill directory's own
+    // handle, which is already closed — and safe path-based regardless: rmdir
+    // never follows a trailing symlink (it fails ENOTDIR) and only ever succeeds
+    // on an empty directory. The customer keeps their own files here too, so a
+    // failure is expected and ignored.
     await rmdir(skillDir).catch(() => undefined);
   }
 
   delete entries[relative];
 
-  if (removedFromDisk) recordRevoked(key, isValidSkillVersion(version) ? version : null);
+  // The raw manifest values go through untouched: `recordRevoked` shape-checks
+  // and redacts both of them itself, so the signal omits a malformed version
+  // rather than recording the `null` a pre-check here would hand it.
+  if (removedFromDisk) recordRevoked(key, version);
 
   return createReconcileAction({
     key,
     action: 'removed',
     version: isValidSkillVersion(version) ? version : null,
-    path: target,
+    path: reportedPath,
   });
 }
 
@@ -1072,7 +1333,7 @@ function sweepableKeys(requests: readonly PendingWrite[], entries: Record<string
 }
 
 /** Sweeps each key's directory. Failures are reported, never thrown. */
-async function sweepOrphanTemps(root: string, keys: ReadonlySet<string>): Promise<ReconcileAction[]> {
+async function sweepOrphanTemps(root: PinnedDirectory, keys: ReadonlySet<string>): Promise<ReconcileAction[]> {
   const actions: ReconcileAction[] = [];
   for (const key of keys) actions.push(...(await sweepSkillDirectory(root, key)));
   return actions;
@@ -1096,10 +1357,10 @@ async function sweepOrphanTemps(root: string, keys: ReadonlySet<string>): Promis
  * That is a visible failure rather than a corrupt file, and concurrent reconciles
  * against a single managed root are outside the contract either way.
  */
-async function sweepSkillDirectory(root: string, key: string): Promise<ReconcileAction[]> {
+async function sweepSkillDirectory(root: PinnedDirectory, key: string): Promise<ReconcileAction[]> {
   if (keyRejectionReason(key) !== null) return [];
 
-  const skillDir = path.join(root, key);
+  const skillDir = path.join(root.address, key);
   const pattern = tempNamePattern(SKILL_FILENAME);
 
   let handle: Awaited<ReturnType<typeof openDirectoryNoFollow>>;
@@ -1109,11 +1370,16 @@ async function sweepSkillDirectory(root: string, key: string): Promise<Reconcile
     return [];
   }
 
+  // Listed and unlinked through the directory's own descriptor, so the name the
+  // readdir enumerated and the name the unlink removes cannot come from two
+  // different directories.
+  const inside = directoryAddress(handle, skillDir);
+
   const actions: ReconcileAction[] = [];
   try {
     let names: string[];
     try {
-      names = await readdir(skillDir);
+      names = await readdir(inside);
     } catch {
       return [];
     }
@@ -1121,8 +1387,8 @@ async function sweepSkillDirectory(root: string, key: string): Promise<Reconcile
       if (!pattern.test(name)) continue;
       try {
         // Never a symlink and never a directory, whatever the name says.
-        if (!(await lstat(path.join(skillDir, name))).isFile()) continue;
-        await unlinkNoFollow(skillDir, name, handle);
+        if (!(await lstat(path.join(inside, name))).isFile()) continue;
+        await unlinkNoFollow(inside, name, handle);
       } catch (error) {
         actions.push(
           createReconcileAction({

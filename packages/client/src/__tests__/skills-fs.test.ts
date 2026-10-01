@@ -8,7 +8,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, realpathSync } from 'node:fs';
 import {
   chmod,
   lstat,
@@ -26,9 +26,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { fsOps, SUPPORTS_DIR_FD } from '../safe-fs.js';
+import { fsOps, SUPPORTS_DIR_FD, SUPPORTS_PROC_FD } from '../safe-fs.js';
 import { _clearState, _setEmitterForTesting, _setStore, InMemorySkillStore, skillRefs } from '../skills.js';
-import { MAX_SKILL_CONTENT_BYTES } from '../skills-core.js';
+import { MAX_SKILL_CONTENT_BYTES, recordRevoked } from '../skills-core.js';
 import { writeSkills } from '../skills-fs.js';
 import type { RawSkillObject, ReconcileAction, ReconcileReport, Skill, SkillStore } from '../types.js';
 import { createSkill, isValidSkillKey, parseAiConfig } from '../types.js';
@@ -44,6 +44,9 @@ const MANIFEST_NAME = '.launchdarkly-skills.json';
 
 const SKILL_BODY = '---\nname: Test Skill\n---\nDo the thing.\n';
 const INJECTED = 'simulated crash between write and rename';
+
+/** One over-cap string for the whole file: 10 MiB costs real time to allocate and hash. */
+const OVERSIZE = 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1);
 
 const INTEGRITY_SIGNAL = 'AgentControl Skill Integrity Failure';
 const MATERIALIZED_SIGNAL = 'AgentControl Skill Materialized';
@@ -142,6 +145,24 @@ class RecordingEmitter {
 type RenameCall = { src: string; dst: string };
 
 /**
+ * A descriptor-addressed path, resolved back to the real one.
+ *
+ * On Linux the implementation issues its operations against
+ * `/proc/self/fd/<fd>/<name>`, so the kernel resolves them from a pinned inode
+ * rather than from a name — see `SUPPORTS_PROC_FD` in `safe-fs.ts`. These tests
+ * assert on *where* an operation landed, which means undoing that addressing, and
+ * it can only be undone while the descriptor is still open. Hence inside the
+ * interception rather than in the assertion.
+ *
+ * Only the parent is resolved: the final component of a rename destination does
+ * not exist yet. Off the fast path this is the identity function.
+ */
+function realize(target: string): string {
+  if (!target.startsWith('/proc/self/fd/')) return target;
+  return path.join(realpathSync(path.dirname(target)), path.basename(target));
+}
+
+/**
  * Records — and optionally fails — every atomic rename of a `SKILL.md`.
  *
  * The implementation performs the
@@ -159,7 +180,7 @@ function interceptRename(options: { fail?: boolean } = {}): RenameCall[] {
   const real = fsOps.rename.bind(fsOps);
   vi.spyOn(fsOps, 'rename').mockImplementation(async (src: string, dst: string) => {
     if (dst.endsWith(SKILL_MD)) {
-      calls.push({ src, dst });
+      calls.push({ src: realize(src), dst: realize(dst) });
       if (options.fail) throw new Error(INJECTED);
     }
     return real(src, dst);
@@ -173,7 +194,7 @@ function interceptUnlink(options: { fail?: boolean } = {}): string[] {
   const real = fsOps.unlink.bind(fsOps);
   vi.spyOn(fsOps, 'unlink').mockImplementation(async (target: string) => {
     if (target.endsWith(SKILL_MD)) {
-      calls.push(target);
+      calls.push(realize(target));
       if (options.fail) throw new Error(INJECTED);
     }
     return real(target);
@@ -271,6 +292,67 @@ describe('writeSkills basic writes', () => {
 
     expect(report.ok).toBe(true);
     expect(report.actions.filter((a) => a.action !== 'error')).toHaveLength(3);
+  });
+
+  it('"*" collapses several versions of one key to the newest', async () => {
+    // <root>/<key>/SKILL.md is a single path, so two versions of one key is not
+    // a duplicate report but a write race against itself, resolved by whichever
+    // version iteration happened to reach last. A store holding one version per
+    // key cannot distinguish this from "write everything", so the two-version
+    // seed is the whole test. Newer seeded first, so insertion order cannot pass
+    // for ordering.
+    const newer = 'newer body\n';
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a', 5, newer));
+    store.put(rawSkill('a', 2, 'older body\n'));
+    _setStore(store);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    const written = report.actions.filter((a) => a.action !== 'error');
+    expect(written).toHaveLength(1);
+    expect(written[0].key).toBe('a');
+    expect(written[0].version).toBe(5);
+    expect(await readFile(path.join(root, 'a', SKILL_MD), 'utf-8')).toBe(newer);
+  });
+
+  it('"*" reports no error for a key a malformed sibling did not stop writing', async () => {
+    // A malformed object beside a good version of the same key. The good one
+    // resolves and materializes, so the run succeeded for that key: reporting
+    // the sibling as well would flip `report.ok` for a skill that is correctly
+    // on disk, and claim the copy there "was left alone" when this very run had
+    // just written it.
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a', 1));
+    store.put(rawSkill('a', 'nope' as unknown as number));
+    _setStore(store);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    expect(report.actions.map((a) => [a.key, a.action])).toEqual([['a', 'written']]);
+    expect(await readFile(path.join(root, 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+  });
+
+  it('"*" still reports a key nothing could resolve, and prunes nothing', async () => {
+    // The converse, and the reason a malformed object is kept at all. No
+    // version of 'b' is usable, so it stays in the requested set: the failure is
+    // reported, and prune leaves the copy already on disk alone rather than
+    // reading the key as revoked.
+    const existing = await placeManaged(root, 'b', SKILL_BODY);
+    const store = new InMemorySkillStore();
+    store.put(rawSkill('a', 1));
+    store.put(rawSkill('b', 'nope' as unknown as number));
+    _setStore(store);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(false);
+    expect(actionsByKey(report).a.action).toBe('written');
+    expect(actionsByKey(report).b.action).toBe('error');
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
   });
 
   it('reports one action per requested skill — no silent skips', async () => {
@@ -555,8 +637,37 @@ describe('writeSkills bare-string guard', () => {
     await expect(writeSkills([skill('a')], root, { onUnavailable: 'explode' as 'keep' })).rejects.toThrow();
   });
 
-  it('rejects a negative timeout', async () => {
-    await expect(writeSkills([skill('a')], root, { timeout: -1 })).rejects.toThrow();
+  it('rejects a negative timeout as a caller value error — the same class an unusable root raises', async () => {
+    const error = await writeSkills([skill('a')], root, { timeout: -1 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(TypeError);
+    expect((error as Error).message).toContain('timeout');
+  });
+
+  it('rejects a non-finite timeout, which would void the bound rather than shorten it', async () => {
+    // Both values pass the `< 0` half of the guard and make the deadline
+    // non-finite, so the option's whole promise — "bounds the entire call,
+    // including content retrieval" — goes silently away and the call runs
+    // unbounded. `NaN` is the worse one: `now > deadline` reads as never
+    // expiring while `deadline - now > 0` reads as already expired, so the same
+    // input can push two implementations in opposite directions.
+    for (const timeout of [Number.POSITIVE_INFINITY, Number.NaN]) {
+      const error = await writeSkills([skill('a')], root, { timeout }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Error);
+      // The value is named as itself: `JSON.stringify` renders both of these as
+      // `null`, which would report a mistake the caller did not make.
+      expect((error as Error).message).toContain(String(timeout));
+    }
+    // Refused before the root was touched, like every other caller value error.
+    expect(await entryNames(root)).toEqual([]);
+  });
+
+  it('validates the request shape before creating the root directory', async () => {
+    // A bare string is refused before `resolveRoot` runs, so a mistaken call
+    // does not leave an empty directory behind as a side effect of failing.
+    const absent = path.join(scratch, 'never-created');
+    await expect(writeSkills('pdf-extraction' as unknown as Skill[], absent)).rejects.toThrow(/"\*"/);
+    expect(await exists(absent)).toBe(false);
   });
 });
 
@@ -695,15 +806,121 @@ describe('writeSkills resilience', () => {
     expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
   });
 
-  it('an exhausted timeout behaves as unavailable', async () => {
+  it('does not prune when one of two references resolved and the other failed', async () => {
+    // The spec-mandated shape for the second suppression condition, and the one
+    // the whole-store-outage case above cannot stand in for: here the run *did*
+    // retrieve something, so an implementation that gated pruning on "did we get
+    // anything at all" passes that test and fails this one. One reference
+    // resolves, one does not, and a third manifest-listed skill that nobody
+    // asked for this run has to survive — because "revoked" and "did not arrive
+    // this time" are indistinguishable from here, and guessing is data loss.
+    const stale = path.join(root, 'stale', SKILL_MD);
+    await mkdir(path.dirname(stale), { recursive: true });
+    await writeFile(stale, SKILL_BODY, 'utf-8');
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: { [`stale/${SKILL_MD}`]: manifestEntry('stale', 3, SKILL_BODY) },
+    });
+
+    _setStore({
+      getObject(_kind: string, key: string) {
+        if (key === 'resolves') return rawSkill('resolves');
+        throw new Error('transport failure');
+      },
+      allObjects() {
+        return { resolves: rawSkill('resolves') };
+      },
+    });
+
+    const report = await writeSkills(
+      [
+        { key: 'resolves', version: 1 },
+        { key: 'fails', version: 1 },
+      ],
+      root,
+    );
+
+    const byKey = actionsByKey(report);
+    // The run genuinely half-succeeded: one skill is on disk, the other is an
+    // error. That is what makes this shape different from a total outage.
+    expect(byKey.resolves.action).toBe('written');
+    expect(await readFile(path.join(root, 'resolves', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+    expect(byKey.fails.action).toBe('error');
+
+    // And the unrequested third skill was left alone, entry and all.
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(byKey.stale).toBeUndefined();
+    expect(await readFile(stale, 'utf-8')).toBe(SKILL_BODY);
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(entries[`stale/${SKILL_MD}`]).toMatchObject({ key: 'stale', version: 3 });
+  });
+
+  it('does not prune when the deadline expired partway through the writes', async () => {
+    // The third shape of the same rule: retrieval was fine and the manifest was
+    // fine, but the budget ran out before every requested skill was written — so
+    // the run still does not know what is current. A caller must not read "no
+    // `removed` actions" as "nothing is stale".
+    const stale = path.join(root, 'stale', SKILL_MD);
+    await mkdir(path.dirname(stale), { recursive: true });
+    await writeFile(stale, SKILL_BODY, 'utf-8');
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: { [`stale/${SKILL_MD}`]: manifestEntry('stale', 3, SKILL_BODY) },
+    });
+
+    // A fake monotonic clock the first rename pushes past the deadline, so the
+    // second skill's write is on the wrong side of it.
+    let nowMs = performance.now();
+    vi.spyOn(performance, 'now').mockImplementation(() => nowMs);
+    const real = fsOps.rename.bind(fsOps);
+    vi.spyOn(fsOps, 'rename').mockImplementation(async (src: string, dst: string) => {
+      const result = await real(src, dst);
+      if (dst.endsWith(SKILL_MD)) nowMs += 5_000;
+      return result;
+    });
+
+    const report = await writeSkills([skill('first'), skill('second')], root, { timeout: 1 });
+
+    const byKey = actionsByKey(report);
+    expect(byKey.first.action).toBe('written');
+    // The injected expiry is what stopped the second write, rather than some
+    // unrelated refusal.
+    expect(byKey.second.action).toBe('error');
+    expect(byKey.second.error).toMatch(/timeout was exhausted/);
+
+    // So nothing was pruned, and the stale entry survives for the next run.
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    // Not *reached*, rather than reached and refused: the prune phase was
+    // suppressed outright, so `stale` carries no action at all. This is the
+    // assertion that separates the suppression gate from the per-entry deadline
+    // check inside the prune loop (§3.22 resilience), which would have reported
+    // a timeout error for the same entry and left the same file on disk.
+    expect(byKey.stale).toBeUndefined();
+    expect(await readFile(stale, 'utf-8')).toBe(SKILL_BODY);
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(entries[`stale/${SKILL_MD}`]).toMatchObject({ key: 'stale', version: 3 });
+  });
+
+  it('an exhausted timeout behaves as unavailable, and retrieves nothing', async () => {
     const store = new InMemorySkillStore();
     store.put(rawSkill('a'));
-    _setStore(store);
+    // `timeout` bounds the whole call *including* retrieval: with the budget
+    // already spent, the store must not be consulted at all.
+    let lookups = 0;
+    _setStore(
+      new Proxy(store, {
+        get(target, property, receiver) {
+          if (property === 'getObject') lookups += 1;
+          return Reflect.get(target, property, receiver);
+        },
+      }),
+    );
     const calls = interceptRename();
 
     const report = await writeSkills([{ key: 'a', version: 1 }], root, { timeout: 0 });
 
     expect(report.ok).toBe(false);
+    expect(lookups).toBe(0);
     expect(calls).toEqual([]);
     expect(await exists(path.join(root, 'a', SKILL_MD))).toBe(false);
   });
@@ -716,6 +933,87 @@ describe('writeSkills resilience', () => {
     await expect(writeSkills([{ key: 'a', version: 1 }], root, { timeout: 0, onUnavailable: 'raise' })).rejects.toThrow(
       /timeout|unavailable/i,
     );
+  });
+
+  it('never prunes on a non-object listing', async () => {
+    // A store that cannot list is not a store holding nothing. A listing
+    // collapsed to "no skills" is indistinguishable from every skill having
+    // been revoked, and prune would then delete every managed file and report a
+    // clean run. The listing failure has to reach the prune gate as an
+    // incomplete run.
+    const noListing: SkillStore = {
+      getObject() {
+        return null;
+      },
+      allObjects() {
+        return null as unknown as Record<string, RawSkillObject>;
+      },
+    };
+    const existing = await placeManaged(root, 'pdf-extraction', SKILL_BODY);
+    _setStore(noListing);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(false);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+    expect(report.actions.map((a) => a.action)).toEqual(['error']);
+    expect(errorMessages(report).some((m) => m.includes('rather than an object'))).toBe(true);
+    // The entry survives, so the next reconcile picks it up.
+    expect(Object.keys((await readManifest(root)).entries as Record<string, unknown>)).toContain(
+      `pdf-extraction/${SKILL_MD}`,
+    );
+  });
+
+  it('writes nothing for an answer served under another key', async () => {
+    // The file is named after the key the object carries, so a store answering
+    // under a different key would write one path and prune another. Left
+    // unchecked, the run wrote the aliased key, then deleted it in the same
+    // pass because prune keys off the request — and reported ok. The requested
+    // key has to be the one the outcome is reported against.
+    const aliasing: SkillStore = {
+      getObject() {
+        return rawSkill('other-key');
+      },
+      allObjects() {
+        return {};
+      },
+    };
+    _setStore(aliasing);
+
+    const report = await writeSkills(['requested-key'], root);
+
+    expect(report.ok).toBe(false);
+    expect(report.actions.map((a) => a.action)).toEqual(['error']);
+    // Reported against the key that was asked for, not the one served.
+    expect(actionsByKey(report)['requested-key'].action).toBe('error');
+    expect(await exists(path.join(root, 'other-key'))).toBe(false);
+    expect((await readManifest(root)).entries).toEqual({});
+  });
+
+  it('an answer served under another key never reaches that key’s file', async () => {
+    // Both keys are requested here, so nothing is prunable and the write itself
+    // is what is under test: unchecked, the object served under the alias is
+    // written to the *other* key's path, clobbering the content that key's own
+    // lookup resolved — and the run still reports ok.
+    const aliased = 'aliased\n';
+    const aliasing: SkillStore = {
+      getObject(_kind, key) {
+        return key === 'other-key' ? rawSkill('other-key') : rawSkill('other-key', 2, aliased);
+      },
+      allObjects() {
+        return {};
+      },
+    };
+    const existing = await placeManaged(root, 'other-key', SKILL_BODY);
+    _setStore(aliasing);
+
+    // The alias is resolved last, so an unchecked write would land on top.
+    const report = await writeSkills(['other-key', 'requested-key'], root);
+
+    expect(report.ok).toBe(false);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+    expect(actionsByKey(report)['requested-key'].action).toBe('error');
+    expect(actionsByKey(report)['other-key'].action).toBe('skipped_current');
   });
 
   it('never corrupts the manifest on an unavailable run', async () => {
@@ -774,8 +1072,29 @@ describe('writeSkills verify-then-write', () => {
     expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
   });
 
+  it('truncates a hostile key echoed into the error to 32 characters', async () => {
+    // A key is attacker-reachable input, and a rejected one is echoed into
+    // `ReconcileAction.error`. The byte-limit branch already truncates; the
+    // grammar branch must too, or a 100 KB "key" becomes a 100 KB error string.
+    const hostile = 'A'.repeat(300);
+    const bad = createSkill({
+      key: hostile,
+      version: 1,
+      content: new TextEncoder().encode('x'),
+      contentHash: hash('x'),
+    });
+
+    const report = await writeSkills([bad], root);
+
+    expect(report.ok).toBe(false);
+    const message = report.errors[0].error ?? '';
+    expect(message).toContain('A'.repeat(32));
+    expect(message).not.toContain('A'.repeat(33));
+    expect(message).toContain('...');
+  });
+
   it('rejects an oversize Skill', async () => {
-    const oversize = 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1);
+    const oversize = OVERSIZE;
     const bad = createSkill({
       key: 'a',
       version: 1,
@@ -982,20 +1301,22 @@ describe('writeSkills symlink attacks', () => {
 /**
  * The two symlink swap-race cases.
  *
- * They are defensible only where the platform provides the `*at()` syscall
- * family, so they are skipped off `SUPPORTS_DIR_FD` — the **same** capability
- * probe the implementation gates on, never off a platform string, so a probe
- * that silently reported "unsupported" could not also silently skip the tests
- * that would have caught it.
+ * Defensible only where a destructive operation can be addressed relative to a
+ * pinned directory, which is true two ways: an `*at()` family
+ * (`SUPPORTS_DIR_FD`, false on every Node release to date) or descriptor
+ * addressing through procfs (`SUPPORTS_PROC_FD`, true on Linux). Gated on the
+ * **same** capability probes the implementation gates on, never on a platform
+ * string, so a probe that silently reported "unsupported" could not also silently
+ * skip the tests that would have caught it.
  *
- * On Node that probe is false: `fs`/`fs.promises` expose no `renameat` or
- * `unlinkat`, and `FileHandle` has no `rename`/`unlink`, so a destructive
- * operation cannot be addressed relative to a pinned descriptor at all. These
- * cases are therefore a documented residual exposure on this runtime — see
- * `SUPPORTS_DIR_FD` in `safe-fs.ts`. They are written out
- * in full so they become live the moment the probe flips.
+ * So these run on Linux, where `safe-fs.ts` addresses `<root>/<key>`'s children
+ * through `/proc/self/fd/<fd>` and the swap cannot redirect the write or the
+ * unlink. They are skipped on macOS and Windows, where the per-component `lstat`
+ * floor narrows the window without closing it and the exposure is documented
+ * instead — see `SUPPORTS_DIR_FD` in `safe-fs.ts`. They stay written out in full
+ * so they become live the moment either probe flips.
  */
-describe.skipIf(!SUPPORTS_DIR_FD)('writeSkills TOCTOU swap races', () => {
+describe.skipIf(!SUPPORTS_DIR_FD && !SUPPORTS_PROC_FD)('writeSkills TOCTOU swap races', () => {
   /**
    * Fires the swap at the exact instant of an operation: renames
    * `<root>/<key>` aside and leaves a symlink to `outside` in its place, then
@@ -1063,6 +1384,30 @@ describe.skipIf(!SUPPORTS_DIR_FD)('writeSkills TOCTOU swap races', () => {
 });
 
 describe('filesystem capability probe', () => {
+  it('reports descriptor addressing only where procfs actually provides it', async () => {
+    // The Linux fast path is gated on this, and a hardcoded `true` would make
+    // the swap-race cases above pass vacuously on a platform that cannot
+    // support them. So assert the two halves of the real property: never true
+    // off Linux, and on Linux only when `/proc/self/fd/<fd>` resolves back to
+    // the inode the descriptor holds.
+    if (process.platform !== 'linux') {
+      expect(SUPPORTS_PROC_FD).toBe(false);
+      return;
+    }
+    const { open, lstat, stat } = await import('node:fs/promises');
+    const handle = await open(tmpdir(), fsConstants.O_RDONLY | fsConstants.O_DIRECTORY);
+    try {
+      const address = `/proc/self/fd/${handle.fd}`;
+      const pinned = await handle.stat({ bigint: true });
+      const resolved = await stat(address, { bigint: true });
+      const usable =
+        (await lstat(address)).isSymbolicLink() && resolved.dev === pinned.dev && resolved.ino === pinned.ino;
+      expect(SUPPORTS_PROC_FD).toBe(usable);
+    } finally {
+      await handle.close();
+    }
+  });
+
   it('is a real feature test rather than a hardcoded answer', async () => {
     // Node exposes no `*at()` family, so TypeScript
     // runs a per-component lstat check instead and the two
@@ -1099,6 +1444,38 @@ describe('writeSkills clobber protection', () => {
     await writeSkills([], root);
 
     expect(await readFile(target, 'utf-8')).toBe('user authored\n');
+  });
+
+  it('distinguishes the adoption carve-out from an unmanaged file it must refuse', async () => {
+    // Adoption (§3.22) is the one carve-out in this row, and it does not weaken
+    // it: the only file ever claimed is one whose bytes *already are* the
+    // LaunchDarkly-resolved content. So the two have to be asserted against the
+    // same setup — the same root, the same absent manifest, the same
+    // `writeSkills` call — because byte equality is the entry condition, and an
+    // implementation that simply ignored the missing manifest entry would adopt
+    // both. This is the assertion that says the check is the bytes and not the
+    // absence.
+    const identical = path.join(root, 'same', SKILL_MD);
+    const divergent = path.join(root, 'differs', SKILL_MD);
+    await mkdir(path.dirname(identical), { recursive: true });
+    await mkdir(path.dirname(divergent), { recursive: true });
+    await writeFile(identical, SKILL_BODY, 'utf-8');
+    // One byte longer, and otherwise the resolved content exactly.
+    await writeFile(divergent, `${SKILL_BODY} `, 'utf-8');
+    expect(await exists(manifestPath(root))).toBe(false);
+
+    const report = await writeSkills([skill('same'), skill('differs')], root);
+
+    const byKey = actionsByKey(report);
+    // Identical bytes: adopted, and recorded as managed from now on.
+    expect(byKey.same.action).toBe('skipped_current');
+    expect(await readFile(identical, 'utf-8')).toBe(SKILL_BODY);
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(entries[`same/${SKILL_MD}`]).toMatchObject({ key: 'same' });
+    // One byte different: still refused, still untouched, still unclaimed.
+    expect(byKey.differs.action).toBe('error');
+    expect(await readFile(divergent, 'utf-8')).toBe(`${SKILL_BODY} `);
+    expect(entries[`differs/${SKILL_MD}`]).toBeUndefined();
   });
 
   it('a manifest entry with a mismatched key does not authorize destruction', async () => {
@@ -1190,6 +1567,62 @@ describe('writeSkills crash-mid-reconcile recovery', () => {
     expect(await readFile(target, 'utf-8')).toBe(divergent);
     // Refused means refused all the way: no entry is created for it either, so
     // the next run cannot mistake the file for one this SDK manages.
+    expect(await readManifest(root)).toMatchObject({ entries: {} });
+  });
+
+  it('bounds the adoption comparison read at content.byteLength + 1 (§3.22)', async () => {
+    // The read reaches arbitrary foreign files at a managed path, so a planted
+    // multi-GB file must not be pulled into memory before the hash is compared.
+    // One byte past the resolved content's length is all that is needed to
+    // prove inequality.
+    const planted = Buffer.byteLength(SKILL_BODY, 'utf-8') + 2 * 1024 * 1024;
+    const target = await placeOrphaned('a', `${SKILL_BODY}${'p'.repeat(2 * 1024 * 1024)}`);
+    const { open } = await import('node:fs/promises');
+    const probe = await open(target, 'r');
+    const prototype = Object.getPrototypeOf(probe) as { read: (...args: unknown[]) => Promise<{ bytesRead: number }> };
+    await probe.close();
+    const consumed: number[] = [];
+    const realRead = prototype.read;
+    const spy = vi.spyOn(prototype, 'read').mockImplementation(async function (this: unknown, ...args: unknown[]) {
+      const result = await realRead.apply(this, args);
+      consumed.push(result.bytesRead);
+      return result;
+    });
+
+    const report = await writeSkills([skill('a')], root);
+
+    // `mockRestore` also resets the recorded history, so read it out first.
+    const reads = spy.mock.calls.length;
+    spy.mockRestore();
+    expect(report.ok).toBe(false);
+    expect(actionsByKey(report).a.action).toBe('error');
+    expect(actionsByKey(report).a.error).toMatch(/does not record it as managed/);
+    expect(reads).toBeGreaterThan(0);
+    const total = consumed.reduce((sum, n) => sum + n, 0);
+    expect(total).toBeGreaterThan(0);
+    expect(total).toBeLessThanOrEqual(Buffer.byteLength(SKILL_BODY, 'utf-8') + 1);
+    // Refused and untouched.
+    expect((await stat(target)).size).toBe(planted);
+  });
+
+  it('an adopted file is prunable afterwards', async () => {
+    // Adoption is a full claim, not a one-run exemption — and this is the test
+    // that says so. Without it, "adopted" is indistinguishable from "tolerated
+    // once": an implementation that reported `skipped_current` without ever
+    // writing the manifest entry would pass every other case in this block, and
+    // then leave the file behind forever on the run that revoked it.
+    const target = await placeOrphaned('a', SKILL_BODY);
+    const first = await writeSkills([skill('a')], root);
+    expect(actionsByKey(first).a.action).toBe('skipped_current');
+
+    const second = await writeSkills([], root);
+
+    // Removed exactly as a file this SDK wrote would have been: the action, the
+    // file, the now-empty directory, and the manifest entry.
+    expect(second.ok).toBe(true);
+    expect(actionsByKey(second).a.action).toBe('removed');
+    expect(await exists(target)).toBe(false);
+    expect(await entryNames(root)).toEqual([MANIFEST_NAME]);
     expect(await readManifest(root)).toMatchObject({ entries: {} });
   });
 
@@ -1525,6 +1958,11 @@ const CORRUPT_MANIFESTS: Array<[string, unknown]> = [
   ['version_not_int', { manifestVersion: '1', entries: {} }],
   ['future_version_live_entries', { manifestVersion: 2, entries: liveEntries() }],
   ['version_not_int_live_entries', { manifestVersion: '1', entries: liveEntries() }],
+  // §3.22: the version gate is bounded below as well as above. No release ever
+  // wrote a version under 1, so these are not older schemas this release can
+  // still read — they are schemas that never existed.
+  ['version_zero_live_entries', { manifestVersion: 0, entries: liveEntries() }],
+  ['version_negative_live_entries', { manifestVersion: -1, entries: liveEntries() }],
 ];
 
 const LIVE_ENTRY_MANIFESTS = CORRUPT_MANIFESTS.filter(([name]) => name.endsWith('_live_entries'));
@@ -1546,6 +1984,30 @@ describe('writeSkills corrupt manifest', () => {
     const errors = errorMessages(report);
     expect(errors.some((e) => e.toLowerCase().includes('manifest'))).toBe(true);
     expect(await readFile(target, 'utf-8')).toBe(DIVERGENT_CONTENT);
+  });
+
+  it.each([0, -1])('treats manifestVersion %s as corrupt, not as an older readable schema', async (declared) => {
+    // Python parity: `test_manifest_version_below_one_is_corrupt`. Before the
+    // lower bound existed, `manifestVersion: 0` pruned a managed file and
+    // reported `ok` true — the destructive steps ran against entries of a
+    // schema that never existed.
+    const target = await placeManaged(root, 'a', SKILL_BODY);
+    await writeManifest(root, {
+      manifestVersion: declared,
+      entries: { [`a/${SKILL_MD}`]: manifestEntry('a', 1, SKILL_BODY) },
+    });
+    const unlinks = interceptUnlink();
+
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(false);
+    const messages = errorMessages(report);
+    expect(messages.some((m) => m.includes('manifestVersion') && m.includes(MANIFEST_NAME))).toBe(true);
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(unlinks).toEqual([]);
+    expect(await exists(target)).toBe(true);
+    // The manifest itself is left alone, as with any other corruption.
+    expect((await readManifest(root)).manifestVersion).toBe(declared);
   });
 
   it('a run-level error carries the empty-key sentinel', async () => {
@@ -1673,6 +2135,246 @@ describe('writeSkills corrupt manifest', () => {
   });
 });
 
+// ─── A well-formed manifest naming a path the SDK could not have written ─────
+
+/**
+ * The three literal cases that matter for the prune path.
+ *
+ * The distinction from the corrupt-manifest block above is the whole point: a
+ * corrupt manifest suppresses every destructive action wholesale, so those tests
+ * say nothing about these. Each manifest here is *well-formed* — parseable, a
+ * `manifestVersion` this release understands, a real `entries` map, and an entry
+ * whose `key` is a perfectly valid skill key genuinely absent from the requested
+ * set. The implementation has every input it needs to prune, and must refuse
+ * anyway, because the recorded *path* is not one this SDK could have written.
+ *
+ * The manifest is untrusted input: a plain file on the customer's disk that
+ * anything with write access to the managed root can edit, and `prune` is the
+ * one code path in the SDK that deletes. So a recorded path never authorizes its
+ * own removal — it must match `<key>/SKILL.md` for a re-validated key, and the
+ * target is recomputed from the *current* managed root rather than read back out
+ * of the entry.
+ */
+const HOSTILE_RECORDED_PATHS: string[] = [
+  // Absolute: the classic. A recorded path read back and unlinked as-is is a
+  // delete of an attacker-chosen file with the reconcile's own privileges.
+  '/etc/passwd',
+  // Traversing: the same attack against an implementation that rejects a
+  // leading slash and then joins the rest onto the managed root.
+  '../../../etc/passwd',
+];
+
+/**
+ * Records every prune unlink without performing it.
+ *
+ * Asserting only that `/etc/passwd` still exists proves nothing: the test
+ * process cannot delete it anyway, so that assertion passes against an
+ * implementation with no path check at all — permissions would be doing the
+ * work. What has teeth is that the removal is never *attempted*: the refusal
+ * happens above the syscall, on a path the SDK recomputes rather than trusts.
+ * `fsOps.unlink` is the single call site the prune deletes through.
+ */
+function recordUnlinks(): string[] {
+  const targets: string[] = [];
+  vi.spyOn(fsOps, 'unlink').mockImplementation(async (target: string) => {
+    targets.push(target);
+  });
+  return targets;
+}
+
+describe('writeSkills hostile manifest prune', () => {
+  it.each(HOSTILE_RECORDED_PATHS)('refuses a recorded path outside the root: %s', async (recorded) => {
+    const unlinked = recordUnlinks();
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: { [recorded]: manifestEntry('a', 1, SKILL_BODY) },
+    });
+
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(false);
+    const action = actionsByKey(report).a;
+    expect(action.action).toBe('error');
+    // The refusal is about ownership of the path, not about the file's state.
+    expect(action.error).toContain('could own');
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    // Nothing was even attempted, let alone completed.
+    expect(unlinked).toEqual([]);
+    expect(await exists('/etc/passwd')).toBe(true);
+    // Left in place rather than tidied away: dropping the entry would let a
+    // single hostile edit erase the SDK's own record of what it manages.
+    expect(await readManifest(root)).toHaveProperty(['entries', recorded]);
+  });
+
+  it('refuses an entry under a parent that has since become a symlink', async () => {
+    // The recorded path is the SDK's own, and is still not enough. The entry is
+    // exactly what a legitimate reconcile writes — `a/SKILL.md` under key `a` —
+    // so the shape check that catches the two cases above passes here. What
+    // changed is the disk underneath it. This is the case a validate-then-act
+    // implementation fails: the manifest and the entry are both entirely
+    // legitimate, and only the current state of the parent is not.
+    const elsewhere = path.join(scratch, 'elsewhere');
+    await mkdir(elsewhere);
+    const victim = path.join(elsewhere, SKILL_MD);
+    await writeFile(victim, 'victim content\n', 'utf-8');
+
+    // Managed legitimately first, so the manifest entry is one this SDK really
+    // did write...
+    const managed = await placeManaged(root, 'a', SKILL_BODY);
+    // ...then the parent directory is swapped for a link out of the root.
+    await rm(managed);
+    await rm(path.join(root, 'a'), { recursive: true });
+    await symlink(elsewhere, path.join(root, 'a'), 'dir');
+
+    const unlinked = recordUnlinks();
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(false);
+    const action = actionsByKey(report).a;
+    expect(action.action).toBe('error');
+    expect(action.error).toContain('symlink');
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(unlinked).toEqual([]);
+    // The file the symlink pointed at is untouched, and so is the link.
+    expect(await readFile(victim, 'utf-8')).toBe('victim content\n');
+    expect((await lstat(path.join(root, 'a'))).isSymbolicLink()).toBe(true);
+    expect(await readManifest(root)).toHaveProperty(['entries', `a/${SKILL_MD}`]);
+  });
+});
+
+// ─── The prune deadline ────────────────────────────────────────────────
+
+/**
+ * The `timeout` bounds the whole call, and the prune loop is inside it.
+ *
+ * Checking the deadline once before pruning begins satisfies that in the letter
+ * only: a manifest with many entries is an unbounded number of `unlink` and
+ * `rmdir` calls after that check, each of which can block on a slow or hostile
+ * filesystem, so the call overruns the budget it promised by an amount the caller
+ * cannot predict. The check therefore belongs inside the loop, once per entry.
+ *
+ * Stopping partway is safe by construction rather than by luck, and the second
+ * test is what proves it: the manifest is rewritten from what actually happened,
+ * so an entry this run never reached stays listed and the next reconcile prunes
+ * it. That is also why an exhausted entry is reported and the loop *continues* —
+ * the report names every skill left in place, not just the first.
+ *
+ * `performance.now` is stubbed rather than slept through: the contract is about
+ * which side of the deadline each entry falls on, and a test that raced a real
+ * clock would assert that flakily instead of exactly.
+ */
+describe('writeSkills prune deadline', () => {
+  /** A fake monotonic clock, in the same units `performance.now` reports. */
+  let nowMs: number;
+
+  /** Installs the clock and hands back a knob to push it past the deadline. */
+  function stubClock(): (byMs: number) => void {
+    nowMs = performance.now();
+    vi.spyOn(performance, 'now').mockImplementation(() => nowMs);
+    return (byMs: number) => {
+      nowMs += byMs;
+    };
+  }
+
+  /** Four managed skills in one manifest, all files present on disk. */
+  async function placeFour(): Promise<string[]> {
+    const keys = ['a', 'b', 'c', 'd'];
+    const entries: Record<string, unknown> = {};
+    for (const key of keys) {
+      const target = path.join(root, key, SKILL_MD);
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, SKILL_BODY, 'utf-8');
+      entries[`${key}/${SKILL_MD}`] = manifestEntry(key, 1, SKILL_BODY);
+    }
+    await writeManifest(root, { manifestVersion: 1, entries });
+    return keys;
+  }
+
+  it('stops pruning when the deadline expires partway and reports what it left', async () => {
+    const keys = await placeFour();
+    const advance = stubClock();
+    // The first unlink burns the whole budget. Every entry after it is on the
+    // wrong side of the deadline.
+    const real = fsOps.unlink.bind(fsOps);
+    vi.spyOn(fsOps, 'unlink').mockImplementation(async (target: string) => {
+      await real(target);
+      advance(5_000);
+    });
+
+    const report = await writeSkills([], root, { timeout: 1 });
+
+    // Exactly one entry was pruned — the one whose check ran before the budget
+    // was gone — and the rest are reported rather than silently skipped.
+    const removed = report.actions.filter((a) => a.action === 'removed');
+    expect(removed).toHaveLength(1);
+    const timedOut = report.errors.filter((a) => /timeout was exhausted/.test(a.error ?? ''));
+    expect(timedOut).toHaveLength(keys.length - 1);
+    // Every key is accounted for: the loop continued instead of breaking, so the
+    // report names all three it left in place.
+    expect(new Set([...removed, ...timedOut].map((a) => a.key))).toEqual(new Set(keys));
+    expect(report.ok).toBe(false);
+
+    // The unreached files are still there...
+    const survivors = keys.filter((key) => key !== removed[0].key);
+    for (const key of survivors) {
+      expect(await readFile(path.join(root, key, SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+    }
+    // ...and so are their manifest entries, which is what makes stopping safe:
+    // the rewrite records what happened, so the next run picks these up.
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(Object.keys(entries).sort()).toEqual(survivors.map((key) => `${key}/${SKILL_MD}`).sort());
+  });
+
+  it('the next reconcile prunes what the expired one left behind', async () => {
+    // The other half of "stopping mid-prune is safe": the entries that survived
+    // are still entries, so a run with a budget finishes the job. Without this,
+    // the test above would also pass against an implementation that stopped and
+    // lost track.
+    await placeFour();
+    const advance = stubClock();
+    const real = fsOps.unlink.bind(fsOps);
+    const spy = vi.spyOn(fsOps, 'unlink').mockImplementation(async (target: string) => {
+      await real(target);
+      advance(5_000);
+    });
+
+    const first = await writeSkills([], root, { timeout: 1 });
+    expect(first.actions.filter((a) => a.action === 'removed')).toHaveLength(1);
+
+    // A fresh budget, and no more clock sabotage.
+    spy.mockRestore();
+    nowMs = performance.now();
+    vi.spyOn(performance, 'now').mockImplementation(() => nowMs);
+
+    const second = await writeSkills([], root, { timeout: 10 });
+
+    expect(second.ok).toBe(true);
+    expect(second.actions.filter((a) => a.action === 'removed')).toHaveLength(3);
+    expect(await readManifest(root)).toMatchObject({ entries: {} });
+    expect(await entryNames(root)).toEqual([MANIFEST_NAME]);
+  });
+
+  it('an already-expired deadline prunes nothing at all', async () => {
+    // The boundary case, and the one that says the check is not merely
+    // *somewhere* in the loop: with the budget gone before the first entry, the
+    // first entry is refused too.
+    const keys = await placeFour();
+    const unlinked = recordUnlinks();
+
+    const report = await writeSkills([], root, { timeout: 0 });
+
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(report.errors.filter((a) => /timeout was exhausted/.test(a.error ?? ''))).toHaveLength(keys.length);
+    // Not attempted, rather than attempted and failed.
+    expect(unlinked).toEqual([]);
+    for (const key of keys) {
+      expect(await readFile(path.join(root, key, SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
+    }
+    const entries = (await readManifest(root)).entries as Record<string, unknown>;
+    expect(Object.keys(entries).sort()).toEqual(keys.map((key) => `${key}/${SKILL_MD}`).sort());
+  });
+});
+
 // ─── Telemetry seam (write half) ───────────────────────────────────────
 
 describe('writeSkills telemetry', () => {
@@ -1764,6 +2466,97 @@ describe('writeSkills telemetry', () => {
     expect(props.language).toBe('typescript');
   });
 
+  it('omits version from the Revoked signal when the manifest entry is malformed', async () => {
+    // The absent half of the bullet above, and the one that needs asserting:
+    // `version` is *omitted*, not recorded as null. The manifest is a file on
+    // disk, so the value in hand here is whatever was written there — a caller
+    // reads "no usable version was recorded" off the key's absence rather than
+    // off a null, and the signal never carries a null for a field that was not
+    // known. `toHaveProperty` is the assertion that distinguishes the two;
+    // reading `props.version` and comparing to undefined would pass either way.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    await mkdir(path.join(root, 'gone'), { recursive: true });
+    await writeFile(path.join(root, 'gone', SKILL_MD), SKILL_BODY, 'utf-8');
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: {
+        [`gone/${SKILL_MD}`]: {
+          key: 'gone',
+          version: 'seven',
+          sha256: hash(SKILL_BODY),
+          writtenAt: '2026-08-14T19:00:00Z',
+        },
+      },
+    });
+
+    await writeSkills([], root);
+
+    const [props] = emitter.signals(REVOKED_SIGNAL);
+    expect(props).toBeDefined();
+    expect(props.skill_key).toBe('gone');
+    expect(props.removed_from_disk).toBe(true);
+    expect(props).not.toHaveProperty('version');
+    expect(Object.keys(props).sort()).toEqual(['language', 'removed_from_disk', 'skill_key']);
+  });
+
+  it('publishes no skill body when a manifest entry carries the body as its key', async () => {
+    // The manifest is as attacker-controlled as a wire object — anything with
+    // write access to the root can author it — so the key it carries gets the
+    // same shape check the wire key does before it reaches a signal.
+    //
+    // Note where this is actually stopped today: `pruneEntries` rejects an entry
+    // whose key fails validation before `pruneOne` runs, so the run reports a
+    // prune `error` and no Revoked signal is emitted at all. Either way the body
+    // stays out of telemetry, which is what this asserts. The redaction inside
+    // `recordRevoked` is the second line of defense behind that guard, and it is
+    // pinned directly below — an end-to-end test cannot reach it.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+    const hostileKey = SKILL_BODY;
+    await writeManifest(root, {
+      manifestVersion: 1,
+      entries: {
+        [`${hostileKey}/${SKILL_MD}`]: {
+          key: hostileKey,
+          version: 1,
+          sha256: hash(SKILL_BODY),
+          writtenAt: '2026-08-14T19:00:00Z',
+        },
+      },
+    });
+
+    const report = await writeSkills([], root);
+
+    for (const [, props] of emitter.records) {
+      for (const value of Object.values(props)) {
+        expect(String(value)).not.toContain('Do the thing.');
+      }
+    }
+    // The entry is reported rather than silently ignored: a manifest path this
+    // SDK could not have written is left in place and surfaced as an error.
+    expect(report.ok).toBe(false);
+    expect(emitter.signals(REVOKED_SIGNAL)).toEqual([]);
+  });
+
+  it('redacts a manifest-supplied key that is not a valid skill key', async () => {
+    // Called directly because the prune path's own key validation refuses the
+    // entry first (see the test above), so this branch is unreachable end to
+    // end. It is still the parity requirement and the defense that holds if that
+    // guard is ever relaxed — and it asserts the placeholder's *effect*, the
+    // body being absent, rather than its exact spelling, which no spec fixes.
+    const emitter = new RecordingEmitter();
+    _setEmitterForTesting(emitter);
+
+    recordRevoked(SKILL_BODY, 3);
+
+    const [props] = emitter.signals(REVOKED_SIGNAL);
+    expect(props.skill_key).not.toContain('Do the thing.');
+    expect(isValidSkillKey(props.skill_key)).toBe(false);
+    expect(props.version).toBe(3);
+    expect(props.removed_from_disk).toBe(true);
+  });
+
   it('records no Revoked signal when pruning is disabled', async () => {
     const emitter = new RecordingEmitter();
     _setEmitterForTesting(emitter);
@@ -1829,7 +2622,7 @@ describe('writeSkills telemetry', () => {
     // case reachable from both layers with the expected hash in hand throughout.
     const emitter = new RecordingEmitter();
     _setEmitterForTesting(emitter);
-    const oversize = 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1);
+    const oversize = OVERSIZE;
     const contentHash = hash(oversize);
 
     // Layer 1 — the accessor boundary.
@@ -1851,6 +2644,165 @@ describe('writeSkills telemetry', () => {
     const [accessorKeys, writeKeys] = failures.map((props) => Object.keys(props).sort());
     expect(accessorKeys).toEqual(writeKeys);
     expect(accessorKeys).toContain('expected_hash');
+  });
+});
+
+// ─── Readiness: a store that has not heard yet must not authorize a prune ────
+
+/**
+ * §3.21 "`isInitialized()` is the optional readiness half of the seam" and
+ * §3.22 "Pruning is suppressed whenever the run cannot tell what is still
+ * current" — the third of the four conditions.
+ *
+ * Through `allObjects` there is no difference between "this environment holds
+ * no skills" and "delivery has not answered yet": both are an empty result.
+ * `writeSkills('*')` reads the first as every skill having been revoked, so
+ * without the probe a reconcile racing a slow boot deletes every managed file
+ * and reports success. Mirrors Python's `TestUninitializedStore`.
+ */
+describe('writeSkills uninitialized store', () => {
+  /** A delivery store whose first payload has not arrived. */
+  function waiting(initialized: boolean): SkillStore & { isInitialized(): boolean } {
+    return {
+      isInitialized: () => initialized,
+      getObject: () => null,
+      allObjects: () => ({}),
+    };
+  }
+
+  it('"*" does not prune before the first payload', async () => {
+    const existing = await placeManaged(root, 'a', SKILL_BODY);
+    const unlinks = interceptUnlink();
+    _setStore(waiting(false));
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(false);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(unlinks).toEqual([]);
+    // The entry survives, so a later reconcile still knows it owns the file.
+    expect((await readManifest(root)).entries).toHaveProperty(`a/${SKILL_MD}`);
+    // The error is run-level, is worded as a retrieval-unavailable failure, and
+    // names the remedy: wait for delivery.
+    const messages = errorMessages(report);
+    expect(messages.some((m) => m.includes('initial data'))).toBe(true);
+    expect(messages.some((m) => m.includes('skill retrieval unavailable'))).toBe(true);
+    expect(messages.some((m) => m.includes('waitForSkills'))).toBe(true);
+    expect(report.errors.every((a) => a.key === '')).toBe(true);
+  });
+
+  it('a reference resolve against an uninitialized store is unavailable too, and suppresses prune', async () => {
+    // The check lives in the single gate both forms go through, so the
+    // reference form reports the same unavailability and holds prune off the
+    // unrelated managed entry.
+    const stale = await placeManaged(root, 'stale', SKILL_BODY);
+    _setStore(waiting(false));
+
+    const report = await writeSkills([{ key: 'a', version: 1 }], root);
+
+    expect(report.ok).toBe(false);
+    expect(actionsByKey(report).a.action).toBe('error');
+    expect(actionsByKey(report).a.error).toContain('initial data');
+    expect(actionsByKey(report).stale).toBeUndefined();
+    expect(await readFile(stale, 'utf-8')).toBe(SKILL_BODY);
+  });
+
+  it('"*" throws in raise mode before the first payload', async () => {
+    _setStore(waiting(false));
+    await expect(writeSkills('*', root, { onUnavailable: 'raise' })).rejects.toThrow(/initial data/);
+  });
+
+  it('an initialized store prunes as before — the positive control', async () => {
+    await placeManaged(root, 'a', SKILL_BODY);
+    _setStore(waiting(true));
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    expect(actionsByKey(report).a.action).toBe('removed');
+    expect(await exists(path.join(root, 'a'))).toBe(false);
+  });
+
+  it('a store without the probe is treated as initialized', async () => {
+    // `isInitialized` is optional; absent means initialized. A hand-populated
+    // store is never waiting for anything, so requiring the probe would break
+    // every InMemorySkillStore caller.
+    const store = new InMemorySkillStore();
+    expect('isInitialized' in store).toBe(false);
+    _setStore(store);
+    await placeManaged(root, 'a', SKILL_BODY);
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(true);
+    expect(actionsByKey(report).a.action).toBe('removed');
+  });
+
+  it('a probe that throws counts as uninitialized, and warns', async () => {
+    // A store that cannot say whether it is ready does not get to delete.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const existing = await placeManaged(root, 'a', SKILL_BODY);
+    _setStore({
+      isInitialized: () => {
+        throw new Error('cannot tell');
+      },
+      getObject: () => null,
+      allObjects: () => ({}),
+    });
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(false);
+    expect(await exists(existing)).toBe(true);
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/isInitialized/);
+  });
+});
+
+// ─── The "*" form's own hole: a withholding with no key to protect anything ──
+
+describe('writeSkills unattributed withholding', () => {
+  it('an unattributable failure never prunes (§3.22: the run is reported incomplete)', async () => {
+    // Every per-object failure the wildcard resolve can attribute to a key
+    // keeps that key in the requested set, which is what holds prune off the
+    // copy on disk. When neither the object's own `key` nor the store's map key
+    // is usable the failure is run-level, so there is no key to hold the
+    // on-disk copy with — reporting the run incomplete is the only thing left
+    // that stops prune reading an unreadable object as a revocation.
+    const seed = new InMemorySkillStore();
+    seed.put(rawSkill('pdf-extraction'));
+    seed.put(rawSkill('other'));
+    _setStore(seed);
+    const first = await writeSkills('*', root);
+    expect(first.ok).toBe(true);
+    const existing = path.join(root, 'pdf-extraction', SKILL_MD);
+
+    // The shipped store keys `allObjects` as `<key>:<version>`, which is never a
+    // valid skill key, so a mangled `key` field leaves no fallback. The good
+    // skill is still served alongside it.
+    const mangled: RawSkillObject = {
+      key: 'PDF Extraction!',
+      version: 1,
+      content: SKILL_BODY,
+      contentHash: hash(SKILL_BODY),
+    };
+    _setStore({
+      getObject: () => null,
+      allObjects: () => ({ 'other:1': rawSkill('other'), 'pdf-extraction:1': mangled }),
+    });
+    const unlinks = interceptUnlink();
+
+    const report = await writeSkills('*', root);
+
+    expect(report.ok).toBe(false);
+    expect(report.errors.some((a) => a.key === '' && /invalid key/.test(a.error ?? ''))).toBe(true);
+    expect(report.actions.filter((a) => a.action === 'removed')).toEqual([]);
+    expect(unlinks).toEqual([]);
+    expect(await readFile(existing, 'utf-8')).toBe(SKILL_BODY);
+    expect((await readManifest(root)).entries).toHaveProperty(`pdf-extraction/${SKILL_MD}`);
+    // The good skill still reconciled — the run is incomplete, not abandoned.
+    expect(actionsByKey(report).other.action).toBe('skipped_current');
   });
 });
 

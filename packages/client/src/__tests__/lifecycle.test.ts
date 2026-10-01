@@ -247,6 +247,23 @@ describe('lifecycle', () => {
       expect(mockTracerProviderRegister).toHaveBeenCalled();
     });
 
+    it('passes the BYOC overload options through to telemetry setup', async () => {
+      // The second argument is the same options bag as the other overload, so
+      // `otlpEndpoint` must reach the exporter rather than being dropped on the
+      // floor while only `skillStore` is read off it.
+      const byocClient = {
+        variation: vi.fn(),
+        track: vi.fn(),
+        flush: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      const { initClient } = await import('../lifecycle.js');
+      await initClient(byocClient, { otlpEndpoint: 'https://otlp.example.test/' });
+      expect(mockOTLPTraceExporter).toHaveBeenCalledWith(
+        expect.objectContaining({ url: 'https://otlp.example.test/v1/traces' }),
+      );
+    });
+
     it('is idempotent — calls init only once when called twice', async () => {
       const mockClient = makeMockClient();
       mockLdInit.mockReturnValue(mockClient);
