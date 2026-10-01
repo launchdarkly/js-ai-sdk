@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-agents-0.3.0...@launchdarkly/ai-langchain-agents-0.4.0) (2026-10-01)
+
+
+### Features
+
+* **AIC-3211:** record each graph node as its own tracking event ([#91](https://github.com/launchdarkly/js-ai-sdk/issues/91)) ([2df2923](https://github.com/launchdarkly/js-ai-sdk/commit/2df2923cd6f831a6583c9747b0d17626189d292c))
+* **build:** build the AI SDK like the other LaunchDarkly JS SDKs so CommonJS apps can load it (2/4) ([#77](https://github.com/launchdarkly/js-ai-sdk/issues/77)) ([2cda755](https://github.com/launchdarkly/js-ai-sdk/commit/2cda7551c8feb7e352040384befea2cd76cb5d94))
+
 ## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-agents-0.2.0...@launchdarkly/ai-langchain-agents-0.3.0) (2026-09-18)
 
 
