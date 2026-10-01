@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { trace } from '@opentelemetry/api';
+import { context, propagation, trace } from '@opentelemetry/api';
 import { _clearState, _setStore } from './skills.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
 import { parseAiConfig } from './types.js';
@@ -130,9 +130,25 @@ export async function waitForTelemetry(timeoutMs = 5000): Promise<void> {
  * Must be called before process.exit() to ensure all pending spans are exported.
  */
 export async function shutdownTelemetry(): Promise<void> {
-  if (tracerProvider) {
-    await tracerProvider.shutdown();
-    tracerProvider = null;
+  const provider = tracerProvider;
+  if (!provider) return;
+  // Release the handle before teardown so a failure mid-flight still leaves a
+  // second shutdownTelemetry() call a no-op, as shutdown() does for the client.
+  tracerProvider = null;
+  try {
+    await provider.shutdown();
+  } finally {
+    // OTel's global registration is one-shot: `register()` logs a duplicate-
+    // registration error and keeps the provider already in place. Leaving the
+    // globals set would make the *next* initClient() build a provider whose
+    // register() is refused, routing every later span to the provider we just
+    // shut down — an init/shutdown/init cycle would export nothing. `disable()`
+    // is the only public way to release them. Guarded by the early return above
+    // so we clear these only when setupTelemetry actually registered them, and
+    // never tear down globals some other library owns.
+    trace.disable();
+    context.disable();
+    propagation.disable();
   }
 }
 
@@ -228,6 +244,11 @@ function isLDClient(value: unknown): value is LDClientInterface {
  * be given one afterwards with `initClient({ skillStore: store })`. A nullish
  * `skillStore` never clears a configured store; `shutdown()` does that.
  *
+ * That idempotency covers overload 2 too: once a client is set, passing a
+ * *different* pre-initialized client does not swap it, and the second call's
+ * telemetry options are ignored rather than re-registering OTel. Call
+ * `shutdown()` first to hand the SDK a new client.
+ *
  * Both overloads return the client instance for further customization.
  */
 export async function initClient(
@@ -248,6 +269,15 @@ export async function initClient(
   const skillStore = (isLDClient(optionsOrClient) ? clientOptions : optionsOrClient)?.skillStore;
   if (skillStore != null) _setStore(skillStore);
 
+  // Ahead of *both* init paths, so "a second call returns the existing client
+  // and every other option is ignored" holds for BYOC as well. It used to sit
+  // below the BYOC branch, which meant a repeat `initClient(client)` re-ran
+  // telemetry setup: OTel refuses to re-register its globals, so the second
+  // provider received no spans while still taking over the module handle that
+  // `shutdownTelemetry()` flushes — silently dropping everything the first
+  // provider had buffered.
+  if (singleton.client) return singleton.client;
+
   if (isLDClient(optionsOrClient)) {
     // Pre-initialized client path (edge / custom runtimes).
     // Still run telemetry setup so OTel traces work regardless of which
@@ -262,7 +292,6 @@ export async function initClient(
     return optionsOrClient;
   }
 
-  if (singleton.client) return singleton.client;
   if (!singleton.initPromise) {
     singleton.initPromise = initBaseClient(optionsOrClient);
   }
