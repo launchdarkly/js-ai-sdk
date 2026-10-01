@@ -45,14 +45,33 @@ import { isValidSkillVersion } from './types.js';
 /**
  * The FDv2 `kind` skills are delivered under.
  *
- * Object kinds on the SDK-facing channel are open strings: the agent-skill
- * payload is classified `generic` and every object in it carries the kind its
- * producer registered, which for skills is the bare category name. Delivery
- * lower-cases the kind, so an exact comparison is the whole test. The kind
- * happens to equal `SKILL_OBJECT_KIND` today; they are still separate constants,
- * because one is a wire value LaunchDarkly owns and the other is an SDK seam.
+ * Object kinds on the SDK-facing channel are open strings: every object in the
+ * agent-skill payload carries the kind its producer registered, which for skills
+ * is the bare category name. Delivery lower-cases the kind, so an exact
+ * comparison is the whole test. The kind happens to equal `SKILL_OBJECT_KIND`
+ * today; they are still separate constants, because one is a wire value
+ * LaunchDarkly owns and the other is an SDK seam.
+ *
+ * Not to be confused with {@link FDV2_PAYLOAD_KIND}: this is the kind of the
+ * *objects*, that one the kind of the *payload* they arrive in.
  */
 export const FDV2_OBJECT_KIND = 'skill';
+
+/**
+ * The kind of the FDv2 payload skills are delivered in, declared on every
+ * request as `?kinds=`.
+ *
+ * Delivery narrows a connection to the payload kinds it declares and defaults to
+ * flags, so this is not an optimisation: a request that omits it receives the
+ * environment's flag payload and no skills at all. Declaring it is also what
+ * makes the connection carry exactly one payload — the shape
+ * {@link ProtocolReader} is built for — since a skill-enabled environment
+ * assigns both the flag payload and this one.
+ *
+ * The wire accepts a comma-separated list, but this store wants the skill
+ * payload and nothing else, so it declares this one kind alone.
+ */
+export const FDV2_PAYLOAD_KIND = 'agent-skill';
 
 /**
  * What separates a skill's key from its version inside the object's wire `key`.
@@ -256,9 +275,10 @@ export type StoreDiagnostics = {
   /** `put-object` events identified as skills, across all payloads. */
   readonly skillObjectsReceived: number;
   /**
-   * Objects skipped because they were not skills — flags, segments, and any
-   * future kind. Skipping is the contract, not a failure; the count exists so a
-   * mixed payload is visibly mixed.
+   * Objects skipped because they were not skills. With the skill payload
+   * declared on every request, this counts an object kind this version does not
+   * recognise rather than the environment's flags. Skipping is the contract,
+   * not a failure.
    */
   readonly objectsIgnored: number;
   /**
@@ -420,9 +440,11 @@ export type Tombstone = { readonly key: string; readonly objectVersion: number |
 /**
  * Whether one `put-object` / `delete-object` payload is a skill.
  *
- * The kind alone decides it. Every other kind is **ignored, not rejected**,
- * because flag and segment objects share the connection and erroring on them
- * would turn a normal payload into a reconnect loop.
+ * The kind alone decides it. Every other kind is **ignored, not rejected**. The
+ * `kinds` declaration means a flag or segment object should no longer arrive at
+ * all, but the skip stays: erroring on an unrecognised kind would turn a payload
+ * that gained one into a reconnect loop, which is the outage this feature must
+ * not cause.
  */
 export function isSkillEvent(data: unknown): boolean {
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return false;
@@ -1113,8 +1135,9 @@ export class RecoverableTransportError extends Error {
 export class StaleRequestStateError extends RecoverableTransportError {}
 
 const REQUEST_ADVICE =
-  'The request this adapter sent was not understood. It carries only the SDK key and, after the first payload, ' +
-  "a 'basis' selector, so check the base URI and that the endpoint speaks FDv2.";
+  'The request this adapter sent was not understood. It carries only the SDK key, a ' +
+  "'kinds' parameter declaring the skill payload, and, after the first payload, a 'basis' selector, so check " +
+  'the base URI and that the endpoint speaks FDv2.';
 
 const FORBIDDEN_ADVICE =
   'The FDv2 protocol is opt-in per LaunchDarkly account and is served as HTTP 403 while it is off. Skill ' +
@@ -1186,6 +1209,14 @@ export function classifyStatus(status: number, headers?: Headers | null): Error 
   // be one the server no longer accepts. Recoverable so the selector can be
   // dropped and a full transfer requested; fatal once that has been tried.
   if (status === 400) return new StaleRequestStateError(`LaunchDarkly returned HTTP 400. ${REQUEST_ADVICE}`);
+
+  // View-scoped SDK keys can't carry skills payloads yet, so that is the most likely cause of a 422
+  if (status === 422) {
+    return new FatalTransportError(
+      'LaunchDarkly will not deliver Agent Skills on this connection (HTTP 422). The usual cause is a view-scoped ' +
+        'SDK key. Check your SDK key or contact LaunchDarkly support.',
+    );
+  }
   if ([405, 406, 414, 501].includes(status)) {
     return new FatalTransportError(
       `LaunchDarkly returned HTTP ${status}, which retrying will not fix. ${REQUEST_ADVICE}`,
@@ -1524,16 +1555,22 @@ export class FetchRequester implements Requester {
   }
 
   /**
-   * The request URL: the path, plus `basis` once a payload has committed.
+   * The request URL: the path, the payload kind this store accepts, and `basis`
+   * once a payload has committed.
+   *
+   * `kinds` is on every request, including the first one, because it selects
+   * what the connection is served rather than describing what it already holds
+   * (see {@link FDV2_PAYLOAD_KIND}).
    *
    * Deliberately no `mv` (data model version). That parameter selects the *flag*
-   * data model and the connection rejects any value but the flag default; the
-   * agent-skill payload is generic, is served regardless of it, and has no model
-   * version of its own to ask for.
+   * data model; delivery overrides whatever a request asks for with the
+   * payload's own default for any non-flagging payload, so sending it would
+   * state a preference that is ignored.
    */
   private url(origin: string, path: string, basis: string | null): string {
-    if (!basis) return `${origin}${path}`;
-    return `${origin}${path}?${new URLSearchParams({ basis }).toString()}`;
+    const params = new URLSearchParams({ kinds: FDV2_PAYLOAD_KIND });
+    if (basis) params.set('basis', basis);
+    return `${origin}${path}?${params.toString()}`;
   }
 
   /**
@@ -2003,10 +2040,10 @@ export class FDv2SkillStore implements SkillStore {
    * swallowed, because a broken listener must not be able to kill delivery.
    *
    * Throws for any `kind` but `'skill'`. This store notifies skill changes and
-   * nothing else — flag and segment objects on the same connection are skipped,
-   * never dispatched — so accepting a listener on another kind would hand back a
-   * watcher that silently never fires, which is indistinguishable from one whose
-   * objects never changed.
+   * nothing else — anything else on the connection is skipped, never dispatched
+   * — so accepting a listener on another kind would hand back a watcher that
+   * silently never fires, which is indistinguishable from one whose objects
+   * never changed.
    */
   addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void {
     if (kind !== SKILL_OBJECT_KIND) {
