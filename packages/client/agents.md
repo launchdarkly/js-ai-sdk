@@ -21,6 +21,8 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 
 | File | Responsibility |
 |---|---|
+| `src/conversation.ts` | `withConversationId`, `ConversationIdSpanProcessor` — stamps `gen_ai.conversation.id` |
+| `src/sdk-info.ts` | `$ld:ai:sdk:info` package registry and flush |
 | `src/lifecycle.ts` | `initClient` (options or BYOC overloads), `getClient`, `shutdown`, `waitForTelemetry`, `shutdownTelemetry`, `extractVariation` |
 | `src/client.ts` | `config()` |
 | `src/tracking.ts` | `executeAndTrack`, `executeAndStream`, `wrapToolHandlers` |
@@ -100,6 +102,7 @@ export type { AiConfigRep } from './client.js';
 export { config } from './client.js';
 export type { ContentCaptureOptions, SpanMessage, SpanMessagePart, ToolDefinitionInput } from './content.js';
 export {
+  langChainContentText,
   langChainFinishReasons,
   langChainSpanMessages,
   setInputContentAttributes,
@@ -109,11 +112,26 @@ export {
   textMessage,
   toSemconvFinishReason,
 } from './content.js';
+export {
+  ConversationIdSpanProcessor,
+  setConversationIdIfAbsent,
+  withConversationId,
+} from './conversation.js';
 export { graph, resolveGraph } from './graph.js';
+export type { CanonicalTurn, ConfigTurn } from './history.js';
+export {
+  anyMultimodal,
+  composeHistory,
+  contentToText,
+  hasMultimodalContent,
+  imageBlockToUrl,
+  isContentBlocks,
+} from './history.js';
 export { buildJudgeTasks, runJudge } from './judges.js';
 export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';
+export { registerAiSdkPackage } from './sdk-info.js';
 export { allSkills, getSkill, getSkillResult, getSkills, InMemorySkillStore, skillRefs } from './skills.js';
 export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills-fdv2.js';
 export { DEFAULT_BASE_URI, DEFAULT_STREAM_URI, FDv2SkillStore } from './skills-fdv2.js';
@@ -121,15 +139,20 @@ export type { WriteSkillsOptions } from './skills-fs.js';
 export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
 export type { WatchSkillsOptions } from './skills-watch.js';
 export { DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
+export { makeNodeTrackData, makeRunTrackData } from './tracking.js';
 export type {
   ConfigArgs,
+  ConfigMessage,
+  ContentBlock,
   GraphArgs,
   GraphDefinition,
   GraphEdge,
   GraphNode,
   GraphOptions,
+  GraphStreamEvent,
   GraphTopology,
   HandlerStreamEvent,
+  ImageContentBlock,
   JudgeCallResult,
   JudgeRunResult,
   JudgeTask,
@@ -139,6 +162,7 @@ export type {
   LDSingleKindContext,
   LDUser,
   Message,
+  MessageContent,
   OnUnavailable,
   ProviderGraphResponse,
   ProviderHandler,
@@ -157,6 +181,7 @@ export type {
   SkillReference,
   SkillStore,
   StreamEvent,
+  TextContentBlock,
   TokenUsage,
   Tool,
   ToolHandlerFn,
@@ -180,6 +205,7 @@ export {
   createRunUsage,
   endSpanOnce,
   langChainSpanUsage,
+  omitModelStamps,
   parseJSONWithPossibleFences,
   parseTemplate,
   setLdSpanAttributes,
@@ -246,14 +272,54 @@ Handlers may return any of these — the client normalizes them before emitting 
       - Calls `handler(config, userInput, toolHandlers, variables, history)`
       - On success: emits `$ld:ai:generation:success` + token tracks
       - On error: emits `$ld:ai:generation:error` then re-throws
-3. If `judgeConfiguration.judges` is present, runs each judge handler (sampled by `samplingRate`) against the primary response and tracks `evaluationMetricKey`.
+3. If `judgeConfiguration.judges` is present, runs each judge handler (sampled by `samplingRate`) against the primary response, tracks `evaluationMetricKey`, and emits a `gen_ai.evaluation.result` span event on the judge's `invoke_agent` span (`gen_ai.evaluation.name` / `.score.value` / `.explanation`).
 4. Returns `ProviderResponse`: `{ response: string, usage: { input, output, total }, trackData: TrackData, judgeResults?: Record<string, JudgeCallResult>, judgeTasks?: JudgeTask[] }`. `judgeResults` is populated when `skipJudges` is `false` (default) and judges ran; `judgeTasks` is populated when `skipJudges: true`.
+
+---
+
+## Conversation grouping
+
+LaunchDarkly's conversation view groups spans on `gen_ai.conversation.id`. Bind a caller-supplied id around any `invoke()` / `stream()` / `graph().invoke()` / `graph().stream()` call:
+
+```ts
+import { withConversationId, config } from '@launchdarkly/ai-node';
+
+await withConversationId('thread-123', () =>
+  config({ key, handler }).invoke(userInput, ctx),
+);
+```
+
+Call `initClient()` before binding. Until it runs there is no OTel context manager registered, and
+OTel's default discards the context — so an id bound before initialization is dropped and that run's
+spans go out unstamped. The SDK warns once when this happens rather than failing silently. Lazy
+initialization is still supported; it just means the very first run of a process loses its id, and
+every run after it is fine.
+
+```ts
+await initClient();
+await withConversationId('thread-123', () => config({ key, handler }).invoke(input, ctx));
+```
+
+`stream()` binds at call time rather than on first `next()`, so handing the generator off and
+iterating it later — the normal shape for a chat app — keeps the id:
+
+```ts
+const gen = withConversationId('thread-123', () => config({ key, handler }).stream(input, ctx));
+for await (const event of gen) { /* spans opened here still carry thread-123 */ }
+```
+
+Only the id is re-applied per step; the ambient context at iteration time is otherwise untouched,
+so streaming span parenting is the same as it is with no id bound.
+
+`initClient()` registers a span processor that stamps the id write-if-absent on every SDK span (root, chat, execute_tool, graph). The processor is registered on the *global* tracer provider, so it is scoped to spans from `@launchdarkly/ai-*` tracers only — a caller-supplied id must not land on third-party instrumentation spans (HTTP, Postgres, the outbound provider call). No id is invented when the caller supplies none — a UUID, a trace id, or a content hash would violate the semantic conventions.
+
+This is an OTel context value, not W3C baggage, so the id does not leak onto outbound provider HTTP calls. A multi-tenant process must bind a different id per request; do not put it on the tracer resource.
 
 ---
 
 ## OTel Setup
 
-The core client owns all OTel initialization. `initClient()` sets up a `NodeTracerProvider` with a `BatchSpanProcessor` and an OTLP HTTP exporter when the optional OTel peer deps are installed.
+The core client owns all OTel initialization. `initClient()` sets up a `NodeTracerProvider` with `ConversationIdSpanProcessor` and a `BatchSpanProcessor` plus an OTLP HTTP exporter when the optional OTel peer deps are installed.
 
 **Required packages (via `@launchdarkly/ai-otel` or installed manually):**
 

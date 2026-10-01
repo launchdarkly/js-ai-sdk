@@ -1,3 +1,4 @@
+import { withJudgeEvaluation } from './conversation.js';
 import { extractVariation, getClient } from './lifecycle.js';
 import { executeAndTrack } from './tracking.js';
 import type {
@@ -10,8 +11,41 @@ import type {
   ProviderResponse,
   ToolHandlerFn,
   TrackData,
+  VariationMeta,
 } from './types.js';
-import { collapseMessagesToInstructions, normalizeMode, parseJSONWithPossibleFences } from './utils.js';
+import {
+  collapseMessagesToInstructions,
+  normalizeMode,
+  omitModelStamps,
+  parseJSONWithPossibleFences,
+} from './utils.js';
+
+/**
+ * Resolves a judge's own AI Config, returning `null` instead of throwing when it
+ * cannot be resolved.
+ *
+ * Judges grade a response that has already been produced, so by the time one runs
+ * the provider call is finished and billed. Letting a judge's own config failure
+ * propagate would throw that response away — the caller pays for a completion and
+ * receives an exception. The most common cause is benign and deliberate: someone
+ * toggles a judge's AI Config off in LaunchDarkly, which makes `extractVariation`
+ * throw for every request the judge is attached to.
+ *
+ * So a judge that cannot be resolved is skipped and logged, matching how this file
+ * already treats a judge with no compatible handler.
+ */
+const resolveJudge = async (
+  key: string,
+  userContext: LDContext,
+): Promise<{ config: AiConfigRep; meta: VariationMeta } | null> => {
+  try {
+    return await extractVariation(key, userContext);
+  } catch (err) {
+    // biome-ignore lint/suspicious/noConsole: judges are non-fatal; say why one was skipped
+    console.error(`Judge '${key}' skipped:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+};
 
 export const FORMATTING_INSTRUCTIONS = [
   'Your response MUST be in valid JSON format with the following structure:',
@@ -26,6 +60,13 @@ export const FORMATTING_INSTRUCTIONS = [
  * judge node events and the evaluation-metric event are attributed to the graph.
  * Shared by `config().invoke()` and per-node graph execution.
  */
+/**
+ * A judge is prompted for a number but can return anything. Only a finite number goes on the span:
+ * semconv defines `gen_ai.evaluation.score.value` as a double, and OTel drops a null attribute with
+ * a diagnostic while happily exporting a string, which breaks numeric aggregation downstream.
+ */
+export const isFiniteScore = (score: unknown): score is number => typeof score === 'number' && Number.isFinite(score);
+
 export const runJudges = async ({
   config,
   userContext,
@@ -59,7 +100,9 @@ export const runJudges = async ({
   for (const judge of judges) {
     if (Math.random() >= judge.samplingRate) continue;
 
-    const { config: judgeConfig, meta: judgeMeta } = await extractVariation(judge.key, userContext);
+    const resolved = await resolveJudge(judge.key, userContext);
+    if (!resolved) continue;
+    const { config: judgeConfig, meta: judgeMeta } = resolved;
 
     const judgeProvider = judgeConfig.provider?.name;
     const judgeMode = normalizeMode(judgeMeta.mode);
@@ -107,43 +150,51 @@ export const runJudges = async ({
 
     const messageHistory = [userInput, llmResponse, FORMATTING_INSTRUCTIONS].filter(Boolean).join('\n\n');
 
-    const { usage, response: rawJudgeResponse } = await executeAndTrack({
-      configKey: judge.key,
-      config: effectiveJudgeConfig,
-      meta: judgeMeta,
-      userContext,
-      handler: judgeHandler,
-      userInput: llmResponse,
-      toolHandlers: undefined,
-      graphKey,
-      variables: {
-        message_history: messageHistory,
-        response_to_evaluate: llmResponse,
-      },
+    // `executeAndTrack` stays outside the `try`, as it was before judge evaluations existed: a
+    // provider/auth/network failure must reject out of `runJudges` rather than be swallowed and
+    // logged as a parse failure. Only parsing and recording are caught.
+    await withJudgeEvaluation(judge.key, async (recordEvaluation) => {
+      const { usage, response: rawJudgeResponse } = await executeAndTrack({
+        configKey: judge.key,
+        config: effectiveJudgeConfig,
+        meta: judgeMeta,
+        userContext,
+        handler: judgeHandler,
+        userInput: llmResponse,
+        toolHandlers: undefined,
+        graphKey,
+        variables: {
+          message_history: messageHistory,
+          response_to_evaluate: llmResponse,
+        },
+      });
+      const judgeResponse = typeof rawJudgeResponse === 'string' ? rawJudgeResponse : JSON.stringify(rawJudgeResponse);
+
+      try {
+        const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
+        if (!parsed) {
+          throw new Error('Invalid JSON');
+        }
+
+        const { score, reasoning } = parsed;
+        judgeResults[judge.key] = { usage, response: reasoning, score };
+        // The reasoning reaches telemetry only when the judge's own handler captures content.
+        // It is model prose about the user's conversation, so it follows the content gate.
+        if (isFiniteScore(score)) recordEvaluation(score, judgeHandler.captureContent ? reasoning : undefined);
+
+        if (judgeConfig.evaluationMetricKey && score !== undefined) {
+          getClient().track(
+            judgeConfig.evaluationMetricKey,
+            userContext,
+            { ...baseTrackData, judgeConfigKey: judge.key },
+            score,
+          );
+        }
+      } catch (err) {
+        // biome-ignore lint/suspicious/noConsole: intentional error logging for judge parse failures
+        console.error(`Judge '${judge.key}' failed:`, err);
+      }
     });
-    const judgeResponse = typeof rawJudgeResponse === 'string' ? rawJudgeResponse : JSON.stringify(rawJudgeResponse);
-
-    try {
-      const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
-      if (!parsed) {
-        throw new Error('Invalid JSON');
-      }
-
-      const { score, reasoning } = parsed;
-      judgeResults[judge.key] = { usage, response: reasoning, score };
-
-      if (judgeConfig.evaluationMetricKey && score !== undefined) {
-        getClient().track(
-          judgeConfig.evaluationMetricKey,
-          userContext,
-          { ...baseTrackData, judgeConfigKey: judge.key },
-          score,
-        );
-      }
-    } catch (err) {
-      // biome-ignore lint/suspicious/noConsole: intentional error logging for judge parse failures
-      console.error(`Judge '${judge.key}' failed:`, err);
-    }
   }
 
   return judgeResults;
@@ -185,7 +236,9 @@ export const buildJudgeTasks = async ({
   for (const judge of judges) {
     if (Math.random() >= judge.samplingRate) continue;
 
-    const { config: judgeConfig, meta: judgeMeta } = await extractVariation(judge.key, userContext);
+    const resolved = await resolveJudge(judge.key, userContext);
+    if (!resolved) continue;
+    const { config: judgeConfig, meta: judgeMeta } = resolved;
 
     const judgeProvider = judgeConfig.provider?.name;
     const judgeMode = normalizeMode(judgeMeta.mode);
@@ -272,35 +325,40 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
 
   const messageHistory = [actualOutput, FORMATTING_INSTRUCTIONS].join('\n\n');
 
-  const {
-    usage,
-    response: rawResponse,
-    trackData,
-  } = await executeAndTrack({
-    configKey,
-    config: effectiveConfig,
-    meta: judgeMeta,
-    userContext,
-    handler: judgeHandler,
-    userInput: actualOutput,
-    toolHandlers: undefined,
-    variables: {
-      ...variables,
-      message_history: messageHistory,
-      response_to_evaluate: actualOutput,
-    },
+  return withJudgeEvaluation(configKey, async (recordEvaluation) => {
+    const {
+      usage,
+      response: rawResponse,
+      trackData,
+    } = await executeAndTrack({
+      configKey,
+      config: effectiveConfig,
+      meta: judgeMeta,
+      userContext,
+      handler: judgeHandler,
+      userInput: actualOutput,
+      toolHandlers: undefined,
+      variables: {
+        ...variables,
+        message_history: messageHistory,
+        response_to_evaluate: actualOutput,
+      },
+    });
+
+    const judgeResponse = typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse);
+    const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
+    if (!parsed) return null;
+
+    const { score, reasoning } = parsed;
+    if (isFiniteScore(score)) recordEvaluation(score, judgeHandler.captureContent ? reasoning : undefined);
+
+    return {
+      score,
+      response: reasoning,
+      usage,
+      // A judge without a pinned model config must not inherit the parent's
+      // modelKey / modelVersion; other parent-only keys (graphKey, ...) still carry over.
+      trackData: { ...omitModelStamps(parentTrackData), ...trackData, judgeConfigKey: configKey },
+    };
   });
-
-  const judgeResponse = typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse);
-  const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
-  if (!parsed) return null;
-
-  const { score, reasoning } = parsed;
-
-  return {
-    score,
-    response: reasoning,
-    usage,
-    trackData: { ...parentTrackData, ...trackData, judgeConfigKey: configKey },
-  };
 };

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerAiSdkPackage, resetAiSdkInfo } from '../sdk-info.js';
 
 // ─── Mock external dependencies before any imports ───────────────────────────
 
@@ -58,6 +59,7 @@ vi.mock('@opentelemetry/core', () => ({
 }));
 
 vi.mock('@opentelemetry/api', () => ({
+  createContextKey: (name: string) => Symbol(name),
   trace: {
     getTracerProvider: vi.fn().mockReturnValue({ _delegate: {} }),
   },
@@ -90,6 +92,7 @@ function clearSingleton() {
 describe('lifecycle', () => {
   beforeEach(() => {
     clearSingleton();
+    resetAiSdkInfo({ clearKnown: true });
     vi.clearAllMocks();
     delete process.env.LD_SDK_KEY;
   });
@@ -274,6 +277,42 @@ describe('lifecycle', () => {
       await initClient();
       expect(mockLdInit).toHaveBeenCalledOnce();
     });
+
+    it('flushes registered AI package information on the BYOC path', async () => {
+      const client = makeMockClient();
+      registerAiSdkPackage('@launchdarkly/ai-server', '0.1.1');
+
+      const { initClient } = await import('../lifecycle.js');
+      await initClient(client);
+
+      expect(client.track).toHaveBeenCalledWith(
+        '$ld:ai:sdk:info',
+        { kind: 'ld_ai', key: 'ld-internal-tracking', anonymous: true },
+        {
+          aiSdkName: '@launchdarkly/ai-server',
+          aiSdkVersion: '0.1.1',
+          aiSdkLanguage: 'javascript',
+        },
+        1,
+      );
+    });
+
+    it('flushes a package registered after initialization without reinitializing', async () => {
+      const client = makeMockClient();
+      mockLdInit.mockReturnValue(client);
+      process.env.LD_SDK_KEY = 'test-key';
+      registerAiSdkPackage('@launchdarkly/ai-server', '0.1.1');
+
+      const { initClient } = await import('../lifecycle.js');
+      await initClient();
+      client.track.mockClear();
+      registerAiSdkPackage('@launchdarkly/ai-openai-agents', '0.1.1');
+      await initClient();
+
+      expect(mockLdInit).toHaveBeenCalledOnce();
+      expect(client.track).toHaveBeenCalledOnce();
+      expect(client.track.mock.calls[0][2].aiSdkName).toBe('@launchdarkly/ai-openai-agents');
+    });
   });
 
   describe('shutdown', () => {
@@ -312,6 +351,21 @@ describe('lifecycle', () => {
       clearSingleton();
       await initClient();
       expect(getClient()).toBe(mockClient);
+    });
+
+    it('reports registered packages again after shutdown and re-initialization', async () => {
+      const client = makeMockClient();
+      mockLdInit.mockReturnValue(client);
+      process.env.LD_SDK_KEY = 'test-key';
+      registerAiSdkPackage('@launchdarkly/ai-server', '0.1.1');
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      await initClient();
+      await shutdown();
+      client.track.mockClear();
+      await initClient();
+
+      expect(client.track).toHaveBeenCalledOnce();
     });
 
     it('is a no-op (does not throw) when called without a prior initClient', async () => {
@@ -431,6 +485,31 @@ describe('lifecycle', () => {
       expect(result.meta?.variationKey).toBe('v1');
     });
 
+    it('preserves modelKey and modelVersion from _ldMeta on meta', async () => {
+      const mockClient = makeMockClient();
+      mockClient.variation = vi.fn().mockResolvedValue({
+        _ldMeta: {
+          enabled: true,
+          variationKey: 'v1',
+          version: 1,
+          mode: 'messages',
+          modelKey: 'my-model',
+          modelVersion: 3,
+        },
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'You are helpful.',
+      });
+      mockLdInit.mockReturnValue(mockClient);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { inspectConfig } = await import('../lifecycle.js');
+      const result = await inspectConfig('my-flag', { kind: 'user' as const, key: 'user-1' });
+
+      expect(result.meta?.modelKey).toBe('my-model');
+      expect(result.meta?.modelVersion).toBe(3);
+    });
+
     it('returns enabled=false and config=null when the variation is disabled', async () => {
       const mockClient = makeMockClient();
       mockClient.variation = vi.fn().mockResolvedValue({
@@ -498,6 +577,31 @@ describe('lifecycle', () => {
 
       expect(config.model.name).toBe('gpt-4o');
       expect(meta.variationKey).toBe('v1');
+    });
+
+    it('preserves modelKey and modelVersion from _ldMeta on meta', async () => {
+      const mockClient = makeMockClient();
+      mockClient.variation = vi.fn().mockResolvedValue({
+        _ldMeta: {
+          enabled: true,
+          variationKey: 'v1',
+          version: 1,
+          mode: 'messages',
+          modelKey: 'my-model',
+          modelVersion: 3,
+        },
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'You are helpful.',
+      });
+      mockLdInit.mockReturnValue(mockClient);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { extractVariation } = await import('../lifecycle.js');
+      const { meta } = await extractVariation('my-flag', { kind: 'user' as const, key: 'user-1' });
+
+      expect(meta.modelKey).toBe('my-model');
+      expect(meta.modelVersion).toBe(3);
     });
 
     it('throws when the variation is disabled', async () => {

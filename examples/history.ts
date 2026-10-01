@@ -1,6 +1,6 @@
 import './register';
-import { config, globalRegistry } from '@launchdarkly/ai-node';
-import { newContext, writeOutput } from './utils';
+import { config, globalRegistry, withConversationId } from '@launchdarkly/ai-node';
+import { newContext, newConversationId, writeOutput } from './utils';
 
 const history = [
   { role: 'user' as const, content: 'What is LaunchDarkly?' },
@@ -22,10 +22,12 @@ const HISTORY_PROMPT =
 
 export async function run(key: string, userInput: string): Promise<void> {
   const prompt = userInput || HISTORY_PROMPT;
-  const response = await config({
-    key,
-    registry: globalRegistry,
-  }).invoke(prompt, newContext(), undefined, history);
+  const response = await withConversationId(newConversationId('history-example'), () =>
+    config({
+      key,
+      registry: globalRegistry,
+    }).invoke(prompt, newContext(), undefined, history),
+  );
 
   const text = typeof response.response === 'string' ? response.response : JSON.stringify(response.response);
   const referencesHistory = /launchdarkly|feature flag|feature management|ai sdk/i.test(text) && text.length > 20;

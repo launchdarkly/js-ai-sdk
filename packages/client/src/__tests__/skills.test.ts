@@ -28,6 +28,7 @@ vi.mock('@opentelemetry/core', () => ({
   W3CTraceContextPropagator: class {},
 }));
 vi.mock('@opentelemetry/api', () => ({
+  createContextKey: (name: string) => Symbol(name),
   trace: { getTracerProvider: () => ({ _delegate: {} }) },
   propagation: { setGlobalPropagator: vi.fn() },
 }));

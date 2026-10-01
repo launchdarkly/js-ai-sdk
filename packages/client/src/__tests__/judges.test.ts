@@ -21,8 +21,8 @@ vi.mock('../lifecycle.js', () => ({
   shutdownTelemetry: vi.fn(),
 }));
 
-import { runJudges } from '../judges.js';
-import type { ProviderHandler } from '../types.js';
+import { isFiniteScore, runJudge, runJudges } from '../judges.js';
+import type { JudgeTask, ProviderHandler } from '../types.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -267,5 +267,163 @@ describe('runJudges', () => {
     const callArgs = mockExecuteAndTrack.mock.calls[0][0];
     // toolHandlers must NOT be forwarded to the judge — judges are evaluators only.
     expect(callArgs.toolHandlers).toBeUndefined();
+  });
+
+  // ─── A judge's own config failing must not fail the run ────────────────────
+  //
+  // By the time judges run, the provider call is finished and billed. A judge
+  // whose AI Config cannot be resolved — most often because it was toggled off
+  // in LaunchDarkly — must be skipped, not allowed to discard that response.
+
+  it('skips a judge whose AI Config is disabled instead of throwing', async () => {
+    mockExtractVariation.mockRejectedValue(new Error('Variation judge-flag is not enabled'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const config = {
+      model: { name: 'gpt-4o' },
+      provider: { name: 'OpenAI' },
+      instructions: 'Be helpful.',
+      judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
+    };
+
+    const results = await runJudges({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    expect(results).toEqual({});
+    expect(mockExecuteAndTrack).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith("Judge 'judge-flag' skipped:", 'Variation judge-flag is not enabled');
+
+    consoleError.mockRestore();
+  });
+
+  it('still runs the judges it can resolve when another one is disabled', async () => {
+    mockExtractVariation.mockImplementation((key: string) => {
+      if (key === 'disabled-judge') {
+        return Promise.reject(new Error('Variation disabled-judge is not enabled'));
+      }
+      return Promise.resolve({ config: mockJudgeConfig, meta: mockJudgeMeta });
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const config = {
+      model: { name: 'gpt-4o' },
+      provider: { name: 'OpenAI' },
+      instructions: 'Be helpful.',
+      judgeConfiguration: {
+        judges: [
+          { key: 'disabled-judge', samplingRate: 1 },
+          { key: 'working-judge', samplingRate: 1 },
+        ],
+      },
+    };
+
+    const results = await runJudges({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    // The disabled judge is absent; the healthy one still produced a score.
+    expect(Object.keys(results)).toEqual(['working-judge']);
+    expect(results['working-judge']?.score).toBe(0.9);
+    expect(mockExecuteAndTrack).toHaveBeenCalledTimes(1);
+
+    consoleError.mockRestore();
+  });
+});
+
+describe('judge score validation', () => {
+  it('only treats a finite number as a recordable score', () => {
+    // A judge is prompted for a number but can return anything; OTel drops a null attribute and
+    // exports a string, which breaks numeric aggregation on gen_ai.evaluation.score.value.
+    for (const junk of [null, undefined, '0.9', '85%', {}, [], Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(isFiniteScore(junk)).toBe(false);
+    }
+    for (const ok of [0, 0.9, 1, -1]) {
+      expect(isFiniteScore(ok)).toBe(true);
+    }
+  });
+});
+
+// ─── runJudge result trackData ────────────────────────────────────────────────
+
+describe('runJudge result trackData', () => {
+  const makeTask = (parentTrackData: Record<string, unknown>): JudgeTask =>
+    ({
+      configKey: 'judge-key',
+      judgeConfig: mockJudgeConfig,
+      judgeMeta: mockJudgeMeta,
+      actualOutput: 'response',
+      userContext: mockContext,
+      judgeProvider: 'OpenAI',
+      judgeMode: 'messages',
+      collapseMessages: false,
+      parentTrackData,
+    }) as JudgeTask;
+
+  const parentTrackData = {
+    runId: 'parent-run',
+    configKey: 'main-flag',
+    variationKey: 'v1',
+    version: 1,
+    modelName: 'gpt-4o',
+    providerName: 'OpenAI',
+    modelKey: 'parent-model',
+    modelVersion: 7,
+    graphKey: 'g1',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('does not inherit the parent modelKey/modelVersion when the judge trackData has none', async () => {
+    mockExecuteAndTrack.mockResolvedValue({
+      usage: { input: 1, output: 1, total: 2 },
+      response: '{"score":0.9,"reasoning":"good"}',
+      trackData: {
+        runId: 'judge-run',
+        configKey: 'judge-key',
+        variationKey: 'j1',
+        version: 1,
+        modelName: 'claude',
+        providerName: 'Anthropic',
+      },
+    });
+    const result = await runJudge(makeTask(parentTrackData), [makeHandler()]);
+    expect(result).not.toBeNull();
+    expect('modelKey' in result!.trackData).toBe(false);
+    expect('modelVersion' in result!.trackData).toBe(false);
+    expect(result!.trackData.judgeConfigKey).toBe('judge-key');
+    expect(result!.trackData.graphKey).toBe('g1');
+  });
+
+  it('keeps the judge own modelKey/modelVersion over the parent values', async () => {
+    mockExecuteAndTrack.mockResolvedValue({
+      usage: { input: 1, output: 1, total: 2 },
+      response: '{"score":0.9,"reasoning":"good"}',
+      trackData: {
+        runId: 'judge-run',
+        configKey: 'judge-key',
+        variationKey: 'j1',
+        version: 1,
+        modelName: 'claude',
+        providerName: 'Anthropic',
+        modelKey: 'judge-model',
+        modelVersion: 2,
+      },
+    });
+    const result = await runJudge(makeTask(parentTrackData), [makeHandler()]);
+    expect(result!.trackData.modelKey).toBe('judge-model');
+    expect(result!.trackData.modelVersion).toBe(2);
   });
 });

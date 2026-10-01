@@ -760,6 +760,24 @@ describe('invoke() judgeTasks via buildJudgeTasks', () => {
     const { judgeTasks } = await config({ key: 'flag', handler, skipJudges: true }).invoke('q', mockContext);
     expect(judgeTasks).toEqual([]);
   });
+
+  it('omits a disabled judge from judgeTasks and still returns the response', async () => {
+    // Only the judge's config is unresolvable; the main config resolves normally.
+    (extractVariation as ReturnType<typeof vi.fn>).mockImplementation(async (k: string) => {
+      if (k === 'judge-flag') throw new Error('Variation judge-flag is not enabled');
+      return { config: mainConfigWithJudge, meta: mockMeta };
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const handler = makeHandler();
+    const { response, judgeTasks } = await config({ key: 'flag', handler, skipJudges: true }).invoke('q', mockContext);
+
+    expect(judgeTasks).toEqual([]);
+    // The response the caller already paid for survives the judge's failure.
+    expect(response).toBe('hello');
+
+    consoleError.mockRestore();
+  });
 });
 
 // ─── config().stream() — multi-handler routing ───────────────────────────────

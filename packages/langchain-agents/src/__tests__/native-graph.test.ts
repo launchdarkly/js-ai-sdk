@@ -20,6 +20,15 @@ const mockAddEdge = vi.hoisted(() => vi.fn());
 const mockAddConditionalEdges = vi.hoisted(() => vi.fn());
 const mockCompile = vi.hoisted(() => vi.fn());
 const mockCompiledInvoke = vi.hoisted(() => vi.fn());
+const MockChatOpenAI = vi.hoisted(() =>
+  vi.fn().mockImplementation(function MockChatOpenAI(this: {
+    invoke: ReturnType<typeof vi.fn>;
+    bindTools: ReturnType<typeof vi.fn>;
+  }) {
+    this.invoke = vi.fn();
+    this.bindTools = vi.fn().mockReturnThis();
+  }),
+);
 
 // ─── Module mocks ─────────────────────────────────────────────────────────────
 
@@ -59,7 +68,7 @@ vi.mock('@langchain/langgraph/prebuilt', () => ({
 }));
 
 vi.mock('@langchain/openai', () => ({
-  ChatOpenAI: class {},
+  ChatOpenAI: MockChatOpenAI,
 }));
 
 vi.mock('@langchain/core/tools', () => ({
@@ -169,6 +178,15 @@ describe('toLangGraph', () => {
     expect(registeredNames).toContain('leaf');
   });
 
+  it('spreads model.parameters into the default ChatOpenAI constructor', async () => {
+    const root = makeNode('root', '', []);
+    root.config.model.parameters = { temperature: 0.2, max_tokens: 512 };
+    const def = makeGraphDef([root], {}, 'root');
+    MockChatOpenAI.mockClear();
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, max_tokens: 512, model: 'gpt-4o' });
+  });
+
   it('wires the root node from START', async () => {
     const root = makeNode('root', '', ['leaf']);
     const leaf = makeNode('leaf', '', []);
@@ -187,6 +205,36 @@ describe('toLangGraph', () => {
     await toLangGraph(Promise.resolve(def)).invoke('hi');
     const edgeCalls: [string, string][] = mockAddEdge.mock.calls;
     expect(edgeCalls.some(([from, to]) => from === 'leaf' && to === '__end__')).toBe(true);
+  });
+
+  // ── History (root-only, native LangChain messages) ──────────────────────────
+
+  it('seeds the root message state with a plain HumanMessage when no history is passed', async () => {
+    const root = makeNode('root', '', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+    const { messages } = mockCompiledInvoke.mock.calls[0][0];
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toBe('hi');
+  });
+
+  it('forwards history to the root initial messages as native LangChain content', async () => {
+    const history = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+        ],
+      },
+    ];
+    const root = makeNode('root', '', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def)).invoke('describe', {}, history);
+    const { messages } = mockCompiledInvoke.mock.calls[0][0];
+    const serialized = JSON.stringify(messages);
+    expect(serialized).toMatch(/image_url|"type":"image"/);
+    expect(serialized).toContain('abc123');
+    expect(serialized).toContain('describe');
   });
 
   // ── Handoff tools ───────────────────────────────────────────────────────────
@@ -272,6 +320,35 @@ describe('toLangGraph', () => {
     const def = makeGraphDef([root], {}, 'root');
     await toLangGraph(Promise.resolve(def), { context: ctx }).invoke('hi');
     expect(mockTrack).toHaveBeenCalledWith('$ld:ai:graph:invocation_success', ctx, expect.anything(), 1);
+    expect(mockTrack).not.toHaveBeenCalledWith(
+      '$ld:ai:graph:path',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('emits $ld:ai:graph:node when the node function runs', async () => {
+    const ctx = { kind: 'user' as const, key: 'u1' };
+    const mockModel = {
+      invoke: vi.fn().mockResolvedValue(new AIMessage({ content: 'ok' })),
+      bindTools: vi.fn().mockReturnThis(),
+    };
+    const root = makeNode('root', 'instructions', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { context: ctx, modelFactory: () => mockModel }).invoke('hi');
+    const nodeFn = mockAddNode.mock.calls.find((c: unknown[]) => c[0] === 'root')?.[1] as
+      | ((state: { messages: unknown[] }) => Promise<unknown>)
+      | undefined;
+    expect(nodeFn).toBeTypeOf('function');
+    mockTrack.mockClear();
+    await nodeFn?.({ messages: [] });
+    expect(mockTrack).toHaveBeenCalledWith(
+      '$ld:ai:graph:node',
+      ctx,
+      expect.objectContaining({ nodeKey: 'root', index: 0 }),
+      1,
+    );
   });
 
   it('emits $ld:ai:graph:duration:total on success', async () => {
@@ -293,11 +370,11 @@ describe('toLangGraph', () => {
 
   // ── OTel span ────────────────────────────────────────────────────────────────
 
-  it('sets ld.ai.graph.key span attribute', async () => {
+  it('sets launchdarkly.graph.key span attribute', async () => {
     const root = makeNode('root', '', []);
     const def = makeGraphDef([root], {}, 'root');
     await toLangGraph(Promise.resolve(def)).invoke('hi');
-    expect(mockSpan.setAttribute).toHaveBeenCalledWith('ld.ai.graph.key', 'test-graph');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.key', 'test-graph');
   });
 
   it('sets span status to OK on success', async () => {
@@ -511,11 +588,11 @@ describe('toLangGraph', () => {
 
   // ── OTel span attributes ─────────────────────────────────────────────────────
 
-  it('sets ld.ai.graph.path span attribute after traversal', async () => {
+  it('sets launchdarkly.graph.path span attribute after traversal', async () => {
     const root = makeNode('root', '', []);
     const def = makeGraphDef([root], {}, 'root');
     await toLangGraph(Promise.resolve(def)).invoke('hi');
-    expect(mockSpan.setAttribute).toHaveBeenCalledWith('ld.ai.graph.path', expect.any(String));
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.path', expect.any(String));
   });
 
   it('sets gen_ai.usage.* span attributes on success', async () => {

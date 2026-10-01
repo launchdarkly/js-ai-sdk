@@ -6,17 +6,20 @@ import { ToolNode, toolsCondition } from '@langchain/langgraph/prebuilt';
 import { ChatOpenAI } from '@langchain/openai';
 import type { LDContext } from '@launchdarkly/ai-server';
 import {
+  composeHistory,
   type GraphDefinition,
   type GraphNode,
   getClient,
+  type Message,
+  makeNodeTrackData,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
   type ToolHandlerFn,
-  type TrackData,
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
+import { toLangChainMessages } from './messages.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -64,16 +67,6 @@ const buildNodeTools = (node: GraphNode, toolHandlers: Record<string, ToolHandle
     ),
   );
 };
-
-const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: string): TrackData => ({
-  runId,
-  configKey: node.key,
-  variationKey: node.meta.variationKey ?? '',
-  version: node.meta.version ?? 1,
-  modelName: node.config.model.name,
-  providerName: node.config.provider.name,
-  graphKey,
-});
 
 const trackNode = (
   node: GraphNode,
@@ -128,10 +121,16 @@ export const toLangGraph = (
     /** LaunchDarkly context used for tracking events. Required for LD telemetry. */
     context?: LDContext;
   },
-): { invoke: (input?: string, variables?: Record<string, unknown>) => Promise<ProviderGraphResponse> } => {
+): {
+  invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
+} => {
   type ContentBlock = { type: string; text?: string };
 
-  const invoke = async (input = '', variables: Record<string, unknown> = {}): Promise<ProviderGraphResponse> => {
+  const invoke = async (
+    input = '',
+    variables: Record<string, unknown> = {},
+    history?: Message[],
+  ): Promise<ProviderGraphResponse> => {
     const def = await defPromise;
     if (!def.enabled) {
       throw new Error(`Agent graph "${def.key}" is disabled`);
@@ -141,11 +140,19 @@ export const toLangGraph = (
     }
 
     const toolHandlers = opts?.toolHandlers ?? {};
-    const modelFactory = opts?.modelFactory ?? ((node) => new ChatOpenAI({ model: node.config.model.name }));
+    const modelFactory =
+      opts?.modelFactory ??
+      ((node) =>
+        new ChatOpenAI({
+          ...(node.config.model.parameters && typeof node.config.model.parameters === 'object'
+            ? node.config.model.parameters
+            : {}),
+          model: node.config.model.name,
+        }));
     const ldContext = opts?.context;
 
-    return trace.getTracer('@launchdarkly/ai-langchain-agents').startActiveSpan('ld.ai.graph', async (span) => {
-      span.setAttribute('ld.ai.graph.key', def.key);
+    return trace.getTracer('@launchdarkly/ai-langchain-agents').startActiveSpan('launchdarkly.graph', async (span) => {
+      span.setAttribute('launchdarkly.graph.key', def.key);
       const startTime = Date.now();
       const runId = crypto.randomUUID();
 
@@ -187,7 +194,14 @@ export const toLangGraph = (
 
         // Node function: run the model, track LD events, return state update
         const nodeFunction = async (state: WorkflowState) => {
-          path.push(node.key);
+          if (!path.includes(node.key)) {
+            const index = path.length;
+            path.push(node.key);
+            if (ldContext) {
+              const nodeTrackData = makeNodeTrackData(node, def.key, runId);
+              getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: node.key, index }, 1);
+            }
+          }
           const nodeStartTime = Date.now();
 
           const systemPrompt = buildSystemPrompt(node, variables);
@@ -269,10 +283,18 @@ export const toLangGraph = (
 
       const compiled = builder.compile();
 
+      // History is a root-only concern: it seeds the initial message state the
+      // entry node reads. Downstream nodes are reached through handoffs and see
+      // the accumulated graph state, never the original `history` array.
+      const initialMessages =
+        history && history.length > 0
+          ? toLangChainMessages(composeHistory({ history, userInput: input }))
+          : [new HumanMessage(input)];
+
       // biome-ignore lint/suspicious/noImplicitAnyLet: assigned immediately in try; catch always re-throws
       let result;
       try {
-        result = await compiled.invoke({ messages: [new HumanMessage(input)] });
+        result = await compiled.invoke({ messages: initialMessages });
         span.setStatus({ code: SpanStatusCode.OK });
       } catch (err) {
         span.recordException(err instanceof Error ? err : new Error(String(err)));
@@ -300,7 +322,7 @@ export const toLangGraph = (
             : ''
         : '';
 
-      span.setAttribute('ld.ai.graph.path', path.join('->'));
+      span.setAttribute('launchdarkly.graph.path', path.join('->'));
       span.setAttribute('gen_ai.usage.input_tokens', totalUsage.input);
       span.setAttribute('gen_ai.usage.output_tokens', totalUsage.output);
       span.setAttribute('gen_ai.usage.total_tokens', totalUsage.total);
@@ -310,7 +332,6 @@ export const toLangGraph = (
         const rootTrackData = makeNodeTrackData(def.root!, def.key, runId);
         getClient().track('$ld:ai:graph:duration:total', ldContext, rootTrackData, duration);
         getClient().track('$ld:ai:graph:total_tokens', ldContext, rootTrackData, totalUsage.total);
-        getClient().track('$ld:ai:graph:path', ldContext, rootTrackData, path.length);
         getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
       }
 

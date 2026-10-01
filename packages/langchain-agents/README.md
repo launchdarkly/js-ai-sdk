@@ -42,6 +42,16 @@ import { createLangChainAgentsHandler } from '@launchdarkly/ai-langchain-agents'
 const handler = createLangChainAgentsHandler(new ChatAnthropic({ model: 'claude-opus-4-5' }));
 ```
 
+A constructed instance cannot see flag parameters. Pass a function instead if the model should
+be built after evaluation:
+
+```ts
+const handler = createLangChainAgentsHandler((config) => new ChatAnthropic({
+  model: config.model.name,
+  ...config.model.parameters,
+}));
+```
+
 ### Convenience wrapper
 
 ```ts

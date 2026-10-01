@@ -39,7 +39,17 @@
     }
   },
   "files": {
-    "includes": ["**/*.ts", "**/*.js", "**/*.json", "!**/dist", "!**/node_modules", "!**/*.d.ts", "!**/output"]
+    "includes": [
+      "**/*.ts",
+      "**/*.js",
+      "**/*.json",
+      "!**/dist",
+      "!**/dist-*",
+      "!**/node_modules",
+      "!**/*.d.ts",
+      "!**/output",
+      "!**/.staging"
+    ]
   },
   "overrides": [
     {

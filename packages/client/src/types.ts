@@ -79,6 +79,10 @@ export type VariationMeta = {
   variationKey?: string;
   version?: number;
   mode?: 'agent' | 'completion' | 'judge';
+  /** Stable key of the pinned model config, delivered in `_ldMeta`. Absent when no model config is pinned. */
+  modelKey?: string;
+  /** Pinned model config version, delivered in `_ldMeta`. */
+  modelVersion?: number;
 };
 
 export type Tool = {
@@ -89,15 +93,46 @@ export type Tool = {
   description?: string;
 };
 
+/** A block of plain text inside a multimodal message. */
+export type TextContentBlock = { type: 'text'; text: string };
+
 /**
- * A single message in a conversation. Used both by `AiConfigRep.messages`
- * (config-time prompts) and the `history` parameter (runtime conversation state).
+ * An image block inside a multimodal message, in LaunchDarkly-canonical form.
+ * `source.type` is either an inline base64 payload (with its media type) or a
+ * URL. Handlers map this into each provider's native image shape — see the
+ * per-provider table in TESTING.md Appendix A.7.
  */
-export type Message = { role: 'user' | 'assistant' | 'system'; content: string };
+export type ImageContentBlock =
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | { type: 'image'; source: { type: 'url'; url: string } };
+
+/** One typed block of a multimodal message. */
+export type ContentBlock = TextContentBlock | ImageContentBlock;
+
+/**
+ * Message content: either a plain string (the common case, and the only shape
+ * flag-delivered `AiConfigRep.messages` ever use) or an array of typed content
+ * blocks for multimodal runtime `history` (text + images). `parseTemplate` is
+ * only applied to string content; block arrays are passed through untouched.
+ */
+export type MessageContent = string | ContentBlock[];
+
+/**
+ * A config-time message from a flag variation's `AiConfigRep.messages`. Always
+ * string content — flag-delivered prompts are never multimodal.
+ */
+export type ConfigMessage = { role: 'user' | 'assistant' | 'system'; content: string };
+
+/**
+ * A single message in a conversation. Used for the runtime `history` parameter,
+ * whose content may be a plain string or an array of multimodal content blocks.
+ * Flag-delivered config prompts use {@link ConfigMessage} (string-only) instead.
+ */
+export type Message = { role: 'user' | 'assistant' | 'system'; content: MessageContent };
 
 export type AiConfigRep = {
   instructions?: string;
-  messages?: Message[];
+  messages?: ConfigMessage[];
   model: {
     name: string;
     region?: string;
@@ -665,6 +700,23 @@ export type StreamEvent =
       judgeResults?: ProviderResponse['judgeResults'];
     };
 
+/**
+ * Public stream event emitted by {@link graph}.stream(). Extends the single-config
+ * chunk/done flow with node-boundary metadata so callers can render per-node UI
+ * while the graph router still owns handoffs and graph-level telemetry.
+ */
+export type GraphStreamEvent =
+  | { type: 'node_start'; nodeKey: string }
+  | { type: 'chunk'; text: string; nodeKey: string }
+  | { type: 'node_done'; nodeKey: string; response: string; usage: TokenUsage }
+  | { type: 'handoff'; sourceKey: string; targetKey: string }
+  | {
+      type: 'done';
+      response: string;
+      usage: TokenUsage;
+      judgeResults?: ProviderResponse['judgeResults'];
+    };
+
 export type ProviderHandler = ((
   config: AiConfigRep,
   userInput?: string,
@@ -676,6 +728,12 @@ export type ProviderHandler = ((
   usage?: Record<string, unknown>;
 }>) & {
   providesFor?: [provider: string, type: 'agent' | 'messages'];
+  /**
+   * Whether this handler was built with content capture on. Declared here so the client core can
+   * apply the same gate to content it writes on the handler's behalf — notably the judge's
+   * reasoning — without reaching into the handler's closure.
+   */
+  captureContent?: boolean;
   /**
    * Optional streaming implementation. When present, `model().stream()` calls
    * this instead of the blocking handler and forwards `chunk` events to the
@@ -733,8 +791,12 @@ export type TrackData = {
   version: number;
   modelName: string;
   providerName: string;
+  /** Stable key of the pinned model config (from `_ldMeta.modelKey`). Omitted when absent. */
+  modelKey?: string;
+  /** Pinned model config version (from `_ldMeta.modelVersion`). Omitted when absent. */
+  modelVersion?: number;
   graphKey?: string;
-  toolName?: string;
+  toolKey?: string;
   judgeConfigKey?: string;
   /** LD environment MongoDB ObjectId — used to set feature_flag.set.id on OTel spans. */
   environmentId?: string;
@@ -774,6 +836,13 @@ export type RunNodeOptions = {
    * `$ld:ai:graph:handoff_success` / `handoff_failure` for the transition.
    */
   from?: GraphNode;
+  /**
+   * Prior conversation turns to pass into this node's handler. Only the graph's
+   * root node receives `history` on the first hop; subsequent nodes stay
+   * oriented through the string `[Original request]` / `[Previous agent
+   * response]` threading instead.
+   */
+  history?: Message[];
 };
 
 /**
