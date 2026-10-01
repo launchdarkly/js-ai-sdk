@@ -45,14 +45,33 @@ import { isValidSkillVersion } from './types.js';
 /**
  * The FDv2 `kind` skills are delivered under.
  *
- * Object kinds on the SDK-facing channel are open strings: the agent-skill
- * payload is classified `generic` and every object in it carries the kind its
- * producer registered, which for skills is the bare category name. Delivery
- * lower-cases the kind, so an exact comparison is the whole test. The kind
- * happens to equal `SKILL_OBJECT_KIND` today; they are still separate constants,
- * because one is a wire value LaunchDarkly owns and the other is an SDK seam.
+ * Object kinds on the SDK-facing channel are open strings: every object in the
+ * agent-skill payload carries the kind its producer registered, which for skills
+ * is the bare category name. Delivery lower-cases the kind, so an exact
+ * comparison is the whole test. The kind happens to equal `SKILL_OBJECT_KIND`
+ * today; they are still separate constants, because one is a wire value
+ * LaunchDarkly owns and the other is an SDK seam.
+ *
+ * Not to be confused with {@link FDV2_PAYLOAD_KIND}: this is the kind of the
+ * *objects*, that one the kind of the *payload* they arrive in.
  */
 export const FDV2_OBJECT_KIND = 'skill';
+
+/**
+ * The kind of the FDv2 payload skills are delivered in, declared on every
+ * request as `?kinds=`.
+ *
+ * Delivery narrows a connection to the payload kinds it declares and defaults to
+ * flags, so this is not an optimisation: a request that omits it receives the
+ * environment's flag payload and no skills at all. Declaring it is also what
+ * makes the connection carry exactly one payload — the shape
+ * {@link ProtocolReader} is built for — since a skill-enabled environment
+ * assigns both the flag payload and this one.
+ *
+ * The wire accepts a comma-separated list, but this store wants the skill
+ * payload and nothing else, so it declares this one kind alone.
+ */
+export const FDV2_PAYLOAD_KIND = 'agent-skill';
 
 /**
  * What separates a skill's key from its version inside the object's wire `key`.
@@ -192,6 +211,52 @@ export function requireServerSideCredential(sdkKey: unknown): string {
   return key;
 }
 
+/** The only hosts a plain `http://` URI may name: a local test double. */
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '::1']);
+
+/**
+ * Refuses a URI that would send the SDK key in cleartext.
+ *
+ * Every request carries the environment's server-side SDK key in
+ * `Authorization`, so the transport is `https://` only. The one exception is
+ * `http://` to a loopback host (`localhost`, `127.0.0.1`, `::1`), which never
+ * leaves the machine and is what a local test double listens on. Throws rather
+ * than warns, for the same reason the credential check does: a store that would
+ * leak its key should not exist.
+ *
+ * Returns the URI trimmed. The check is on the store, not on the socket it
+ * happens to open, so it runs whether or not a `Requester` was injected.
+ */
+export function requireHttpsUri(uri: unknown, option: 'baseUri' | 'streamUri' = 'baseUri'): string {
+  if (typeof uri !== 'string' || uri.trim() === '') {
+    throw new Error(`FDv2SkillStore requires an https:// URI for ${option}; none was given.`);
+  }
+  const trimmed = uri.trim();
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    parsed = null;
+  }
+  // WHATWG `hostname` keeps the brackets on an IPv6 literal; the loopback list
+  // names the address, as the Python SDK's does.
+  const hostname = parsed?.hostname.replace(/^\[(.*)\]$/, '$1') ?? '';
+  if (parsed?.protocol === 'https:' && hostname !== '') return trimmed;
+  if (parsed?.protocol === 'http:' && LOOPBACK_HOSTS.has(hostname)) return trimmed;
+  if (parsed?.protocol === 'http:') {
+    throw new Error(
+      `FDv2SkillStore refuses ${option} ${JSON.stringify(trimmed)}: a plain http:// URI would send the server-side ` +
+        'SDK key in cleartext. Use https:// (the defaults are https://sdk.launchdarkly.com for polling and ' +
+        'https://stream.launchdarkly.com for streaming). Plain http:// is allowed only for a loopback host ' +
+        '(localhost, 127.0.0.1, ::1) serving a local test double.',
+    );
+  }
+  throw new Error(
+    `FDv2SkillStore refuses ${option} ${JSON.stringify(trimmed)}: expected an https:// URI with a host, such as ` +
+      'https://sdk.launchdarkly.com.',
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Diagnostics — and the contentHash gap in particular
 // ---------------------------------------------------------------------------
@@ -210,9 +275,10 @@ export type StoreDiagnostics = {
   /** `put-object` events identified as skills, across all payloads. */
   readonly skillObjectsReceived: number;
   /**
-   * Objects skipped because they were not skills — flags, segments, and any
-   * future kind. Skipping is the contract, not a failure; the count exists so a
-   * mixed payload is visibly mixed.
+   * Objects skipped because they were not skills. With the skill payload
+   * declared on every request, this counts an object kind this version does not
+   * recognise rather than the environment's flags. Skipping is the contract,
+   * not a failure.
    */
   readonly objectsIgnored: number;
   /**
@@ -374,9 +440,11 @@ export type Tombstone = { readonly key: string; readonly objectVersion: number |
 /**
  * Whether one `put-object` / `delete-object` payload is a skill.
  *
- * The kind alone decides it. Every other kind is **ignored, not rejected**,
- * because flag and segment objects share the connection and erroring on them
- * would turn a normal payload into a reconnect loop.
+ * The kind alone decides it. Every other kind is **ignored, not rejected**. The
+ * `kinds` declaration means a flag or segment object should no longer arrive at
+ * all, but the skip stays: erroring on an unrecognised kind would turn a payload
+ * that gained one into a reconnect loop, which is the outage this feature must
+ * not cause.
  */
 export function isSkillEvent(data: unknown): boolean {
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return false;
@@ -1067,8 +1135,9 @@ export class RecoverableTransportError extends Error {
 export class StaleRequestStateError extends RecoverableTransportError {}
 
 const REQUEST_ADVICE =
-  'The request this adapter sent was not understood. It carries only the SDK key and, after the first payload, ' +
-  "a 'basis' selector, so check the base URI and that the endpoint speaks FDv2.";
+  'The request this adapter sent was not understood. It carries only the SDK key, a ' +
+  "'kinds' parameter declaring the skill payload, and, after the first payload, a 'basis' selector, so check " +
+  'the base URI and that the endpoint speaks FDv2.';
 
 const FORBIDDEN_ADVICE =
   'The FDv2 protocol is opt-in per LaunchDarkly account and is served as HTTP 403 while it is off. Skill ' +
@@ -1089,6 +1158,37 @@ export function retryAfterMs(headers: Headers | null | undefined): number | null
   return Math.max(0, seconds * 1000);
 }
 
+/**
+ * The fatal error for a 3xx. Both fetches are sent with `redirect: 'manual'`,
+ * because the default `'follow'` copies every request header onto the
+ * redirected request, `Authorization` included, so a 3xx from a proxy or a
+ * misconfigured private instance would hand the SDK key to whatever host
+ * `Location` names. Same-host redirects are refused too: the endpoints this
+ * module calls do not redirect, and a 304 is not a redirect and never reaches
+ * here.
+ */
+function redirectRefused(status: string): FatalTransportError {
+  return new FatalTransportError(
+    `LaunchDarkly returned ${status}, a redirect. Redirects are not followed, so the SDK key is never forwarded to a ` +
+      'host other than the base URI. The SDK-facing FDv2 endpoints do not redirect; check the base URI, and any proxy ' +
+      'in between, for the address being redirected to.',
+  );
+}
+
+/**
+ * The error for a response `fetch` answered with `redirect: 'manual'`, or
+ * `null` when it was not a redirect. A runtime that withholds the status of a
+ * redirect answers with an `opaqueredirect` response instead; that is still a
+ * redirect and still refused.
+ */
+function refusedRedirect(response: Response): FatalTransportError | null {
+  if (response.type === 'opaqueredirect') return redirectRefused('a 3xx status');
+  if (response.status >= 300 && response.status < 400 && response.status !== 304) {
+    return classifyStatus(response.status, response.headers);
+  }
+  return null;
+}
+
 /** Turns an HTTP error status into the right error type. */
 export function classifyStatus(status: number, headers?: Headers | null): Error {
   if (status === 401) {
@@ -1098,6 +1198,7 @@ export function classifyStatus(status: number, headers?: Headers | null): Error 
     );
   }
   if (status === 403) return new FatalTransportError(`LaunchDarkly returned HTTP 403. ${FORBIDDEN_ADVICE}`);
+  if (status >= 300 && status < 400 && status !== 304) return redirectRefused(`HTTP ${status}`);
   if (status === 404) {
     return new FatalTransportError(
       'LaunchDarkly returned HTTP 404 for the FDv2 endpoint. Check the base URI, and that this instance serves ' +
@@ -1108,6 +1209,14 @@ export function classifyStatus(status: number, headers?: Headers | null): Error 
   // be one the server no longer accepts. Recoverable so the selector can be
   // dropped and a full transfer requested; fatal once that has been tried.
   if (status === 400) return new StaleRequestStateError(`LaunchDarkly returned HTTP 400. ${REQUEST_ADVICE}`);
+
+  // View-scoped SDK keys can't carry skills payloads yet, so that is the most likely cause of a 422
+  if (status === 422) {
+    return new FatalTransportError(
+      'LaunchDarkly will not deliver Agent Skills on this connection (HTTP 422). The usual cause is a view-scoped ' +
+        'SDK key. Check your SDK key or contact LaunchDarkly support.',
+    );
+  }
   if ([405, 406, 414, 501].includes(status)) {
     return new FatalTransportError(
       `LaunchDarkly returned HTTP ${status}, which retrying will not fix. ${REQUEST_ADVICE}`,
@@ -1121,6 +1230,52 @@ export type PollResult = {
   readonly events: Array<[string, unknown]>;
   readonly etag: string | null;
 };
+
+/**
+ * Reads a whole poll body, holding no more than `limit` UTF-16 code units of it.
+ *
+ * Read in chunks rather than all at once so a body that is never going to be
+ * accepted is abandoned as soon as it crosses the bound, instead of being
+ * buffered whole by `response.text()` and measured after — which is no bound at
+ * all, because by then the allocation has already happened.
+ *
+ * Deliberately does not touch the caller's {@link ReadDeadline}. In `'poll'`
+ * mode that deadline bounds the whole request, body included; touching it per
+ * read would silently turn it into the per-read gap that `'stream'` mode wants
+ * and polling does not.
+ */
+async function readBoundedText(body: ReadableStream<Uint8Array>, limit: number): Promise<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+      if (text.length > limit) {
+        throw new RecoverableTransportError(
+          `polling response exceeded the ${limit} character transport bound ` +
+            `(at least ${text.length} received); nothing from it was applied`,
+        );
+      }
+    }
+    // Flushes a truncated multi-byte sequence at the very end of the body as
+    // U+FFFD rather than dropping it, so a cut-short body fails in `JSON.parse`
+    // as the malformed payload it is.
+    return text + decoder.decode();
+  } finally {
+    // Same contract as `iterSse`: cancelling closes the connection underneath,
+    // so a body abandoned at the bound does not leave a socket open behind the
+    // retry. Best effort — the stream may already be errored or closed.
+    reader.cancel().catch(() => {});
+    try {
+      reader.releaseLock();
+    } catch {
+      // Already released, or the stream errored. Nothing to recover.
+    }
+  }
+}
 
 /**
  * Unwraps `{"events": [...]}`.
@@ -1230,11 +1385,42 @@ function readFailure(cause: unknown, what: string, deadline: ReadDeadline | unde
 }
 
 /**
+ * The most the transport will hold in memory from one response, in UTF-16 code
+ * units: one whole poll body, or one streamed event — the unterminated tail of
+ * its current line plus its accumulated `data:` lines.
+ *
+ * A memory backstop, not a content limit. Verification caps each skill's content
+ * at 10 MiB (`MAX_SKILL_CONTENT_BYTES`) in `skills-core`, and content rides
+ * inline in the `put-object` envelope, so this bound has to sit *above* that one
+ * or a legitimate large skill becomes undeliverable: the decoder would reject
+ * it, the rejection is deterministic, and every retried connection would meet it
+ * again until the failure budget ran out and delivery gave up for the process
+ * lifetime. It is set far above any payload LaunchDarkly legitimately serves —
+ * the two bound different things and move independently.
+ *
+ * What it is really for is the unbounded case: a server or proxy that never sends
+ * a newline, one event whose data never ends, a poll body with no end in sight.
+ * Each of those would otherwise grow memory without limit. Crossing the bound is
+ * a recoverable transport failure, so the connection is dropped and retried and
+ * nothing from the payload in flight is committed, rather than the store giving
+ * up.
+ *
+ * The same number as Python's `MAX_RESPONSE_BYTES`, deliberately, so the two
+ * SDKs document one bound. The units are not identical and cannot be: Python
+ * counts bytes off the socket, this counts UTF-16 code units after decoding, so
+ * non-ASCII content is measured slightly differently either side. Acceptable in
+ * a backstop this far above real payloads; it would not be in a limit either SDK
+ * enforced as a contract.
+ */
+export const MAX_RESPONSE_CHARS = 64 * 1024 * 1024;
+
+/**
  * Decodes an SSE byte stream into `[event name, data]` pairs.
  *
  * Minimal on purpose — this consumes one LaunchDarkly endpoint, not the whole
  * spec: `event:`/`data:` fields, multi-line `data` joined with newlines, a blank
- * line dispatching, and `:` comments skipped.
+ * line dispatching, and `:` comments skipped. Bounded by
+ * {@link MAX_RESPONSE_CHARS} per event.
  *
  * Only the read itself is wrapped as recoverable (see {@link readFailure}).
  * Whatever the consumer's loop body throws while this generator is suspended at
@@ -1250,6 +1436,16 @@ export async function* iterSse(
   let buffer = '';
   let name: string | null = null;
   let dataLines: string[] = [];
+  let dataChars = 0;
+
+  // Two distinct quantities, deliberately not summed into one predicate. The
+  // data already accumulated for the current event is bounded on its own; the
+  // unterminated tail is bounded only once every complete line in the read has
+  // been consumed, at which point the tail is the current event's next line and
+  // adding the two is the honest measure of what one event holds. Summing them
+  // mid-split would measure whole finished events still waiting to be parsed.
+  const dataOverBound = (): boolean => dataChars > MAX_RESPONSE_CHARS;
+  const tailOverBound = (): boolean => buffer.length + dataChars > MAX_RESPONSE_CHARS;
 
   // Every block that ends clears the buffered fields, whether or not it turns
   // into an event: a block with no `event:` field is the default `message`
@@ -1260,6 +1456,7 @@ export async function* iterSse(
     const payload = dataLines.join('\n');
     name = null;
     dataLines = [];
+    dataChars = 0;
     if (eventName === null) return null;
     if (payload === '') return [eventName, null];
     try {
@@ -1295,9 +1492,22 @@ export async function* iterSse(
           let value2 = colon === -1 ? '' : line.slice(colon + 1);
           if (value2.startsWith(' ')) value2 = value2.slice(1);
           if (field === 'event') name = value2;
-          else if (field === 'data') dataLines.push(value2);
+          else if (field === 'data') {
+            dataLines.push(value2);
+            dataChars += value2.length + 1;
+            if (dataOverBound()) {
+              throw new RecoverableTransportError(
+                `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters of data for one event`,
+              );
+            }
+          }
         }
         newline = buffer.indexOf('\n');
+      }
+      if (tailOverBound()) {
+        throw new RecoverableTransportError(
+          `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters without completing an event`,
+        );
       }
     }
   } finally {
@@ -1345,16 +1555,22 @@ export class FetchRequester implements Requester {
   }
 
   /**
-   * The request URL: the path, plus `basis` once a payload has committed.
+   * The request URL: the path, the payload kind this store accepts, and `basis`
+   * once a payload has committed.
+   *
+   * `kinds` is on every request, including the first one, because it selects
+   * what the connection is served rather than describing what it already holds
+   * (see {@link FDV2_PAYLOAD_KIND}).
    *
    * Deliberately no `mv` (data model version). That parameter selects the *flag*
-   * data model and the connection rejects any value but the flag default; the
-   * agent-skill payload is generic, is served regardless of it, and has no model
-   * version of its own to ask for.
+   * data model; delivery overrides whatever a request asks for with the
+   * payload's own default for any non-flagging payload, so sending it would
+   * state a preference that is ignored.
    */
   private url(origin: string, path: string, basis: string | null): string {
-    if (!basis) return `${origin}${path}`;
-    return `${origin}${path}?${new URLSearchParams({ basis }).toString()}`;
+    const params = new URLSearchParams({ kinds: FDV2_PAYLOAD_KIND });
+    if (basis) params.set('basis', basis);
+    return `${origin}${path}?${params.toString()}`;
   }
 
   /**
@@ -1369,12 +1585,26 @@ export class FetchRequester implements Requester {
     // headers and body together.
     const deadline = readDeadline(signal, this.readTimeoutMs);
     try {
-      const response = await fetch(this.url(this.baseUri, POLL_PATH, basis), { headers, signal: deadline.signal });
+      // `redirect: 'manual'`: a 3xx comes back as itself and is refused below,
+      // rather than being followed with the SDK key attached.
+      const response = await fetch(this.url(this.baseUri, POLL_PATH, basis), {
+        headers,
+        signal: deadline.signal,
+        redirect: 'manual',
+      });
+      // A 304 is a current answer, not a redirect; it is settled before either
+      // check below can see it.
       if (response.status === 304) return { notModified: true, events: [], etag };
+      const redirect = refusedRedirect(response);
+      if (redirect) throw redirect;
       if (!response.ok) throw classifyStatus(response.status, response.headers);
+      // A 200 with no body at all is not a payload; `decodePollBody` rejects the
+      // empty string as the malformed response it is, under the same recoverable
+      // error as any other unusable body.
+      const body = response.body === null ? '' : await readBoundedText(response.body, MAX_RESPONSE_CHARS);
       return {
         notModified: false,
-        events: decodePollBody(await response.text()),
+        events: decodePollBody(body),
         etag: response.headers.get('ETag') ?? etag,
       };
     } catch (cause) {
@@ -1398,12 +1628,21 @@ export class FetchRequester implements Requester {
     const deadline = readDeadline(signal, this.readTimeoutMs);
     let response: Response;
     try {
-      response = await fetch(this.url(this.streamUri, STREAM_PATH, basis), { headers, signal: deadline.signal });
+      response = await fetch(this.url(this.streamUri, STREAM_PATH, basis), {
+        headers,
+        signal: deadline.signal,
+        redirect: 'manual',
+      });
     } catch (cause) {
       deadline.clear();
       throw readFailure(cause, 'streaming request', deadline);
     }
 
+    const redirect = refusedRedirect(response);
+    if (redirect) {
+      deadline.clear();
+      throw redirect;
+    }
     if (!response.ok) {
       deadline.clear();
       throw classifyStatus(response.status, response.headers);
@@ -1469,12 +1708,20 @@ export type FDv2SkillStoreOptions = {
    * Origin for `GET /sdk/poll`. Default {@link DEFAULT_BASE_URI}. When given
    * without `streamUri`, it is used for streaming too, which is what a relay or
    * private instance serving both endpoints from one host needs.
+   *
+   * Must be `https://`; the constructor throws otherwise, because every request
+   * carries the server-side SDK key in `Authorization`. Plain `http://` is
+   * accepted only for a loopback host (`localhost`, `127.0.0.1`, `::1`) serving
+   * a local test double. Redirects from it are never followed.
    */
   readonly baseUri?: string;
   /**
    * Origin for `GET /sdk/stream`. Default {@link DEFAULT_STREAM_URI}, or
    * `baseUri` when that is given, since LaunchDarkly serves streaming from a
    * separate host but a relay or private instance usually does not.
+   *
+   * Held to the same rule as `baseUri`: `https://`, or plain `http://` to a
+   * loopback host only, and redirects from it are never followed.
    */
   readonly streamUri?: string;
   readonly pollIntervalMs?: number;
@@ -1529,6 +1776,12 @@ export type FDv2SkillStoreOptions = {
  * **Server-side only.** Skills are for server-side agent runtimes and skill
  * content is customer-confidential. A mobile key or a client-side environment ID
  * throws from the constructor.
+ *
+ * **The SDK key goes only where it was pointed.** `baseUri` and `streamUri` must
+ * each be `https://` — plain `http://` is refused except to a loopback host, for
+ * local test doubles — and redirects are never followed, so a 3xx from a proxy
+ * or a private instance is a fatal failure rather than a request carrying the
+ * key to whatever host `Location` named.
  *
  * **Delivery is in the background; retrieval is not.** A background task owns
  * the connection and fills memory, and `getObject` only ever reads what has
@@ -1610,10 +1863,13 @@ export class FDv2SkillStore implements SkillStore {
     this.initialBackoffMs = options.initialBackoffMs ?? 1_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
     this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? 10;
-    const baseUri = options.baseUri ?? DEFAULT_BASE_URI;
+    const baseUri = requireHttpsUri(options.baseUri ?? DEFAULT_BASE_URI);
     // A custom `baseUri` alone means one host serves both endpoints; only the
     // LaunchDarkly defaults split them.
-    const streamUri = options.streamUri ?? (options.baseUri === undefined ? DEFAULT_STREAM_URI : baseUri);
+    const streamUri = requireHttpsUri(
+      options.streamUri ?? (options.baseUri === undefined ? DEFAULT_STREAM_URI : baseUri),
+      'streamUri',
+    );
     this.requester = options.requester ?? new FetchRequester(key, baseUri, readTimeoutMs, streamUri);
   }
 
@@ -1784,10 +2040,10 @@ export class FDv2SkillStore implements SkillStore {
    * swallowed, because a broken listener must not be able to kill delivery.
    *
    * Throws for any `kind` but `'skill'`. This store notifies skill changes and
-   * nothing else — flag and segment objects on the same connection are skipped,
-   * never dispatched — so accepting a listener on another kind would hand back a
-   * watcher that silently never fires, which is indistinguishable from one whose
-   * objects never changed.
+   * nothing else — anything else on the connection is skipped, never dispatched
+   * — so accepting a listener on another kind would hand back a watcher that
+   * silently never fires, which is indistinguishable from one whose objects
+   * never changed.
    */
   addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void {
     if (kind !== SKILL_OBJECT_KIND) {

@@ -39,6 +39,7 @@ vi.mock('node:fs/promises', async () => {
 const {
   atomicWrite,
   directoryAddress,
+  isDescriptorAddressed,
   openDirectoryNoFollow,
   openOrCreateDirectory,
   SUPPORTS_PROC_FD,
@@ -206,11 +207,11 @@ describe('pinned-directory identity re-check', () => {
       await swapForSymlink(dir, outside);
 
       await expect(atomicWrite(dir, 'SKILL.md', Buffer.from('body\n', 'utf-8'), handle)).rejects.toThrow(/replaced/i);
-      // The temp file *is* created through the swapped link before the check fires
-      // (only the final component gets O_NOFOLLOW), so this proves the rename is
-      // refused and the temp cleaned up — not that the outside directory was never
-      // touched at all.
+      // The identity is re-checked *before* the temp file is opened as well as
+      // before the rename, so nothing — not even a temp file — is written
+      // through the swapped link. The outside directory was never touched.
       expect(await readdir(outside)).toEqual([]);
+      expect(tempOpens()).toEqual([]);
     } finally {
       await handle.close();
     }
@@ -327,6 +328,63 @@ describe.skipIf(!SUPPORTS_PROC_FD)('descriptor addressing on the /proc/self/fd f
     } finally {
       await handle.close();
     }
+  });
+});
+
+describe('isDescriptorAddressed', () => {
+  // Pure string logic, ungated: it decides whether the identity re-check is
+  // skipped, so a lookalike must never be mistaken for the descriptor address.
+  it('accepts exactly the address built for this handle, and nothing else on procfs', async () => {
+    const handle = await openDirectoryNoFollow(scratch);
+    try {
+      expect(isDescriptorAddressed(`/proc/self/fd/${handle.fd}`, handle)).toBe(true);
+      expect(isDescriptorAddressed(scratch, handle)).toBe(false);
+      expect(isDescriptorAddressed('/tmp/proc/self/fd/3', handle)).toBe(false);
+      for (const shape of [
+        '/proc/self/fd',
+        '/proc/self/fd/',
+        `/proc/self/fd/${handle.fd}/`,
+        `/proc/self/fd/${handle.fd}/child`,
+        `/proc/self/fd/${handle.fd + 1}`,
+        '/proc/self/fd/../../etc',
+      ]) {
+        expect(() => isDescriptorAddressed(shape, handle), shape).toThrow(/descriptor/i);
+      }
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+describe('single path component names', () => {
+  // `name` is the one argument that becomes part of a path this module writes
+  // or unlinks; a caller passing `../x` would be addressing outside the pinned
+  // directory. The check is structural rather than trusting every caller.
+  const badNames = ['', '.', '..', 'a/b', '../SKILL.md', 'SKILL.md/', '/SKILL.md'];
+
+  it.each(badNames)('atomicWrite refuses name %j', async (name) => {
+    const dir = path.join(scratch, 'skill');
+    await mkdir(dir);
+    const handle = await openDirectoryNoFollow(dir);
+    try {
+      await expect(atomicWrite(dir, name, Buffer.from('body\n'), handle)).rejects.toThrow(/single path component/);
+    } finally {
+      await handle.close();
+    }
+    expect(tempOpens()).toEqual([]);
+  });
+
+  it.each(badNames)('unlinkNoFollow refuses name %j', async (name) => {
+    const dir = path.join(scratch, 'skill');
+    await mkdir(dir);
+    await writeFile(path.join(dir, 'SKILL.md'), 'body\n', 'utf-8');
+    const handle = await openDirectoryNoFollow(dir);
+    try {
+      await expect(unlinkNoFollow(dir, name, handle)).rejects.toThrow(/single path component/);
+    } finally {
+      await handle.close();
+    }
+    expect(await readdir(dir)).toEqual(['SKILL.md']);
   });
 });
 
