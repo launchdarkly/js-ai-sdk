@@ -73,23 +73,39 @@ const SIGNAL_REVOKED = 'AgentControl Skill Revoked Received';
 const EVENT_INTEGRITY_FAILURE = 'ld.skills.integrity_failure';
 
 /**
- * Why a skill was withheld: a closed vocabulary with exactly one token per call
- * site of `recordIntegrityFailure`.
+ * Why a skill was withheld: a closed vocabulary of ten tokens.
  *
  * Customers alert on these tokens, and every language implementation emits the
- * same eight for the same conditions, so a polyglot fleet writes one detection
- * rule rather than two. A ninth token is a cross-SDK change — add it everywhere,
- * or not at all.
+ * same ten for the same conditions, so a polyglot fleet writes one detection
+ * rule rather than two. An eleventh token is a cross-SDK change — add it
+ * everywhere, or not at all.
+ *
+ * Eight of the ten are one per call site of `recordIntegrityFailure`, decided
+ * inside `verifyRawSkill` over a single object, and they fire **both** detection
+ * surfaces. `key_mismatch` and `version_mismatch` are the exceptions on both
+ * counts: they come from `recordKeyMismatch` and `recordVersionMismatch` at the
+ * retrieval boundary, after verification has already passed, and they fire the
+ * log record only. They share this vocabulary anyway because a customer's
+ * detection rule cares that integrity failed, not about which layer noticed —
+ * see `recordKeyMismatch` for why the signal stays out of both.
+ *
+ * This is a **finer** vocabulary than `SkillOutcomeReason`, which stays five
+ * tokens, and the version mismatch is the one condition with a token in each:
+ * `version_mismatch` is the code that says which check failed, `wrong_version`
+ * the outcome that says what the caller got. The spellings differ deliberately —
+ * see `recordVersionMismatch`.
  */
 export type IntegrityReasonCode =
   | 'hash_mismatch'
   | 'invalid_key'
   | 'invalid_version'
+  | 'key_mismatch'
   | 'missing_content'
   | 'missing_content_hash'
   | 'not_an_object'
   | 'not_utf8'
-  | 'over_size_cap';
+  | 'over_size_cap'
+  | 'version_mismatch';
 
 /** What the accessors report when no store is configured. */
 export const NO_STORE_MESSAGE =
@@ -180,6 +196,38 @@ export function requireStore(): SkillStore {
 }
 
 /**
+ * Whether `store` has received its initial data.
+ *
+ * `true` for a store that does not implement the optional `isInitialized`,
+ * since a hand-populated store is never waiting for anything. Probed rather
+ * than required on the seam for the reason `SkillStore` gives: a required
+ * member would reject every store without it.
+ *
+ * This is what keeps `writeSkills('*')` from reading a store that has not yet
+ * received a payload as an environment whose every skill was revoked. Retrieval
+ * through such a store is reported unavailable, which suppresses pruning — the
+ * same treatment a throwing store gets, and for the same reason: deleting a
+ * customer's files because content could not be retrieved would turn a slow
+ * boot into data loss.
+ *
+ * A probe that throws counts as not initialized. A store that cannot answer
+ * whether it is ready is not one to authorize deletions on.
+ */
+export function storeIsInitialized(store: SkillStore): boolean {
+  const probe = (store as { isInitialized?: unknown }).isInitialized;
+  if (typeof probe !== 'function') return true;
+  try {
+    return Boolean(probe.call(store));
+  } catch (error) {
+    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a failing store must be visible
+    console.warn(
+      `[LaunchDarkly] The skill store's isInitialized() threw; treating the store as not yet initialized: ${storeThrew(error)}`,
+    );
+    return false;
+  }
+}
+
+/**
  * Records one signal. Never throws into the calling operation — a broken emitter
  * must not be able to fail a retrieval or a reconcile.
  */
@@ -262,6 +310,158 @@ export function recordIntegrityFailure(
   // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; integrity failures must be visible
   console.error(`[LaunchDarkly] ${EVENT_INTEGRITY_FAILURE} ${JSON.stringify(record)}`, record);
   emit(SIGNAL_INTEGRITY_FAILURE, properties);
+}
+
+/**
+ * Records a store answering under a key other than the one requested.
+ *
+ * **Log record only — no product signal.** One of the two integrity failures
+ * that fire one surface rather than both — `recordVersionMismatch` is the
+ * other, for the same reasons — and the asymmetry is the decision rather than
+ * an oversight.
+ *
+ * The record fires because a substituting store is a genuine tampering
+ * indicator, and the record is the customer-owned detection path — the only one
+ * that works when telemetry is opt-out or the instance has no telemetry
+ * destination at all. It reuses `EVENT_INTEGRITY_FAILURE` deliberately: that
+ * string is a documented compatibility surface a customer's SIEM matches on, so
+ * reusing it means an existing rule catches this case without being rewritten,
+ * with `reason_code` distinguishing it.
+ *
+ * The signal stays out because the overwhelmingly common cause of a key mismatch
+ * is not an attacker but a **broken store adapter** — a stale cache entry, a
+ * colliding key, a wrong index lookup. Counting those as integrity failures in
+ * LaunchDarkly's own product counter is the same false positive
+ * `resolveFromStore` already refuses when a pinned `getObject` answers with a
+ * non-object: it reads that as `absent` rather than inventing a tampering
+ * signal from a merely broken adapter.
+ *
+ * Lives here, beside `recordIntegrityFailure`, so the single-emission-site rule
+ * still holds by reading one module.
+ *
+ * Both keys are shape-checked and redacted on the same rule as every other key
+ * that reaches a surface. `served` cannot actually be hostile on the path that
+ * calls this — `verifyRawSkill` accepted it first — but that is a property of
+ * the current call order rather than of this function, and the check is what
+ * stops a future reordering from publishing a body here.
+ */
+export function recordKeyMismatch(requested: unknown, served: unknown): void {
+  const record: Record<string, unknown> = {
+    action: 'withheld',
+    event: EVENT_INTEGRITY_FAILURE,
+    language: LANGUAGE,
+    // Named apart from the eight so a reader of the line can tell the retrieval
+    // boundary from a verification failure without consulting the spec.
+    reason: 'the skill store answered under a different key than the one requested',
+    reason_code: 'key_mismatch' satisfies IntegrityReasonCode,
+    // The key the store answered under: the one datum that makes a broken
+    // adapter diagnosable, so it is a parseable field rather than prose buried
+    // in `reason`. Record-only, and never added to the signal's allowlist.
+    served_key: isValidSkillKey(served) ? served : '<invalid-key>',
+    // `skill_key` keeps the meaning it has on every other record — the key the
+    // *caller asked for* — so a rule that groups by it keeps working.
+    skill_key: isValidSkillKey(requested) ? requested : '<invalid-key>',
+  };
+  // No `expected_hash` or `observed_hash`: verification passed, so there is no
+  // hash disagreement to report, and an absent field stays absent rather than
+  // being emitted as null. No `version` either — the object's version verified
+  // fine and is not what disqualified the answer.
+  //
+  // Keys above are in alphabetical order, as in `recordIntegrityFailure`, so the
+  // emitted line is byte-identical across SDKs for the same input. Do not
+  // reorder.
+  //
+  // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; integrity failures must be visible
+  console.error(`[LaunchDarkly] ${EVENT_INTEGRITY_FAILURE} ${JSON.stringify(record)}`, record);
+}
+
+/**
+ * Records a store answering a version pin with a different version.
+ *
+ * **Log record only — no product signal**, the same split `recordKeyMismatch`
+ * makes and for the same reason: both are decided at the retrieval boundary
+ * after verification has passed, both name a store that answered *something
+ * other than what was asked for*, and the overwhelmingly common cause of either
+ * is a **broken custom store adapter** rather than an attacker. LaunchDarkly's
+ * own counter must not fill up with customers' adapter bugs. The two stay in
+ * step: a change that gives one of them a signal has to justify it for both.
+ *
+ * The record fires even though neither shipped store can reach this path.
+ * `FDv2SkillStore` and `InMemorySkillStore` both answer a pin with exactly that
+ * version or with `null`, so a pin that misses reads as `absent`; getting here
+ * means the store was asked for version N and answered with a well-formed object
+ * at version M. The population that does that is the one `key_mismatch` got its
+ * record for, and the record is the customer-owned detection path — the only one
+ * that works with telemetry off.
+ *
+ * It is **not** made redundant by `wrong_version` being a public
+ * `SkillOutcomeReason`. That token only reaches a caller who used
+ * `getSkillResult`; `getSkill` is the documented default and collapses
+ * `wrong_version` to `null` exactly as it collapses `integrity_failure`, so
+ * without this record an operator on `getSkill` has *zero* visibility into a
+ * store answering pins with the wrong version.
+ *
+ * The `reason_code` is `version_mismatch`, deliberately not `wrong_version`.
+ * It keeps the `*_mismatch` family consistent — `hash_mismatch`, `key_mismatch`,
+ * `version_mismatch` all say "this check found two values that disagree" — and
+ * it keeps one string out of two closed vocabularies with two meanings, so a
+ * detection rule matching `wrong_version` cannot be ambiguous about which
+ * surface it was written against. Widening `SkillOutcomeReason` is not part of
+ * this: the public outcome vocabulary stays five tokens, and only the detection
+ * surface changed.
+ *
+ * Lives here, beside `recordKeyMismatch`, so the single-emission-site rule still
+ * holds by reading one module.
+ *
+ * The key and `served` are shape-checked and redacted on the same rule as every
+ * other value that reaches a surface; `requested` is not, and the asymmetry is
+ * deliberate. `served` cannot actually be hostile on the path that calls this —
+ * `verifyRawSkill`'s `invalid_version` check accepted it first — but that is a
+ * property of the current call order rather than of this function, exactly as it
+ * is for `recordKeyMismatch`'s `served_key`. The check is also what keeps the
+ * field an **integer**, which the sorted-key JSON needs to stay byte-comparable
+ * across SDKs: `3` and `"3"` are not the same line. `requested` is the caller's
+ * own pin rather than a store-controlled value, so it cannot carry skill content,
+ * and coercing a mistyped one would hide the caller's own mistake from their log.
+ */
+export function recordVersionMismatch(key: unknown, requested: number, served: unknown): void {
+  const record: Record<string, unknown> = {
+    action: 'withheld',
+    event: EVENT_INTEGRITY_FAILURE,
+    language: LANGUAGE,
+    // Named apart from the eight, as the key mismatch is, so a reader of the
+    // line can tell the retrieval boundary from a verification failure.
+    reason: 'the skill store answered with a different version than the one requested',
+    reason_code: 'version_mismatch' satisfies IntegrityReasonCode,
+    // The version the store answered with: record-only, paralleling
+    // `served_key`, and never added to the signal's allowlist. Burying it in the
+    // prose `reason` would leave the one datum that makes a broken adapter
+    // diagnosable unparseable. Shape-checked for the reason the doc comment
+    // gives — and the Python SDK emits the same placeholder for the same input.
+    served_version: isValidSkillVersion(served) ? served : '<invalid-version>',
+    // `skill_key` keeps the meaning it has on every other record — the key the
+    // *caller asked for*. Here it is not what disagreed, but the record still
+    // has to name the skill it is about.
+    skill_key: isValidSkillKey(key) ? key : '<invalid-key>',
+    // `version` likewise keeps its meaning everywhere else: the version
+    // **requested**, so a rule that groups or filters on it keeps working. That
+    // this record carries `version` while `recordKeyMismatch`'s does not is
+    // deliberate — there identity is what disagreed and any pin was incidental;
+    // here the two versions *are* the disagreement, so a record naming only one
+    // of them would be undiagnosable.
+    version: requested,
+  };
+  // No `expected_hash` or `observed_hash`: verification passed, so the hashes
+  // are not what disqualified the answer and an absent field stays absent
+  // rather than being emitted as null.
+  //
+  // Keys above are in alphabetical order, as in `recordIntegrityFailure`, so the
+  // emitted line is byte-identical across SDKs for the same input. Note that
+  // `served_key` and `served_version` sort adjacently, so a reader who knows one
+  // record's shape can predict the other's. Do not reorder.
+  //
+  // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; integrity failures must be visible
+  console.error(`[LaunchDarkly] ${EVENT_INTEGRITY_FAILURE} ${JSON.stringify(record)}`, record);
 }
 
 /**
@@ -641,15 +841,32 @@ export function resolveFromStore(store: SkillStore, key: string, wantedVersion: 
     // is not `wrong_version` either — that token names a version mismatch
     // specifically, and there is deliberately no `wrong_key` to parallel it.
     //
-    // This path reports the outcome reason only: `verifyRawSkill` has already
-    // passed, so no integrity signal is recorded and no `ld.skills.integrity_failure`
-    // record is logged. That asymmetry is deliberate and pinned by a test.
+    // Records the log surface but not the product signal. `verifyRawSkill` has
+    // already passed, so this is not a verification failure and does not go
+    // through `recordIntegrityFailure`; see `recordKeyMismatch` for why the two
+    // surfaces part company here. The asymmetry is pinned by a test in both
+    // directions, because an implementation that emitted the signal too would
+    // look correct from every other angle.
+    recordKeyMismatch(key, skill.key);
     return {
       error: `skill '${key}' is not available: the store answered under key '${skill.key}'`,
       reason: 'integrity_failure',
     };
   }
   if (wantedVersion !== null && skill.version !== wantedVersion) {
+    // Records the log surface but not the product signal, the same split the key
+    // mismatch above makes and for the same reason — see
+    // `recordVersionMismatch`. The asymmetry is pinned by a test in both
+    // directions, because an implementation that emitted the signal too would
+    // look correct from every other angle.
+    //
+    // Recorded even though neither shipped store can get here: reaching this
+    // branch means the store answered a pin with a well-formed object at another
+    // version, which is a broken custom adapter. `wrong_version` being a public
+    // outcome token is not a substitute — `getSkill` collapses it to `null`
+    // exactly as it collapses `integrity_failure`, so the record is the only
+    // visibility an operator on the default accessor has.
+    recordVersionMismatch(key, wantedVersion, skill.version);
     return {
       error: `skill '${key}' version ${wantedVersion} is not available (the store holds version ${skill.version})`,
       reason: 'wrong_version',
