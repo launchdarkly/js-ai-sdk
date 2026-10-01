@@ -211,34 +211,48 @@ async function initBaseClient(options: InitBaseClientOptions = {}): Promise<LDCl
     throw new Error('LD_SDK_KEY is not set');
   }
 
-  await setupTelemetry(options, sdkKey);
-
-  // biome-ignore lint/suspicious/noExplicitAny: @launchdarkly/node-server-sdk loaded via dynamic import
-  let init: any;
+  // A failed attempt must leave nothing behind: initClient drops its rejected
+  // promise so the next call can retry, and a retry that found this attempt's
+  // provider still registered would be refused by that leftover — stranding a
+  // second provider exactly as a repeat BYOC call used to.
+  let client: LDClientInterface | undefined;
   try {
-    ({ init } = await import('@launchdarkly/node-server-sdk'));
-  } catch {
-    throw new Error(
-      '[LaunchDarkly] @launchdarkly/node-server-sdk is not installed. ' +
-        'Either install it (npm install @launchdarkly/node-server-sdk) or pass a ' +
-        'pre-initialized LD client to initClient().',
-    );
+    await setupTelemetry(options, sdkKey);
+
+    // biome-ignore lint/suspicious/noExplicitAny: @launchdarkly/node-server-sdk loaded via dynamic import
+    let init: any;
+    try {
+      ({ init } = await import('@launchdarkly/node-server-sdk'));
+    } catch {
+      throw new Error(
+        '[LaunchDarkly] @launchdarkly/node-server-sdk is not installed. ' +
+          'Either install it (npm install @launchdarkly/node-server-sdk) or pass a ' +
+          'pre-initialized LD client to initClient().',
+      );
+    }
+
+    const baseUri = options.baseUri ?? env('LD_BASE_URI');
+    const streamUri = options.streamUri ?? env('LD_STREAM_URI');
+    const eventsUri = options.eventsUri ?? env('LD_EVENTS_URI');
+    client = init(sdkKey, {
+      ...(baseUri !== undefined && { baseUri }),
+      ...(streamUri !== undefined && { streamUri }),
+      ...(eventsUri !== undefined && { eventsUri }),
+    }) as LDClientInterface;
+
+    // biome-ignore lint/suspicious/noExplicitAny: waitForInitialization is a concrete SDK method not in LDClientInterface
+    await (client as any).waitForInitialization({ timeout: 10 });
+    await waitForTelemetry();
+
+    return client;
+  } catch (err) {
+    // Teardown failures are swallowed so the error that caused the failed init
+    // is the one the caller sees. The client is ours to close — it holds a
+    // streaming connection that would otherwise outlive the attempt.
+    await client?.close().catch(() => undefined);
+    await shutdownTelemetry().catch(() => undefined);
+    throw err;
   }
-
-  const baseUri = options.baseUri ?? env('LD_BASE_URI');
-  const streamUri = options.streamUri ?? env('LD_STREAM_URI');
-  const eventsUri = options.eventsUri ?? env('LD_EVENTS_URI');
-  const client: LDClientInterface = init(sdkKey, {
-    ...(baseUri !== undefined && { baseUri }),
-    ...(streamUri !== undefined && { streamUri }),
-    ...(eventsUri !== undefined && { eventsUri }),
-  });
-
-  // biome-ignore lint/suspicious/noExplicitAny: waitForInitialization is a concrete SDK method not in LDClientInterface
-  await (client as any).waitForInitialization({ timeout: 10 });
-  await waitForTelemetry();
-
-  return client;
 }
 
 /**
@@ -320,7 +334,16 @@ export async function initClient(
   }
 
   if (!singleton.initPromise) {
-    singleton.initPromise = initBaseClient(optionsOrClient);
+    // Drop a failed attempt instead of replaying its rejection to every later
+    // caller. Caching it meant one transient waitForInitialization timeout, or a
+    // health check that ran before LD_SDK_KEY was set, bricked this path for the
+    // life of the process — the next call's own options never even read.
+    // Identity-checked so a slow failure can never clear a newer attempt.
+    const attempt: Promise<LDClientInterface> = initBaseClient(optionsOrClient).catch((err) => {
+      if (singleton.initPromise === attempt) singleton.initPromise = null;
+      throw err;
+    });
+    singleton.initPromise = attempt;
   }
   singleton.client = await singleton.initPromise;
   return singleton.client;
@@ -339,6 +362,9 @@ export async function shutdown(): Promise<void> {
   // path, or a direct injection), so gating it on the client would leave a
   // configured store alive across a shutdown.
   _clearState();
+  // Gating telemetry teardown on the client is sound only because a failed init
+  // tears its own telemetry down: no client means either nothing was set up, or
+  // an init is in flight whose provider must not be pulled out from under it.
   if (!singleton.client) return;
   // Null the singleton before teardown so that any failure mid-flight still
   // leaves the process in a state where a second shutdown() call is a no-op.

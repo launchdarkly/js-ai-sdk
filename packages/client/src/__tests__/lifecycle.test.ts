@@ -336,6 +336,47 @@ describe('lifecycle', () => {
       await initClient();
       expect(mockLdInit).toHaveBeenCalledOnce();
     });
+
+    it('retries with the next call’s own options after a failed init', async () => {
+      // A health check before LD_SDK_KEY is set fails the lazy init. That
+      // rejection used to be cached, so the explicit key below was never read
+      // and initClient kept throwing "LD_SDK_KEY is not set".
+      mockLdInit.mockReturnValue(makeMockClient());
+      const { initClient, inspectConfig } = await import('../lifecycle.js');
+      await inspectConfig('flag', { kind: 'user', key: 'u' });
+
+      await expect(initClient({ sdkKey: 'now-provided' })).resolves.toBeDefined();
+      expect(mockLdInit).toHaveBeenCalledWith('now-provided', expect.anything());
+    });
+
+    it('recovers from a transient init failure, tearing down what the failed attempt built', async () => {
+      const failing = {
+        ...makeMockClient(),
+        waitForInitialization: vi.fn().mockRejectedValue(new Error('timeout')),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      const healthy = makeMockClient();
+      mockLdInit.mockReturnValueOnce(failing).mockReturnValue(healthy);
+      process.env.LD_SDK_KEY = 'test-key';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const { initClient } = await import('../lifecycle.js');
+      await expect(initClient()).rejects.toThrow('timeout');
+
+      // Nothing left behind: the client's connection is closed and the
+      // provider is shut down with its globals released...
+      expect(failing.close).toHaveBeenCalledOnce();
+      expect(mockTracerProviderShutdown).toHaveBeenCalledOnce();
+      expect(otel.delegate).toBeNull();
+
+      // ...so the retry really re-attempts, and its provider owns the globals
+      // rather than being refused by the failed attempt's leftover.
+      await expect(initClient()).resolves.toBe(healthy);
+      expect(mockLdInit).toHaveBeenCalledTimes(2);
+      expect(otel.delegate).not.toBeNull();
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('already registered'));
+      warnSpy.mockRestore();
+    });
   });
 
   describe('shutdown', () => {
