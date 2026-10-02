@@ -1013,7 +1013,7 @@ export type PollResult = {
 
 /**
  * Reads a whole poll body in chunks, abandoning it as soon as it exceeds `limit`
- * UTF-16 code units.
+ * UTF-16 code units (fatal; see {@link MAX_RESPONSE_CHARS}).
  *
  * Does not touch the {@link ReadDeadline}, so in `'poll'` mode the timeout
  * bounds the whole request.
@@ -1028,9 +1028,9 @@ async function readBoundedText(body: ReadableStream<Uint8Array>, limit: number):
       if (done) break;
       text += decoder.decode(value, { stream: true });
       if (text.length > limit) {
-        throw new RecoverableTransportError(
+        throw new FatalTransportError(
           `polling response exceeded the ${limit} character transport bound ` +
-            `(at least ${text.length} received); nothing from it was applied`,
+            `(at least ${text.length} received); nothing from it was applied. ${OVERSIZED_ADVICE}`,
         );
       }
     }
@@ -1147,17 +1147,24 @@ function readFailure(cause: unknown, what: string, deadline: ReadDeadline | unde
  * event, in UTF-16 code units.
  *
  * A memory backstop set far above any real payload, separate from the per-skill
- * content limit verification enforces. Crossing it is a recoverable failure:
- * nothing is applied, the store keeps its current content, and delivery retries.
+ * content limit verification enforces. Crossing it is fatal, like a 422: nothing
+ * is applied and the store keeps its current content, but delivery stops. The
+ * payload's size belongs to the environment, not the connection, so a retry
+ * would download up to this much again on every backoff step and be refused the
+ * same way.
  */
 export const MAX_RESPONSE_CHARS = 64 * 1024 * 1024;
+
+const OVERSIZED_ADVICE =
+  'The payload is larger than this SDK will hold in memory, and a retry would be refused the same way. Contact ' +
+  'LaunchDarkly support.';
 
 /**
  * Decodes an SSE byte stream into `[event name, data]` pairs.
  *
  * Minimal: `event:`/`data:` fields, multi-line `data` joined with newlines,
  * blank line dispatches, `:` comments skipped. An event over
- * {@link MAX_RESPONSE_CHARS} throws a recoverable error. Only read failures are
+ * {@link MAX_RESPONSE_CHARS} throws a fatal error. Only read failures are
  * wrapped; errors thrown by the consumer pass through unchanged.
  */
 export async function* iterSse(
@@ -1223,8 +1230,9 @@ export async function* iterSse(
             dataLines.push(value2);
             dataChars += value2.length + 1;
             if (dataOverBound()) {
-              throw new RecoverableTransportError(
-                `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters of data for one event`,
+              throw new FatalTransportError(
+                `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters of data for one event; ` +
+                  `nothing from it was applied. ${OVERSIZED_ADVICE}`,
               );
             }
           }
@@ -1232,8 +1240,9 @@ export async function* iterSse(
         newline = buffer.indexOf('\n');
       }
       if (tailOverBound()) {
-        throw new RecoverableTransportError(
-          `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters without completing an event`,
+        throw new FatalTransportError(
+          `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters without completing an event; ` +
+            `nothing from it was applied. ${OVERSIZED_ADVICE}`,
         );
       }
     }

@@ -97,6 +97,7 @@ The `3` after the delimiter is what a `{key, version}` reference pins; it become
 
 - `iterSse` wraps read failures (a reset, a truncated chunk, the read deadline) as `RecoverableTransportError`, since a live stream dies mid-body far more often than it refuses to open. The delivery loop treats anything else as a bug and stops for the process lifetime.
 - An error thrown by the consumer's loop body while the generator is suspended at a `yield` passes through unwrapped, so a bug still surfaces as one.
+- A poll body or streamed event over `MAX_RESPONSE_CHARS` is a `FatalTransportError`, not a read failure, and takes the give-up path like a 422 (`failed` and `lastError` set, `connectionFailures` untouched). The size belongs to the environment, so a retry would re-download up to 64 Mi characters on every backoff step, from every process, and never set `failed`.
 - Every retry delay is clamped to `maxBackoffMs` and floored at `initialBackoffMs`, so `Retry-After: 0` cannot cause a tight reconnect loop. A blank `Retry-After` means "no delay given", not zero (`Number("")` is `0`).
 
 **What resets the failure counter, and what escapes it.** The counter is reported as `connectionFailures`; it bounds nothing, and it no longer drives the backoff (see the next paragraph). Recoverable failures are retried for the life of the store, and there is no `maxConsecutiveFailures` option: a count bound would turn a short outage into a process that never sees another revocation. Only a fatal status stops delivery.

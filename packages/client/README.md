@@ -421,6 +421,8 @@ try {
 - **Not the empty case:** an environment with zero skills is served an empty payload that commits normally.
 - **Recovery:** `start()` does nothing on a store that has given up, so a process that booted while the cause was in effect picks up skills only after a restart.
 
+**A response over the transport's memory bound also stops delivery.** The store holds at most 64 Mi characters from one poll body or one streamed event, far above any real payload. Past that, nothing from the response is applied, and it is accounted like a 422: `failed` and `lastError` are set, `connectionFailures` does not move, and the store keeps serving what it already held. The payload's size belongs to the environment, not the connection, so a retry would download it again only to be refused the same way. Recovery is the same as for a 422: a store that has given up does not resume, so once the payload is back under the bound, restart the process or construct a new store.
+
 **Nothing above the store changes.** The accessors, integrity verification, and `writeSkills` see raw objects through the `SkillStore` interface and cannot tell which store produced them.
 
 **Server-side only.** Skills are for server-side agent runtimes and skill content is customer-confidential. A mobile key (`mob-…`) or a client-side environment ID throws from the constructor.

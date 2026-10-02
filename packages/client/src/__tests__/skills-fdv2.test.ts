@@ -1537,12 +1537,15 @@ describe('SSE framing', () => {
     return seen;
   };
 
-  it('bounds an unterminated line and fails recoverably rather than buffering it without limit', async () => {
+  it('bounds an unterminated line and fails fatally rather than buffering it without limit', async () => {
     // A server (or a proxy) that never sends a newline would otherwise grow the
-    // line buffer until the process ran out of memory. Recoverable, so the
-    // connection is dropped and retried rather than the store giving up.
+    // line buffer until the process ran out of memory. Fatal, like a 422: the
+    // payload's size belongs to the environment, so a retry would download it
+    // again on every backoff step and be refused the same way.
     const newlineless = 'x'.repeat(MAX_RESPONSE_CHARS + 1024);
-    await expect(drained(chunkedBody(newlineless, 1024 * 1024))).rejects.toBeInstanceOf(RecoverableTransportError);
+    const failure = drained(chunkedBody(newlineless, 1024 * 1024));
+    await expect(failure).rejects.toBeInstanceOf(FatalTransportError);
+    await expect(failure).rejects.not.toBeInstanceOf(RecoverableTransportError);
   });
 
   it('bounds the accumulated data lines of one event the same way', async () => {
@@ -1555,7 +1558,9 @@ describe('SSE framing', () => {
     const dataPerLine = line.length - 'data: '.length;
     const lines = Math.ceil(MAX_RESPONSE_CHARS / dataPerLine) + 1;
     const body = readsOf('event: put-object\n', ...Array.from({ length: lines }, () => line));
-    await expect(drained(body)).rejects.toThrow(/characters of data for one event/);
+    const failure = drained(body);
+    await expect(failure).rejects.toThrow(/characters of data for one event/);
+    await expect(failure).rejects.toBeInstanceOf(FatalTransportError);
   });
 
   it('accepts a read that delivered many finished events at once', async () => {
@@ -2526,6 +2531,89 @@ describe('failure handling', () => {
     expect(report.actions.some((action) => action.action === 'removed')).toBe(false);
     expect(existsSync(path.join(stale, 'SKILL.md'))).toBe(true);
     expect(await readFile(path.join(stale, 'SKILL.md'), 'utf8')).toBe('not ours to delete');
+  });
+
+  /**
+   * A response body that opens with `prefix` and then runs past the transport
+   * bound without a newline, in 4 MiB reads. Finite, a little past the bound,
+   * so an unbounded reader fails an assertion rather than the worker.
+   */
+  const oversizedBody = (prefix: string): ReadableStream<Uint8Array> => {
+    const encoder = new TextEncoder();
+    const filler = encoder.encode('x'.repeat(4 * 1024 * 1024));
+    let remaining = Math.ceil(MAX_RESPONSE_CHARS / filler.length) + 2;
+    let opened = false;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!opened) {
+          opened = true;
+          controller.enqueue(encoder.encode(prefix));
+        } else if (remaining > 0) {
+          remaining -= 1;
+          controller.enqueue(filler);
+        } else {
+          controller.close();
+        }
+      },
+    });
+  };
+
+  it('stops on a poll body over the memory bound, like a 422, after exactly one request (§3.25)', async () => {
+    // The payload's size belongs to the environment, not the connection, so
+    // the next request would be refused the same way: retried, it would
+    // re-download up to the bound on every backoff step, from every process.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response(oversizedBody('{"events": ['), { status: 200 }));
+    const store = new FDv2SkillStore(SDK_KEY, {
+      baseUri: 'https://sdk.example.com',
+      mode: 'poll',
+      pollIntervalMs: 20,
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+    });
+    openStores.push(store);
+    store.start();
+    expect(await store.waitForSkills(10_000)).toBe(false);
+    expect(store.failed).toMatch(/transport bound/);
+    expect(store.diagnostics.lastError).toMatch(/transport bound/);
+    // Accounted as a fatal: it never retries, so it is not a recoverable failure.
+    expect(store.diagnostics.connectionFailures).toBe(0);
+    expect(store.isInitialized()).toBe(false);
+    // A window that would hold several retries at this store's 5ms backoff.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(logged(warnSpy)).not.toMatch(/Skill delivery failed/);
+    expect(consoleErrors()).toMatch(/will not retry/);
+  });
+
+  it('stops on a streamed event over the memory bound and keeps serving what it held (§3.25)', async () => {
+    // One connection: a payload commits, then an event runs past the bound.
+    const committed = fullPayload([['put-object', putSkill()]])
+      .map((event) => `event: ${event.event}\ndata: ${JSON.stringify(event.data ?? null)}\n\n`)
+      .join('');
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(
+        async () => new Response(oversizedBody(`${committed}event: put-object\ndata: `), { status: 200 }),
+      );
+    const store = new FDv2SkillStore(SDK_KEY, {
+      baseUri: 'https://sdk.example.com',
+      mode: 'stream',
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+    });
+    openStores.push(store);
+    store.start();
+    expect(await store.waitForSkills(10_000)).toBe(true);
+    expect(await waitUntil(() => store.failed !== null, 10_000)).toBe(true);
+    expect(store.failed).toMatch(/characters/);
+    expect(store.diagnostics.lastError).toBe(store.failed);
+    expect(store.diagnostics.connectionFailures).toBe(0);
+    // Last known good is still served.
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it('makes backoff exponential and capped', () => {
@@ -3900,9 +3988,7 @@ describe('endpoints', () => {
     const { body, reads } = oversizedPollBody(chunk);
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }));
     const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1000);
-    await expect(requester.poll(null, null, new AbortController().signal)).rejects.toBeInstanceOf(
-      RecoverableTransportError,
-    );
+    await expect(requester.poll(null, null, new AbortController().signal)).rejects.toBeInstanceOf(FatalTransportError);
     expect(reads()).toBeLessThanOrEqual(MAX_RESPONSE_CHARS / chunk + 2);
   });
 
