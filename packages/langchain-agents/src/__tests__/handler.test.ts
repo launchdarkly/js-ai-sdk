@@ -1016,7 +1016,6 @@ describe('model source', () => {
     expect(MockChatOpenAI).toHaveBeenCalledWith({
       temperature: 0.2,
       max_tokens: 512,
-      tools: ['openai-tool'],
       model: 'gpt-4o',
     });
     expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: constructed }));

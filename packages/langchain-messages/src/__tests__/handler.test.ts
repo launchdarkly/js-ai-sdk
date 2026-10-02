@@ -1415,7 +1415,6 @@ describe('model source', () => {
     expect(ChatOpenAI).toHaveBeenCalledWith({
       temperature: 0.2,
       max_tokens: 512,
-      tools: ['openai-tool'],
       model: 'gpt-4o',
     });
   });

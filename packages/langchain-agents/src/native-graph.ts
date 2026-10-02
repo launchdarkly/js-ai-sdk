@@ -142,13 +142,19 @@ export const toLangGraph = (
     const toolHandlers = opts?.toolHandlers ?? {};
     const modelFactory =
       opts?.modelFactory ??
-      ((node) =>
-        new ChatOpenAI({
+      ((node) => {
+        const parameters = {
           ...(node.config.model.parameters && typeof node.config.model.parameters === 'object'
             ? node.config.model.parameters
             : {}),
+        };
+        // Tools are bound from the node config. A tools key here is forwarded raw and rejected.
+        delete parameters.tools;
+        return new ChatOpenAI({
+          ...parameters,
           model: node.config.model.name,
-        }));
+        });
+      });
     const ldContext = opts?.context;
 
     return trace.getTracer('@launchdarkly/ai-langchain-agents').startActiveSpan('launchdarkly.graph', async (span) => {
