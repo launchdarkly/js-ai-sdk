@@ -263,7 +263,8 @@ function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record
   const parameters = {
     ...(config.model?.parameters && typeof config.model.parameters === 'object' ? config.model.parameters : {}),
   };
-  if ((config.provider?.name ?? '').toLowerCase() === 'bedrock') delete parameters.tools;
+  // Tools are bound from config.tools. A tools key here is forwarded raw and rejected.
+  delete parameters.tools;
   return { ...parameters, model: resolvedModelName(config, fallbackName) };
 }
 

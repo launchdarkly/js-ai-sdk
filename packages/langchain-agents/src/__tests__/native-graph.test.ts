@@ -180,7 +180,11 @@ describe('toLangGraph', () => {
 
   it('spreads model.parameters into the default ChatOpenAI constructor', async () => {
     const root = makeNode('root', '', []);
-    root.config.model.parameters = { temperature: 0.2, max_tokens: 512 };
+    root.config.model.parameters = {
+      temperature: 0.2,
+      max_tokens: 512,
+      tools: [{ name: 'openai-tool' }],
+    };
     const def = makeGraphDef([root], {}, 'root');
     MockChatOpenAI.mockClear();
     await toLangGraph(Promise.resolve(def)).invoke('hi');

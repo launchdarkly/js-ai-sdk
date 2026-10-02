@@ -173,7 +173,8 @@ function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record
   const parameters = {
     ...(config.model?.parameters && typeof config.model.parameters === 'object' ? config.model.parameters : {}),
   };
-  if ((config.provider?.name ?? '').toLowerCase() === 'bedrock') delete parameters.tools;
+  // Tools are bound from config.tools. A tools key here is forwarded raw and rejected.
+  delete parameters.tools;
   // Name from the config always wins over a colliding `model` key in the parameter bag.
   return { ...parameters, model: resolvedModelName(config, fallbackName) };
 }
@@ -184,7 +185,7 @@ function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record
  * Otherwise, the provider and model name from the AI config are used to
  * instantiate the appropriate model via a dynamic import, so that neither
  * @langchain/openai, @langchain/anthropic, nor @langchain/aws is a hard
- * dependency. Parameters are passed through unchanged.
+ * dependency. Parameters are passed through, except `tools`, which is bound separately.
  */
 async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource): Promise<BaseChatModel> {
   const invocation = configForModelCall(config);
