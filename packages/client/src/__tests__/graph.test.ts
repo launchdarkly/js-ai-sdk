@@ -21,7 +21,7 @@ vi.mock('../lifecycle.js', () => ({
 }));
 
 vi.mock('../judges.js', () => ({
-  runJudges: vi.fn().mockResolvedValue({}),
+  runJudges: vi.fn().mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] }),
 }));
 
 import { ConversationIdSpanProcessor, GEN_AI_CONVERSATION_ID, withConversationId } from '../conversation.js';
@@ -420,7 +420,7 @@ describe('graph().invoke()', () => {
   it('includes graphJudge results when graphJudge is configured', async () => {
     const judgeData = { 'graph-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'ok', score: 0.8 } };
     const { runJudges } = await import('../judges.js');
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue(judgeData);
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: judgeData, judgeDiagnostics: [] });
     setupTwoNodeGraph();
     const handler = makeHandler();
     const result = await graph('graph-flag', { handlers: [handler], graphJudge: 'graph-judge' }).invoke(
@@ -532,7 +532,7 @@ describe('graph() conversation id', () => {
     (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack, variation: mockVariation });
     const { runJudges } = await import('../judges.js');
     (runJudges as ReturnType<typeof vi.fn>).mockReset();
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] });
   });
 
   it('stamps gen_ai.conversation.id on the launchdarkly.graph span', async () => {
@@ -682,7 +682,10 @@ describe('graph() conversation id', () => {
         // Judge handlers open spans off context.active(), same as provider handlers.
         const judgeSpan = tracer.startSpan(isGraphJudge ? 'judge_graph' : 'judge_node');
         judgeSpan.end();
-        return isGraphJudge ? { 'graph-judge': { score: 1 } } : {};
+        return {
+          judgeResults: isGraphJudge ? { 'graph-judge': { score: 1 } } : {},
+          judgeDiagnostics: [],
+        };
       },
     );
 
@@ -712,7 +715,7 @@ describe('graph().stream()', () => {
     (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack, variation: mockVariation });
     const { runJudges } = await import('../judges.js');
     (runJudges as ReturnType<typeof vi.fn>).mockReset();
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] });
   });
 
   it('returns an async generator', () => {
@@ -902,7 +905,7 @@ describe('graph().stream()', () => {
   it('includes graphJudge results on the final done event', async () => {
     const judgeData = { 'graph-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'ok', score: 0.8 } };
     const { runJudges } = await import('../judges.js');
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue(judgeData);
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: judgeData, judgeDiagnostics: [] });
     setupTwoNodeGraph();
     const handler = makeStreamingHandler(['final']);
     const events = await collectStream(
@@ -912,9 +915,50 @@ describe('graph().stream()', () => {
     expect(events.at(-1)).toMatchObject({ type: 'done', judgeResults: judgeData });
   });
 
+  it('forwards graphJudge diagnostics on the done event and from invoke()', async () => {
+    const judgeDiagnostics = [
+      { judgeKey: 'graph-judge', status: 'failed', stage: 'provider', code: 'judge_provider_failed' },
+    ];
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockImplementation(
+      async (args: { config?: { judgeConfiguration?: { judges?: { key: string }[] } } }) => ({
+        judgeResults: {},
+        judgeDiagnostics: args.config?.judgeConfiguration?.judges?.[0]?.key === 'graph-judge' ? judgeDiagnostics : [],
+      }),
+    );
+    setupTwoNodeGraph();
+    const events = await collectStream(
+      graph('graph-flag', { handlers: [makeStreamingHandler(['final'])], graphJudge: 'graph-judge' }).stream(
+        'hi',
+        mockContext,
+      ),
+    );
+    const done = events.at(-1) as { judgeResults?: unknown; judgeDiagnostics?: unknown };
+    expect(done.judgeResults).toBeUndefined();
+    expect(done.judgeDiagnostics).toEqual(judgeDiagnostics);
+
+    setupTwoNodeGraph();
+    const result = await graph('graph-flag', { handlers: [makeHandler()], graphJudge: 'graph-judge' }).invoke(
+      'hi',
+      mockContext,
+    );
+    expect(result.judgeDiagnostics).toEqual(judgeDiagnostics);
+  });
+
+  it('omits judgeDiagnostics when the graphJudge reports none', async () => {
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] });
+    setupTwoNodeGraph();
+    const result = await graph('graph-flag', { handlers: [makeHandler()], graphJudge: 'graph-judge' }).invoke(
+      'hi',
+      mockContext,
+    );
+    expect('judgeDiagnostics' in result).toBe(false);
+  });
+
   it('omits judgeResults on done when judges return empty', async () => {
     const { runJudges } = await import('../judges.js');
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] });
     setupTwoNodeGraph();
     const handler = makeStreamingHandler(['final']);
     const events = await collectStream(
@@ -950,7 +994,7 @@ describe('graph().stream()', () => {
 
   it('multi-edge route: judges receive the original node config, not handoff-augmented tools', async () => {
     const { runJudges } = await import('../judges.js');
-    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] });
     setupBranchingGraph();
     const handler = makeBranchPickingStreamHandler('agent-b');
     await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
