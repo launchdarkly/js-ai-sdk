@@ -1380,6 +1380,12 @@ export function backoffDelayMs(attempt: number, baseMs: number, maximumMs: numbe
   return ceiling * (1 - jitter * Math.random());
 }
 
+/**
+ * How long a stream must stay open for the reconnect after it to start again at
+ * `initialBackoffMs`, as in the base server-side SDKs. Internal, not an option.
+ */
+export const BACKOFF_RESET_INTERVAL_MS = 60_000;
+
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) {
@@ -1503,6 +1509,16 @@ export class FDv2SkillStore implements SkillStore {
   // Whether the current attempt completed an exchange, which separates a
   // recycled healthy stream from a failed one.
   private reachedServer = false;
+  // The backoff step, kept apart from `failures`: a completed exchange does not
+  // reset it, or a server that answers and then drops would be reconnected at
+  // `initialBackoffMs` for as long as it stayed degraded. It resets after a
+  // stream outlives `_backoffResetIntervalMs`, or a completed poll.
+  private backoffAttempt = 0;
+  // When the current stream connection opened (`performance.now()`), or `null`
+  // before it has.
+  private connectedAt: number | null = null;
+  /** {@link BACKOFF_RESET_INTERVAL_MS}. Exposed for tests; not API. */
+  _backoffResetIntervalMs = BACKOFF_RESET_INTERVAL_MS;
 
   constructor(sdkKey: string, options: FDv2SkillStoreOptions = {}) {
     const key = requireServerSideCredential(sdkKey);
@@ -1736,12 +1752,16 @@ export class FDv2SkillStore implements SkillStore {
     while (!signal.aborted) {
       try {
         this.reachedServer = false;
+        this.connectedAt = null;
         if (this.mode === 'stream') await this.streamOnce(signal);
         else await this.pollOnce(signal);
         if (signal.aborted) return;
         // A returned poll is a current answer, even a 304. Stream successes are
         // recorded in `apply`.
         this.recordSuccess();
+        // `pollIntervalMs` already spaces the requests, so a completed poll
+        // also starts the backoff over.
+        this.backoffAttempt = 0;
       } catch (cause) {
         if (signal.aborted) return;
         if (cause instanceof FatalTransportError) {
@@ -1770,13 +1790,19 @@ export class FDv2SkillStore implements SkillStore {
           this.reader.diagnostics.connectionFailures = this.failures;
           this.reader.diagnostics.lastError = cause.message;
         }
+        // Every reconnect advances the step, a recycle included. Only a stream
+        // that stayed open long enough starts it over.
+        if (this.connectedAt !== null && performance.now() - this.connectedAt >= this._backoffResetIntervalMs) {
+          this.backoffAttempt = 0;
+        }
+        this.backoffAttempt += 1;
         const requested = cause.retryAfterMs;
         const delay = Math.min(
           requested !== null && Number.isFinite(requested)
             ? // Floor at `initialBackoffMs` so `Retry-After: 0` cannot cause a
               // tight reconnect loop.
               Math.max(requested, this.initialBackoffMs)
-            : backoffDelayMs(this.failures, this.initialBackoffMs, this.maxBackoffMs),
+            : backoffDelayMs(this.backoffAttempt, this.initialBackoffMs, this.maxBackoffMs),
           // Cap at `maxBackoffMs` even if `Retry-After` asks for more.
           this.maxBackoffMs,
         );
@@ -1810,7 +1836,8 @@ export class FDv2SkillStore implements SkillStore {
   private apply(name: string, data: unknown): TransferOutcome {
     const outcome = this.reader.handle(name, data);
     // A commit or a `none` intent is a completed exchange. Counting `none` keeps
-    // a stream for an unchanging environment from backing off to the cap.
+    // a stream for an unchanging environment from reading as failing. Neither
+    // resets the backoff step; see `backoffAttempt`.
     if (outcome.healthy || outcome.committed) this.reachedServer = true;
     if (outcome.healthy) this.recordSuccess();
     if (outcome.committed) {
@@ -1855,6 +1882,7 @@ export class FDv2SkillStore implements SkillStore {
 
   private async streamOnce(signal: AbortSignal): Promise<void> {
     const events = await this.requester.stream(this.basis, signal);
+    this.connectedAt = performance.now();
     for await (const [name, data] of events) {
       if (signal.aborted) return;
       this.dispatch(this.apply(name, data));

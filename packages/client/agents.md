@@ -99,14 +99,16 @@ The `3` after the delimiter is what a `{key, version}` reference pins; it become
 - An error thrown by the consumer's loop body while the generator is suspended at a `yield` passes through unwrapped, so a bug still surfaces as one.
 - Every retry delay is clamped to `maxBackoffMs` and floored at `initialBackoffMs`, so `Retry-After: 0` cannot cause a tight reconnect loop. A blank `Retry-After` means "no delay given", not zero (`Number("")` is `0`).
 
-**What resets the failure counter, and what escapes it.** The counter drives the backoff and is reported as `connectionFailures`; it bounds nothing. Recoverable failures are retried for the life of the store, and there is no `maxConsecutiveFailures` option: a count bound would turn a short outage into a process that never sees another revocation. Only a fatal status stops delivery.
+**What resets the failure counter, and what escapes it.** The counter is reported as `connectionFailures`; it bounds nothing, and it no longer drives the backoff (see the next paragraph). Recoverable failures are retried for the life of the store, and there is no `maxConsecutiveFailures` option: a count bound would turn a short outage into a process that never sees another revocation. Only a fatal status stops delivery.
 
 - **It resets only on a completed exchange** — a committed payload, or a `none` intent — not when a connection returns. A stream only ever ends by being dropped, so resetting on return would count every healthy, server-recycled connection as a failure.
-- **`none` counts** because a reconnect whose basis is already current is answered with `none` and commits nothing; requiring a commit would back a healthy stream for an environment whose skills never change off to `maxBackoffMs`.
+- **`none` counts** because a reconnect whose basis is already current is answered with `none` and commits nothing; requiring a commit would report a healthy stream for an environment whose skills never change as failing.
 - **A parsed `xfer-full` or `xfer-changes` intent does not reset it.** A server that announces a transfer and drops before `payload-transferred`, every time, has delivered nothing, and would otherwise be retried forever at the initial backoff (pinned by the `counts each drop of a server that announces a transfer and drops` test).
 - **A non-catastrophic `goodbye` is exempt from the counter** only on a connection that completed such an exchange, tracked per attempt by `reachedServer`. Otherwise a server that says goodbye before sending any intent could reconnect without limit, never reaching `diagnostics` or `failed`.
 
 Keep both halves — the reset rule and the `reachedServer` qualifier.
+
+**The backoff step is not the failure counter.** `backoffAttempt` advances on every reconnect after a failure or a dropped stream, a `goodbye` recycle included, and returns to the first step only when the stream that just ended had been open for `BACKOFF_RESET_INTERVAL_MS` (60 s, as js-core's `Backoff` and the Python SDK's `BACKOFF_RESET_INTERVAL`), or when a poll completes (`pollIntervalMs` already spaces polls). Resetting it on a commit or a `none` instead would let a degraded server that answers and then drops be reconnected at `initialBackoffMs` by every process for as long as it stayed degraded, and with no failure bound nothing else would stop that. The interval is not an option; tests shorten it through the instance's `_backoffResetIntervalMs`.
 
 **The SDK key goes only where it was pointed, enforced in two places.** Every request carries the server-side SDK key in `Authorization`.
 

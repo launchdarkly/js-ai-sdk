@@ -36,6 +36,7 @@ import {
 } from '../skills.js';
 import { SKILL_OBJECT_KIND } from '../skills-core.js';
 import {
+  BACKOFF_RESET_INTERVAL_MS,
   backoffDelayMs,
   classifyStatus,
   DEFAULT_BASE_URI,
@@ -1833,6 +1834,71 @@ class GoodbyeOnlyRequester implements Requester {
   }
 }
 
+/**
+ * A degraded server: every connection is answered with the `none` intent, a
+ * completed exchange, and then dropped at once without a goodbye.
+ */
+class AnswerThenDropRequester implements Requester {
+  connections = 0;
+
+  poll(): Promise<PollResult> {
+    throw new Error('not a polling double');
+  }
+
+  async stream(): Promise<AsyncIterable<[string, unknown]>> {
+    this.connections += 1;
+    const scripted = asPairs(events(['server-intent', serverIntent('none')]));
+    return (async function* () {
+      yield* scripted;
+    })();
+  }
+}
+
+/**
+ * Plays one outcome per connection: an `Error` thrown at connect, or events
+ * delivered on a connection held open for `holdMs` and then dropped. Exhausted,
+ * it parks a connection until the store closes, freezing what was logged.
+ */
+class HeldStreamRequester implements Requester {
+  connections = 0;
+
+  constructor(private readonly outcomes: Array<Error | { events: WireEvent[]; holdMs: number }>) {}
+
+  poll(): Promise<PollResult> {
+    throw new Error('not a polling double');
+  }
+
+  async stream(_basis: string | null, signal: AbortSignal): Promise<AsyncIterable<[string, unknown]>> {
+    this.connections += 1;
+    const outcome = this.outcomes.shift();
+    if (outcome instanceof Error) throw outcome;
+    const scripted = outcome === undefined ? [] : asPairs(outcome.events);
+    const holdMs = outcome === undefined ? Number.POSITIVE_INFINITY : outcome.holdMs;
+    return (async function* () {
+      yield* scripted;
+      await new Promise<void>((resolve) => {
+        const timer = Number.isFinite(holdMs) ? setTimeout(resolve, holdMs) : null;
+        signal.addEventListener(
+          'abort',
+          () => {
+            if (timer !== null) clearTimeout(timer);
+            resolve();
+          },
+          { once: true },
+        );
+      });
+    })();
+  }
+}
+
+/** The delays the store logged before each counted retry, in order. */
+const retryDelays = (): number[] =>
+  logged(warnSpy)
+    .split('\n')
+    .map((line) => /retrying in (\d+)ms/.exec(line)?.[1])
+    .filter((delay): delay is string => delay !== undefined)
+    .map(Number);
+
 function scriptedStreamStore(requester: Requester, options: Record<string, unknown> = {}): FDv2SkillStore {
   const store = new FDv2SkillStore(SDK_KEY, {
     mode: 'stream',
@@ -2021,7 +2087,11 @@ describe('failure handling', () => {
   it('reports one failure, not two, for a store that fails, succeeds, then fails (§3.25)', async () => {
     // Polled, so the success is a request of its own rather than a stream whose
     // own end counts as the next failure. The fourth request parks, freezing
-    // the count after the second failure.
+    // the count after the second failure. A completed poll also starts the
+    // backoff over, since `pollIntervalMs` already spaces the requests.
+    // No jitter, so the first step is exactly `initialBackoffMs` and the second
+    // exactly twice it.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
     const requester = new ScriptedRequester([
       new RecoverableTransportError('x'),
       asPairs(fullPayload([['put-object', putSkill()]])),
@@ -2047,7 +2117,67 @@ describe('failure handling', () => {
       .map((line) => /Skill delivery failed \(y\); retrying in (\d+)ms/.exec(line)?.[1])
       .filter((delay): delay is string => delay !== undefined);
     expect(retries).toHaveLength(1);
-    expect(Number(retries[0])).toBeLessThanOrEqual(100);
+    expect(Number(retries[0])).toBe(100);
+  });
+
+  it('reconnects a server that answers none and drops at once on a growing delay (§3.25)', async () => {
+    // Each connection completes an exchange, so the failure count resets every
+    // time and never climbs past one. The delay must not reset with it: a
+    // degraded server that answers and then drops would otherwise be
+    // reconnected at `initialBackoffMs`, by every process, for as long as it
+    // stayed degraded. Only a stream that stays open resets the delay.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const requester = new AnswerThenDropRequester();
+    const store = scriptedStreamStore(requester, { initialBackoffMs: 2, maxBackoffMs: 10_000 });
+    let worst = 0;
+    store.start();
+    expect(
+      await waitUntil(() => {
+        worst = Math.max(worst, store.diagnostics.connectionFailures);
+        return requester.connections >= 6;
+      }),
+    ).toBe(true);
+    expect(worst).toBeLessThanOrEqual(1);
+    expect(store.diagnostics.connectionFailures).toBeLessThanOrEqual(1);
+    expect(store.failed).toBeNull();
+    // Doubling from the first step on every reconnect: 2, 4, 8, 16, 32.
+    expect(retryDelays().slice(0, 5)).toEqual([2, 4, 8, 16, 32]);
+  });
+
+  it('retries at the first step after a stream that stayed open past the reset interval (§3.25)', async () => {
+    // Three refused connects advance the step to 8ms; the fourth connection
+    // answers and is held open past the (shortened) reset interval before it
+    // drops, so the reconnect after it starts over at `initialBackoffMs`.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const requester = new HeldStreamRequester([
+      new RecoverableTransportError('x'),
+      new RecoverableTransportError('x'),
+      new RecoverableTransportError('x'),
+      { events: events(['server-intent', serverIntent('none')]), holdMs: 80 },
+    ]);
+    const store = scriptedStreamStore(requester, { initialBackoffMs: 2, maxBackoffMs: 10_000 });
+    store._backoffResetIntervalMs = 20;
+    store.start();
+    expect(await waitUntil(() => requester.connections === 5)).toBe(true);
+    expect(retryDelays()).toEqual([2, 4, 8, 2]);
+  });
+
+  it('keeps advancing the step after a stream that dropped inside the reset interval (§3.25)', async () => {
+    // The control for the test above: the same script against the real
+    // interval, so the reset there is the uptime's doing and nothing else's.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const requester = new HeldStreamRequester([
+      new RecoverableTransportError('x'),
+      new RecoverableTransportError('x'),
+      new RecoverableTransportError('x'),
+      { events: events(['server-intent', serverIntent('none')]), holdMs: 80 },
+    ]);
+    const store = scriptedStreamStore(requester, { initialBackoffMs: 2, maxBackoffMs: 10_000 });
+    expect(store._backoffResetIntervalMs).toBe(BACKOFF_RESET_INTERVAL_MS);
+    expect(BACKOFF_RESET_INTERVAL_MS).toBe(60_000);
+    store.start();
+    expect(await waitUntil(() => requester.connections === 5)).toBe(true);
+    expect(retryDelays()).toEqual([2, 4, 8, 16]);
   });
 
   it('resets the failure count on a stream commit', async () => {
