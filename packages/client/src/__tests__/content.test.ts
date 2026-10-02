@@ -193,8 +193,8 @@ describe('OpenLLMetry carrier', () => {
 
   it('leaves a tool result the provider never sent out of the transcript', () => {
     // The three carriers are written from the same messages so they cannot disagree, and the
-    // canonical one omits an absent `result` entirely. This one used to render it as the literal
-    // text `null`, so the trace view showed a tool that returned nothing as one that returned a
+    // canonical one omits an absent `result` entirely. This one must not render it as the literal
+    // text `null`, or the trace view would show a tool that returned nothing as one that returned a
     // null value.
     const attrs = attributesOf((span) =>
       setOutputContentAttributes(span, true, [{ role: 'tool', parts: [{ type: 'tool_call_response', id: 'c1' }] }]),

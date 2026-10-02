@@ -5,9 +5,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ConversationIdSpanProcessor, GEN_AI_CONVERSATION_ID, withConversationId } from '../conversation.js';
 
 /**
- * Every other test file registers an `AsyncLocalStorageContextManager` up front, which is exactly
- * why this gap went unnoticed: real callers start with OTel's `NoopContextManager`, whose `with()`
- * discards the context. A `withConversationId` call made before `initClient()` therefore binds
+ * Every other test file registers an `AsyncLocalStorageContextManager` up front, so none of them
+ * covers the state real callers start in: OTel's `NoopContextManager`, whose `with()` discards the
+ * context. A `withConversationId` call made before `initClient()` therefore binds
  * nothing, and every span goes out unstamped.
  *
  * This file deliberately does NOT register a context manager until the second test, so the
@@ -43,7 +43,7 @@ describe('withConversationId before a context manager is registered', () => {
     expect(message).toContain('initClient');
     expect(message).toContain('gen_ai.conversation.id');
 
-    // The binding genuinely cannot work here — the point is that it is no longer silent.
+    // The binding genuinely cannot work here — the point is that it does not fail silently.
     expect(exporter.getFinishedSpans()[0]?.attributes[GEN_AI_CONVERSATION_ID]).toBeUndefined();
     warn.mockRestore();
   });

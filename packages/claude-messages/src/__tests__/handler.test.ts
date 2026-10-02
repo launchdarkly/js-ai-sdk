@@ -1046,7 +1046,7 @@ describe('createClaudeMessagesHandler', () => {
     expect(mockSpan.recordException).toHaveBeenCalledWith(err);
   });
 
-  // ── §1.2 additional: multiple system messages joined ────────────────────────
+  // ── Multiple system messages joined ─────────────────────────────────────────
 
   it('joins multiple system-role messages with newline when instructions absent', async () => {
     mockMessagesCreate.mockResolvedValue(mockFinalResponse());
@@ -1190,7 +1190,7 @@ describe('createClaudeMessagesHandler', () => {
     expect(serialized).toContain('What colour is this?');
   });
 
-  // ── §1.9 streaming ignores outputFormat ─────────────────────────────────────
+  // ── Streaming ignores outputFormat ──────────────────────────────────────────
 
   it('streaming handler does not inject outputFormat schema into system prompt', async () => {
     const outputFormat = { type: 'object', properties: { answer: { type: 'string' } } };
@@ -1208,7 +1208,7 @@ describe('createClaudeMessagesHandler', () => {
   });
 });
 
-// ── §1.9 outputFormat — best-effort (system prompt injection) ─────────────────
+// ── outputFormat — best-effort (system prompt injection) ──────────────────────
 
 describe('createClaudeMessagesHandler — outputFormat (§1.9)', () => {
   const outputFormat = { type: 'object', properties: { answer: { type: 'string' } } };
@@ -1252,7 +1252,7 @@ describe('createClaudeMessagesHandler — outputFormat (§1.9)', () => {
   });
 });
 
-// ── §1.10 MAX_STEPS cap ───────────────────────────────────────────────────────
+// ── MAX_STEPS cap ─────────────────────────────────────────────────────────────
 
 describe('createClaudeMessagesHandler — MAX_STEPS cap (§1.10)', () => {
   beforeEach(() => {

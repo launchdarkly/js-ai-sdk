@@ -146,7 +146,7 @@ describe('langchain-messages span tree against a real tracer', () => {
     expect(attrs['gen_ai.usage.output_tokens']).toBe(10);
     expect(attrs['gen_ai.usage.total_tokens']).toBe(30);
     // `gen_ai.provider.name` is the configured provider, lower-cased. The legacy `gen_ai.system`
-    // keeps the shipped framework value.
+    // keeps the framework value.
     expect(attrs['gen_ai.provider.name']).toBe('langchain');
     expect(attrs['gen_ai.system']).toBe('langchain');
   });

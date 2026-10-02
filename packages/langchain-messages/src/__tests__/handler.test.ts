@@ -1157,7 +1157,7 @@ describe('createLangChainHandler', () => {
   });
 });
 
-// ── §1.9 outputFormat — first-class (withStructuredOutput) ───────────────────
+// ── outputFormat — first-class (withStructuredOutput) ────────────────────────
 
 describe('createLangChainHandler — outputFormat (§1.9)', () => {
   const outputFormat = { type: 'object', properties: { answer: { type: 'string' } } };
@@ -1244,7 +1244,7 @@ describe('createLangChainHandler — outputFormat (§1.9)', () => {
   });
 });
 
-// ── §1.9 outputFormat + tools conflict ───────────────────────────────────────
+// ── outputFormat + tools conflict ────────────────────────────────────────────
 
 describe('createLangChainHandler — outputFormat + tools conflict (§1.9)', () => {
   beforeEach(() => {
@@ -1296,7 +1296,7 @@ describe('createLangChainHandler — outputFormat + tools conflict (§1.9)', () 
   });
 });
 
-// ── §1.10 MAX_STEPS cap ───────────────────────────────────────────────────────
+// ── MAX_STEPS cap ─────────────────────────────────────────────────────────────
 
 describe('createLangChainHandler — MAX_STEPS cap (§1.10)', () => {
   beforeEach(() => {

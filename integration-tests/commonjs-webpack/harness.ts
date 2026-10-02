@@ -14,7 +14,7 @@ const tarballDir = join(stagingDir, 'tarballs');
 /** Workspaces a CommonJS Lambda consumer installs from npm. */
 const WORKSPACES = ['client', 'ai-node', 'ai-otel', 'openai-messages', 'langchain-messages'];
 
-/** Pinned to the versions reported in AIC-3370. */
+/** Pinned to a Webpack toolchain that downlevels `await import()` to `require()` in a CommonJS bundle. */
 const BUNDLER_DEPS = ['webpack@5.104.1', 'webpack-cli@6.0.1', 'webpack-node-externals@3.0.0'];
 
 export type Variant = 'externalized' | 'allowlisted';

@@ -595,7 +595,7 @@ describe('createOpenAIAgentHandler', () => {
     expect(mockSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
   });
 
-  // ── History (§1.11 — structured Runner input, not system-prompt text) ────────
+  // ── History (structured Runner input, not system-prompt text) ────────────────
 
   const sampleHistory = [
     { role: 'user' as const, content: 'What is feature flagging?' },
@@ -682,7 +682,7 @@ describe('createOpenAIAgentHandler', () => {
   });
 });
 
-// ── §1.9 outputFormat — first-class (Agent outputType) ───────────────────────
+// ── outputFormat — first-class (Agent outputType) ────────────────────────────
 
 describe('createOpenAIAgentHandler — outputFormat (§1.9)', () => {
   const outputFormat = { type: 'object', properties: { score: { type: 'number' } } };
