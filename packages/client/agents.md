@@ -486,7 +486,7 @@ It is in **seconds**, defaulting to `10`. The signature is a cross-language cont
 
 Prune is **suppressed** — not merely empty — whenever the run cannot tell what is still current:
 
-- an incomplete retrieval (a reference that did not resolve, a store that threw, an exhausted timeout);
+- an incomplete retrieval (no store configured, a store that threw, an exhausted timeout);
 - a store whose `isInitialized()` answers `false` (delivery has not sent a payload yet);
 - a withholding that could not be attributed to a key (the `'*'` form's run-level `error`);
 - a corrupt manifest.
@@ -498,6 +498,8 @@ Each case puts an `error` action in the report, sets `ok` to `false`, and prunes
 Run one reconcile per root at a time. Two interleaved runs read the same manifest and each writes it back from its own picture, so the loser's entries vanish while its files stay on disk unmanaged. `SkillWatcher` serializes its own reconciles, but cannot see a second watcher on the same root or a caller's own `writeSkills` against it. Do neither.
 
 ### 4d. Expecting revocation to reach a boot-only `writeSkills` deployment
+
+With an explicit list, `watchSkills` does not close the gap either. A requested skill the store answers `absent` for stays in the requested set as an `error` action and is not pruned, and the watcher listens only to the skill store, so unpinning a skill from an AI Config is not seen. Only `watchSkills('*', …)` removes a revoked skill from disk without a re-run.
 
 Without `watchSkills`, the revocation bound is process lifetime: a skill revoked after boot stays on disk until the process reconciles again, so a restart (or an explicit re-run of `writeSkills`) is the incident-response action — and content an agent has already read into a conversation is out of reach at this layer either way.
 
