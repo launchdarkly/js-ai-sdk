@@ -107,6 +107,17 @@ const SKILL_MD = 'SKILL.md';
 const SKILL_BODY = '---\nname: Test Skill\n---\nDo the thing.\n';
 const NEVER_FIRED = 'the hook never fired; the test proves nothing';
 
+/**
+ * Convenience for building fixtures whose `contentHash` is correct.
+ *
+ * Deliberately the same expression the implementation hashes with, which is
+ * what makes it useless as an oracle: a change to the hashing rule moves every
+ * fixture built here along with it, and nothing in this file would fail. The
+ * rule is pinned independently, against the digests LaunchDarkly's delivery
+ * service computes, in the `contentHash contract` suite in `skills.test.ts` for the
+ * accessor and write paths, and below for the adoption comparison, which
+ * hashes through an expression of its own.
+ */
 function hash(bytes: Uint8Array | string): string {
   return createHash('sha256')
     .update(typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : bytes)
@@ -247,6 +258,107 @@ describe('the adoption comparison read is bounded', () => {
     await writeSkills([skill('a')], root);
 
     expect(hook.wholeFileReads.has('.launchdarkly-skills.json')).toBe(true);
+  });
+});
+
+// ─── The adoption comparison hashes the delivered rule ───────────────────────
+
+/**
+ * Adoption compares an on-disk file against `contentHash` using its *own*
+ * expression — `createHash('sha256').update(onDisk)` in `skills-fs.ts` — rather
+ * than going through `verifiedBytes`. So it is a second place the content-hash
+ * rule is written down, and the accessor-side contract test cannot reach it.
+ *
+ * It is also the one that decides whether an unmanaged file is claimed or
+ * refused. A comparison that normalized would adopt a planted file whose bytes
+ * merely *normalize* to the delivered content, leave those foreign bytes on
+ * disk, and report `skipped_current` — the bytes on disk would not be the bytes
+ * LaunchDarkly delivered, which is precisely what that action claims.
+ */
+describe('the adoption comparison hashes the delivered rule', () => {
+  /**
+   * The same vector and digest pinned in `skills.test.ts`, deliberately copied
+   * rather than shared: every test file here defines its own helpers, and the
+   * value of a literal is that it is not derived from anything. Both copies are
+   * the digest LaunchDarkly's delivery service computes for this content, so
+   * neither may be replaced by a call to `hash` and the two only ever change
+   * together, and only if the service's rule changed.
+   *
+   * `é` as an escape rather than the character itself, so a tool that
+   * re-normalized this source file could not quietly change the input.
+   */
+  const HAZARD_CONTENT = '# héllo\r\n\ntrailing no newline';
+  const HAZARD_DIGEST = '2b7c050d94135e5e947263053ebde1c988c2bb90bcc037e8f3d1a2d340b9a558';
+
+  /** The post-crash state adoption exists for: a managed path, no manifest. */
+  async function placeOrphaned(content: string | Uint8Array): Promise<string> {
+    const target = path.join(root, 'a', SKILL_MD);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, content);
+    return target;
+  }
+
+  /**
+   * A skill carrying the pinned digest as a literal.
+   *
+   * `writeSkills` re-verifies through `verifiedBytes` before it ever looks at
+   * the disk, so this pins the write path's copy of the rule too: a skill built
+   * this way only survives to the adoption comparison if the digest still
+   * matches the content's exact bytes.
+   */
+  const pinned = () =>
+    createSkill({
+      key: 'a',
+      version: 1,
+      content: new TextEncoder().encode(HAZARD_CONTENT),
+      contentHash: HAZARD_DIGEST,
+    });
+
+  const manifestEntries = async (): Promise<Record<string, unknown>> =>
+    JSON.parse(await readFile(path.join(root, '.launchdarkly-skills.json'), 'utf-8')).entries;
+
+  it('adopts a file whose bytes are exactly the pinned content', async () => {
+    // The positive control, and the half that fails if either this SDK or the
+    // delivery service starts canonicalizing: the file on disk is byte-for-byte
+    // what the pinned digest is the digest of.
+    await placeOrphaned(HAZARD_CONTENT);
+
+    const report = await writeSkills([pinned()], root);
+
+    expect(report.ok).toBe(true);
+    expect(report.actions.find((a) => a.key === 'a')?.action).toBe('skipped_current');
+    expect(Object.keys(await manifestEntries())).toEqual(['a/SKILL.md']);
+  });
+
+  // The same three fixups the accessor-side contract test applies, here against
+  // the file on disk: an editor rewriting line endings, a lint step adding the
+  // final newline, a normalization form decomposing the accent. None changes
+  // what the document means and all three change its bytes, so none of them is
+  // the content LaunchDarkly delivered.
+  const normalizations: Array<[string, (text: string) => string]> = [
+    ['CRLF rewritten to LF', (text) => text.replace(/\r\n/g, '\n')],
+    ['a trailing newline appended', (text) => `${text}\n`],
+    ['NFD decomposition', (text) => text.normalize('NFD')],
+  ];
+
+  it.each(normalizations)('refuses a planted file with %s, rather than adopting it', async (_label, normalize) => {
+    const planted = normalize(HAZARD_CONTENT);
+    expect(planted, 'the transform left this input alone').not.toBe(HAZARD_CONTENT);
+    const target = await placeOrphaned(planted);
+
+    const report = await writeSkills([pinned()], root);
+
+    expect(report.ok).toBe(false);
+    const action = report.actions.find((a) => a.key === 'a');
+    expect(action?.action).toBe('error');
+    expect(action?.error).toContain('does not record it as managed');
+    // Refused after looking, not because the read failed — the same distinction
+    // the bounded-read cases above rely on.
+    expect(action?.error).not.toContain('could not be read');
+    // Neither adopted nor overwritten: the planted bytes are still the planted
+    // bytes, and nothing was claimed into the manifest.
+    expect(await readFile(target, 'utf-8')).toBe(planted);
+    expect(await manifestEntries()).toEqual({});
   });
 });
 

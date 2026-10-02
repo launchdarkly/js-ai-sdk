@@ -77,6 +77,16 @@ const APPROVED_SIGNALS = new Set([INTEGRITY_SIGNAL, MATERIALIZED_SIGNAL, REVOKED
  */
 const REMOVED_SIGNALS = ['AgentControl Skill SDK Reference Returned', 'AgentControl Skill Content Retrieved'];
 
+/**
+ * Convenience for building fixtures whose `contentHash` is correct.
+ *
+ * Deliberately the same expression the implementation hashes with, which is
+ * what makes it useless as an oracle: a change to the hashing rule moves every
+ * fixture built here along with it, and nothing in this file would fail. The
+ * rule is pinned independently, against the digests LaunchDarkly's delivery
+ * service computes, in the `contentHash contract` suite below — whose literal digests must
+ * never be replaced by a call to this helper.
+ */
 function hash(content: string | Uint8Array): string {
   return createHash('sha256')
     .update(typeof content === 'string' ? Buffer.from(content, 'utf-8') : content)
@@ -2345,6 +2355,119 @@ describe('integrity-failure log record', () => {
 
     expect(records).toHaveLength(1);
     expect(records[0].record.reason_code).toBe('hash_mismatch');
+  });
+});
+
+// ─── contentHash contract ──────────────────────────────────────────────
+
+describe('contentHash contract', () => {
+  // The verbatim-bytes rule, checked against the service that computes it.
+  //
+  // `contentHash` is specified as sha256, lowercase hex, over the content's
+  // exact UTF-8 bytes, with no canonicalization on either side — so agreement
+  // between this SDK and LaunchDarkly's delivery service is part of the rule
+  // rather than an implementation detail. The SDK cannot verify the service's
+  // half, but it can pin the one thing that would break if either half began
+  // normalizing: the digests the service produces for content where a round
+  // trip is observable.
+
+  /**
+   * Content whose bytes a normalizing round trip would silently alter: a
+   * non-ASCII character, a CRLF, and no trailing newline.
+   */
+  // `\u00e9` as an escape rather than the character itself: the input has to be
+  // exactly the NFC form, and a source file carrying the literal character could
+  // be re-normalized by an editor without the diff showing anything.
+  const HAZARD_CONTENT = '# h\u00e9llo\r\n\ntrailing no newline';
+  const HAZARD_DIGEST = '2b7c050d94135e5e947263053ebde1c988c2bb90bcc037e8f3d1a2d340b9a558';
+
+  /**
+   * Two digests the delivery service computes for the content beside them,
+   * pinned here as literals.
+   *
+   * The literals are the point, and they must never be replaced by a call to
+   * `hash`. Every other raw object in this file comes from `rawSkill`, which
+   * hashes its content with the same expression `verifiedBytes` uses, so a
+   * change to the hashing rule moves the expectation along with it and nothing
+   * fails. That would leave the one rule which has to agree with a service
+   * outside this process as the only rule in the feature with no independent
+   * oracle. These two digests are that oracle.
+   */
+  const serviceVectors: Array<[string, string, string]> = [
+    ['ASCII', '# hello', 'ea67f39f2a707e536439ee31e49fdd586b4a8437d3408f0466112d040cd06681'],
+    ['non-ASCII, CRLF and no trailing newline', HAZARD_CONTENT, HAZARD_DIGEST],
+  ];
+
+  /**
+   * Fixups something between the author and this process might plausibly apply
+   * to a markdown file: an editor rewriting line endings, a lint step adding the
+   * final newline, a normalization form decomposing the accent. None of the
+   * three changes what the document means, and all three change what it hashes
+   * to — which is the whole reason the rule is stated over bytes.
+   */
+  const normalizations: Array<[string, (text: string) => string]> = [
+    ['CRLF rewritten to LF', (text) => text.replace(/\r\n/g, '\n')],
+    ['a trailing newline appended', (text) => `${text}\n`],
+    ['NFD decomposition', (text) => text.normalize('NFD')],
+  ];
+
+  /**
+   * The integrity records logged while `run` executed.
+   *
+   * `reason_code` lives only on the log record — `recordIntegrityFailure` keeps
+   * it off the product signal on purpose — so the withholding half has to read
+   * the record rather than the emitter.
+   */
+  async function integrityRecords(run: () => Promise<unknown>): Promise<Array<Record<string, unknown>>> {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let calls: unknown[][] = [];
+    try {
+      await run();
+    } finally {
+      // Read the calls out before restoring: `mockRestore` also resets the
+      // recorded history, so a read afterwards sees nothing.
+      calls = [...spy.mock.calls];
+      spy.mockRestore();
+    }
+    return calls
+      .map(([first]) => String(first))
+      .filter((line) => line.includes('ld.skills.integrity_failure'))
+      .map((line) => JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown>);
+  }
+
+  it.each(serviceVectors)("verifies the service's pinned digest over %s content", async (_label, content, digest) => {
+    // Passing means the SDK computes what the service computed. Failing means
+    // one of the two now normalizes, and a customer would see every skill in
+    // the environment withheld as `hash_mismatch` with no way to tell why.
+    const store = new InMemorySkillStore();
+    store.put({ key: 'a', version: 1, content, contentHash: digest });
+    _setStore(store);
+
+    const verified = await getSkill('a');
+
+    expect(verified).not.toBeNull();
+    // Byte-for-byte, so the digest attests the bytes the caller receives rather
+    // than some decoded form of them.
+    expect(verified?.content).toEqual(new TextEncoder().encode(content));
+    expect(verified?.contentHash).toBe(digest);
+  });
+
+  it.each(normalizations)('withholds the same content with %s', async (_label, normalize) => {
+    // The teeth on the cases above. Agreeing on a digest proves nothing unless
+    // disagreeing is detectable, and a rule that quietly tolerated any of these
+    // three would let content LaunchDarkly never delivered pass verification.
+    const altered = normalize(HAZARD_CONTENT);
+    expect(altered, 'the transform left this input alone').not.toBe(HAZARD_CONTENT);
+    _setStore(new DictStore({ a: { key: 'a', version: 1, content: altered, contentHash: HAZARD_DIGEST } }));
+
+    let listed: Skill[] = [];
+    const records = await integrityRecords(async () => {
+      listed = await allSkills();
+    });
+
+    expect(listed).toEqual([]);
+    expect(records).toHaveLength(1);
+    expect(records[0].reason_code).toBe('hash_mismatch');
   });
 });
 

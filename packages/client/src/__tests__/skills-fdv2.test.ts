@@ -70,6 +70,15 @@ import type { RawSkillObject, ReconcileReport } from '../types.js';
 const SDK_KEY = 'sdk-00000000-0000-4000-8000-000000000000';
 const SKILL_BODY = '---\nname: PDF Extraction\n---\nExtract text from PDFs.\n';
 
+/**
+ * Convenience for building fixtures whose `contentHash` is correct.
+ *
+ * Deliberately the same expression the implementation hashes with, which is
+ * what makes it useless as an oracle: a change to the hashing rule moves every
+ * fixture built here along with it, and nothing in this file would fail. The
+ * rule is pinned independently, against the digests LaunchDarkly's delivery
+ * service computes, in the `contentHash contract` suite in `skills.test.ts`.
+ */
 const hash = (content: string): string => createHash('sha256').update(content, 'utf8').digest('hex');
 
 // ─── Wire builders — one place that knows the shape ──────────────────────────

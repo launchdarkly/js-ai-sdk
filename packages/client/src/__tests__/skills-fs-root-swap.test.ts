@@ -121,6 +121,15 @@ function disarm(): void {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Convenience for building fixtures whose `contentHash` is correct.
+ *
+ * Deliberately the same expression the implementation hashes with, which is
+ * what makes it useless as an oracle: a change to the hashing rule moves every
+ * fixture built here along with it, and nothing in this file would fail. The
+ * rule is pinned independently, against the digests LaunchDarkly's delivery
+ * service computes, in the `contentHash contract` suite in `skills.test.ts`.
+ */
 function hash(content: string): string {
   return createHash('sha256').update(Buffer.from(content, 'utf-8')).digest('hex');
 }
