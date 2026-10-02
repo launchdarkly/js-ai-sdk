@@ -17,7 +17,7 @@ vi.mock('../lifecycle.js', () => ({
 
 vi.mock('../judges.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../judges.js')>();
-  return { ...actual, runJudges: vi.fn().mockResolvedValue({}) };
+  return { ...actual, runJudges: vi.fn().mockResolvedValue({ judgeResults: {}, judgeDiagnostics: [] }) };
 });
 
 import { config } from '../client.js';
