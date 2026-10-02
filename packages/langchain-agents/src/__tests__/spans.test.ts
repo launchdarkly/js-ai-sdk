@@ -9,9 +9,9 @@ import { createLangChainAgentsHandler } from '../handler.js';
 /**
  * The companion `callbacks.test.ts` drives `buildSpanCallbacks` directly, against a root span the
  * test creates itself. That proves the callbacks nest under whatever context they are handed, but
- * not that the *handler* hands them the right one — so the handler's own root-to-child wiring was
- * asserted only in `handler.test.ts`, where `startSpan` discards its `parentContext` argument and
- * parentage is unobservable.
+ * not that the *handler* hands them the right one. Outside this file, the handler's own
+ * root-to-child wiring is asserted only in `handler.test.ts`, where `startSpan` discards its
+ * `parentContext` argument and parentage is unobservable.
  *
  * This file closes that gap: a real `BasicTracerProvider`, a real `createAgent` graph, and a fake
  * chat model injected through the handler's own `llm` parameter. No module is mocked.
@@ -154,7 +154,7 @@ describe('langchain-agents span tree against a real tracer', () => {
     expect(attrs['gen_ai.usage.output_tokens']).toBe(5);
     expect(attrs['gen_ai.usage.total_tokens']).toBe(15);
     // `gen_ai.provider.name` is the configured provider, lower-cased. The legacy `gen_ai.system`
-    // keeps the shipped framework value.
+    // keeps the framework value.
     expect(attrs['gen_ai.provider.name']).toBe('openai');
     expect(attrs['gen_ai.system']).toBe('langchain');
   });

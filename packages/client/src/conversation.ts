@@ -90,7 +90,7 @@ const contextManagerStoresValues = (): boolean =>
 const warnContextManagerMissing = (): void => {
   if (warnedAboutContextManager) return;
   warnedAboutContextManager = true;
-  // biome-ignore lint/suspicious/noConsole: the alternative is failing silently, which is the bug
+  // biome-ignore lint/suspicious/noConsole: the alternative is failing silently
   console.warn(
     '[LaunchDarkly] withConversationId was called before an OpenTelemetry context manager was ' +
       "registered, so gen_ai.conversation.id will not be set on this run's spans. Await " +

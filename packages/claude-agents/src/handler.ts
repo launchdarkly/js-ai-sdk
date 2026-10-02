@@ -251,8 +251,8 @@ function marksLocalWork(message: { type: string }): boolean {
  * message per content block of a response and dispatches those blocks one at a time, so a single
  * API call surfaces as several messages that share a `request_id` and repeat the same `usage` bag —
  * with tool executions interleaved between them. Measured on a live 8-turn run, treating each
- * message as a call produced 55 spans for 22 real calls and counted every call's tokens two to four
- * times over.
+ * message as a call would produce 55 spans for 22 real calls and count every call's tokens two to
+ * four times over.
  *
  * So `request_id` is the unit, accumulated across the whole run rather than only while consecutive:
  * the messages of one response are not adjacent in the stream. Usage and identity are written once,
@@ -343,9 +343,10 @@ class InferenceSpans {
   /**
    * Adds a user turn to the running conversation.
    *
-   * These are the tool results and injected context the next call is being sent, which this handler
-   * previously read only as a clock tick. Turns the CLI synthesised itself are kept: the model saw
-   * them, and a conversation with them removed is one that never happened.
+   * These are the tool results and injected context the next call is being sent, so they are
+   * recorded as conversation rather than read only as a clock tick. Turns the CLI synthesised
+   * itself are kept: the model saw them, and a conversation with them removed is one that never
+   * happened.
    */
   private absorbUserTurn(message: UserTurn): void {
     const parts = toSpanParts(message.message?.content);
@@ -531,10 +532,10 @@ function failSpan(span: Span, error: unknown, endedSpans?: Set<Span>): void {
 /**
  * Builds the error for a non-success result message.
  *
- * `SDKResultError` has no `result` field, so the old `'result' in message` gate never matched one:
- * the loop simply ended, the run was reported OK with zeroed usage, and the real token spend and
- * `errors` were discarded. A run that hit `error_max_turns` or `error_max_budget_usd` genuinely
- * failed and has to surface as a failure.
+ * `SDKResultError` has no `result` field, so a `'result' in message` gate never matches one: the
+ * loop would simply end, the run would be reported OK with zeroed usage, and the real token spend
+ * and `errors` would be discarded. A run that hit `error_max_turns` or `error_max_budget_usd`
+ * genuinely failed and has to surface as a failure.
  */
 function resultError(subtype: string, errors: ReadonlyArray<string> | undefined): Error {
   const detail = errors?.length ? `: ${errors.join('; ')}` : '';
@@ -936,7 +937,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
         }
         // With runtime history, `query()` receives an async-iterable prompt of the composed turns
         // (multimodal-native) rather than a flattened string; `systemPrompt` is unchanged. Without
-        // history the plain-string path is byte-for-byte what it always was.
+        // history it receives the plain flattened string.
         const queryPrompt = buildQueryPrompt(config, userInput, variables, history, prompt);
         // Reflect what `query()` actually receives: the no-history path is a single flattened
         // prompt string (one user turn), while the history path streams the composed turns, so
@@ -1017,8 +1018,8 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
 
           // The stream ended without a result message, so no message closed the last response —
           // and no message carried a run-level total either. The per-response sum is the only
-          // record of what the run spent; this used to report a local that was never incremented,
-          // so a run ending this way always claimed zero tokens.
+          // record of what the run spent, so it is what gets reported; without it a run ending this
+          // way would claim zero tokens.
           inference.finish();
           const streamedUsage = inference.runUsage;
           finishRootSpan(span, config, streamedUsage.total);
@@ -1153,8 +1154,8 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
         }
 
         // The stream ended without a result message, so nothing carried a run-level total. The
-        // per-response sum is the only record of the spend; this used to write an empty bag, so a
-        // run ending this way always reported zero tokens for calls that really happened.
+        // per-response sum is the only record of the spend; without it a run ending this way would
+        // report zero tokens for calls that really happened.
         inference.finish();
         const streamedUsage = inference.runUsage;
         finishRootSpan(span, config, streamedUsage.total);
@@ -1199,8 +1200,8 @@ export const claudeAgents = (
   userInput: string,
   context: LDContext,
   // Both `captureContent` and `variables` are lifted out of `options`: the first configures the
-  // handler, the second belongs to the invocation. Passing either through to `config()` drops it —
-  // which is how a `{{user_input}}` placeholder used to reach the model unsubstituted whenever a
+  // handler, the second belongs to the invocation. Passing either through to `config()` would drop
+  // it, and a `{{user_input}}` placeholder would then reach the model unsubstituted whenever a
   // caller used one of these wrappers instead of `config().invoke()`.
   {
     captureContent,

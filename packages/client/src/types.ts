@@ -99,8 +99,20 @@ export type TextContentBlock = { type: 'text'; text: string };
 /**
  * An image block inside a multimodal message, in LaunchDarkly-canonical form.
  * `source.type` is either an inline base64 payload (with its media type) or a
- * URL. Handlers map this into each provider's native image shape — see the
- * per-provider table in TESTING.md Appendix A.7.
+ * URL. Handlers map this into each provider's native image shape:
+ *
+ * - Anthropic (`claude-messages`, `claude-agents`): an `image` block with the same
+ *   `base64` (`media_type` + `data`) or `url` source, unchanged.
+ * - OpenAI Responses (`openai-messages`): an `input_image` part whose `image_url` is
+ *   the URL or a `data:` URL.
+ * - OpenAI Agents (`openai-agents`): an `input_image` part whose `image` is the URL
+ *   or a `data:` URL.
+ * - LangChain (`langchain-messages`, `langchain-agents`): an `image_url` part whose
+ *   `url` is the URL or a `data:` URL.
+ * - Vercel AI SDK (`vercel-messages`, `vercel-agents`): a `file` part carrying the
+ *   URL or the base64 data with its media type.
+ *
+ * `data:` URLs are built by `imageBlockToUrl` in `history.ts`.
  */
 export type ImageContentBlock =
   | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }

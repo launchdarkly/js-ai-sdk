@@ -1083,7 +1083,7 @@ describe('createOpenAIHandler', () => {
   });
 });
 
-// ── §1.4 Token accumulation across multiple tool turns (blocking) ────────────
+// ── Token accumulation across multiple tool turns (blocking) ─────────────────
 
 describe('createOpenAIHandler — token accumulation', () => {
   beforeEach(() => {
@@ -1109,7 +1109,7 @@ describe('createOpenAIHandler — token accumulation', () => {
   });
 });
 
-// ── §1.9 outputFormat — first-class (Responses API text.format) ───────────────
+// ── outputFormat — first-class (Responses API text.format) ────────────────────
 
 describe('createOpenAIHandler — outputFormat (§1.9)', () => {
   const outputFormat = { type: 'object', properties: { answer: { type: 'string' } } };
@@ -1139,7 +1139,7 @@ describe('createOpenAIHandler — outputFormat (§1.9)', () => {
   });
 });
 
-// ── §1.10 MAX_STEPS cap ───────────────────────────────────────────────────────
+// ── MAX_STEPS cap ─────────────────────────────────────────────────────────────
 
 describe('createOpenAIHandler — MAX_STEPS cap (§1.10)', () => {
   beforeEach(() => {
