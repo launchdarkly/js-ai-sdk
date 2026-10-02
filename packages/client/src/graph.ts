@@ -126,6 +126,7 @@ const buildGraph = async (
     node: GraphNode,
     input?: string,
     opts?: RunNodeOptions,
+    runTrackData?: TrackData,
   ) => AsyncGenerator<GraphStreamEvent, RouteResult>;
 }> => {
   const { enabled, topology, meta } = await fetchGraphVariation(key, context);
@@ -279,6 +280,7 @@ const buildGraph = async (
     node: GraphNode,
     input = '',
     opts: RunNodeOptions = {},
+    runTrackData: TrackData = graphTrackData,
   ): AsyncGenerator<GraphStreamEvent, ProviderResponse> {
     const resolvedHandlersForNode = resolveHandlers(options.registry, options.handlers);
     if (!resolvedHandlersForNode?.length) {
@@ -342,7 +344,7 @@ const buildGraph = async (
         getClient().track(
           '$ld:ai:graph:handoff_success',
           context,
-          { ...graphTrackData, sourceKey: opts.from.key, targetKey: node.key },
+          { ...runTrackData, sourceKey: opts.from.key, targetKey: node.key },
           1,
         );
       }
@@ -354,7 +356,7 @@ const buildGraph = async (
         getClient().track(
           '$ld:ai:graph:handoff_failure',
           context,
-          { ...graphTrackData, sourceKey: opts.from.key, targetKey: node.key },
+          { ...runTrackData, sourceKey: opts.from.key, targetKey: node.key },
           1,
         );
       }
@@ -370,6 +372,7 @@ const buildGraph = async (
     node: GraphNode,
     input = '',
     opts: RunNodeOptions = {},
+    runTrackData: TrackData = graphTrackData,
   ): AsyncGenerator<GraphStreamEvent, RouteResult> {
     if (!options.handlers?.length) {
       throw new Error(
@@ -381,7 +384,7 @@ const buildGraph = async (
     const outgoing = edgesFrom(node.key);
 
     if (outgoing.length <= 1) {
-      const res = yield* streamNode(node, input, opts);
+      const res = yield* streamNode(node, input, opts, runTrackData);
       const next = outgoing[0] ? nodes.get(outgoing[0].targetKey) : undefined;
       return { ...res, next };
     }
@@ -446,7 +449,7 @@ const buildGraph = async (
         getClient().track(
           '$ld:ai:graph:handoff_success',
           context,
-          { ...graphTrackData, sourceKey: node.key, targetKey: next.key },
+          { ...runTrackData, sourceKey: node.key, targetKey: next.key },
           1,
         );
       }
@@ -459,7 +462,7 @@ const buildGraph = async (
         getClient().track(
           '$ld:ai:graph:handoff_failure',
           context,
-          { ...graphTrackData, sourceKey: node.key, targetKey: chosenKey },
+          { ...runTrackData, sourceKey: node.key, targetKey: chosenKey },
           1,
         );
       }
@@ -714,10 +717,13 @@ export const graph = (
       );
     }
 
-    const { def, graphTrackData, streamRoute } = await resolveBuilt(context, resolvedOptions);
+    const { def, graphTrackData: builtTrackData, streamRoute } = await resolveBuilt(context, resolvedOptions);
     if (!def.enabled) {
       throw new Error(`Agent graph "${key}" is disabled`);
     }
+    // The build is cached per context, so its track data is shared across runs. Each run gets
+    // its own id; streamRoute takes it so handoff events inside the build carry it too.
+    const graphTrackData: TrackData = { ...builtTrackData, runId: crypto.randomUUID() };
 
     const span = trace.getTracer('@launchdarkly/ai-server').startSpan('launchdarkly.graph', undefined, callerContext);
     span.setAttribute('launchdarkly.graph.key', key);
@@ -760,7 +766,7 @@ export const graph = (
           // After the root hop, nodes stay oriented through the string threading
           // built below, so history is not re-sent to downstream handlers.
           else if (history && history.length > 0) routeOpts.history = history;
-          const res: RouteResult = yield* streamRoute(current, currentInput, routeOpts);
+          const res: RouteResult = yield* streamRoute(current, currentInput, routeOpts, graphTrackData);
           accumulate(res);
           last = res;
 
