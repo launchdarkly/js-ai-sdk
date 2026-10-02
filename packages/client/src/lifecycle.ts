@@ -225,10 +225,14 @@ function isLDClient(value: unknown): value is LDClientInterface {
  *
  * Idempotent for the client singleton: a second call returns the existing
  * client and every other option is ignored — with one deliberate exception.
- * **`skillStore` is applied on every call, before the idempotency check**, so a
- * client that was lazily auto-initialized, or initialized without a store, can
- * be given one afterwards with `initClient({ skillStore: store })`. A nullish
- * `skillStore` never clears a configured store; `shutdown()` does that.
+ * **`skillStore` is applied on every successful call**, including one that
+ * returns the existing client, so a client that was lazily auto-initialized, or
+ * initialized without a store, can be given one afterwards with
+ * `initClient({ skillStore: store })`. A nullish `skillStore` never clears a
+ * configured store; `shutdown()` does that. The store is installed only once
+ * initialization has succeeded: a call that rejects leaves no global state
+ * behind, so a failed init cannot leave the skill accessors working against a
+ * store the application believes was never installed.
  *
  * Both overloads return the client instance for further customization.
  */
@@ -241,14 +245,30 @@ export async function initClient(
   optionsOrClient?: InitBaseClientOptions | LDClientInterface,
   clientOptions?: InitBaseClientOptions,
 ): Promise<LDClientInterface> {
-  const singleton = getSingleton();
+  const client = await resolveClient(optionsOrClient, clientOptions);
 
-  // Applied before the idempotency check below, and on every call: it is what
-  // lets a client that was lazily auto-initialized, or initialized without a
-  // store, be given one afterwards. A nullish store never clears a configured
-  // one — `shutdown()` is for that.
+  // The single success point: every path that rejects throws before here, so
+  // "installed only on success" is one statement rather than a copy per exit.
+  // Applied on every successful call, including the idempotent early return:
+  // it is what lets a client that was lazily auto-initialized, or initialized
+  // without a store, be given one afterwards. A nullish store never clears a
+  // configured one — `shutdown()` is for that.
   const skillStore = (isLDClient(optionsOrClient) ? clientOptions : optionsOrClient)?.skillStore;
   if (skillStore != null) _setStore(skillStore);
+  return client;
+}
+
+/**
+ * Returns the singleton client, initializing it on first call.
+ *
+ * Split from `initClient` so that function has exactly one success point to
+ * hang the `skillStore` carve-out on.
+ */
+async function resolveClient(
+  optionsOrClient?: InitBaseClientOptions | LDClientInterface,
+  clientOptions?: InitBaseClientOptions,
+): Promise<LDClientInterface> {
+  const singleton = getSingleton();
 
   if (isLDClient(optionsOrClient)) {
     // Pre-initialized client path (edge / custom runtimes).
