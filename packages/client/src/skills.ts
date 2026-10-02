@@ -12,6 +12,7 @@
 import {
   allRawObjects,
   clearState,
+  logWithholdingSummary,
   newestByKey,
   referenceTarget,
   requireStore,
@@ -275,7 +276,7 @@ export async function getSkillResult(key: string, options: { version?: number } 
  * @param refs `SkillReference` values and/or bare key strings (a string means the
  *   newest version).
  * @returns The skills found, in input order. Entries that are missing, at the
- *   wrong version, or fail verification are omitted.
+ *   wrong version, or fail verification are omitted, and a warning logs how many.
  * @throws TypeError if `refs` is a single string; pass `[key]` instead.
  * @throws Error if no skill store is configured.
  */
@@ -295,6 +296,7 @@ export async function getSkills(refs: ReadonlyArray<SkillReference | string>): P
     const { skill } = resolveFromStore(store, key, wanted);
     if (skill) skills.push(skill);
   }
+  logWithholdingSummary('requested skills', refs.length, skills.length);
   return skills;
 }
 
@@ -302,7 +304,7 @@ export async function getSkills(refs: ReadonlyArray<SkillReference | string>): P
  * Retrieves every verified skill the store currently holds.
  *
  * Returns the newest version of each key. Skills that fail verification are
- * omitted.
+ * omitted, and a warning logs how many.
  *
  * @throws Error if no skill store is configured.
  */
@@ -311,10 +313,12 @@ export async function allSkills(): Promise<Skill[]> {
   if (error !== null) return [];
 
   // The store may hold several versions per key; keep only the newest.
+  const candidates = newestByKey(objects);
   const skills: Skill[] = [];
-  for (const { raw } of newestByKey(objects)) {
+  for (const { raw } of candidates) {
     const skill = verifyRawSkill(raw);
     if (skill) skills.push(skill);
   }
+  logWithholdingSummary('skills held by the store', candidates.length, skills.length);
   return skills;
 }

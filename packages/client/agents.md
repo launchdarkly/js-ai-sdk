@@ -126,7 +126,7 @@ The Python SDK enforces the same pair with the same wording; change both or neit
 **The store refuses two things loudly rather than degrading.**
 
 - `addListener` throws for any kind but `'skill'`, in `FDv2SkillStore` and `InMemorySkillStore` alike: a listener on another kind would silently never fire. `removeListener` accepts any kind, so a consumer can detach unconditionally.
-- `close` is final: `start` throws afterwards rather than opening a second delivery loop. Closing leaves `failed` as `null` (it is the caller's decision, not a delivery failure), and both a closed store and one that gave up answer `waitForSkills` immediately.
+- `close` is final: `start` throws afterwards rather than opening a second delivery loop. A store that gave up on its own is different: `start` runs delivery again with a fresh retry budget and clears `failed`, and is a no-op while delivery is running. Closing leaves `failed` as `null` (it is the caller's decision, not a delivery failure), and both a closed store and one that gave up answer `waitForSkills` immediately.
 
 ---
 
@@ -503,7 +503,7 @@ Without `watchSkills`, the revocation bound is process lifetime: a skill revoked
 
 ### 5. Relaxing a path or manifest check in `skills-fs.ts`
 
-`keyRejectionReason` and `unsafePathReason` are shared by the write and prune paths so the two cannot disagree about which paths this SDK may destroy, and both are **non-relaxable**. The same goes for the manifest rules: a destructive operation is allowed only on a path the manifest lists under a matching key, and a corrupt manifest suppresses every destructive action. Each has a dedicated abuse-case test in `src/__tests__/skills-fs.test.ts`; if one starts failing, the defense changed, not the test.
+`keyRejectionReason` and `unsafePathReason` are shared by the write and prune paths so the two cannot disagree about which paths this SDK may destroy, and both are **non-relaxable**. The same goes for the manifest rules: a destructive operation is allowed only on a path the manifest lists under a matching key, and a corrupt manifest (including one larger than `MAX_MANIFEST_BYTES`, 8 MiB) suppresses every destructive action. Each has a dedicated abuse-case test in `src/__tests__/skills-fs.test.ts`; if one starts failing, the defense changed, not the test.
 
 Three specifics a later contributor is most likely to widen:
 
