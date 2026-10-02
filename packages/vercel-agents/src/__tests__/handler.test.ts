@@ -179,6 +179,87 @@ describe('createVercelAgentsHandler', () => {
     });
   });
 
+  it('maps snake_case model.parameters onto the ToolLoopAgent call settings', async () => {
+    const parameters = {
+      max_tokens: 256,
+      top_p: 0.9,
+      top_k: 40,
+      presence_penalty: 0.1,
+      frequency_penalty: 0.2,
+      stop_sequences: ['END'],
+      seed: 7,
+      reasoning_effort: 'low',
+      max_retries: 1,
+      tool_choice: 'auto',
+      provider_options: { anthropic: { thinking: { type: 'enabled', budget_tokens: 1024 } } },
+    };
+    await createVercelAgentsHandler()({ ...baseConfig, model: { ...baseConfig.model, parameters } } as any, 'hello');
+    const settings = aiMocks.agentArguments[0];
+    expect(settings).toMatchObject({
+      maxOutputTokens: 256,
+      topP: 0.9,
+      topK: 40,
+      presencePenalty: 0.1,
+      frequencyPenalty: 0.2,
+      stopSequences: ['END'],
+      seed: 7,
+      reasoning: 'low',
+      maxRetries: 1,
+      toolChoice: 'auto',
+      // Nested values reach the provider untouched, snake_case and all.
+      providerOptions: { anthropic: { thinking: { type: 'enabled', budget_tokens: 1024 } } },
+    });
+    for (const key of Object.keys(parameters).filter((k) => k.includes('_'))) {
+      expect(settings).not.toHaveProperty(key);
+    }
+  });
+
+  it('applies the same mapping on the streaming path', async () => {
+    aiMocks.stream.mockReturnValue({
+      textStream: (async function* () {
+        yield 'ok';
+      })(),
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    });
+    const parameters = { max_tokens: 64, maxOutputTokens: 9, top_p: 0.5, abort_signal: 'bad' };
+    await collect(
+      createVercelAgentsHandler().stream?.(
+        { ...baseConfig, model: { ...baseConfig.model, parameters } } as any,
+        'q',
+        {},
+        {},
+      ) as AsyncIterable<any>,
+    );
+    const settings = aiMocks.agentArguments[0];
+    // Both spellings of one key set: snake_case wins, as in every other handler.
+    expect(settings).toMatchObject({ maxOutputTokens: 64, topP: 0.5 });
+    expect(settings).not.toHaveProperty('max_tokens');
+    expect(settings).not.toHaveProperty('abortSignal');
+  });
+
+  it('does not forward keys that are not AI SDK call settings', async () => {
+    const parameters = {
+      temperature: 0.3,
+      allowSystemInMessages: true,
+      experimental_telemetry: { isEnabled: true },
+      unknown_setting: 1,
+      abortSignal: 'bad',
+    };
+    await createVercelAgentsHandler()({ ...baseConfig, model: { ...baseConfig.model, parameters } } as any, 'q');
+    const settings = aiMocks.agentArguments[0];
+    expect(settings.temperature).toBe(0.3);
+    for (const key of [
+      'allowSystemInMessages',
+      'experimental_telemetry',
+      'experimentalTelemetry',
+      'unknown_setting',
+      'unknownSetting',
+      'abortSignal',
+    ]) {
+      expect(settings).not.toHaveProperty(key);
+    }
+  });
+
   it('passes structured history and user input to agent.generate messages', async () => {
     const history = [
       { role: 'system' as const, content: 'filtered system' },
