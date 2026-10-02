@@ -13,7 +13,7 @@ import type {
   StreamEvent,
   VariationMeta,
 } from './types.js';
-import { normalizeMode, parseJSONWithPossibleFences } from './utils.js';
+import { coversProviderName, normalizeMode, parseJSONWithPossibleFences, selectModeHandler } from './utils.js';
 
 function resolveOutputFormatResponse(rawResponse: unknown, outputFormat: Record<string, unknown> | undefined): unknown {
   if (!outputFormat) return rawResponse ?? '';
@@ -42,13 +42,10 @@ function selectHandler(
   if (!provider) throw new Error('Provider not found');
   const normalizedMode = normalizeMode(mode);
 
-  const exact = resolvedHandlers?.find((h) => h.providesFor?.[0] === provider && h.providesFor?.[1] === normalizedMode);
-  if (exact) return exact;
+  const chosen = resolvedHandlers ? selectModeHandler(resolvedHandlers, provider, normalizedMode) : undefined;
+  if (chosen) return chosen;
 
-  const wildcard = resolvedHandlers?.find((h) => h.providesFor?.[0] === '*' && h.providesFor?.[1] === normalizedMode);
-  if (wildcard) return wildcard;
-
-  if (!resolvedHandlers?.some((h) => h.providesFor?.[0] === provider || h.providesFor?.[0] === '*')) {
+  if (!resolvedHandlers?.some((handler) => coversProviderName(handler, provider))) {
     throw new Error(`Handler for provider ${provider} not found`);
   }
   throw new Error(`Handler for provider ${provider} with mode ${normalizedMode} not found`);

@@ -376,7 +376,7 @@ const toToolDefinitions = (configTools: Record<string, Tool> | undefined): ToolD
 /** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
 export function createLangChainAgentsHandler(
   llm?: LangChainModelSource,
-  { captureContent = false }: ContentCaptureOptions = {},
+  { captureContent = false, providers }: ContentCaptureOptions & { providers?: readonly string[] } = {},
 ): ProviderHandler {
   return createHandler(
     ['*', 'agent'],
@@ -544,6 +544,7 @@ export function createLangChainAgentsHandler(
       }
     },
     captureContent,
+    providers,
   );
 }
 
@@ -551,22 +552,25 @@ export const langchainAgents = (
   configKey: string,
   userInput: string,
   context: LDContext,
-  // Both `captureContent` and `variables` are lifted out of `options`: the first configures the
-  // handler, the second belongs to the invocation. Passing either through to `config()` drops it —
-  // which is how a `{{user_input}}` placeholder used to reach the model unsubstituted whenever a
-  // caller used one of these wrappers instead of `config().invoke()`.
+  // `captureContent` and `providers` configure the handler; `variables` belongs to the invocation.
+  // Passing any of them through to `config()` drops it — which is how a `{{user_input}}` placeholder
+  // used to reach the model unsubstituted whenever a caller used one of these wrappers instead of
+  // `config().invoke()`.
   {
     captureContent,
+    providers,
     variables,
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     ContentCaptureOptions & {
+      /** Provider names this wildcard accepts. Forwarded to the handler, not to `config`. */
+      providers?: readonly string[];
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
 ) =>
-  config({ ...options, key: configKey, handler: createLangChainAgentsHandler(undefined, { captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+  config({
+    ...options,
+    key: configKey,
+    handler: createLangChainAgentsHandler(undefined, { captureContent, providers }),
+  }).invoke(userInput, context, variables);

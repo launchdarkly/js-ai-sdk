@@ -404,6 +404,11 @@ export type ProviderHandler = ((
 }>) & {
   providesFor?: [provider: string, type: 'agent' | 'messages'];
   /**
+   * Allowlist consulted only when `providesFor` starts with `'*'`. Names must match
+   * `config.provider.name` exactly. Omitted means the wildcard accepts every provider.
+   */
+  providers?: readonly string[];
+  /**
    * Whether this handler was built with content capture on. Declared here so the client core can
    * apply the same gate to content it writes on the handler's behalf — notably the judge's
    * reasoning — without reaching into the handler's closure.

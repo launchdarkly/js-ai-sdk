@@ -26,7 +26,7 @@ import {
   type TraverseVisitor,
   type VariationMeta,
 } from './types.js';
-import { endSpanOnce, normalizeMode } from './utils.js';
+import { endSpanOnce, normalizeMode, selectModeHandler } from './utils.js';
 
 // Cycle protection: cap how many BFS layers a traversal will expand.
 const MAX_TRAVERSAL_DEPTH = 100;
@@ -54,16 +54,19 @@ const selectHandler = (config: AiConfigRep, meta: VariationMeta, handlers: Provi
 
   const mode = normalizeMode(meta.mode);
 
-  const exact = handlers.find((h) => h.providesFor?.[0] === provider && h.providesFor?.[1] === mode);
-  if (exact) return exact;
-
-  const wildcard = handlers.find((h) => h.providesFor?.[0] === '*' && h.providesFor?.[1] === mode);
-  if (wildcard) return wildcard;
+  const chosen = selectModeHandler(handlers, provider, mode);
+  if (chosen) return chosen;
 
   const byProvider = handlers.find((h) => h.providesFor?.[0] === provider);
   if (byProvider) return byProvider;
 
-  if (handlers.length === 1) return handlers[0];
+  if (handlers.length === 1) {
+    const only = handlers[0];
+    if (only.providers !== undefined && !only.providers.includes(provider)) {
+      throw new Error(`Handler for provider ${provider} not found`);
+    }
+    return only;
+  }
 
   throw new Error(`Handler for provider ${provider} not found`);
 };
