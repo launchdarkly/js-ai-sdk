@@ -2,9 +2,10 @@
  * Agent Skills — keep skills on disk in sync as delivery changes.
  *
  * `writeSkills` is a one-shot reconcile of what the store holds now.
- * `watchSkills` re-runs it whenever the store reports a change, so a skill
- * revoked in LaunchDarkly is removed from disk within a debounce interval rather
- * than at the next restart.
+ * `watchSkills` re-runs it whenever the store reports a change, so with `'*'` a
+ * skill revoked in LaunchDarkly is removed from disk within a debounce interval
+ * rather than at the next restart. With an explicit list, an `absent` skill stays
+ * requested (an `error` action, not pruned), and flag changes are not watched.
  *
  * `onUnavailable: 'keep'` remains the default, so an outage never deletes the
  * application's skill files.

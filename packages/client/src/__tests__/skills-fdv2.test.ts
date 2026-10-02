@@ -36,6 +36,7 @@ import {
 } from '../skills.js';
 import { SKILL_OBJECT_KIND } from '../skills-core.js';
 import {
+  BACKOFF_RESET_INTERVAL_MS,
   backoffDelayMs,
   classifyStatus,
   DEFAULT_BASE_URI,
@@ -309,6 +310,7 @@ let openStores: FDv2SkillStore[];
 let tempRoots: string[];
 let warnSpy: ReturnType<typeof vi.spyOn>;
 let errorSpy: ReturnType<typeof vi.spyOn>;
+let debugSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(async () => {
   endpoint = new FakeFDv2Endpoint();
@@ -319,6 +321,7 @@ beforeEach(async () => {
   _clearState();
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
 });
 
 afterEach(async () => {
@@ -847,6 +850,49 @@ describe('protocol reader', () => {
     drive(reader, fullPayload([['put-object', putSkill()]]));
     drive(reader, events(['server-intent', serverIntent('none')], ['payload-transferred', transferred('basis-2')]));
     expect(held.size).toBe(1);
+  });
+
+  it('applies a put that follows a none intent on the same connection (§3.25)', () => {
+    // `none` says the basis is current, not that the connection is finished:
+    // later edits arrive as objects with no second intent. Dropping them while
+    // adopting the selector would move the basis past a change never applied.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, fullPayload([['put-object', putSkill('a')]]));
+    const outcomes = drive(
+      reader,
+      events(
+        ['server-intent', serverIntent('none')],
+        ['put-object', putSkill('b')],
+        ['payload-transferred', transferred('basis-2')],
+      ),
+    );
+    expect(held.get('a', null)).not.toBeNull();
+    expect(held.get('b', null)?.content).toBe(SKILL_BODY);
+    expect(outcomes.at(-1)?.basis).toBe('basis-2');
+    expect((outcomes.at(-1)?.changes ?? []).map((raw) => raw.key)).toEqual(['b']);
+    expect(reader.diagnostics.objectsIgnored).toBe(0);
+  });
+
+  it('applies a revocation that follows a none intent on the same connection (§3.25)', () => {
+    // The case that matters: a skill revoked after a routine reconnect. Dropped,
+    // it would keep being served, and reconnecting would not recover it,
+    // because the basis has already moved past the delete.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, fullPayload([['put-object', putSkill()]]));
+    const outcomes = drive(
+      reader,
+      events(
+        ['server-intent', serverIntent('none')],
+        ['delete-object', deleteSkill()],
+        ['payload-transferred', transferred('basis-2')],
+      ),
+    );
+    expect(held.get('pdf-extraction', null)).toBeNull();
+    expect(reader.diagnostics.objectsRevoked).toBe(1);
+    expect(reader.diagnostics.objectsIgnored).toBe(0);
+    expect(outcomes.at(-1)?.changes).toEqual([{ key: 'pdf-extraction', version: 3 }]);
   });
 
   it('treats an object arriving with no intent as a delta', () => {
@@ -1493,12 +1539,15 @@ describe('SSE framing', () => {
     return seen;
   };
 
-  it('bounds an unterminated line and fails recoverably rather than buffering it without limit', async () => {
+  it('bounds an unterminated line and fails fatally rather than buffering it without limit', async () => {
     // A server (or a proxy) that never sends a newline would otherwise grow the
-    // line buffer until the process ran out of memory. Recoverable, so the
-    // connection is dropped and retried rather than the store giving up.
+    // line buffer until the process ran out of memory. Fatal, like a 422: the
+    // payload's size belongs to the environment, so a retry would download it
+    // again on every backoff step and be refused the same way.
     const newlineless = 'x'.repeat(MAX_RESPONSE_CHARS + 1024);
-    await expect(drained(chunkedBody(newlineless, 1024 * 1024))).rejects.toBeInstanceOf(RecoverableTransportError);
+    const failure = drained(chunkedBody(newlineless, 1024 * 1024));
+    await expect(failure).rejects.toBeInstanceOf(FatalTransportError);
+    await expect(failure).rejects.not.toBeInstanceOf(RecoverableTransportError);
   });
 
   it('bounds the accumulated data lines of one event the same way', async () => {
@@ -1511,7 +1560,9 @@ describe('SSE framing', () => {
     const dataPerLine = line.length - 'data: '.length;
     const lines = Math.ceil(MAX_RESPONSE_CHARS / dataPerLine) + 1;
     const body = readsOf('event: put-object\n', ...Array.from({ length: lines }, () => line));
-    await expect(drained(body)).rejects.toThrow(/characters of data for one event/);
+    const failure = drained(body);
+    await expect(failure).rejects.toThrow(/characters of data for one event/);
+    await expect(failure).rejects.toBeInstanceOf(FatalTransportError);
   });
 
   it('accepts a read that delivered many finished events at once', async () => {
@@ -1532,7 +1583,7 @@ describe('SSE framing', () => {
     // Content rides inline in the envelope, so the transport bound has to clear
     // the 10 MiB content cap: a skill this size is verification's business to
     // accept or withhold, and must reach it rather than being dropped as a
-    // framing failure and retried into the failure budget.
+    // framing failure and retried for as long as it is redelivered.
     const big = JSON.stringify({ content: 'z'.repeat(11 * 1024 * 1024) });
     expect(big.length).toBeLessThan(MAX_RESPONSE_CHARS);
     const framedEvents = await drained(chunkedBody(`event: put-object\ndata: ${big}\n\n`, 64 * 1024));
@@ -1643,7 +1694,7 @@ describe('streaming against the endpoint', () => {
     for (let i = 1; i <= 5; i += 1) {
       endpoint.queueStream(fullPayload([['put-object', putSkill()]], `basis-${i}`));
     }
-    const store = streamStore({ maxConsecutiveFailures: 3 });
+    const store = streamStore();
     store.start();
     expect(await store.waitForSkills(5000)).toBe(true);
     expect(await waitUntil(() => endpoint.requests.length >= 5)).toBe(true);
@@ -1746,7 +1797,10 @@ class RecyclingRequester implements Requester {
 class UnchangingRequester implements Requester {
   connections = 0;
 
-  constructor(private readonly firstTransfer: WireEvent[] = []) {}
+  constructor(
+    private readonly firstTransfer: WireEvent[] = [],
+    private readonly silent = true,
+  ) {}
 
   poll(): Promise<PollResult> {
     throw new Error('not a polling double');
@@ -1760,7 +1814,7 @@ class UnchangingRequester implements Requester {
         : events(['server-intent', serverIntent('none')]);
     const scripted = asPairs([
       ...transfer,
-      ...events(['goodbye', { reason: 'server recycle', silent: true, catastrophe: false }]),
+      ...events(['goodbye', { reason: 'server recycle', silent: this.silent, catastrophe: false }]),
     ]);
     return (async function* () {
       yield* scripted;
@@ -1789,6 +1843,71 @@ class GoodbyeOnlyRequester implements Requester {
     })();
   }
 }
+
+/**
+ * A degraded server: every connection is answered with the `none` intent, a
+ * completed exchange, and then dropped at once without a goodbye.
+ */
+class AnswerThenDropRequester implements Requester {
+  connections = 0;
+
+  poll(): Promise<PollResult> {
+    throw new Error('not a polling double');
+  }
+
+  async stream(): Promise<AsyncIterable<[string, unknown]>> {
+    this.connections += 1;
+    const scripted = asPairs(events(['server-intent', serverIntent('none')]));
+    return (async function* () {
+      yield* scripted;
+    })();
+  }
+}
+
+/**
+ * Plays one outcome per connection: an `Error` thrown at connect, or events
+ * delivered on a connection held open for `holdMs` and then dropped. Exhausted,
+ * it parks a connection until the store closes, freezing what was logged.
+ */
+class HeldStreamRequester implements Requester {
+  connections = 0;
+
+  constructor(private readonly outcomes: Array<Error | { events: WireEvent[]; holdMs: number }>) {}
+
+  poll(): Promise<PollResult> {
+    throw new Error('not a polling double');
+  }
+
+  async stream(_basis: string | null, signal: AbortSignal): Promise<AsyncIterable<[string, unknown]>> {
+    this.connections += 1;
+    const outcome = this.outcomes.shift();
+    if (outcome instanceof Error) throw outcome;
+    const scripted = outcome === undefined ? [] : asPairs(outcome.events);
+    const holdMs = outcome === undefined ? Number.POSITIVE_INFINITY : outcome.holdMs;
+    return (async function* () {
+      yield* scripted;
+      await new Promise<void>((resolve) => {
+        const timer = Number.isFinite(holdMs) ? setTimeout(resolve, holdMs) : null;
+        signal.addEventListener(
+          'abort',
+          () => {
+            if (timer !== null) clearTimeout(timer);
+            resolve();
+          },
+          { once: true },
+        );
+      });
+    })();
+  }
+}
+
+/** The delays the store logged before each counted retry, in order. */
+const retryDelays = (): number[] =>
+  logged(warnSpy)
+    .split('\n')
+    .map((line) => /retrying in (\d+)ms/.exec(line)?.[1])
+    .filter((delay): delay is string => delay !== undefined)
+    .map(Number);
 
 function scriptedStreamStore(requester: Requester, options: Record<string, unknown> = {}): FDv2SkillStore {
   const store = new FDv2SkillStore(SDK_KEY, {
@@ -1873,30 +1992,56 @@ describe('failure handling', () => {
     expect(await waitUntil(() => store.diagnostics.connectionFailures === 0)).toBe(true);
   });
 
-  it('bounds retries', async () => {
+  it('keeps retrying a recoverable failure well past ten in a row (§3.25)', async () => {
+    // There is no consecutive-failure bound. One would turn a few minutes of
+    // outage into a process that receives no updates, and no revocations, for
+    // the rest of its life.
+    const requester = new ScriptedRequester([asPairs(fullPayload([['put-object', putSkill()]]))]);
     const store = new FDv2SkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalMs: 5,
       initialBackoffMs: 1,
       maxBackoffMs: 2,
-      maxConsecutiveFailures: 3,
-      requester: new ScriptedRequester(),
+      requester,
     });
     openStores.push(store);
     store.start();
-    expect(await waitUntil(() => store.failed !== null)).toBe(true);
-    // Four, not three: the bound is the number of failures *tolerated*, so the
-    // run that exceeds it is the one that gives up.
-    expect(store.failed).toContain('gave up after 4 consecutive failures');
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await waitUntil(() => store.diagnostics.connectionFailures >= 15)).toBe(true);
+    expect(store.failed).toBeNull();
+    // Still counting, so still retrying.
+    const seen = store.diagnostics.connectionFailures;
+    expect(await waitUntil(() => store.diagnostics.connectionFailures > seen)).toBe(true);
+    expect(store.failed).toBeNull();
+    expect(store.diagnostics.lastError).not.toBeNull();
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+  });
+
+  it('keeps retrying stream failures too', async () => {
+    const store = scriptedStreamStore(new ScriptedRequester());
+    store.start();
+    expect(await waitUntil(() => store.diagnostics.connectionFailures >= 15)).toBe(true);
+    expect(store.failed).toBeNull();
+  });
+
+  it('runs waitForSkills to its timeout during a recoverable outage', async () => {
+    // Only `close()` or a fatal status ends delivery, so an outage before the
+    // first payload is an answer the store does not have yet.
+    const store = scriptedStreamStore(new ScriptedRequester());
+    store.start();
+    const started = Date.now();
+    expect(await store.waitForSkills(300)).toBe(false);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+    expect(store.failed).toBeNull();
+    expect(store.diagnostics.connectionFailures).toBeGreaterThan(0);
   });
 
   it('does not count recycled stream connections as failures', async () => {
     // A streaming connection only ever ends by being dropped, so a loop that
-    // counted every drop as a failure would give up on a healthy server after
-    // maxConsecutiveFailures + 1 recycles, and delivery (including revocation)
-    // would silently stop for the process lifetime.
+    // counted every drop as a failure would back a healthy server off to
+    // maxBackoffMs and report it as failing.
     const requester = new RecyclingRequester();
-    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 3 });
+    const store = scriptedStreamStore(requester);
     store.start();
     expect(await waitUntil(() => requester.connections >= 8)).toBe(true);
     expect(store.failed).toBeNull();
@@ -1907,29 +2052,26 @@ describe('failure handling', () => {
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
 
-  it('does not count an up-to-date connection against the retry bound', async () => {
+  it('does not count an up-to-date connection as a failure', async () => {
     // An environment whose skills never change is answered with the `none`
     // intent and then recycled, so nothing ever commits. Clearing the failure
-    // row only at a commit would give up on this healthy server after
-    // maxConsecutiveFailures + 1 recycles, and no later revocation would ever
-    // be delivered.
+    // row only at a commit would back this healthy server off to maxBackoffMs
+    // and report it as failing.
     const requester = new UnchangingRequester();
-    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 3 });
+    const store = scriptedStreamStore(requester);
     store.start();
-    // A bound well inside the test timeout, so a loop that gave up fails here
-    // rather than by running out of time: each recycle costs a 1ms backoff.
+    // Each recycle costs a 1ms backoff, so eight arrive well inside the wait.
     expect(await waitUntil(() => requester.connections >= 8, 2000)).toBe(true);
     expect(store.failed).toBeNull();
     expect(store.diagnostics.connectionFailures).toBe(0);
     expect(store.diagnostics.lastError).toBeNull();
   });
 
-  it('keeps delivering after more recycles than the retry bound tolerates', async () => {
+  it('keeps delivering across many recycles', async () => {
     // The same server, but with a payload transferred first: the content it
-    // delivered has to survive the recycles, and delivery has to still be live
-    // afterwards rather than quietly given up on.
+    // delivered has to survive the recycles, and the count has to stay clear.
     const requester = new UnchangingRequester(fullPayload([['put-object', putSkill()]], 'basis-1'));
-    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 3 });
+    const store = scriptedStreamStore(requester);
     store.start();
     expect(await store.waitForSkills(5000)).toBe(true);
     expect(await waitUntil(() => requester.connections >= 6, 2000)).toBe(true);
@@ -1938,68 +2080,214 @@ describe('failure handling', () => {
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
 
-  it('bounds a server that only ever says goodbye', async () => {
-    // A goodbye is exempt from the retry bound because it is how a healthy
-    // stream is recycled — but a connection that says goodbye without ever
-    // sending a `server-intent` served nothing. Exempting that too would
-    // reconnect without limit, and without `failed` or the diagnostics ever
-    // saying so.
+  it('counts a server that only ever says goodbye as failing', async () => {
+    // A goodbye is exempt from the count because it is how a healthy stream is
+    // recycled — but a connection that says goodbye without ever sending a
+    // `server-intent` served nothing. Exempting that too would reconnect
+    // indefinitely without `diagnostics` ever saying so.
     const requester = new GoodbyeOnlyRequester();
-    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 3 });
+    const store = scriptedStreamStore(requester);
     store.start();
-    expect(await waitUntil(() => store.failed !== null, 2000)).toBe(true);
-    expect(store.failed).toContain('gave up after 4 consecutive failures');
-    expect(store.failed).toContain('server said goodbye: recycling');
-    expect(requester.connections).toBe(4);
-    expect(store.diagnostics.connectionFailures).toBe(4);
-    expect(store.diagnostics.lastError).not.toBeNull();
+    expect(await waitUntil(() => store.diagnostics.connectionFailures >= 4, 2000)).toBe(true);
+    expect(store.failed).toBeNull();
+    expect(requester.connections).toBeGreaterThanOrEqual(4);
+    expect(store.diagnostics.lastError).toContain('server said goodbye: recycling');
+    // Counted, so the delivery loop warns for it, as for any other failure.
+    expect(logged(warnSpy)).toMatch(/Skill delivery failed \(server said goodbye: recycling\); retrying in/);
+  });
+
+  it('reads no failure, no lastError and no warning across repeated answer-then-goodbye recycles (§3.25)', async () => {
+    // A goodbye after a completed exchange is how the server recycles a
+    // long-lived stream. The counter is the main outage signal now that
+    // `failed` is reserved for fatal failures, so a recycle must not appear in
+    // it at any point, nor in `lastError`, nor in any log above debug. Not
+    // silent, so the reader's own closing line is exercised too.
+    const requester = new UnchangingRequester(fullPayload([['put-object', putSkill()]], 'basis-1'), false);
+    const store = scriptedStreamStore(requester);
+    let worst = 0;
+    let lastError: string | null = null;
+    store.start();
+    expect(
+      await waitUntil(() => {
+        worst = Math.max(worst, store.diagnostics.connectionFailures);
+        lastError = lastError ?? store.diagnostics.lastError;
+        return requester.connections >= 8;
+      }, 2000),
+    ).toBe(true);
+    expect(worst).toBe(0);
+    expect(lastError).toBeNull();
+    expect(store.diagnostics.connectionFailures).toBe(0);
+    expect(store.diagnostics.lastError).toBeNull();
+    expect(store.failed).toBeNull();
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+    // Still visible at debug.
+    expect(logged(debugSpy)).toMatch(/FDv2 connection closing: server recycle/);
+  });
+
+  it('reports one failure, not two, for a store that fails, succeeds, then fails (§3.25)', async () => {
+    // Polled, so the success is a request of its own rather than a stream whose
+    // own end counts as the next failure. The fourth request parks, freezing
+    // the count after the second failure. A completed poll also starts the
+    // backoff over, since `pollIntervalMs` already spaces the requests.
+    // No jitter, so the first step is exactly `initialBackoffMs` and the second
+    // exactly twice it.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const requester = new ScriptedRequester([
+      new RecoverableTransportError('x'),
+      asPairs(fullPayload([['put-object', putSkill()]])),
+      new RecoverableTransportError('y'),
+      new Promise(() => {}),
+    ]);
+    const store = new FDv2SkillStore(SDK_KEY, {
+      mode: 'poll',
+      pollIntervalMs: 5,
+      initialBackoffMs: 100,
+      maxBackoffMs: 10_000,
+      requester,
+    });
+    openStores.push(store);
+    store.start();
+    expect(await waitUntil(() => requester.calls.length === 4)).toBe(true);
+    expect(store.diagnostics.connectionFailures).toBe(1);
+    expect(store.diagnostics.lastError).toBe('y');
+    // And the retry was on the first step of the backoff (at most
+    // initialBackoffMs), not the second (more than it).
+    const retries = logged(warnSpy)
+      .split('\n')
+      .map((line) => /Skill delivery failed \(y\); retrying in (\d+)ms/.exec(line)?.[1])
+      .filter((delay): delay is string => delay !== undefined);
+    expect(retries).toHaveLength(1);
+    expect(Number(retries[0])).toBe(100);
+  });
+
+  it('reconnects a server that answers none and drops at once on a growing delay (§3.25)', async () => {
+    // Each connection completes an exchange, so the failure count resets every
+    // time and never climbs past one. The delay must not reset with it: a
+    // degraded server that answers and then drops would otherwise be
+    // reconnected at `initialBackoffMs`, by every process, for as long as it
+    // stayed degraded. Only a stream that stays open resets the delay.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const requester = new AnswerThenDropRequester();
+    const store = scriptedStreamStore(requester, { initialBackoffMs: 2, maxBackoffMs: 10_000 });
+    let worst = 0;
+    store.start();
+    expect(
+      await waitUntil(() => {
+        worst = Math.max(worst, store.diagnostics.connectionFailures);
+        return requester.connections >= 6;
+      }),
+    ).toBe(true);
+    expect(worst).toBeLessThanOrEqual(1);
+    expect(store.diagnostics.connectionFailures).toBeLessThanOrEqual(1);
+    expect(store.failed).toBeNull();
+    // Doubling from the first step on every reconnect: 2, 4, 8, 16, 32.
+    expect(retryDelays().slice(0, 5)).toEqual([2, 4, 8, 16, 32]);
+  });
+
+  it('retries at the first step after a stream that stayed open past the reset interval (§3.25)', async () => {
+    // Three refused connects advance the step to 8ms; the fourth connection
+    // answers and is held open past the (shortened) reset interval before it
+    // drops, so the reconnect after it starts over at `initialBackoffMs`.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const requester = new HeldStreamRequester([
+      new RecoverableTransportError('x'),
+      new RecoverableTransportError('x'),
+      new RecoverableTransportError('x'),
+      { events: events(['server-intent', serverIntent('none')]), holdMs: 80 },
+    ]);
+    const store = scriptedStreamStore(requester, { initialBackoffMs: 2, maxBackoffMs: 10_000 });
+    store._backoffResetIntervalMs = 20;
+    store.start();
+    expect(await waitUntil(() => requester.connections === 5)).toBe(true);
+    expect(retryDelays()).toEqual([2, 4, 8, 2]);
+  });
+
+  it('keeps advancing the step after a stream that dropped inside the reset interval (§3.25)', async () => {
+    // The control for the test above: the same script against the real
+    // interval, so the reset there is the uptime's doing and nothing else's.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const requester = new HeldStreamRequester([
+      new RecoverableTransportError('x'),
+      new RecoverableTransportError('x'),
+      new RecoverableTransportError('x'),
+      { events: events(['server-intent', serverIntent('none')]), holdMs: 80 },
+    ]);
+    const store = scriptedStreamStore(requester, { initialBackoffMs: 2, maxBackoffMs: 10_000 });
+    expect(store._backoffResetIntervalMs).toBe(BACKOFF_RESET_INTERVAL_MS);
+    expect(BACKOFF_RESET_INTERVAL_MS).toBe(60_000);
+    store.start();
+    expect(await waitUntil(() => requester.connections === 5)).toBe(true);
+    expect(retryDelays()).toEqual([2, 4, 8, 16]);
   });
 
   it('resets the failure count on a stream commit', async () => {
+    // Three failures, then a commit: the stream's own drop after the commit is
+    // failure one again, not four.
     const requester = new ScriptedRequester([
       new RecoverableTransportError('x'),
       new RecoverableTransportError('x'),
       new RecoverableTransportError('x'),
       asPairs(fullPayload([['put-object', putSkill()]])),
+      new Promise(() => {}),
     ]);
-    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 3 });
+    const store = scriptedStreamStore(requester);
     store.start();
     expect(await store.waitForSkills(5000)).toBe(true);
-    // Three failures reach the bound, then a commit, then the exhausted
-    // requester fails on every reconnect. The count must start again at the
-    // commit: the stream's own drop is failure one, and three more connects are
-    // owed before giving up. Carrying the three over would give up on the drop
-    // itself, with no further connect at all.
-    expect(await waitUntil(() => store.failed !== null)).toBe(true);
-    expect(store.failed).toContain('gave up after 4 consecutive failures');
-    expect(store.failed).toContain('last error: x');
-    expect(requester.calls).toHaveLength(7);
+    expect(await waitUntil(() => requester.calls.length === 5)).toBe(true);
+    expect(store.diagnostics.connectionFailures).toBe(1);
+    expect(store.diagnostics.lastError).toContain('closed unexpectedly');
   });
 
-  it('bounds stream retries', async () => {
-    const store = scriptedStreamStore(new ScriptedRequester(), { maxConsecutiveFailures: 3 });
-    store.start();
-    expect(await waitUntil(() => store.failed !== null)).toBe(true);
-    expect(store.failed).toContain('gave up after 4 consecutive failures');
-  });
-
-  it('gives up on a server that announces a transfer and drops before committing, every time (§3.25)', async () => {
+  it('counts each drop of a server that announces a transfer and drops before committing (§3.25)', async () => {
     // An `xfer-full` intent is a promise, not a delivery. A server that sends
     // one and drops before `payload-transferred` has delivered nothing, and a
-    // store that counted the announcement as health would retry it forever at
-    // the initial backoff. Only a committed payload or a `none` intent resets
-    // the row of failures.
+    // store that counted the announcement as health would report it healthy
+    // for as long as it kept doing so. Only a committed payload or a `none`
+    // intent resets the row of failures.
     const outcomes: unknown[] = [];
-    for (let i = 0; i < 10; i += 1) {
+    for (let i = 0; i < 5; i += 1) {
       outcomes.push(asPairs(events(['server-intent', serverIntent('xfer-full')], ['put-object', putSkill()])));
     }
+    outcomes.push(new Promise(() => {}));
     const requester = new ScriptedRequester(outcomes);
-    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 3 });
+    const store = scriptedStreamStore(requester);
     store.start();
-    expect(await waitUntil(() => store.failed !== null, 5000)).toBe(true);
-    expect(store.failed).toContain('gave up after 4 consecutive failures');
-    expect(requester.calls).toHaveLength(4);
+    expect(await waitUntil(() => requester.calls.length === 6, 5000)).toBe(true);
+    expect(store.diagnostics.connectionFailures).toBe(5);
+    expect(store.failed).toBeNull();
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).toBeNull();
+  });
+
+  it('revokes and notifies on a delete that follows a none intent on a live stream (§3.25)', async () => {
+    // The reconnect is answered `none`, and the revocation comes later on the
+    // same connection with no second intent. The listener is what wakes a
+    // watcher to prune, so it must see the tombstone.
+    const requester = new ScriptedRequester([
+      asPairs(fullPayload([['put-object', putSkill()]], 'basis-1')),
+      asPairs(
+        events(
+          ['server-intent', serverIntent('none')],
+          ['delete-object', deleteSkill()],
+          ['payload-transferred', transferred('basis-2')],
+        ),
+      ),
+      new Promise(() => {}),
+    ]);
+    const store = scriptedStreamStore(requester);
+    const seen: RawSkillObject[] = [];
+    store.addListener(SKILL_OBJECT_KIND, (raw) => {
+      seen.push(raw);
+    });
+    store.start();
+    expect(await waitUntil(() => store.diagnostics.payloadsTransferred === 2)).toBe(true);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).toBeNull();
+    expect(store.diagnostics.objectsRevoked).toBe(1);
+    expect(store.diagnostics.objectsIgnored).toBe(0);
+    expect(seen.at(-1)).toEqual({ key: 'pdf-extraction', version: 3 });
+    // The next connection resumes from the basis the revocation committed.
+    expect(await waitUntil(() => requester.calls.length === 3)).toBe(true);
+    expect(requester.calls[2][0]).toBe('basis-2');
   });
 
   it('honours a Retry-After header off the wire', async () => {
@@ -2016,21 +2304,21 @@ describe('failure handling', () => {
 
   it('does not treat a blank Retry-After as no delay at all', async () => {
     // `Number('')` is 0 and finite, so a header a proxy sent empty would win
-    // over the backoff and reconnect with no wait — burning every retry the
-    // bound allows in a few milliseconds and going permanently fatal.
+    // over the backoff and reconnect with no wait, a tight loop against the
+    // endpoint for as long as the proxy kept doing it.
     for (let i = 0; i < 5; i += 1) endpoint.queuePoll([], { status: 503, retryAfter: '' });
-    const store = pollStore({ initialBackoffMs: 100, maxBackoffMs: 100, maxConsecutiveFailures: 3 });
+    const store = pollStore({ initialBackoffMs: 100, maxBackoffMs: 100 });
     const started = Date.now();
     store.start();
-    expect(await waitUntil(() => store.failed !== null, 4000)).toBe(true);
-    // Three backoffs before the fourth failure gives up. Jitter can halve each,
-    // so 120ms is the floor; collapsed, the whole run lands in single digits.
+    expect(await waitUntil(() => endpoint.requests.length >= 4, 4000)).toBe(true);
+    // Three backoffs before the fourth request. Jitter can halve each, so 120ms
+    // is the floor; collapsed, the whole run lands in single digits.
     expect(Date.now() - started).toBeGreaterThanOrEqual(120);
   });
 
   it('floors an honoured Retry-After at initialBackoffMs', async () => {
     // `Retry-After: 0` is legal and means "try again now". Taken literally it
-    // is a busy loop against the retry bound, so it is honoured as the shortest
+    // is a busy loop against the endpoint, so it is honoured as the shortest
     // delay the store was configured to wait.
     const requester = new ScriptedRequester([
       new RecoverableTransportError('slow down', 0),
@@ -2069,35 +2357,32 @@ describe('failure handling', () => {
     expect(retry.ifNoneMatch).toBeUndefined();
   });
 
-  it('asks from scratch after a 400 even on a budget an outage has spent', async () => {
-    // The one repair available does not compete with the retry bound. A 400
-    // arriving on a spent budget would otherwise give up while holding the one
-    // request known to fix it, and delivery would stop for the process lifetime
-    // over state the store was about to drop.
+  it('asks from scratch after a 400 that follows a recoverable failure', async () => {
+    // The repair is owed however the previous request failed.
     endpoint.queuePoll(fullPayload([['put-object', putSkill('first')]], 'basis-1'), { etag: 'etag-1' });
     endpoint.queuePoll([], { status: 500 });
     endpoint.queuePoll([], { status: 400 });
     endpoint.queuePoll(fullPayload([['put-object', putSkill('second')]], 'basis-2'));
-    const store = pollStore({ maxConsecutiveFailures: 1 });
+    const store = pollStore();
     store.start();
     expect(await waitUntil(() => store.getObject(SKILL_OBJECT_KIND, 'second') !== null)).toBe(true);
     expect(store.failed).toBeNull();
-    // The repair went out from scratch rather than never going out at all.
     const repair = endpoint.requests[3];
     expect(repair.query.basis).toBeUndefined();
     expect(repair.ifNoneMatch).toBeUndefined();
   });
 
-  it('meets the spent budget on a non-400 after the repair', async () => {
-    // The exemption is for the repair, not for the run that follows it.
+  it('still stops on the second 400 when a recoverable failure sits between them', async () => {
+    // The 400 is retried once because the retry drops the state; a 500 in
+    // between restores none, so the next 400 is answering a stateless request.
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]], 'basis-1'));
-    endpoint.queuePoll([], { status: 500 });
     endpoint.queuePoll([], { status: 400 });
     endpoint.queuePoll([], { status: 500 });
-    const store = pollStore({ maxConsecutiveFailures: 1 });
+    endpoint.queuePoll([], { status: 400 });
+    const store = pollStore();
     store.start();
     expect(await waitUntil(() => store.failed !== null)).toBe(true);
-    expect(store.failed).toContain('gave up after 3 consecutive failures');
+    expect(store.failed).toContain('400');
     expect(endpoint.requests).toHaveLength(4);
   });
 
@@ -2138,7 +2423,7 @@ describe('failure handling', () => {
     const store = new FDv2SkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalMs: 10_000,
-      initialBackoffMs: 5_000,
+      initialBackoffMs: 20,
       maxBackoffMs: 20,
       requester,
     });
@@ -2180,7 +2465,7 @@ describe('failure handling', () => {
 
   it('answers every status with exactly one of the two classes', () => {
     // There is no third class. A status handled as neither recoverable nor
-    // fatal is a retry loop with no bound and no budget, invisible to both
+    // fatal is a retry loop off the backoff schedule, invisible to both
     // `failed` and `connectionFailures`.
     const statuses = [
       301, 302, 307, 308, 400, 401, 402, 403, 404, 405, 406, 408, 409, 410, 413, 414, 418, 422, 425, 429, 431, 451, 500,
@@ -2207,9 +2492,8 @@ describe('failure handling', () => {
     // payload it will never be assigned stops instead of hammering the fleet.
     // So the first response is enough: no retry, and nothing committed.
     endpoint.defaultPollStatus = 422;
-    // A bound well above one, so what stops the loop is provably the
-    // classification and not an exhausted budget.
-    const store = pollStore({ maxConsecutiveFailures: 10 });
+    // Nothing else stops a loop, so what stops this one is the classification.
+    const store = pollStore();
     store.start();
     expect(await waitUntil(() => store.failed !== null)).toBe(true);
     expect(store.failed).toMatch(/422/);
@@ -2222,11 +2506,11 @@ describe('failure handling', () => {
   });
 
   it('accounts a fatal 422 on failed and lastError, and not on connectionFailures', async () => {
-    // `connectionFailures` measures consecutive *recoverable* failures against
-    // the retry bound. A fatal never retries, so moving it would put a number
-    // against a budget nothing will spend and make a store that gave up on its
-    // first response look like one that exhausted its attempts. This is how the
-    // give-up path already accounts 401 and 404; 422 is not a special case.
+    // `connectionFailures` measures consecutive *recoverable* failures, the
+    // ones driving the backoff. A fatal never retries, so moving it would make
+    // a store that gave up on its first response look like one riding out an
+    // outage. This is how the give-up path already accounts 401 and 404; 422 is
+    // not a special case.
     endpoint.defaultPollStatus = 422;
     const store = pollStore();
     store.start();
@@ -2285,11 +2569,107 @@ describe('failure handling', () => {
     expect(await readFile(path.join(stale, 'SKILL.md'), 'utf8')).toBe('not ours to delete');
   });
 
+  /**
+   * A response body that opens with `prefix` and then runs past the transport
+   * bound without a newline, in 4 MiB reads. Finite, a little past the bound,
+   * so an unbounded reader fails an assertion rather than the worker.
+   */
+  const oversizedBody = (prefix: string): ReadableStream<Uint8Array> => {
+    const encoder = new TextEncoder();
+    const filler = encoder.encode('x'.repeat(4 * 1024 * 1024));
+    let remaining = Math.ceil(MAX_RESPONSE_CHARS / filler.length) + 2;
+    let opened = false;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!opened) {
+          opened = true;
+          controller.enqueue(encoder.encode(prefix));
+        } else if (remaining > 0) {
+          remaining -= 1;
+          controller.enqueue(filler);
+        } else {
+          controller.close();
+        }
+      },
+    });
+  };
+
+  it('stops on a poll body over the memory bound, like a 422, after exactly one request (§3.25)', async () => {
+    // The payload's size belongs to the environment, not the connection, so
+    // the next request would be refused the same way: retried, it would
+    // re-download up to the bound on every backoff step, from every process.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response(oversizedBody('{"events": ['), { status: 200 }));
+    const store = new FDv2SkillStore(SDK_KEY, {
+      baseUri: 'https://sdk.example.com',
+      mode: 'poll',
+      pollIntervalMs: 20,
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+    });
+    openStores.push(store);
+    store.start();
+    expect(await store.waitForSkills(10_000)).toBe(false);
+    expect(store.failed).toMatch(/transport bound/);
+    expect(store.diagnostics.lastError).toMatch(/transport bound/);
+    // Accounted as a fatal: it never retries, so it is not a recoverable failure.
+    expect(store.diagnostics.connectionFailures).toBe(0);
+    expect(store.isInitialized()).toBe(false);
+    // A window that would hold several retries at this store's 5ms backoff.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(logged(warnSpy)).not.toMatch(/Skill delivery failed/);
+    expect(consoleErrors()).toMatch(/will not retry/);
+  });
+
+  it('stops on a streamed event over the memory bound and keeps serving what it held (§3.25)', async () => {
+    // One connection: a payload commits, then an event runs past the bound.
+    const committed = fullPayload([['put-object', putSkill()]])
+      .map((event) => `event: ${event.event}\ndata: ${JSON.stringify(event.data ?? null)}\n\n`)
+      .join('');
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(
+        async () => new Response(oversizedBody(`${committed}event: put-object\ndata: `), { status: 200 }),
+      );
+    const store = new FDv2SkillStore(SDK_KEY, {
+      baseUri: 'https://sdk.example.com',
+      mode: 'stream',
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+    });
+    openStores.push(store);
+    store.start();
+    expect(await store.waitForSkills(10_000)).toBe(true);
+    expect(await waitUntil(() => store.failed !== null, 10_000)).toBe(true);
+    expect(store.failed).toMatch(/characters/);
+    expect(store.diagnostics.lastError).toBe(store.failed);
+    expect(store.diagnostics.connectionFailures).toBe(0);
+    // Last known good is still served.
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('makes backoff exponential and capped', () => {
     expect(backoffDelayMs(1, 1000, 30_000, 0)).toBe(1000);
     expect(backoffDelayMs(2, 1000, 30_000, 0)).toBe(2000);
     expect(backoffDelayMs(3, 1000, 30_000, 0)).toBe(4000);
     expect(backoffDelayMs(20, 1000, 30_000, 0)).toBe(30_000);
+  });
+
+  it('keeps backoff finite at any attempt number', () => {
+    // Retries are unbounded, so the attempt number is too; `2 ** 9999` is
+    // `Infinity`, and `0 * Infinity` is `NaN`.
+    for (const jitter of [0, 0.5, 1]) {
+      const delay = backoffDelayMs(10_000, 1000, 30_000, jitter);
+      expect(Number.isFinite(delay)).toBe(true);
+      expect(delay).toBeLessThanOrEqual(30_000);
+      expect(delay).toBeGreaterThanOrEqual(0);
+    }
+    expect(backoffDelayMs(10_000, 1000, 30_000, 0)).toBe(30_000);
+    expect(backoffDelayMs(10_000, 0, 30_000)).toBe(0);
   });
 
   it('never lets jitter exceed the cap', () => {
@@ -3644,9 +4024,7 @@ describe('endpoints', () => {
     const { body, reads } = oversizedPollBody(chunk);
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }));
     const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1000);
-    await expect(requester.poll(null, null, new AbortController().signal)).rejects.toBeInstanceOf(
-      RecoverableTransportError,
-    );
+    await expect(requester.poll(null, null, new AbortController().signal)).rejects.toBeInstanceOf(FatalTransportError);
     expect(reads()).toBeLessThanOrEqual(MAX_RESPONSE_CHARS / chunk + 2);
   });
 
@@ -3717,12 +4095,27 @@ describe('transport contract', () => {
     expect(source).not.toMatch(/payloadUnavailable/);
     // There is no expected-recoverable class at all, not merely an unexported
     // one: a status handled as neither recoverable nor fatal is a retry
-    // loop with no bound and no budget.
+    // loop off the backoff schedule.
     expect(source).not.toMatch(/NoSkillPayloadError/);
     // And no idle warning, no retry parked at the cap instead of on the
     // backoff schedule.
     expect(source).not.toMatch(/delivery is idle/i);
     expect(source).not.toMatch(/warnedNoSkillPayload/);
+  });
+
+  it('declares no maxConsecutiveFailures option, by source text (§3.25)', () => {
+    // The option would freeze a give-up contract into the public API, so its
+    // absence is asserted by name, the same way as payloadUnavailable's.
+    expect(source).not.toMatch(/maxConsecutiveFailures/);
+    expect(source).not.toMatch(/consecutive failures/);
+  });
+
+  it('does not read a maxConsecutiveFailures passed anyway', async () => {
+    // The runtime half: an untyped caller passing the old option gets no bound.
+    const store = scriptedStreamStore(new ScriptedRequester(), { maxConsecutiveFailures: 1 });
+    store.start();
+    expect(await waitUntil(() => store.diagnostics.connectionFailures >= 5)).toBe(true);
+    expect(store.failed).toBeNull();
   });
 
   it('carries no payloadUnavailable key on a real diagnostics snapshot', () => {
@@ -3751,14 +4144,17 @@ describe('transport contract', () => {
     expect(held.size).toBe(1);
   });
 
-  it('bound exhaustion logs the error and keeps serving last known good, in one test', async () => {
-    const requester = new ScriptedRequester([asPairs(fullPayload([['put-object', putSkill()]]))]);
-    const store = scriptedStreamStore(requester, { maxConsecutiveFailures: 2 });
+  it('giving up logs the error and keeps serving last known good, in one test', async () => {
+    const requester = new ScriptedRequester([
+      asPairs(fullPayload([['put-object', putSkill()]])),
+      new FatalTransportError('HTTP 401'),
+    ]);
+    const store = scriptedStreamStore(requester);
     store.start();
     expect(await store.waitForSkills(5000)).toBe(true);
     expect(await waitUntil(() => store.failed !== null, 5000)).toBe(true);
     expect(consoleErrors()).toMatch(/will not retry/);
-    expect(consoleErrors()).toMatch(/gave up after 3 consecutive failures/);
+    expect(consoleErrors()).toMatch(/HTTP 401/);
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
     expect(store.allObjects(SKILL_OBJECT_KIND)).toHaveProperty('pdf-extraction');
   });
@@ -3786,6 +4182,39 @@ describe('transport contract', () => {
   ])('rejects a non-positive or non-finite pollIntervalMs (%s)', (value) => {
     // `NaN` is the case a `<= 0` guard misses.
     expect(() => new FDv2SkillStore(SDK_KEY, { mode: 'poll', pollIntervalMs: value })).toThrow(/pollIntervalMs/);
+  });
+
+  describe.each(['initialBackoffMs', 'maxBackoffMs'] as const)('%s', (option) => {
+    // With no failure bound, the backoff options are the only limit on the
+    // retry loop: a zero or negative delay against a failing server is a
+    // reconnect as fast as the network allows, for the life of the process.
+    it.each([
+      0,
+      -1,
+      -5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ])('rejects a non-positive or non-finite value (%s)', (value) => {
+      // The other option is set out of the way, so only the one under test can
+      // be what the constructor refuses.
+      const other = option === 'initialBackoffMs' ? { maxBackoffMs: 30_000 } : { initialBackoffMs: 1 };
+      expect(() => new FDv2SkillStore(SDK_KEY, { ...other, [option]: value })).toThrow(new RegExp(option));
+    });
+  });
+
+  it('rejects an initialBackoffMs greater than maxBackoffMs', () => {
+    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffMs: 5_000, maxBackoffMs: 20 })).toThrow(
+      /initialBackoffMs.*must not exceed maxBackoffMs/,
+    );
+    // Either one alone can produce the inversion against the other's default.
+    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffMs: 60_000 })).toThrow(/must not exceed/);
+    expect(() => new FDv2SkillStore(SDK_KEY, { maxBackoffMs: 500 })).toThrow(/must not exceed/);
+  });
+
+  it('accepts an initialBackoffMs equal to maxBackoffMs, and the defaults', () => {
+    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffMs: 250, maxBackoffMs: 250 })).not.toThrow();
+    expect(() => new FDv2SkillStore(SDK_KEY)).not.toThrow();
   });
 
   it('rejects a non-string credential', () => {
@@ -3853,7 +4282,7 @@ describe('transport contract', () => {
         return parked.stream(b, s);
       },
     };
-    const store = scriptedStreamStore(wrapped, { maxConsecutiveFailures: 5 });
+    const store = scriptedStreamStore(wrapped);
     store.start();
     expect(await waitUntil(() => release !== null, 5000)).toBe(true);
     expect(store.diagnostics.connectionFailures).toBe(1);
