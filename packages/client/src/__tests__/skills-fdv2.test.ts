@@ -310,6 +310,7 @@ let openStores: FDv2SkillStore[];
 let tempRoots: string[];
 let warnSpy: ReturnType<typeof vi.spyOn>;
 let errorSpy: ReturnType<typeof vi.spyOn>;
+let debugSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(async () => {
   endpoint = new FakeFDv2Endpoint();
@@ -320,6 +321,7 @@ beforeEach(async () => {
   _clearState();
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
 });
 
 afterEach(async () => {
@@ -1795,7 +1797,10 @@ class RecyclingRequester implements Requester {
 class UnchangingRequester implements Requester {
   connections = 0;
 
-  constructor(private readonly firstTransfer: WireEvent[] = []) {}
+  constructor(
+    private readonly firstTransfer: WireEvent[] = [],
+    private readonly silent = true,
+  ) {}
 
   poll(): Promise<PollResult> {
     throw new Error('not a polling double');
@@ -1809,7 +1814,7 @@ class UnchangingRequester implements Requester {
         : events(['server-intent', serverIntent('none')]);
     const scripted = asPairs([
       ...transfer,
-      ...events(['goodbye', { reason: 'server recycle', silent: true, catastrophe: false }]),
+      ...events(['goodbye', { reason: 'server recycle', silent: this.silent, catastrophe: false }]),
     ]);
     return (async function* () {
       yield* scripted;
@@ -2087,6 +2092,37 @@ describe('failure handling', () => {
     expect(store.failed).toBeNull();
     expect(requester.connections).toBeGreaterThanOrEqual(4);
     expect(store.diagnostics.lastError).toContain('server said goodbye: recycling');
+    // Counted, so the delivery loop warns for it, as for any other failure.
+    expect(logged(warnSpy)).toMatch(/Skill delivery failed \(server said goodbye: recycling\); retrying in/);
+  });
+
+  it('reads no failure, no lastError and no warning across repeated answer-then-goodbye recycles (§3.25)', async () => {
+    // A goodbye after a completed exchange is how the server recycles a
+    // long-lived stream. The counter is the main outage signal now that
+    // `failed` is reserved for fatal failures, so a recycle must not appear in
+    // it at any point, nor in `lastError`, nor in any log above debug. Not
+    // silent, so the reader's own closing line is exercised too.
+    const requester = new UnchangingRequester(fullPayload([['put-object', putSkill()]], 'basis-1'), false);
+    const store = scriptedStreamStore(requester);
+    let worst = 0;
+    let lastError: string | null = null;
+    store.start();
+    expect(
+      await waitUntil(() => {
+        worst = Math.max(worst, store.diagnostics.connectionFailures);
+        lastError = lastError ?? store.diagnostics.lastError;
+        return requester.connections >= 8;
+      }, 2000),
+    ).toBe(true);
+    expect(worst).toBe(0);
+    expect(lastError).toBeNull();
+    expect(store.diagnostics.connectionFailures).toBe(0);
+    expect(store.diagnostics.lastError).toBeNull();
+    expect(store.failed).toBeNull();
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+    // Still visible at debug.
+    expect(logged(debugSpy)).toMatch(/FDv2 connection closing: server recycle/);
   });
 
   it('reports one failure, not two, for a store that fails, succeeds, then fails (§3.25)', async () => {

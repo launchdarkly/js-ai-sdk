@@ -101,6 +101,11 @@ const SERVER_KEY_PREFIX = 'sdk-';
 /** A client-side environment ID: unprefixed lowercase hex. */
 const CLIENT_SIDE_ID = /^[0-9a-f]{20,}$/;
 
+function debug(message: string): void {
+  // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; routine events log at debug
+  console.debug(`[LaunchDarkly] ${message}`);
+}
+
 function warn(message: string): void {
   // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; delivery problems must be visible
   console.warn(`[LaunchDarkly] ${message}`);
@@ -843,8 +848,10 @@ export class ProtocolReader {
   private goodbye(data: unknown): TransferOutcome {
     const parsed = (data ?? {}) as { reason?: unknown; silent?: unknown; catastrophe?: unknown };
     this.abandonInFlight();
+    // Debug only: a goodbye after a completed exchange is a routine recycle, and
+    // the reader cannot tell. The delivery loop warns for one that counts.
     if (parsed.silent !== true) {
-      warn(`FDv2 connection closing: ${String(parsed.reason)}`);
+      debug(`FDv2 connection closing: ${String(parsed.reason)}`);
     }
     if (parsed.catastrophe === true) {
       return { fatal: `server sent a catastrophic goodbye: ${String(parsed.reason)}` };
@@ -1817,6 +1824,9 @@ export class FDv2SkillStore implements SkillStore {
         );
         if (!cause.expected) {
           warn(`Skill delivery failed (${cause.message}); retrying in ${Math.round(delay)}ms`);
+        } else {
+          // A routine recycle: nothing above debug.
+          debug(`Skill delivery reconnecting (${cause.message}) in ${Math.round(delay)}ms`);
         }
         await sleep(delay, signal);
         continue;
