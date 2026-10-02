@@ -905,7 +905,7 @@ export class RecoverableTransportError extends Error {
     readonly retryAfterMs: number | null = null,
     /**
      * A `goodbye` after a completed exchange: retried, but not logged as a
-     * failure or counted against `maxConsecutiveFailures`.
+     * failure or counted in `connectionFailures`.
      */
     readonly expected = false,
   ) {
@@ -1373,7 +1373,10 @@ export class FetchRequester implements Requester {
  * Jitter is subtracted, never added, so `maximumMs` is a true ceiling.
  */
 export function backoffDelayMs(attempt: number, baseMs: number, maximumMs: number, jitter = 0.5): number {
-  const ceiling = Math.min(maximumMs, baseMs * 2 ** Math.max(0, attempt - 1));
+  // Retries are unbounded, so the attempt number is too. Clamped so the power
+  // stays finite (`0 * Infinity` is `NaN`); 2^30 of any base passes any cap.
+  const exponent = Math.min(Math.max(0, attempt - 1), 30);
+  const ceiling = Math.min(maximumMs, baseMs * 2 ** exponent);
   return ceiling * (1 - jitter * Math.random());
 }
 
@@ -1430,15 +1433,11 @@ export type FDv2SkillStoreOptions = {
    */
   readonly readTimeoutMs?: number;
   readonly initialBackoffMs?: number;
-  /** Caps every retry delay, including `Retry-After`. */
-  readonly maxBackoffMs?: number;
   /**
-   * After this many failures in a row, delivery stops, logs an error, and
-   * `failed` is set; the store keeps serving last known good. A completed
-   * exchange (a commit or a `none` intent) resets the count, and a server
-   * `goodbye` after one is not counted.
+   * Caps every retry delay, including `Retry-After`. Recoverable failures are
+   * retried for the life of the store; only a fatal status stops delivery.
    */
-  readonly maxConsecutiveFailures?: number;
+  readonly maxBackoffMs?: number;
   /** Replaces the built-in `fetch` transport. Intended for testing. */
   readonly requester?: Requester;
 };
@@ -1481,7 +1480,6 @@ export class FDv2SkillStore implements SkillStore {
   private readonly pollIntervalMs: number;
   private readonly initialBackoffMs: number;
   private readonly maxBackoffMs: number;
-  private readonly maxConsecutiveFailures: number;
 
   private basis: string | null = null;
   private etag: string | null = null;
@@ -1519,7 +1517,6 @@ export class FDv2SkillStore implements SkillStore {
     }
     this.initialBackoffMs = options.initialBackoffMs ?? 1_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
-    this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? 10;
     const baseUri = requireHttpsUri(options.baseUri ?? DEFAULT_BASE_URI);
     // A lone `baseUri` serves both endpoints.
     const streamUri = requireHttpsUri(
@@ -1735,7 +1732,6 @@ export class FDv2SkillStore implements SkillStore {
           this.giveUp(`unexpected error in skill delivery: ${cause instanceof Error ? cause.message : String(cause)}`);
           return;
         }
-        let repairingState = false;
         if (cause instanceof StaleRequestStateError) {
           // With no basis or etag to drop, the 400 is fatal. Otherwise drop them
           // and request a full transfer once.
@@ -1746,7 +1742,6 @@ export class FDv2SkillStore implements SkillStore {
           this.basis = null;
           this.etag = null;
           this.etagBasis = null;
-          repairingState = true;
         }
         // A routine stream recycle (see `dispatch`) reconnects without counting
         // as a failure.
@@ -1754,12 +1749,6 @@ export class FDv2SkillStore implements SkillStore {
           this.failures += 1;
           this.reader.diagnostics.connectionFailures = this.failures;
           this.reader.diagnostics.lastError = cause.message;
-          // The one stateless retry after a 400 is exempt, so an exhausted
-          // budget cannot block that repair.
-          if (this.failures > this.maxConsecutiveFailures && !repairingState) {
-            this.giveUp(`gave up after ${this.failures} consecutive failures; last error: ${cause.message}`);
-            return;
-          }
         }
         const requested = cause.retryAfterMs;
         const delay = Math.min(
@@ -1801,7 +1790,7 @@ export class FDv2SkillStore implements SkillStore {
   private apply(name: string, data: unknown): TransferOutcome {
     const outcome = this.reader.handle(name, data);
     // A commit or a `none` intent is a completed exchange. Counting `none` keeps
-    // a stream for an unchanging environment from exhausting its budget.
+    // a stream for an unchanging environment from backing off to the cap.
     if (outcome.healthy || outcome.committed) this.reachedServer = true;
     if (outcome.healthy) this.recordSuccess();
     if (outcome.committed) {
@@ -1817,7 +1806,7 @@ export class FDv2SkillStore implements SkillStore {
     if (outcome.fatal) throw new FatalTransportError(outcome.fatal);
     if (outcome.disconnect) {
       // A goodbye is routine only after a completed exchange; otherwise it
-      // counts as a failure, so a server that only says goodbye stays bounded.
+      // counts as a failure, so a server that only says goodbye is backed off.
       const expected = outcome.expected === true && this.reachedServer;
       throw new RecoverableTransportError(outcome.disconnect, null, expected);
     }

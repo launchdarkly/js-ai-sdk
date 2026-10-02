@@ -97,13 +97,13 @@ The `3` after the delimiter is what a `{key, version}` reference pins; it become
 
 - `iterSse` wraps read failures (a reset, a truncated chunk, the read deadline) as `RecoverableTransportError`, since a live stream dies mid-body far more often than it refuses to open. The delivery loop treats anything else as a bug and stops for the process lifetime.
 - An error thrown by the consumer's loop body while the generator is suspended at a `yield` passes through unwrapped, so a bug still surfaces as one.
-- Every retry delay is clamped to `maxBackoffMs` and floored at `initialBackoffMs`, so `Retry-After: 0` cannot burn the retry bound in milliseconds. A blank `Retry-After` means "no delay given", not zero (`Number("")` is `0`).
+- Every retry delay is clamped to `maxBackoffMs` and floored at `initialBackoffMs`, so `Retry-After: 0` cannot cause a tight reconnect loop. A blank `Retry-After` means "no delay given", not zero (`Number("")` is `0`).
 
-**What resets the failure counter, and what escapes it.**
+**What resets the failure counter, and what escapes it.** The counter drives the backoff and is reported as `connectionFailures`; it bounds nothing. Recoverable failures are retried for the life of the store, and there is no `maxConsecutiveFailures` option: a count bound would turn a short outage into a process that never sees another revocation. Only a fatal status stops delivery.
 
 - **It resets only on a completed exchange** — a committed payload, or a `none` intent — not when a connection returns. A stream only ever ends by being dropped, so resetting on return would count every healthy, server-recycled connection as a failure.
-- **`none` counts** because a reconnect whose basis is already current is answered with `none` and commits nothing; requiring a commit would expire an environment whose skills never change.
-- **A parsed `xfer-full` or `xfer-changes` intent does not reset it.** A server that announces a transfer and drops before `payload-transferred`, every time, has delivered nothing, and would otherwise be retried forever at the initial backoff (pinned by the `gives up on a server that announces a transfer and drops` test).
+- **`none` counts** because a reconnect whose basis is already current is answered with `none` and commits nothing; requiring a commit would back a healthy stream for an environment whose skills never change off to `maxBackoffMs`.
+- **A parsed `xfer-full` or `xfer-changes` intent does not reset it.** A server that announces a transfer and drops before `payload-transferred`, every time, has delivered nothing, and would otherwise be retried forever at the initial backoff (pinned by the `counts each drop of a server that announces a transfer and drops` test).
 - **A non-catastrophic `goodbye` is exempt from the counter** only on a connection that completed such an exchange, tracked per attempt by `reachedServer`. Otherwise a server that says goodbye before sending any intent could reconnect without limit, never reaching `diagnostics` or `failed`.
 
 Keep both halves — the reset rule and the `reachedServer` qualifier.
