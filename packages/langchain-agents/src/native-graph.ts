@@ -11,10 +11,12 @@ import {
   type GraphNode,
   getClient,
   type Message,
+  makeGraphTrackData,
   makeNodeTrackData,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
+  setLdSpanAttributes,
   type ToolHandlerFn,
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
@@ -152,190 +154,192 @@ export const toLangGraph = (
     const ldContext = opts?.context;
 
     return trace.getTracer('@launchdarkly/ai-langchain-agents').startActiveSpan('launchdarkly.graph', async (span) => {
-      span.setAttribute('launchdarkly.graph.key', def.key);
-      const startTime = Date.now();
-      const runId = crypto.randomUUID();
+      try {
+        const startTime = Date.now();
+        const runId = crypto.randomUUID();
+        setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext });
 
-      const path: string[] = [];
-      const totalUsage = { input: 0, output: 0, total: 0 };
+        const path: string[] = [];
+        const totalUsage = { input: 0, output: 0, total: 0 };
 
-      const builder = new StateGraph(StateAnnotation);
+        const builder = new StateGraph(StateAnnotation);
 
-      // Walk root → leaves, registering each node in the StateGraph
-      await def.traverse(async (node) => {
-        const nodeKey = sanitizeName(node.key);
-        const outgoing = def.edgesFrom(node.key);
-        const isTerminal = node.isTerminal();
-        const isMultiChild = outgoing.length > 1;
+        // Walk root → leaves, registering each node in the StateGraph
+        await def.traverse(async (node) => {
+          const nodeKey = sanitizeName(node.key);
+          const outgoing = def.edgesFrom(node.key);
+          const isTerminal = node.isTerminal();
+          const isMultiChild = outgoing.length > 1;
 
-        const chatModel = modelFactory(node);
-        const regularTools = buildNodeTools(node, toolHandlers);
+          const chatModel = modelFactory(node);
+          const regularTools = buildNodeTools(node, toolHandlers);
 
-        // Handoff tools for each child edge — returning Command routes the graph
-        const handoffTools = outgoing.map((edge) =>
-          tool(
-            async (): Promise<Command> => {
-              const targetKey = sanitizeName(edge.targetKey);
+          // Handoff tools for each child edge — returning Command routes the graph
+          const handoffTools = outgoing.map((edge) =>
+            tool(
+              async (): Promise<Command> => {
+                const targetKey = sanitizeName(edge.targetKey);
+                if (ldContext) {
+                  const trackData = makeNodeTrackData(node, def.key, runId);
+                  getClient().track('$ld:ai:graph:handoff_success', ldContext, trackData, 1);
+                }
+                return new Command({ goto: targetKey });
+              },
+              {
+                name: `transfer_to_${sanitizeName(edge.targetKey)}`,
+                description: `Transfer control to the ${edge.targetKey} agent`,
+                schema: z.object({}),
+              },
+            ),
+          );
+
+          const allTools = [...regularTools, ...handoffTools];
+
+          // Node function: run the model, track LD events, return state update
+          const nodeFunction = async (state: WorkflowState) => {
+            if (!path.includes(node.key)) {
+              const index = path.length;
+              path.push(node.key);
               if (ldContext) {
-                const trackData = makeNodeTrackData(node, def.key, runId);
-                getClient().track('$ld:ai:graph:handoff_success', ldContext, trackData, 1);
+                const nodeTrackData = makeNodeTrackData(node, def.key, runId);
+                getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: node.key, index }, 1);
               }
-              return new Command({ goto: targetKey });
-            },
-            {
-              name: `transfer_to_${sanitizeName(edge.targetKey)}`,
-              description: `Transfer control to the ${edge.targetKey} agent`,
-              schema: z.object({}),
-            },
-          ),
-        );
+            }
+            const nodeStartTime = Date.now();
 
-        const allTools = [...regularTools, ...handoffTools];
+            const systemPrompt = buildSystemPrompt(node, variables);
+            const conversationMessages = state.messages;
+            const fullMessages: BaseMessage[] = [
+              ...(systemPrompt ? [new SystemMessage(systemPrompt)] : []),
+              ...conversationMessages,
+            ];
 
-        // Node function: run the model, track LD events, return state update
-        const nodeFunction = async (state: WorkflowState) => {
-          if (!path.includes(node.key)) {
-            const index = path.length;
-            path.push(node.key);
-            if (ldContext) {
-              const nodeTrackData = makeNodeTrackData(node, def.key, runId);
-              getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: node.key, index }, 1);
+            const boundModel =
+              allTools.length > 0
+                ? // biome-ignore lint/suspicious/noExplicitAny: LangChain BaseChatModel.bindTools is not typed in the base class
+                  (chatModel as any).bindTools(allTools, {
+                    ...(isMultiChild ? { parallel_tool_calls: false } : {}),
+                  })
+                : chatModel;
+
+            const result = (await boundModel.invoke(fullMessages)) as AIMessage;
+            const usage = extractUsage(result);
+            totalUsage.input += usage.input;
+            totalUsage.output += usage.output;
+            totalUsage.total += usage.total;
+
+            const _text =
+              typeof result.content === 'string'
+                ? result.content
+                : Array.isArray(result.content)
+                  ? result.content
+                      .filter((c: ContentBlock) => c.type === 'text')
+                      .map((c: ContentBlock) => c.text)
+                      .join('')
+                  : '';
+
+            trackNode(node, nodeStartTime, usage, ldContext, def, runId);
+
+            return { messages: [result] };
+          };
+
+          builder.addNode(nodeKey, nodeFunction);
+
+          if (allTools.length > 0) {
+            builder.addNode(`${nodeKey}_tools`, new ToolNode(allTools));
+          }
+
+          // Edge wiring
+          // biome-ignore lint/suspicious/noExplicitAny: LangGraph StateGraph addEdge/addConditionalEdges require literal types; cast builder to bypass
+          const b = builder as any;
+          if (node.key === def.root?.key) {
+            b.addEdge(START, nodeKey);
+          }
+
+          if (isTerminal) {
+            if (allTools.length > 0) {
+              // tool loop → END
+              b.addConditionalEdges(nodeKey, toolsCondition, { tools: `${nodeKey}_tools`, __end__: END });
+              b.addEdge(`${nodeKey}_tools`, nodeKey);
+            } else {
+              b.addEdge(nodeKey, END);
+            }
+          } else if (isMultiChild) {
+            // Handoff tools in allTools return Command; ToolNode propagates it
+            if (allTools.length > 0) {
+              b.addConditionalEdges(nodeKey, toolsCondition, { tools: `${nodeKey}_tools`, __end__: END });
+              b.addEdge(`${nodeKey}_tools`, nodeKey);
+            } else {
+              b.addEdge(nodeKey, END);
+            }
+          } else {
+            // Single child: tool loop, then go to child
+            const childKey = sanitizeName(outgoing[0].targetKey);
+            if (allTools.length > 0) {
+              b.addConditionalEdges(nodeKey, toolsCondition, { tools: `${nodeKey}_tools`, __end__: childKey });
+              b.addEdge(`${nodeKey}_tools`, nodeKey);
+            } else {
+              b.addEdge(nodeKey, childKey);
             }
           }
-          const nodeStartTime = Date.now();
+        });
 
-          const systemPrompt = buildSystemPrompt(node, variables);
-          const conversationMessages = state.messages;
-          const fullMessages: BaseMessage[] = [
-            ...(systemPrompt ? [new SystemMessage(systemPrompt)] : []),
-            ...conversationMessages,
-          ];
+        const compiled = builder.compile();
 
-          const boundModel =
-            allTools.length > 0
-              ? // biome-ignore lint/suspicious/noExplicitAny: LangChain BaseChatModel.bindTools is not typed in the base class
-                (chatModel as any).bindTools(allTools, {
-                  ...(isMultiChild ? { parallel_tool_calls: false } : {}),
-                })
-              : chatModel;
+        // History is a root-only concern: it seeds the initial message state the
+        // entry node reads. Downstream nodes are reached through handoffs and see
+        // the accumulated graph state, never the original `history` array.
+        const initialMessages =
+          history && history.length > 0
+            ? toLangChainMessages(composeHistory({ history, userInput: input }))
+            : [new HumanMessage(input)];
 
-          const result = (await boundModel.invoke(fullMessages)) as AIMessage;
-          const usage = extractUsage(result);
-          totalUsage.input += usage.input;
-          totalUsage.output += usage.output;
-          totalUsage.total += usage.total;
-
-          const _text =
-            typeof result.content === 'string'
-              ? result.content
-              : Array.isArray(result.content)
-                ? result.content
-                    .filter((c: ContentBlock) => c.type === 'text')
-                    .map((c: ContentBlock) => c.text)
-                    .join('')
-                : '';
-
-          trackNode(node, nodeStartTime, usage, ldContext, def, runId);
-
-          return { messages: [result] };
-        };
-
-        builder.addNode(nodeKey, nodeFunction);
-
-        if (allTools.length > 0) {
-          builder.addNode(`${nodeKey}_tools`, new ToolNode(allTools));
-        }
-
-        // Edge wiring
-        // biome-ignore lint/suspicious/noExplicitAny: LangGraph StateGraph addEdge/addConditionalEdges require literal types; cast builder to bypass
-        const b = builder as any;
-        if (node.key === def.root?.key) {
-          b.addEdge(START, nodeKey);
-        }
-
-        if (isTerminal) {
-          if (allTools.length > 0) {
-            // tool loop → END
-            b.addConditionalEdges(nodeKey, toolsCondition, { tools: `${nodeKey}_tools`, __end__: END });
-            b.addEdge(`${nodeKey}_tools`, nodeKey);
-          } else {
-            b.addEdge(nodeKey, END);
+        // biome-ignore lint/suspicious/noImplicitAnyLet: assigned immediately in try; catch always re-throws
+        let result;
+        try {
+          result = await compiled.invoke({ messages: initialMessages });
+          span.setStatus({ code: SpanStatusCode.OK });
+        } catch (err) {
+          span.recordException(err instanceof Error ? err : new Error(String(err)));
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
+          if (ldContext) {
+            const trackData = makeGraphTrackData(def.key, runId);
+            getClient().track('$ld:ai:graph:invocation_failure', ldContext, trackData, 1);
           }
-        } else if (isMultiChild) {
-          // Handoff tools in allTools return Command; ToolNode propagates it
-          if (allTools.length > 0) {
-            b.addConditionalEdges(nodeKey, toolsCondition, { tools: `${nodeKey}_tools`, __end__: END });
-            b.addEdge(`${nodeKey}_tools`, nodeKey);
-          } else {
-            b.addEdge(nodeKey, END);
-          }
-        } else {
-          // Single child: tool loop, then go to child
-          const childKey = sanitizeName(outgoing[0].targetKey);
-          if (allTools.length > 0) {
-            b.addConditionalEdges(nodeKey, toolsCondition, { tools: `${nodeKey}_tools`, __end__: childKey });
-            b.addEdge(`${nodeKey}_tools`, nodeKey);
-          } else {
-            b.addEdge(nodeKey, childKey);
-          }
+          throw err;
         }
-      });
 
-      const compiled = builder.compile();
+        const duration = Date.now() - startTime;
 
-      // History is a root-only concern: it seeds the initial message state the
-      // entry node reads. Downstream nodes are reached through handoffs and see
-      // the accumulated graph state, never the original `history` array.
-      const initialMessages =
-        history && history.length > 0
-          ? toLangChainMessages(composeHistory({ history, userInput: input }))
-          : [new HumanMessage(input)];
-
-      // biome-ignore lint/suspicious/noImplicitAnyLet: assigned immediately in try; catch always re-throws
-      let result;
-      try {
-        result = await compiled.invoke({ messages: initialMessages });
-        span.setStatus({ code: SpanStatusCode.OK });
-      } catch (err) {
-        span.recordException(err instanceof Error ? err : new Error(String(err)));
-        span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
-        if (ldContext) {
-          // biome-ignore lint/style/noNonNullAssertion: def.root is asserted non-null earlier in this function
-          const trackData = makeNodeTrackData(def.root!, def.key, runId);
-          getClient().track('$ld:ai:graph:invocation_failure', ldContext, trackData, 1);
-        }
-        throw err;
-      }
-
-      const duration = Date.now() - startTime;
-
-      // Extract final output from last AI message
-      const lastMsg: BaseMessage | undefined = result.messages?.[result.messages.length - 1];
-      const finalOutput = lastMsg
-        ? typeof lastMsg.content === 'string'
-          ? lastMsg.content
-          : Array.isArray(lastMsg.content)
+        // Extract final output from last AI message
+        const lastMsg: BaseMessage | undefined = result.messages?.[result.messages.length - 1];
+        const finalOutput = lastMsg
+          ? typeof lastMsg.content === 'string'
             ? lastMsg.content
-                .filter((c: ContentBlock) => c.type === 'text')
-                .map((c: ContentBlock) => c.text)
-                .join('')
-            : ''
-        : '';
+            : Array.isArray(lastMsg.content)
+              ? lastMsg.content
+                  .filter((c: ContentBlock) => c.type === 'text')
+                  .map((c: ContentBlock) => c.text)
+                  .join('')
+              : ''
+          : '';
 
-      span.setAttribute('launchdarkly.graph.path', path.join('->'));
-      span.setAttribute('gen_ai.usage.input_tokens', totalUsage.input);
-      span.setAttribute('gen_ai.usage.output_tokens', totalUsage.output);
-      span.setAttribute('gen_ai.usage.total_tokens', totalUsage.total);
+        span.setAttribute('launchdarkly.graph.path', path.join('->'));
+        span.setAttribute('gen_ai.usage.input_tokens', totalUsage.input);
+        span.setAttribute('gen_ai.usage.output_tokens', totalUsage.output);
+        span.setAttribute('gen_ai.usage.total_tokens', totalUsage.total);
 
-      if (ldContext) {
-        // biome-ignore lint/style/noNonNullAssertion: def.root is asserted non-null earlier in this function
-        const rootTrackData = makeNodeTrackData(def.root!, def.key, runId);
-        getClient().track('$ld:ai:graph:duration:total', ldContext, rootTrackData, duration);
-        getClient().track('$ld:ai:graph:total_tokens', ldContext, rootTrackData, totalUsage.total);
-        getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
+        if (ldContext) {
+          const graphTrackData = makeGraphTrackData(def.key, runId);
+          getClient().track('$ld:ai:graph:duration:total', ldContext, graphTrackData, duration);
+          getClient().track('$ld:ai:graph:total_tokens', ldContext, graphTrackData, totalUsage.total);
+          getClient().track('$ld:ai:graph:invocation_success', ldContext, graphTrackData, 1);
+        }
+
+        return { response: finalOutput, usage: totalUsage };
+      } finally {
+        span.end();
       }
-
-      return { response: finalOutput, usage: totalUsage };
     });
   };
 

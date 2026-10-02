@@ -94,6 +94,17 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   return {
     ...actual,
     getClient: vi.fn().mockReturnValue({ track: mockTrack }),
+    // The real `tryGetEnvironmentId` reads the LD client's feature store, which no unit test has.
+    // Stub the environment id onto the two track-data builders so the adapter's wiring can be
+    // asserted here; the lookup itself is covered in the client package's own tests.
+    makeGraphTrackData: (graphKey: string, runId: string) => ({
+      ...actual.makeGraphTrackData(graphKey, runId),
+      environmentId: 'env-123',
+    }),
+    makeNodeTrackData: (node: any, graphKey: string, runId: string) => ({
+      ...actual.makeNodeTrackData(node, graphKey, runId),
+      environmentId: 'env-123',
+    }),
   };
 });
 
@@ -359,6 +370,70 @@ describe('toLangGraph', () => {
     expect(mockTrack).toHaveBeenCalledWith('$ld:ai:graph:duration:total', ctx, expect.anything(), expect.any(Number));
   });
 
+  it('tags the graph span with the run identity so LaunchDarkly can link the trace to the config', async () => {
+    const ctx = { kind: 'user' as const, key: 'u1' };
+    const root = makeNode('root', '', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { context: ctx }).invoke('hi');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.operation.type', 'gen_ai');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.config.key', 'test-graph');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.key', 'test-graph');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.run.id', expect.any(String));
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.variation.key', expect.any(String));
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('context.contextKeys.user', 'u1');
+    expect(mockSpan.addEvent).toHaveBeenCalledWith('feature_flag', {
+      'feature_flag.key': 'test-graph',
+      'feature_flag.provider.name': 'LaunchDarkly',
+      'feature_flag.set.id': 'env-123',
+      'feature_flag.context.id': 'u1',
+      'feature_flag.contextKeys': '{"user":"u1"}',
+    });
+  });
+
+  it('keys the graph-level events to the graph, not the root node', async () => {
+    const def = makeGraphDef([makeNode('root', '', [])], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { context: { kind: 'user', key: 'u1' } }).invoke('hi');
+    const graphEvents = mockTrack.mock.calls.filter((c: unknown[]) =>
+      ['$ld:ai:graph:invocation_success', '$ld:ai:graph:duration:total', '$ld:ai:graph:total_tokens'].includes(
+        c[0] as string,
+      ),
+    );
+    expect(graphEvents).toHaveLength(3);
+    for (const call of graphEvents) {
+      expect(call[2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+    }
+  });
+
+  it('keys invocation_failure to the graph, not the root node', async () => {
+    mockCompiledInvoke.mockRejectedValue(new Error('boom'));
+    const def = makeGraphDef([makeNode('root', '', [])], {}, 'root');
+    await expect(
+      toLangGraph(Promise.resolve(def), { context: { kind: 'user', key: 'u1' } }).invoke('hi'),
+    ).rejects.toThrow('boom');
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+  });
+
+  it('puts the environment id on every node and graph tracking event', async () => {
+    const ctx = { kind: 'user' as const, key: 'u1' };
+    const mockModel = {
+      invoke: vi.fn().mockResolvedValue(new AIMessage({ content: 'ok' })),
+      bindTools: vi.fn().mockReturnThis(),
+    };
+    const root = makeNode('root', 'instructions', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { context: ctx, modelFactory: () => mockModel }).invoke('hi');
+    const nodeFn = mockAddNode.mock.calls.find((c: unknown[]) => c[0] === 'root')?.[1] as
+      | ((state: { messages: unknown[] }) => Promise<unknown>)
+      | undefined;
+    await nodeFn?.({ messages: [] });
+    expect(mockTrack).toHaveBeenCalled();
+    for (const call of mockTrack.mock.calls) {
+      expect(call[2]).toEqual(expect.objectContaining({ environmentId: 'env-123' }));
+    }
+  });
+
   it('emits $ld:ai:graph:invocation_failure when compiled.invoke throws', async () => {
     const ctx = { kind: 'user' as const, key: 'u1' };
     mockCompiledInvoke.mockRejectedValue(new Error('graph crash'));
@@ -392,6 +467,21 @@ describe('toLangGraph', () => {
     await expect(toLangGraph(Promise.resolve(def)).invoke('hi')).rejects.toThrow('boom');
     expect(mockSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
     expect(mockSpan.recordException).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('ends the span once on success so it gets exported', async () => {
+    const root = makeNode('root', '', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+    expect(mockSpan.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('ends the span once when compiled.invoke throws', async () => {
+    mockCompiledInvoke.mockRejectedValue(new Error('boom'));
+    const root = makeNode('root', '', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await expect(toLangGraph(Promise.resolve(def)).invoke('hi')).rejects.toThrow('boom');
+    expect(mockSpan.end).toHaveBeenCalledTimes(1);
   });
 
   // ── Root null guard ──────────────────────────────────────────────────────────

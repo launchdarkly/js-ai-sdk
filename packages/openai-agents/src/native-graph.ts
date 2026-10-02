@@ -8,10 +8,12 @@ import {
   imageBlockToUrl,
   type Message,
   type MessageContent,
+  makeGraphTrackData,
   makeNodeTrackData,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
+  setLdSpanAttributes,
   type ToolHandlerFn,
 } from '@launchdarkly/ai-server';
 import { Agent, handoff, Runner, tool } from '@openai/agents';
@@ -125,136 +127,138 @@ export const toOpenAIAgents = (
     const ldContext = opts?.context;
 
     return trace.getTracer('@launchdarkly/ai-openai-agents').startActiveSpan('launchdarkly.graph', async (span) => {
-      span.setAttribute('launchdarkly.graph.key', def.key);
-      const startTime = Date.now();
-      const runId = crypto.randomUUID();
-
-      const path: string[] = [];
-      // Map from sanitized agent name → original node key (for hook callbacks)
-      const agentNameToKey = new Map<string, string>();
-      // Built Agent instances, keyed by node key
-      const agentCtx: Record<string, Agent> = {};
-
-      // Build leaves → root so children exist before parents reference them as handoffs
-      await def.reverseTraverse<void>(async (node, ctx) => {
-        const childHandoffs = node.edges.map((edge) => {
-          const childAgent = agentCtx[edge.targetKey];
-          if (!childAgent) {
-            throw new Error(`Child agent "${edge.targetKey}" was not built before parent "${node.key}"`);
-          }
-          return handoff(childAgent);
-        });
-
-        const instructions = buildInstructions(node, variables);
-        const tools = buildNodeTools(node, toolHandlers);
-        const agentName = sanitizeName(node.key);
-        agentNameToKey.set(agentName, node.key);
-
-        const agent = new Agent({
-          name: agentName,
-          model: node.config.model.name,
-          ...(instructions ? { instructions } : {}),
-          ...(tools.length > 0 ? { tools } : {}),
-          ...(childHandoffs.length > 0 ? { handoffs: childHandoffs } : {}),
-        });
-
-        agentCtx[node.key] = agent;
-        ctx[node.key] = agent;
-      });
-
-      const root = def.root;
-      if (!root) throw new Error(`Graph "${def.key}" has no root node`);
-
-      const rootAgent = agentCtx[root.key];
-      if (!rootAgent) {
-        throw new Error(`Root agent "${root.key}" was not built`);
-      }
-
-      // Attach run-level lifecycle hooks for LD tracking
-      const runner = new Runner();
-
-      runner.on('agent_start', (_runCtx: unknown, agent: { name: string }) => {
-        const nodeKey = agentNameToKey.get(agent.name);
-        if (!nodeKey || path.includes(nodeKey)) return;
-        const index = path.length;
-        path.push(nodeKey);
-        if (!ldContext) return;
-        const node = def.getNode(nodeKey);
-        if (!node) return;
-        const trackData = makeNodeTrackData(node, def.key, runId);
-        getClient().track('$ld:ai:graph:node', ldContext, { ...trackData, nodeKey, index }, 1);
-      });
-
-      runner.on('agent_end', (_runCtx: unknown, agent: { name: string }, _output: string) => {
-        const nodeKey = agentNameToKey.get(agent.name);
-        if (!nodeKey) return;
-        if (ldContext) {
-          const node = def.getNode(nodeKey);
-          if (node) {
-            const trackData = makeNodeTrackData(node, def.key, runId);
-            getClient().track('$ld:ai:generation:success', ldContext, trackData, 1);
-          }
-        }
-      });
-
-      runner.on('agent_handoff', (_runCtx: unknown, fromAgent: { name: string }, _toAgent: { name: string }) => {
-        if (!ldContext) return;
-        const fromKey = agentNameToKey.get(fromAgent.name);
-        if (fromKey) {
-          const fromNode = def.getNode(fromKey);
-          if (fromNode) {
-            const trackData = makeNodeTrackData(fromNode, def.key, runId);
-            getClient().track('$ld:ai:graph:handoff_success', ldContext, trackData, 1);
-          }
-        }
-      });
-
-      // History is a root-only concern: it seeds the entry agent's input via the
-      // framework-native item list. Downstream agents are reached through
-      // handoffs and receive their context from the Runner, not from `history`.
-      const rootInput = history && history.length > 0 ? toRunnerInput(history, input) : input;
-
-      // biome-ignore lint/suspicious/noImplicitAnyLet: assigned immediately in try; catch always re-throws
-      let result;
       try {
-        // biome-ignore lint/suspicious/noExplicitAny: Runner.run accepts string | AgentInputItem[]; our item shape is structurally compatible
-        result = await runner.run(rootAgent, rootInput as any);
-        span.setStatus({ code: SpanStatusCode.OK });
-      } catch (err) {
-        span.recordException(err instanceof Error ? err : new Error(String(err)));
-        span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
-        if (ldContext) {
-          const trackData = makeNodeTrackData(root, def.key, runId);
-          getClient().track('$ld:ai:graph:invocation_failure', ldContext, trackData, 1);
+        const startTime = Date.now();
+        const runId = crypto.randomUUID();
+        setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext });
+
+        const path: string[] = [];
+        // Map from sanitized agent name → original node key (for hook callbacks)
+        const agentNameToKey = new Map<string, string>();
+        // Built Agent instances, keyed by node key
+        const agentCtx: Record<string, Agent> = {};
+
+        // Build leaves → root so children exist before parents reference them as handoffs
+        await def.reverseTraverse<void>(async (node, ctx) => {
+          const childHandoffs = node.edges.map((edge) => {
+            const childAgent = agentCtx[edge.targetKey];
+            if (!childAgent) {
+              throw new Error(`Child agent "${edge.targetKey}" was not built before parent "${node.key}"`);
+            }
+            return handoff(childAgent);
+          });
+
+          const instructions = buildInstructions(node, variables);
+          const tools = buildNodeTools(node, toolHandlers);
+          const agentName = sanitizeName(node.key);
+          agentNameToKey.set(agentName, node.key);
+
+          const agent = new Agent({
+            name: agentName,
+            model: node.config.model.name,
+            ...(instructions ? { instructions } : {}),
+            ...(tools.length > 0 ? { tools } : {}),
+            ...(childHandoffs.length > 0 ? { handoffs: childHandoffs } : {}),
+          });
+
+          agentCtx[node.key] = agent;
+          ctx[node.key] = agent;
+        });
+
+        const root = def.root;
+        if (!root) throw new Error(`Graph "${def.key}" has no root node`);
+
+        const rootAgent = agentCtx[root.key];
+        if (!rootAgent) {
+          throw new Error(`Root agent "${root.key}" was not built`);
         }
+
+        // Attach run-level lifecycle hooks for LD tracking
+        const runner = new Runner();
+
+        runner.on('agent_start', (_runCtx: unknown, agent: { name: string }) => {
+          const nodeKey = agentNameToKey.get(agent.name);
+          if (!nodeKey || path.includes(nodeKey)) return;
+          const index = path.length;
+          path.push(nodeKey);
+          if (!ldContext) return;
+          const node = def.getNode(nodeKey);
+          if (!node) return;
+          const trackData = makeNodeTrackData(node, def.key, runId);
+          getClient().track('$ld:ai:graph:node', ldContext, { ...trackData, nodeKey, index }, 1);
+        });
+
+        runner.on('agent_end', (_runCtx: unknown, agent: { name: string }, _output: string) => {
+          const nodeKey = agentNameToKey.get(agent.name);
+          if (!nodeKey) return;
+          if (ldContext) {
+            const node = def.getNode(nodeKey);
+            if (node) {
+              const trackData = makeNodeTrackData(node, def.key, runId);
+              getClient().track('$ld:ai:generation:success', ldContext, trackData, 1);
+            }
+          }
+        });
+
+        runner.on('agent_handoff', (_runCtx: unknown, fromAgent: { name: string }, _toAgent: { name: string }) => {
+          if (!ldContext) return;
+          const fromKey = agentNameToKey.get(fromAgent.name);
+          if (fromKey) {
+            const fromNode = def.getNode(fromKey);
+            if (fromNode) {
+              const trackData = makeNodeTrackData(fromNode, def.key, runId);
+              getClient().track('$ld:ai:graph:handoff_success', ldContext, trackData, 1);
+            }
+          }
+        });
+
+        // History is a root-only concern: it seeds the entry agent's input via the
+        // framework-native item list. Downstream agents are reached through
+        // handoffs and receive their context from the Runner, not from `history`.
+        const rootInput = history && history.length > 0 ? toRunnerInput(history, input) : input;
+
+        // biome-ignore lint/suspicious/noImplicitAnyLet: assigned immediately in try; catch always re-throws
+        let result;
+        try {
+          // biome-ignore lint/suspicious/noExplicitAny: Runner.run accepts string | AgentInputItem[]; our item shape is structurally compatible
+          result = await runner.run(rootAgent, rootInput as any);
+          span.setStatus({ code: SpanStatusCode.OK });
+        } catch (err) {
+          span.recordException(err instanceof Error ? err : new Error(String(err)));
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
+          if (ldContext) {
+            const trackData = makeGraphTrackData(def.key, runId);
+            getClient().track('$ld:ai:graph:invocation_failure', ldContext, trackData, 1);
+          }
+          throw err;
+        }
+
+        const finalOutput = String(result.finalOutput ?? '');
+        const usage = result.state.usage;
+        const inputTokens = usage.inputTokens ?? 0;
+        const outputTokens = usage.outputTokens ?? 0;
+        const totalTokens = usage.totalTokens ?? inputTokens + outputTokens;
+
+        const totalUsage = { input: inputTokens, output: outputTokens, total: totalTokens };
+        const duration = Date.now() - startTime;
+
+        span.setAttribute('launchdarkly.graph.path', path.join('->'));
+        span.setAttribute('gen_ai.usage.input_tokens', inputTokens);
+        span.setAttribute('gen_ai.usage.output_tokens', outputTokens);
+        span.setAttribute('gen_ai.usage.total_tokens', totalTokens);
+
+        if (ldContext) {
+          const graphTrackData = makeGraphTrackData(def.key, runId);
+          getClient().track('$ld:ai:graph:duration:total', ldContext, graphTrackData, duration);
+          getClient().track('$ld:ai:graph:total_tokens', ldContext, graphTrackData, totalTokens);
+          getClient().track('$ld:ai:graph:invocation_success', ldContext, graphTrackData, 1);
+        }
+
+        span.setStatus({ code: SpanStatusCode.OK });
+        return { response: finalOutput, usage: totalUsage };
+      } finally {
         span.end();
-        throw err;
       }
-
-      const finalOutput = String(result.finalOutput ?? '');
-      const usage = result.state.usage;
-      const inputTokens = usage.inputTokens ?? 0;
-      const outputTokens = usage.outputTokens ?? 0;
-      const totalTokens = usage.totalTokens ?? inputTokens + outputTokens;
-
-      const totalUsage = { input: inputTokens, output: outputTokens, total: totalTokens };
-      const duration = Date.now() - startTime;
-
-      span.setAttribute('launchdarkly.graph.path', path.join('->'));
-      span.setAttribute('gen_ai.usage.input_tokens', inputTokens);
-      span.setAttribute('gen_ai.usage.output_tokens', outputTokens);
-      span.setAttribute('gen_ai.usage.total_tokens', totalTokens);
-
-      if (ldContext) {
-        const rootTrackData = makeNodeTrackData(root, def.key, runId);
-        getClient().track('$ld:ai:graph:duration:total', ldContext, rootTrackData, duration);
-        getClient().track('$ld:ai:graph:total_tokens', ldContext, rootTrackData, totalTokens);
-        getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
-      }
-
-      span.setStatus({ code: SpanStatusCode.OK });
-      span.end();
-      return { response: finalOutput, usage: totalUsage };
     });
   };
 

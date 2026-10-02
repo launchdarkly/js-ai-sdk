@@ -4,7 +4,7 @@ import { bindConversationId, bindSpanContext } from './conversation.js';
 import { runJudges } from './judges.js';
 import { extractVariation, getClient, initClient } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
-import { executeAndStream, modelStampsFromMeta } from './tracking.js';
+import { executeAndStream, modelStampsFromMeta, tryGetEnvironmentId } from './tracking.js';
 import type { LDContext, Message, ToolHandlerFn } from './types.js';
 import {
   type AiConfigRep,
@@ -26,7 +26,7 @@ import {
   type TraverseVisitor,
   type VariationMeta,
 } from './types.js';
-import { endSpanOnce, normalizeMode } from './utils.js';
+import { endSpanOnce, normalizeMode, setLdSpanAttributes } from './utils.js';
 
 // Cycle protection: cap how many BFS layers a traversal will expand.
 const MAX_TRAVERSAL_DEPTH = 100;
@@ -139,6 +139,7 @@ const buildGraph = async (
     providerName: '',
     ...modelStampsFromMeta(meta),
     graphKey: key,
+    environmentId: tryGetEnvironmentId(),
   };
 
   const disabledStreamRoute = (): AsyncGenerator<GraphStreamEvent, RouteResult> => {
@@ -720,7 +721,7 @@ export const graph = (
     }
 
     const span = trace.getTracer('@launchdarkly/ai-server').startSpan('launchdarkly.graph', undefined, callerContext);
-    span.setAttribute('launchdarkly.graph.key', key);
+    setLdSpanAttributes(span, { __ld: graphTrackData, ldContext: context });
     const spanContext = trace.setSpan(callerContext, span);
     const ended = new Set<Span>();
 

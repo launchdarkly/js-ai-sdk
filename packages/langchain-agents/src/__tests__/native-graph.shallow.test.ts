@@ -34,6 +34,7 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
         startActiveSpan: vi.fn().mockImplementation((_name: string, fn: Function) =>
           fn({
             setAttribute: vi.fn(),
+            addEvent: vi.fn(),
             setStatus: vi.fn(),
             end: vi.fn(),
             recordException: vi.fn(),
