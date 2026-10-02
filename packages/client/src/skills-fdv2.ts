@@ -704,6 +704,9 @@ export class ProtocolReader {
     } else if (intent === INTENT_TRANSFER_CHANGES) {
       this.pending = this.committed.copy();
     } else if (intent === INTENT_TRANSFER_NONE) {
+      // The basis is current, and later edits on this connection arrive as
+      // objects with no second intent: read on as a delta with nothing pending.
+      this.intent = INTENT_TRANSFER_CHANGES;
       this.pending = null;
     } else {
       // Unknown intent codes are ignored; guessing could empty the store.
@@ -724,7 +727,7 @@ export class ProtocolReader {
 
   /**
    * Drops a skill object that arrived under an intent this reader cannot apply
-   * (an unknown code, or `none`). Counted under `objectsIgnored`, with one
+   * (an unknown code). Counted under `objectsIgnored`, with one
    * warning per intent.
    */
   private ignoreUnderUnknownIntent(): TransferOutcome {

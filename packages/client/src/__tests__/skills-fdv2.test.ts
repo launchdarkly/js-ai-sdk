@@ -849,6 +849,49 @@ describe('protocol reader', () => {
     expect(held.size).toBe(1);
   });
 
+  it('applies a put that follows a none intent on the same connection (§3.25)', () => {
+    // `none` says the basis is current, not that the connection is finished:
+    // later edits arrive as objects with no second intent. Dropping them while
+    // adopting the selector would move the basis past a change never applied.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, fullPayload([['put-object', putSkill('a')]]));
+    const outcomes = drive(
+      reader,
+      events(
+        ['server-intent', serverIntent('none')],
+        ['put-object', putSkill('b')],
+        ['payload-transferred', transferred('basis-2')],
+      ),
+    );
+    expect(held.get('a', null)).not.toBeNull();
+    expect(held.get('b', null)?.content).toBe(SKILL_BODY);
+    expect(outcomes.at(-1)?.basis).toBe('basis-2');
+    expect((outcomes.at(-1)?.changes ?? []).map((raw) => raw.key)).toEqual(['b']);
+    expect(reader.diagnostics.objectsIgnored).toBe(0);
+  });
+
+  it('applies a revocation that follows a none intent on the same connection (§3.25)', () => {
+    // The case that matters: a skill revoked after a routine reconnect. Dropped,
+    // it would keep being served, and reconnecting would not recover it,
+    // because the basis has already moved past the delete.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, fullPayload([['put-object', putSkill()]]));
+    const outcomes = drive(
+      reader,
+      events(
+        ['server-intent', serverIntent('none')],
+        ['delete-object', deleteSkill()],
+        ['payload-transferred', transferred('basis-2')],
+      ),
+    );
+    expect(held.get('pdf-extraction', null)).toBeNull();
+    expect(reader.diagnostics.objectsRevoked).toBe(1);
+    expect(reader.diagnostics.objectsIgnored).toBe(0);
+    expect(outcomes.at(-1)?.changes).toEqual([{ key: 'pdf-extraction', version: 3 }]);
+  });
+
   it('treats an object arriving with no intent as a delta', () => {
     const held = new SkillObjectSet();
     const reader = new ProtocolReader(held);
@@ -2000,6 +2043,37 @@ describe('failure handling', () => {
     expect(store.failed).toContain('gave up after 4 consecutive failures');
     expect(requester.calls).toHaveLength(4);
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).toBeNull();
+  });
+
+  it('revokes and notifies on a delete that follows a none intent on a live stream (§3.25)', async () => {
+    // The reconnect is answered `none`, and the revocation comes later on the
+    // same connection with no second intent. The listener is what wakes a
+    // watcher to prune, so it must see the tombstone.
+    const requester = new ScriptedRequester([
+      asPairs(fullPayload([['put-object', putSkill()]], 'basis-1')),
+      asPairs(
+        events(
+          ['server-intent', serverIntent('none')],
+          ['delete-object', deleteSkill()],
+          ['payload-transferred', transferred('basis-2')],
+        ),
+      ),
+      new Promise(() => {}),
+    ]);
+    const store = scriptedStreamStore(requester);
+    const seen: RawSkillObject[] = [];
+    store.addListener(SKILL_OBJECT_KIND, (raw) => {
+      seen.push(raw);
+    });
+    store.start();
+    expect(await waitUntil(() => store.diagnostics.payloadsTransferred === 2)).toBe(true);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).toBeNull();
+    expect(store.diagnostics.objectsRevoked).toBe(1);
+    expect(store.diagnostics.objectsIgnored).toBe(0);
+    expect(seen.at(-1)).toEqual({ key: 'pdf-extraction', version: 3 });
+    // The next connection resumes from the basis the revocation committed.
+    expect(await waitUntil(() => requester.calls.length === 3)).toBe(true);
+    expect(requester.calls[2][0]).toBe('basis-2');
   });
 
   it('honours a Retry-After header off the wire', async () => {
