@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { trace } from '@opentelemetry/api';
 import { ConversationIdSpanProcessor } from './conversation.js';
 import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
+import { _clearState, _setStore } from './skills.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
 import { parseAiConfig } from './types.js';
 
@@ -219,23 +220,38 @@ function isLDClient(value: unknown): value is LDClientInterface {
  *
  * **Overload 2 — pre-initialized client (edge / custom runtimes):**
  * Pass an already-initialized `LDClientInterface`-compatible client (e.g. from
- * `@launchdarkly/vercel-server-sdk`) to bypass the Node SDK entirely.
+ * `@launchdarkly/vercel-server-sdk`) to bypass the Node SDK entirely. The
+ * optional second argument is the same options bag as the first overload.
+ *
+ * Idempotent: later calls return the existing client and ignore every option
+ * **except** `skillStore`, which is applied on every call, so you can add a store
+ * after initialization with `initClient({ skillStore: store })`. A nullish store
+ * never clears the current one (use `shutdown()`). Without a store, the Agent
+ * Skills accessors throw.
  *
  * Both overloads return the client instance for further customization.
  */
-export async function initClient(client: LDClientInterface): Promise<LDClientInterface>;
+export async function initClient(
+  client: LDClientInterface,
+  options?: InitBaseClientOptions,
+): Promise<LDClientInterface>;
 export async function initClient(options?: InitBaseClientOptions): Promise<LDClientInterface>;
 export async function initClient(
   optionsOrClient?: InitBaseClientOptions | LDClientInterface,
+  clientOptions?: InitBaseClientOptions,
 ): Promise<LDClientInterface> {
   const singleton = getSingleton();
 
+  // Applied on every call, before the idempotency check.
+  const skillStore = (isLDClient(optionsOrClient) ? clientOptions : optionsOrClient)?.skillStore;
+  if (skillStore != null) _setStore(skillStore);
+
   if (isLDClient(optionsOrClient)) {
     // Pre-initialized client path (edge / custom runtimes).
-    // Still run telemetry setup so OTel traces work regardless of which
-    // LD SDK is providing the client. SDK key is optional here — it's only
-    // used for the highlight.project_id resource attribute.
-    await setupTelemetry({}, process.env.LD_SDK_KEY ?? '');
+    // Still run telemetry setup (with the caller's options) so OTel traces work
+    // regardless of which LD SDK provides the client. The SDK key is optional
+    // here — it's only used for the highlight.project_id resource attribute.
+    await setupTelemetry(clientOptions ?? {}, clientOptions?.sdkKey ?? process.env.LD_SDK_KEY ?? '');
     singleton.client = optionsOrClient;
     singleton.initPromise = Promise.resolve(optionsOrClient);
     flushAiSdkInfo(optionsOrClient);
@@ -262,6 +278,8 @@ export function getClient(): LDClientInterface {
 
 export async function shutdown(): Promise<void> {
   const singleton = getSingleton();
+  // Before the early return: a store can be configured without a client.
+  _clearState();
   if (!singleton.client) return;
   // Null the singleton before teardown so that any failure mid-flight still
   // leaves the process in a state where a second shutdown() call is a no-op.

@@ -276,7 +276,7 @@ describe('config() — single handler', () => {
     expect(result.response).toBe('{"name":"Alice"}');
   });
 
-  it('returns raw string when outputFormat is set but output cannot be parsed as JSON (§3.10 best-effort)', async () => {
+  it('returns raw string when outputFormat is set but output cannot be parsed as JSON (best-effort)', async () => {
     const outputFormat = { type: 'object', properties: { name: { type: 'string' } } };
     (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
       config: { ...mockConfig, outputFormat },
