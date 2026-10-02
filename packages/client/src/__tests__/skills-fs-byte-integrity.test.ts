@@ -5,8 +5,8 @@
  * about what happens *inside* a single reconcile rather than about its report:
  *
  * - the adoption comparison read is **bounded** at the resolved content's length
- *   plus one byte (§3.22), and
- * - the bytes that were hashed are the bytes that get **written** (§3.21) — the
+ *   plus one byte, and
+ * - the bytes that were hashed are the bytes that get **written** — the
  *   content is snapshotted before hashing, so a caller mutating `skill.content`
  *   during the awaits in between cannot substitute bytes nothing verified.
  *
@@ -140,7 +140,7 @@ afterEach(async () => {
 // ─── The bounded comparison read ─────────────────────────────────────────────
 
 /**
- * Adoption (§3.22) reads the file at `<root>/<key>/SKILL.md` and compares its
+ * Adoption reads the file at `<root>/<key>/SKILL.md` and compares its
  * hash against the resolved content's. That read deliberately reaches files the
  * manifest does **not** vouch for — that is the whole crash-recovery self-heal —
  * so the file it opens may be one an attacker with write access to the root

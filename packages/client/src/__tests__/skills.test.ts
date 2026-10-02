@@ -100,9 +100,8 @@ function rawSkill(overrides: Partial<RawSkillObject> & { key?: unknown } = {}): 
 /**
  * One over-cap string for the whole file.
  *
- * At 10 MiB this costs real time and memory to allocate and to hash, and §3.21
- * asks for one true over-cap case rather than one per test — so the cases that
- * need it share this.
+ * At 10 MiB this costs real time and memory to allocate and to hash, so the cases
+ * that need a true over-cap value share this one.
  */
 const OVERSIZE = 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1);
 
@@ -334,9 +333,8 @@ describe('package exports', () => {
   });
 
   it('exports the delivery transport, the watcher, and their defaults from the package root', () => {
-    // §3.25 / §3.26: the transport and the watcher are root exports in both
-    // languages; the base-URI and debounce defaults are TypeScript-only root
-    // exports (A.12).
+    // The transport and the watcher are root exports in both languages; the
+    // base-URI and debounce defaults are TypeScript-only root exports.
     expect(typeof packageIndex.FDv2SkillStore).toBe('function');
     expect(typeof packageIndex.watchSkills).toBe('function');
     expect(typeof packageIndex.SkillWatcher).toBe('function');

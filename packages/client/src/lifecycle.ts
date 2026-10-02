@@ -223,12 +223,11 @@ function isLDClient(value: unknown): value is LDClientInterface {
  * `@launchdarkly/vercel-server-sdk`) to bypass the Node SDK entirely. The
  * optional second argument is the same options bag as the first overload.
  *
- * Idempotent for the client singleton: a second call returns the existing
- * client and every other option is ignored — with one deliberate exception.
- * **`skillStore` is applied on every call, before the idempotency check**, so a
- * client that was lazily auto-initialized, or initialized without a store, can
- * be given one afterwards with `initClient({ skillStore: store })`. A nullish
- * `skillStore` never clears a configured store; `shutdown()` does that.
+ * Idempotent: later calls return the existing client and ignore every option
+ * **except** `skillStore`, which is applied on every call, so you can add a store
+ * after initialization with `initClient({ skillStore: store })`. A nullish store
+ * never clears the current one (use `shutdown()`). Without a store, the Agent
+ * Skills accessors throw.
  *
  * Both overloads return the client instance for further customization.
  */
@@ -243,21 +242,15 @@ export async function initClient(
 ): Promise<LDClientInterface> {
   const singleton = getSingleton();
 
-  // Applied before the idempotency check below, and on every call: it is what
-  // lets a client that was lazily auto-initialized, or initialized without a
-  // store, be given one afterwards. A nullish store never clears a configured
-  // one — `shutdown()` is for that.
+  // Applied on every call, before the idempotency check.
   const skillStore = (isLDClient(optionsOrClient) ? clientOptions : optionsOrClient)?.skillStore;
   if (skillStore != null) _setStore(skillStore);
 
   if (isLDClient(optionsOrClient)) {
     // Pre-initialized client path (edge / custom runtimes).
-    // Still run telemetry setup so OTel traces work regardless of which
-    // LD SDK is providing the client, and with the caller's options — the
-    // second argument is the same bag as the other overload, so `otlpEndpoint`,
-    // `serviceName` and `environment` mean the same thing here. SDK key is
-    // optional here — it's only used for the highlight.project_id resource
-    // attribute.
+    // Still run telemetry setup (with the caller's options) so OTel traces work
+    // regardless of which LD SDK provides the client. The SDK key is optional
+    // here — it's only used for the highlight.project_id resource attribute.
     await setupTelemetry(clientOptions ?? {}, clientOptions?.sdkKey ?? process.env.LD_SDK_KEY ?? '');
     singleton.client = optionsOrClient;
     singleton.initPromise = Promise.resolve(optionsOrClient);
@@ -285,10 +278,7 @@ export function getClient(): LDClientInterface {
 
 export async function shutdown(): Promise<void> {
   const singleton = getSingleton();
-  // Unconditional, and ahead of the early return: the skills state can be
-  // configured without a client (`initClient({ skillStore })` on a BYOC-less
-  // path, or a direct injection), so gating it on the client would leave a
-  // configured store alive across a shutdown.
+  // Before the early return: a store can be configured without a client.
   _clearState();
   if (!singleton.client) return;
   // Null the singleton before teardown so that any failure mid-flight still

@@ -178,17 +178,15 @@ export type SkillReference = {
 };
 
 /**
- * A single verbatim skill document.
+ * A single verified `SKILL.md` document. Frozen.
  *
- * Only ever constructed after integrity verification passes, so `content` is the
- * exact byte sequence LaunchDarkly delivered and `contentHash` is its sha256.
- * Instances are frozen. The SDK never interprets `content` — consumers that want
- * structure (frontmatter, markdown, anything else) parse the bytes themselves.
+ * The accessors return a `Skill` only after integrity verification, so `content`
+ * is exactly the bytes LaunchDarkly delivered and `contentHash` is their sha256.
  */
 export type Skill = {
   readonly key: string;
   readonly version: number;
-  /** The verified verbatim bytes — exactly the bytes that were hashed. */
+  /** The verbatim bytes. The SDK never decodes or parses them. */
   readonly content: Uint8Array;
   /** sha256, lowercase hex, over the verbatim bytes of `content`. */
   readonly contentHash: string;
@@ -199,41 +197,46 @@ export type Skill = {
 };
 
 /**
- * Why an accessor returned the skill it did — or returned none.
+ * The outcomes `getSkillResult` reports.
  *
- * A closed five-token vocabulary with exactly one token per outcome the store
- * resolution can reach. Every language implementation publishes the same five for
- * the same conditions, so a polyglot fleet writes one handler rather than two. A
- * sixth token is a cross-SDK change — add it everywhere, or not at all.
- *
- * `integrity_failure` is the token worth acting on: content and its declared
- * digest disagreed, which is the shape of active tampering with skill delivery,
- * and it is precisely the case a `null` return cannot distinguish from a skill
- * nobody ever configured. `absent` and `store_unavailable` stay separate for the
- * same reason the reconcile keeps them separate — "the store answered no" and
- * "the store could not answer" call for different responses, and treating an
- * outage as an absence is how an outage becomes data loss.
+ * - `ok` — a verified skill was returned.
+ * - `absent` — the store does not hold the key.
+ * - `integrity_failure` — content failed verification and was withheld. Fail
+ *   closed on this one: it can indicate tampering.
+ * - `store_unavailable` — the store threw. An outage, not a deletion.
+ * - `wrong_version` — the store holds a different version than the one
+ *   requested, so nothing was returned.
  */
 export type SkillOutcomeReason = 'absent' | 'integrity_failure' | 'ok' | 'store_unavailable' | 'wrong_version';
 
 /**
- * One skill retrieval, reported rather than collapsed to `null`.
- *
- * `skill` is non-null exactly when `reason` is `'ok'`. `detail` carries the
- * human-readable reason for every other outcome and is `null` for `'ok'`.
- *
- * `detail` is safe to show a caller or put in a log: it names the skill key, the
- * requested and held versions, and the failure category, and it carries neither
- * skill content nor any filesystem path. Keep it that way — it is the one string
- * here that a consumer might put in front of a person.
+ * The result of `getSkillResult`: the skill, plus why it was or wasn't returned.
+ * Frozen.
  */
 export type SkillOutcome = {
+  /** The verified skill; set only when `reason === 'ok'`. */
   readonly skill: Skill | null;
+  /** Which outcome happened; see {@link SkillOutcomeReason}. */
   readonly reason: SkillOutcomeReason;
+  /**
+   * Human-readable message, set for every reason except `'ok'`.
+   *
+   * Safe to log: never contains skill content or filesystem paths. Branch on
+   * `reason`, not on this.
+   */
   readonly detail: string | null;
 };
 
-/** The closed set of outcomes `writeSkills` reports. */
+/**
+ * The per-skill outcomes `writeSkills` reports.
+ *
+ * - `written` — the file did not exist and now holds the resolved content.
+ * - `updated` — a managed file held different bytes and was overwritten.
+ * - `skipped_current` — the bytes on disk already are the resolved content.
+ * - `removed` — the skill is no longer managed and is not on disk (whether this
+ *   run deleted it or it was already gone).
+ * - `error` — the outcome was refused or failed; see `ReconcileAction.error`.
+ */
 export type ReconcileActionKind = 'written' | 'updated' | 'skipped_current' | 'removed' | 'error';
 
 /** How `writeSkills` reacts to content it could not retrieve. */
@@ -242,11 +245,9 @@ export type OnUnavailable = 'keep' | 'raise';
 /** What `writeSkills` did — or refused to do — for one skill. */
 export type ReconcileAction = {
   /**
-   * The skill key, or the **empty string** for a failure that belongs to the run
-   * rather than to one skill — a corrupt manifest, a manifest that could not be
-   * rewritten, a retrieval that failed before any key was known. Callers
-   * grouping a report by key need to expect that sentinel; a report may carry
-   * both kinds.
+   * The skill key, or `''` for a run-level failure not tied to one skill (for
+   * example a corrupt or unwritable manifest, or a failed retrieval). Expect `''`
+   * when grouping a report by key.
    */
   readonly key: string;
   readonly action: ReconcileActionKind;
@@ -257,27 +258,19 @@ export type ReconcileAction = {
   readonly error: string | null;
 };
 
-/** The result of a `writeSkills` run — every outcome is visible here. */
+/** The result of a `writeSkills` run: one action per outcome. */
 export type ReconcileReport = {
   readonly actions: readonly ReconcileAction[];
-  /** `true` iff no action is an `error`. Always agrees with `errors`. */
+  /** `true` iff no action is an `error`. */
   readonly ok: boolean;
-  /**
-   * The `error` actions, in `actions` order.
-   *
-   * Exposed so callers never re-derive it — filtering `actions` is boilerplate
-   * that otherwise reappears in every consumer. Computed at construction rather
-   * than exposed as a getter, because a report is a frozen plain object.
-   */
+  /** The `error` actions, in `actions` order. */
   readonly errors: readonly ReconcileAction[];
 };
 
 /**
- * The wire-level shape a `SkillStore` serves, before verification.
+ * A raw skill object as a `SkillStore` serves it, before verification.
  *
- * Field names are camelCase and identical across language implementations.
- * Every field is optional and typed loosely on purpose: this is untrusted input,
- * and the accessor boundary is what proves any of it.
+ * Every field is `unknown`: this is untrusted input, and the accessors verify it.
  */
 export type RawSkillObject = {
   key?: unknown;
@@ -290,63 +283,39 @@ export type RawSkillObject = {
 };
 
 /**
- * Structural interface every source of skill content satisfies.
+ * The interface a source of skill content implements. Structurally typed: pass
+ * any object with these methods. `FDv2SkillStore` (LaunchDarkly delivery) and
+ * `InMemorySkillStore` are the built-in implementations.
  *
- * Structurally typed on purpose, mirroring how {@link LDClientInterface} works in
- * this package: pass any object carrying these methods. `FDv2SkillStore`, which
- * streams or polls LaunchDarkly's FDv2 channel, is one implementation;
- * `InMemorySkillStore` is another.
+ * Everything a store serves is treated as untrusted; the accessors re-verify
+ * key, version, size, and content hash on every read.
  *
- * `addListener` and `removeListener` are part of the seam but **optional**: a
- * store without them must still be accepted. The accessors call neither; they
- * exist so a consumer such as `watchSkills` can observe delivery changes.
- * `watchSkills` throws when the configured store lacks `addListener`, and uses
- * `removeListener` on close when present. A store that implements `addListener`
- * should implement `removeListener` too; it removes one occurrence of `fn` under
- * `kind` and is a no-op when `fn` is not registered.
- *
- * `addListener` should throw for a `kind` the store cannot notify rather than
- * accept the listener and never call it — both shipped stores notify `'skill'`
- * only, and do throw. A watcher that silently never fires is indistinguishable
- * from one whose objects never changed. `removeListener` has no such constraint:
- * a kind holding no listeners is simply nothing to remove.
- * * `isInitialized` is the optional readiness half of the seam, probed the same
- * way `addListener` is. It reports whether the store has received its initial
- * data — for a delivery transport, whether a payload has arrived yet. A store
- * that does not implement it is treated as initialized, which is correct for
- * one populated by hand (`InMemorySkillStore` implements nothing here), and a
- * probe that throws counts as *not* initialized. It matters because "the store
- * holds nothing" and "the store has not heard yet" are the same answer through
- * `allObjects`, and `writeSkills('*')` reads the first as "every skill was
- * revoked" — so a reconcile against an uninitialized store reports retrieval
- * unavailable and prunes nothing. `FDv2SkillStore` implements it as "a payload
- * has committed", the same fact `waitForSkills` resolves to without the wait.
- *
- * Everything a store serves is untrusted input. The transport is not part of the
- * trust boundary — key, version, size, and content hash are revalidated at the
- * accessor boundary on every pass.
+ * Optional methods:
+ * - `addListener` / `removeListener` — needed by `watchSkills` (which throws
+ *   without `addListener`); the accessors use neither. `addListener` should throw
+ *   for a `kind` it cannot notify rather than accept a listener that never
+ *   fires. `removeListener` removes one registration and is a no-op if `fn` is
+ *   not registered.
+ * - `isInitialized` — whether the store has received its initial data. Absent
+ *   means initialized; a throw means not. `writeSkills` prunes nothing while the
+ *   store is uninitialized, so an empty store that hasn't heard yet is not
+ *   mistaken for "every skill was revoked".
  */
 export type SkillStore = {
   /**
    * The object held for `key`, or `null`/`undefined` when there is none.
    *
    * `version` is the pinned version; omitted or `null` asks for the newest held.
-   * It goes *into* the lookup because a store may hold several versions of one
-   * key and only the store can pick between them. A store that cannot satisfy a
-   * pin should answer with what it has rather than with nothing — the accessor
-   * boundary re-checks the version and withholds a mismatch anyway, since
-   * everything a store serves is untrusted, and an answer of "nothing" would
-   * report a version mismatch as a plain absence.
+   * A store that cannot satisfy a pin should return what it has rather than
+   * nothing: the accessors withhold the mismatch and report it as
+   * `wrong_version` rather than `absent`.
    */
   getObject(kind: string, key: string, version?: number | null): RawSkillObject | null | undefined;
+  /** Every object held. Record keys are opaque; identity comes from each object's `key` and `version`. */
   allObjects(kind: string): Record<string, RawSkillObject>;
   addListener?(kind: string, fn: (raw: RawSkillObject) => unknown): void;
   removeListener?(kind: string, fn: (raw: RawSkillObject) => unknown): void;
-  /**
-   * Whether the store has received its initial data. Optional; absent means
-   * initialized. See the type's docblock for why the materialization path
-   * consults it before it may prune.
-   */
+  /** Whether the store has received its initial data. Absent means initialized. */
   isInitialized?(): boolean;
 };
 
@@ -358,9 +327,8 @@ export function createSkillReference(init: { key: string; version: number }): Sk
 /**
  * Builds a frozen {@link Skill}.
  *
- * Construction does **not** verify anything — the accessors do that, and
- * `writeSkills` re-verifies immediately before writing precisely because a
- * `Skill` can also be built here by a caller.
+ * Does **not** verify the content; `writeSkills` re-verifies every skill before
+ * writing it.
  */
 export function createSkill(init: {
   key: string;
@@ -370,9 +338,8 @@ export function createSkill(init: {
   name?: string | null;
   description?: string | null;
 }): Skill {
-  // The wrapper is frozen; a TypedArray's elements cannot be (Object.freeze
-  // throws on an array-buffer view), so the binding is immutable and the bytes
-  // are shared with the caller.
+  // Only the wrapper is frozen (a TypedArray can't be); `content` shares the
+  // caller's bytes.
   return Object.freeze({
     key: init.key,
     version: init.version,
@@ -383,13 +350,7 @@ export function createSkill(init: {
   });
 }
 
-/**
- * Builds a frozen {@link SkillOutcome}.
- *
- * `reason` is required and has no default: every construction site has to state
- * which of the five outcomes it is reporting, so a new internal outcome cannot
- * quietly inherit `'absent'`.
- */
+/** Builds a frozen {@link SkillOutcome}. `reason` is required. */
 export function createSkillOutcome(init: {
   skill?: Skill | null;
   reason: SkillOutcomeReason;
@@ -432,30 +393,23 @@ export function createReconcileReport(actions: readonly ReconcileAction[]): Reco
 // ---------------------------------------------------------------------------
 
 /**
- * Skill keys are `^[a-z0-9][a-z0-9-]*$`. Anchored explicitly with `^`/`$` and
- * *without* the `m` flag, so a trailing newline cannot slip through as it would
- * in a multiline match — `'pdf-extraction\n'` must never become a directory name.
+ * The skill key grammar. No `m` flag, so `$` cannot match before a trailing
+ * newline and let `'pdf-extraction\n'` through as a directory name.
  */
 const SKILL_KEY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
- * Longest key the data model permits. Note that no mainstream filesystem allows
- * a 256-byte path component, so `writeSkills` applies a tighter bound of its own.
+ * Longest permitted skill key. `writeSkills` applies a tighter bound, since most
+ * filesystems cap a path component below 256 bytes.
  */
 export const SKILL_KEY_MAX_LENGTH = 256;
 
-/** Skill keys are untrusted input everywhere they appear — validate every time. */
+/** Whether `key` is a valid skill key: `^[a-z0-9][a-z0-9-]*$`, at most 256 characters. */
 export function isValidSkillKey(key: unknown): key is string {
   return typeof key === 'string' && key.length <= SKILL_KEY_MAX_LENGTH && SKILL_KEY_PATTERN.test(key);
 }
 
-/**
- * Skill versions are integers >= 1.
- *
- * `Number.isInteger` rejects `NaN`, `Infinity`, and non-integral values, and a
- * `typeof` check rejects a boolean — which is not an acceptable integer even
- * though JavaScript will happily coerce it.
- */
+/** Whether `version` is a valid skill version: an integer >= 1 (not `NaN`, `Infinity`, or a boolean). */
 export function isValidSkillVersion(version: unknown): version is number {
   return typeof version === 'number' && Number.isInteger(version) && version >= 1;
 }
@@ -463,9 +417,8 @@ export function isValidSkillVersion(version: unknown): version is number {
 /**
  * Validates the optional `skills` array. Returns an error message or `null`.
  *
- * Fail closed: a malformed reference makes the whole config malformed, because an
- * SDK that silently dropped a bad reference would materialize a partial skill set
- * without telling anyone.
+ * Fails closed: one malformed reference fails the whole config, rather than
+ * silently materializing a partial skill set.
  */
 function parseSkills(raw: unknown): string | null {
   if (!Array.isArray(raw)) return 'skills must be an array of {key, version} objects';
@@ -934,14 +887,11 @@ export type InitBaseClientOptions = {
   environment?: string;
   otlpEndpoint?: string;
   /**
-   * The store the Agent Skills accessors read content from. Absent by default,
-   * in which case they throw an actionable error.
+   * The store the Agent Skills accessors read from. Without one, they throw.
    *
-   * Unlike every other option here, this one is applied on **every**
-   * `initClient` call rather than only the first, so a client that was lazily
-   * auto-initialized — or initialized without a store — can be given one
-   * afterwards. A nullish value never clears an already-configured store; use
-   * `shutdown()` for that.
+   * Unlike other options, applied on **every** `initClient` call, so you can add
+   * a store after initialization. A nullish value never clears the current store
+   * (use `shutdown()`).
    */
   skillStore?: SkillStore;
 };

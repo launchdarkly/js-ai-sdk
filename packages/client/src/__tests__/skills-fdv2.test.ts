@@ -378,7 +378,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<bo
   return predicate();
 }
 
-/** A telemetry emitter that records instead of emitting (§3.24). */
+/** A telemetry emitter that records instead of emitting. */
 class RecordingEmitter {
   records: Array<[string, Record<string, unknown>]> = [];
   record(signal: string, properties: Record<string, unknown>): void {
@@ -2181,8 +2181,7 @@ describe('failure handling', () => {
   it('answers every status with exactly one of the two classes', () => {
     // There is no third class. A status handled as neither recoverable nor
     // fatal is a retry loop with no bound and no budget, invisible to both
-    // `failed` and `connectionFailures` — the shape this suite forbids, not
-    // just the name it used to go by.
+    // `failed` and `connectionFailures`.
     const statuses = [
       301, 302, 307, 308, 400, 401, 402, 403, 404, 405, 406, 408, 409, 410, 413, 414, 418, 422, 425, 429, 431, 451, 500,
       501, 502, 503, 504, 507, 599,
@@ -2258,9 +2257,8 @@ describe('failure handling', () => {
   });
 
   it('leaves a store that gave up on a 422 uninitialized, so a wildcard reconcile prunes nothing', async () => {
-    // Composed with §3.22: "delivery gave up, therefore the store is empty,
-    // therefore prune" is exactly the inference an implementation assembles
-    // from two sections, and it deletes a customer's files. The readiness gate
+    // "Delivery gave up, therefore the store is empty, therefore prune" is an
+    // easy inference to assemble, and it deletes a customer's files. The readiness gate
     // is what stops it, and this is the path a filesystem-agent deployment
     // takes when Agent Skills is not enabled for the account.
     const root = await scratchRoot();
@@ -2709,28 +2707,13 @@ describe('watchSkills', () => {
   });
 
   it('coalesces a burst of changes into exactly one reconcile', async () => {
-    // Three things make this test either evidence or theatre, and all three have
-    // to be right:
-    //
-    // 1. **The burst has to arrive after the watcher registers.** A payload
-    //    committed before `watchSkills` attaches its listener notifies nobody,
-    //    so the reconcile counter never leaves zero — and an upper bound
-    //    (`<= 2`) then passes against an implementation with the debouncing
-    //    deleted. So the seed payload is what boot waits for, and the burst is
-    //    queued only once the watcher is up.
-    // 2. **The assertion has to be an equality, and it has to see movement.**
-    //    Exactly one more reconcile than the initial one, and the counter has to
-    //    have advanced at all; a run in which it stays at zero is not testing
-    //    coalescing.
-    // 3. **The notifications have to be spread over time.** This one is not in
-    //    the spec and it is what actually makes the test discriminate, verified
-    //    by mutation: `SkillWatcher.schedule` also has a `pending` flag, so a
-    //    burst that arrives in *one synchronous run* of the listener collapses
-    //    to a single reconcile whether or not the debounce exists. Twelve
-    //    objects in one commit are therefore not enough. Three commits arriving
-    //    a poll apart are: each one lands after the previous reconcile would
-    //    already have started and cleared `pending`, so only the debounce window
-    //    can merge them.
+    // To discriminate rather than pass vacuously: the burst is queued only
+    // after the watcher registers, the assertion is an exact count that must
+    // have moved, and the notifications are spread over time. A burst in one
+    // synchronous listener run collapses to one reconcile via
+    // `SkillWatcher.schedule`'s `pending` flag with or without a debounce, so
+    // three commits arrive a poll apart and only the debounce window can merge
+    // them.
     endpoint.queuePoll(fullPayload([['put-object', putSkill('seed')]]));
     const store = pollStore({ pollIntervalMs: 20 });
     store.start();
@@ -2748,7 +2731,7 @@ describe('watchSkills', () => {
       expect(watcher.reconciles).toBe(0);
 
       // Twelve objects across three commits. Twelve, because a commit notifies
-      // once per *changed object* rather than once per commit (§3.25) — which is
+      // once per *changed object* rather than once per commit — which is
       // why the debounce exists at all rather than being a refinement of a
       // per-commit notification.
       for (let commit = 0; commit < 3; commit += 1) {
@@ -2884,8 +2867,7 @@ describe('watchSkills', () => {
   });
 
   it('returns a named object, not a tuple, and takes its debounce in milliseconds', async () => {
-    // A.12 fixes both, and both are places a port from Python goes wrong
-    // silently: destructuring `[report, watcher]` off an object yields
+    // Both differ from Python, and both go wrong silently in a port: destructuring `[report, watcher]` off an object yields
     // `undefined`s, and passing Python's seconds value to `debounceMs` sets a
     // 0.5 ms window that looks like a timing bug rather than a unit bug.
     const store = new InMemorySkillStore();
@@ -3035,7 +3017,7 @@ describe('watchSkills', () => {
     _setStore(store);
     const scratch = await scratchRoot();
 
-    // A root whose parent does not exist: never created recursively (§3.22).
+    // A root whose parent does not exist: never created recursively.
     await expect(watchSkills('*', path.join(scratch, 'a', 'b', 'c'))).rejects.toThrow();
     // And a root that is a file rather than a directory.
     const file = path.join(scratch, 'file');
@@ -3081,7 +3063,7 @@ describe('watchSkills', () => {
     // Driven behaviourally rather than by spying on the import: a `prune: false`
     // that reached `writeSkills` leaves a stale managed skill alone on the
     // initial reconcile *and* on a re-reconcile, and a `timeout: 0` that reached
-    // it exhausts before retrieval — both are §3.22 outcomes only `writeSkills`
+    // it exhausts before retrieval — both are outcomes only `writeSkills`
     // produces.
     const seed = new InMemorySkillStore();
     seed.put({ key: 'a', version: 1, content: 'first', contentHash: hash('first') });
@@ -3370,8 +3352,8 @@ describe('lifecycle', () => {
 
   it('resolves waitForSkills false at once for a wait started after close', async () => {
     // A connection that is open and has delivered nothing: the store is neither
-    // holding a payload nor has it given up, which is the state in which a wait
-    // used to run its timeout out in full.
+    // holding a payload nor has it given up, so a wait must not run its
+    // timeout out in full.
     endpoint.holdStreamOpen = true;
     endpoint.queueStream([]);
     const store = streamStore();
@@ -3700,7 +3682,7 @@ describe('endpoints', () => {
 
 // ─── Layering, and the absence of telemetry ──────────────────────────────────
 
-// ─── Transport contract assertions the spec names (§3.25) ────────────────────
+// ─── Transport contract assertions ───────────────────────────────────────────
 
 describe('transport contract', () => {
   const source = readFileSync(new URL('../skills-fdv2.ts', import.meta.url), 'utf8');
@@ -3730,15 +3712,15 @@ describe('transport contract', () => {
     // `StoreDiagnostics` is public API from the moment it ships, and a
     // type-level removal is invisible at runtime — so the absence is asserted
     // against the source, the way the kind constants above are. A field still
-    // declared but never incremented would fail the spec's absence assertion,
-    // and would pass a test that only looked at a snapshot.
+    // declared but never incremented would pass a test that only looked at a
+    // snapshot.
     expect(source).not.toMatch(/payloadUnavailable/);
-    // The expected-recoverable class is specified out of existence, not merely
-    // unexported: a status handled as neither recoverable nor fatal is a retry
+    // There is no expected-recoverable class at all, not merely an unexported
+    // one: a status handled as neither recoverable nor fatal is a retry
     // loop with no bound and no budget.
     expect(source).not.toMatch(/NoSkillPayloadError/);
-    // And nothing left of the shape it carried: no idle warning, no retry
-    // parked at the cap instead of on the backoff schedule.
+    // And no idle warning, no retry parked at the cap instead of on the
+    // backoff schedule.
     expect(source).not.toMatch(/delivery is idle/i);
     expect(source).not.toMatch(/warnedNoSkillPayload/);
   });

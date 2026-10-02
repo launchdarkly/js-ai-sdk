@@ -1,18 +1,13 @@
 /**
- * Agent Skills — re-reconcile on delivery, so revocation does not wait for a restart.
+ * Agent Skills — keep skills on disk in sync as delivery changes.
  *
- * `writeSkills` is a one-shot reconcile: it materializes what the store holds
- * now. This module re-runs it whenever the store reports a change, so a
- * `delete-object` that reaches a live connection takes a skill's `SKILL.md` off
- * disk within a debounce interval rather than at the next process restart.
+ * `writeSkills` is a one-shot reconcile of what the store holds now.
+ * `watchSkills` re-runs it whenever the store reports a change, so a skill
+ * revoked in LaunchDarkly is removed from disk within a debounce interval rather
+ * than at the next restart.
  *
- * `onUnavailable: 'keep'` stays the default: an outage must not read as
- * "everything was revoked". A watcher that pruned on a failed retrieval would
- * convert every transport blip into deletion of a customer's skill files.
- *
- * Layering: this module sits *above* `skills-fs.ts` and calls `writeSkills`
- * without modifying it. Nothing in the reconcile, the accessors, or verification
- * knows this file exists.
+ * `onUnavailable: 'keep'` remains the default, so an outage never deletes the
+ * application's skill files.
  */
 
 import { getStore, SKILL_OBJECT_KIND } from './skills-core.js';
@@ -20,24 +15,21 @@ import { type WriteSkillsOptions, writeSkills } from './skills-fs.js';
 import type { ReconcileReport, Skill, SkillReference, SkillStore } from './types.js';
 
 /**
- * How long a change waits for its neighbours before a reconcile runs.
- *
- * A full payload transfer commits many objects at once and the listener fires per
- * object, so without coalescing a payload of forty skills would run forty
- * reconciles against one root. Half a second is far below the seconds-scale
- * latency this feature is trying to achieve and far above the microseconds a
- * commit's listener calls take.
+ * Default debounce, in milliseconds: how long to wait after a change before
+ * reconciling, so a payload of many skills triggers one reconcile, not one each.
  */
 export const DEFAULT_DEBOUNCE_MS = 500;
 
+/** Options for {@link watchSkills}: every {@link WriteSkillsOptions} field, plus these. */
 export type WatchSkillsOptions = WriteSkillsOptions & {
-  /** Coalescing window, in **milliseconds**. Default {@link DEFAULT_DEBOUNCE_MS}. */
+  /**
+   * Milliseconds to wait after a change before reconciling. Must be a
+   * non-negative finite number. Default {@link DEFAULT_DEBOUNCE_MS}.
+   */
   debounceMs?: number;
   /**
-   * Called with each re-reconcile's report — the ones delivery triggers, not
-   * the initial reconcile, whose report `watchSkills` returns directly. May be
-   * `async`; a throw or a rejection is logged, not thrown, and does not stop
-   * the watcher.
+   * Called with each re-reconcile's report (not the initial one). May be
+   * `async`; a throw or rejection is logged and does not stop the watcher.
    */
   onReconcile?: (report: ReconcileReport) => unknown;
 };
@@ -48,15 +40,11 @@ function error(message: string): void {
 }
 
 /**
- * A running re-reconcile. Returned by {@link watchSkills}; stop it with `close`.
+ * A running watch. Returned by {@link watchSkills}; stop it with `close`.
  *
- * One watcher owns one root. **Do not point two watchers at the same root**, and
- * do not run `writeSkills` against a watched root concurrently: the reconcile's
- * own contract is one root, one reconcile at a time, because two interleaved runs
- * lose the loser's manifest entries and leave the files it wrote unmanaged. This
- * class enforces that for its *own* reconciles — they are chained, never
- * overlapped — and cannot enforce it against a caller who reconciles the same
- * root by hand.
+ * **One watcher per root.** Don't point two watchers at the same root or run
+ * `writeSkills` on a watched root concurrently: interleaved reconciles can lose
+ * manifest entries. The watcher serialises its own reconciles only.
  */
 export class SkillWatcher {
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -77,17 +65,12 @@ export class SkillWatcher {
   /**
    * The store's change listener. Schedules a reconcile; runs nothing inline.
    *
-   * Deliberately trivial. It is called from the delivery task, where a reconcile
-   * — which does filesystem I/O, an fsync per file, and a manifest rewrite —
-   * would stall event processing for the duration and, on a stream, let the
-   * connection's read buffer back up behind a disk write. The argument is
-   * ignored: a put's raw object and a revocation's tombstone both mean the same
-   * thing here, which is "the store is not what it was".
+   * Called from the delivery task, so it must not block on filesystem work.
+   * The argument is ignored: any change triggers a full reconcile.
    */
   readonly notify = (): void => {
     if (this.closed) return;
-    // Restarting the timer rather than letting the first one win is what makes a
-    // burst collapse into one reconcile that sees the *settled* state.
+    // Restart the timer, so a burst collapses into one reconcile of the settled state.
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
@@ -100,8 +83,7 @@ export class SkillWatcher {
     if (this.closed) return;
     if (this.pending) return;
     this.pending = true;
-    // Chained onto whatever is already running: two concurrent reconciles of one
-    // root interleave on the manifest and lose entries.
+    // Chain, never overlap: concurrent reconciles of one root lose manifest entries.
     this.running = this.running.then(async () => {
       this.pending = false;
       await this.reconcileOnce();
@@ -109,21 +91,15 @@ export class SkillWatcher {
   }
 
   /**
-   * Runs the first reconcile inside the watcher's own chain, and returns its report.
+   * Runs the initial reconcile on the watcher's chain and returns its report.
+   * Called once by {@link watchSkills}.
    *
-   * Sharing the chain lets {@link watchSkills} register the change listener
-   * *before* this runs: a payload that commits during the reconcile's filesystem
-   * I/O still reaches the watcher, and queues behind this run rather than
-   * reconciling the same root concurrently.
-   *
-   * Unlike {@link reconcileOnce} the failure propagates — a bad root or a corrupt
-   * manifest is `watchSkills`'s to throw — and does not count toward
-   * {@link reconciles}, which reports re-reconciles only.
+   * A change delivered meanwhile queues behind it. Errors propagate, and the run
+   * does not count toward {@link reconciles}.
    */
   async runInitial(): Promise<ReconcileReport> {
     const run = this.running.then(() => writeSkills(this.request, this.root, this.options));
-    // The chain itself must survive a rejection: a rejected `running` would
-    // reject every reconcile chained after it. The caller still gets `run`.
+    // Keep the chain alive past a rejection; the caller still gets `run`.
     this.running = run.then(
       () => undefined,
       () => undefined,
@@ -137,8 +113,7 @@ export class SkillWatcher {
     try {
       report = await writeSkills(this.request, this.root, this.options);
     } catch (cause) {
-      // A watcher that died on one bad reconcile would silently stop tracking
-      // revocations, which is worse than a noisy one.
+      // Log and keep watching; dying here would silently stop revocations.
       error(
         `A skill re-reconcile threw; the watcher continues: ${cause instanceof Error ? cause.message : String(cause)}`,
       );
@@ -147,8 +122,7 @@ export class SkillWatcher {
     this.completed += 1;
     if (this.onReconcile) {
       try {
-        // Awaited inside the try, so an `async` callback that rejects is logged
-        // like a synchronous throw rather than left as an unhandled rejection.
+        // Awaited inside the try, so an async rejection is logged too.
         await Promise.resolve(this.onReconcile(report));
       } catch (cause) {
         error(`A watchSkills callback threw: ${cause instanceof Error ? cause.message : String(cause)}`);
@@ -156,30 +130,17 @@ export class SkillWatcher {
     }
   }
 
-  /**
-   * How many re-reconciles have completed since the watcher started.
-   *
-   * Excludes the initial reconcile {@link watchSkills} awaits, which is the
-   * caller's own result.
-   */
+  /** Number of re-reconciles completed, excluding the initial one. */
   get reconciles(): number {
     return this.completed;
   }
 
   /**
-   * Stops watching. Idempotent. Does not undo anything already on disk.
+   * Stops watching. Idempotent; leaves files on disk as they are.
    *
-   * Awaits an in-flight reconcile rather than abandoning one, because a reconcile
-   * interrupted between its content writes and its manifest rewrite is the one
-   * case the manifest format has to recover from — worth avoiding when we control
-   * the timing.
-   *
-   * Marks the watcher closed and disarms the timer *before* detaching, so a
-   * `removeListener` that throws cannot leave a watcher that is half-closed with
-   * a reconcile still scheduled. Detaching is best effort: a failure is logged,
-   * not thrown, and a store without the optional `removeListener` is left as it
-   * is rather than failing the close. Either way no further change reaches a
-   * watcher that is shutting down, because `notify` checks `closed` first.
+   * Detaches from the store (when it has `removeListener`; a throw there is
+   * logged, not rethrown), then awaits any in-flight reconcile rather than
+   * interrupting it mid-write.
    */
   async close(): Promise<void> {
     if (this.closed) {
@@ -212,11 +173,15 @@ export class SkillWatcher {
 /**
  * Reconciles now, then re-reconciles whenever delivery changes.
  *
- * Every option `writeSkills` takes means the same thing here and is passed
- * straight through; the reconcile's semantics are untouched. Resolves to the
- * initial reconcile's report — so a caller can fail fast on a bad root or a
- * corrupt manifest exactly as they would with `writeSkills` — paired with a
- * {@link SkillWatcher} to close when the process is done:
+ * Takes the same arguments as `writeSkills`, plus `debounceMs` and `onReconcile`
+ * (see {@link WatchSkillsOptions}).
+ *
+ * Errors from the initial `writeSkills` (e.g. a bad root) propagate, so you can
+ * fail fast exactly as with `writeSkills`. If the store has no `removeListener`,
+ * a closed watcher stays registered with the store for the store's lifetime.
+ *
+ * @returns The initial reconcile's report and a {@link SkillWatcher} to close
+ *   when done:
  *
  * ```ts
  * const { report, watcher } = await watchSkills('*', '.claude/skills');
@@ -227,16 +192,9 @@ export class SkillWatcher {
  * }
  * ```
  *
- * A revocation delivered over a streaming connection then prunes the skill's
- * files within `debounceMs` of arriving, rather than at the next restart.
- *
- * Requires a store that implements the optional `addListener` half of the seam.
- * Throws when no store is configured, and when the configured store has no
- * `addListener` — the second case failing loudly rather than degrading to a
- * one-shot reconcile, because a watcher that silently never fires looks exactly
- * like a watcher whose skills never changed. The optional `removeListener` lets
- * `SkillWatcher.close` detach; a store without it keeps working, at the cost of
- * a listener that lives as long as the store does.
+ * @throws Error if no store is configured, or the store has no `addListener`
+ *   (use `writeSkills` for a one-shot reconcile).
+ * @throws Error if `debounceMs` is negative, `NaN`, or infinite.
  */
 export async function watchSkills(
   skills: ReadonlyArray<Skill | SkillReference | string> | '*',
@@ -257,28 +215,22 @@ export async function watchSkills(
     );
   }
 
-  // `NaN` is the case a `< 0` guard misses — `NaN < 0` is false — and it is not a
-  // harmless one: `setTimeout(fn, NaN)` fires at 1 ms, which collapses the
-  // coalescing window to nothing and reconciles once per *delivered object*. A
-  // twelve-skill payload would then run twelve reconciles of one root. Guarded
-  // the way `writeSkills` already guards its own `timeout`.
+  // A bare `< 0` check misses `NaN`, which `setTimeout` treats as ~0 (no debouncing).
   const { debounceMs = DEFAULT_DEBOUNCE_MS, onReconcile, ...writeOptions } = options;
   if (typeof debounceMs !== 'number' || !Number.isFinite(debounceMs) || debounceMs < 0) {
-    // `String` rather than `JSON.stringify` for the number case: the latter
-    // serializes `NaN` as `null`, which names the wrong mistake.
+    // `String`, because `JSON.stringify(NaN)` is `null`.
     const shown = typeof debounceMs === 'number' ? String(debounceMs) : JSON.stringify(debounceMs);
     throw new Error(`debounceMs must be a non-negative, finite number of milliseconds, got ${shown}`);
   }
 
   const watcher = new SkillWatcher(store, skills, root, writeOptions, debounceMs, onReconcile);
 
-  // The listener goes on before the first reconcile, so a payload committing
-  // during that reconcile's filesystem I/O still reaches the watcher.
+  // Attach the listener before the initial reconcile, so a change delivered
+  // during it is still seen (nothing re-reconciles on a timer).
   store.addListener(SKILL_OBJECT_KIND, watcher.notify);
 
-  // The initial reconcile is awaited, so its report is the caller's to inspect
-  // and a bad root throws out of `watchSkills`. Nothing is left watching a root
-  // that never reconciled, hence the close on the way out.
+  // A failed initial reconcile throws to the caller, who gets no watcher to
+  // close, so detach the listener here.
   let report: ReconcileReport;
   try {
     report = await watcher.runInitial();
