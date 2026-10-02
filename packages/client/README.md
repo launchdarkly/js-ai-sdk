@@ -235,9 +235,9 @@ if (!result.enabled) {
 
 ### Agent Skills
 
-Agent Skills are versioned `SKILL.md` documents managed in LaunchDarkly, attachable to AI Config variations by reference. This package surfaces which skills a config references, retrieves their content, and materializes them onto disk where agent runtimes (the Claude Agent SDK and friends) can discover them.
+Agent Skills are versioned `SKILL.md` documents managed in LaunchDarkly and attached to AI Config variations by reference. This package tells you which skills a config references, retrieves their content, and writes them to `<root>/<key>/SKILL.md`, where agent runtimes such as the Claude Agent SDK discover them.
 
-**Everything below runs against the `SkillStore` seam**, and the shipped default is *absent*, so the accessors throw an actionable error until a store is configured. `InMemorySkillStore` is provided for local development, tests, and bring-your-own-content; `FDv2SkillStore` is the delivery transport that receives content from LaunchDarkly — see [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly).
+**Everything below goes through a `SkillStore`.** None is configured by default, so the accessors throw an actionable error until you set one. Use `InMemorySkillStore` for local development, tests, and bring-your-own-content, and `FDv2SkillStore` to receive content from LaunchDarkly — see [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly).
 
 ```ts
 import { createHash } from 'node:crypto';
@@ -253,8 +253,8 @@ import {
 } from '@launchdarkly/ai-server';
 
 // A store serves wire-shaped raw objects. `contentHash` is sha256, lowercase
-// hex, over the verbatim UTF-8 bytes of `content` — content that does not hash
-// to it is withheld, so this is not a field to hand-wave.
+// hex, over the verbatim UTF-8 bytes of `content`. Content that does not hash
+// to it is withheld.
 const content = '---\nname: PDF Extraction\n---\nExtract text from PDFs.\n';
 const store = new InMemorySkillStore();
 store.put({
@@ -283,21 +283,20 @@ const refs = skillRefs({
 // const refs = skillRefs(info.config);
 
 // Retrieve content. Every skill is hash-verified before you see it.
-// `Skill.content` is a Uint8Array — the verified verbatim bytes, exactly what
-// was hashed. The SDK never interprets them; decode or parse them yourself.
+// `Skill.content` is a Uint8Array of the verified verbatim bytes; the SDK never
+// interprets them.
 const newest = await getSkill('pdf-extraction'); // newest available
 const pinned = await getSkill('pdf-extraction', { version: 2 }); // exact version, or null
 const batch = await getSkills(refs); // input order; misses omitted
-// `getSkill` returns null for four different reasons. When you need to tell them
-// apart — to fail closed on suspected tampering — ask for the outcome instead.
+// `getSkill` returns null for four different reasons. To tell them apart (for
+// example, to fail closed on suspected tampering), ask for the outcome instead.
 const outcome = await getSkillResult('pdf-extraction', { version: 2 });
 if (outcome.reason === 'integrity_failure') throw new Error(outcome.detail ?? 'withheld');
 const everything = await allSkills();
 const text = new TextDecoder().decode(newest?.content); // if you want a string
 
 // Materialize onto disk at <root>/<key>/SKILL.md. Only the leaf directory is
-// ever created, so `.claude` must already exist — a typo in the path is an
-// error, not an invitation to scatter a directory tree.
+// created, so `.claude` must already exist.
 const report = await writeSkills(refs, '.claude/skills');
 if (!report.ok) {
   for (const action of report.errors) {
@@ -306,75 +305,72 @@ if (!report.ok) {
 }
 ```
 
-`writeSkills` is a **reconcile**, not a copy. It records what it wrote in `<root>/.launchdarkly-skills.json` and only ever overwrites or deletes paths that manifest lists under a matching key — a file you placed yourself is reported as an error and left alone. Revocation is pruning: a skill absent from the resolved set is removed on the next run.
+`writeSkills` is a **reconcile**, not a copy. It records what it wrote in `<root>/.launchdarkly-skills.json` and overwrites or deletes **only** paths that manifest lists under a matching key. A file you placed yourself is reported as an error and left alone. Revocation is pruning: a skill absent from the resolved set is removed on the next run.
 
-One narrow exception keeps that conservatism from becoming a trap. The manifest is written atomically, once, last, so a process killed after a skill file lands but before that write would leave the file at a managed path with no manifest entry — which is exactly what an unmanaged collision looks like, so every later reconcile would refuse it and the skill would stay stuck. So a colliding file whose bytes **already are** the resolved content is adopted: recorded in the manifest and reported `skipped_current`, and a crashed reconcile heals itself on the next run. Nothing is overwritten, because nothing needs to be — the only file ever adopted is one that is already byte-identical to what LaunchDarkly resolved. A file whose bytes differ, or one that cannot be read at all, is still refused and left untouched.
+**One exception: byte-identical files are adopted.** A file at a managed path whose bytes already equal the resolved content is recorded in the manifest and reported `skipped_current` instead of refused. This lets a reconcile that crashed after writing a skill file, but before writing the manifest, recover on the next run. A file whose bytes differ, or that cannot be read, is still refused and left untouched.
 
 ```ts
 // Everything the store holds, materialized at boot.
 const report = await writeSkills('*', '.claude/skills', {
   prune: true,          // default — remove formerly-managed skills no longer resolved
-  timeout: 10,          // SECONDS, not milliseconds (cross-language contract)
+  timeout: 10,          // seconds, not milliseconds
   onUnavailable: 'keep', // 'keep' reports a failed retrieval; 'raise' throws
 });
 ```
 
-**Know what `'*'` asks for.** It materializes the **whole project library**, which puts every
-skill's `description` into the agent's context — including skills no AI Config references and
-skills belonging to other teams. `writeSkills(skillRefs(config), root)`, the form used in the
-example above, materializes only what the resolved variation actually asked for. Reach for
-`'*'` when you genuinely want the entire library on disk.
+**Know what `'*'` asks for.** It writes the **whole project library**, which puts every skill's `description` into the agent's context, including skills no AI Config references and skills belonging to other teams. `writeSkills(skillRefs(config), root)`, as in the first example, writes only what the resolved variation asked for.
 
 | Export | Description |
 |---|---|
 | `skillRefs(config)` | Project a config's `skills` array into typed `SkillReference[]`. Pure — no client, no store, no telemetry. `[]` when absent. |
-| `getSkill(key, { version? })` | One verified skill. Omit `version` for the newest available. Resolves to `null` for not-found or a version mismatch; throws only when no store is configured. |
-| `getSkillResult(key, { version? })` | The same retrieval as `getSkill`, reported instead of collapsed. Resolves to `{ skill, reason, detail }`, where `reason` is one of `ok` / `absent` / `integrity_failure` / `store_unavailable` / `wrong_version`. Throws only when no store is configured — same as `getSkill`. See [fail closed on tampering](#fail-closed-on-tampering-getskillresult). |
+| `getSkill(key, { version? })` | One verified skill. Omit `version` for the newest available. Resolves to `null` when the skill is unavailable; throws only when no store is configured. |
+| `getSkillResult(key, { version? })` | The same retrieval, reporting **why**: resolves to `{ skill, reason, detail }`, where `reason` is `ok` / `absent` / `integrity_failure` / `store_unavailable` / `wrong_version`. Throws only when no store is configured. See [fail closed on tampering](#fail-closed-on-tampering-getskillresult). |
 | `getSkills(refs)` | Batch form. Accepts `SkillReference` values and bare key strings (string = latest). Results follow input order; missing or unverifiable entries are omitted. |
 | `allSkills()` | Every verified skill the store holds, newest version per key. |
-| `writeSkills(skills, root, options?)` | Materialize to `<root>/<key>/SKILL.md`. Accepts `Skill` / `SkillReference` / key strings, or the literal `'*'`. Returns a `ReconcileReport`. Throws for a caller error — an unusable `root`, a bare string other than `'*'` — as distinct from the per-skill `error` actions in the report. |
-| `InMemorySkillStore` | A `SkillStore` backed by in-memory maps. `put(raw)`, `getObject(kind, key, version?)`, `allObjects(kind)`, `addListener(kind, fn)`, `removeListener(kind, fn)`. Several versions of one key coexist, as they do in a real payload: `getObject` answers a pin with exactly that version and an omitted version with the newest held, and `allObjects` returns one entry per `(key, version)` under keys opaque to callers. `addListener` throws for any kind but `'skill'`. |
-| `FDv2SkillStore(sdkKey, options?)` | The delivery transport: a `SkillStore` fed by LaunchDarkly over the SDK-facing FDv2 channel. `start()`, `waitForSkills(timeoutMs)`, `isInitialized()`, `close()`, `diagnostics`, `failed`, `addListener` / `removeListener`. `close()` is final — `start()` throws afterwards — and `addListener` throws for any kind but `'skill'`. Options (`FDv2SkillStoreOptions`): `mode` (`'stream'` default, or `'poll'`), `baseUri`, `streamUri`, `pollIntervalMs`, `readTimeoutMs`, `initialBackoffMs`, `maxBackoffMs`, `maxConsecutiveFailures`. **Server-side only** — a mobile key or client-side environment ID throws. See [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly). |
-| `watchSkills(skills, root, options?)` | `writeSkills` plus a re-reconcile on every delivery change. Resolves to `{ report, watcher }` — the initial reconcile's report and a `SkillWatcher`; `await watcher.close()` when done, which also detaches the watcher from the store. Options (`WatchSkillsOptions`): everything `writeSkills` takes, plus `debounceMs` (milliseconds, default `DEFAULT_DEBOUNCE_MS`) and `onReconcile`, called with each delivery-triggered report. Requires a store that implements `addListener`; one watcher per root. Revocation then takes effect within `debounceMs` of arriving rather than at the next restart. |
-| `SkillWatcher` | What `watchSkills` returns alongside the report: `reconciles` (re-reconciles completed, excluding the initial one), `notify` (the registered change listener), `close()` (idempotent; detaches and awaits any reconcile in flight). |
-| `StoreDiagnostics` | What the transport has seen: `payloadsTransferred`, `skillObjectsReceived`, `objectsIgnored`, `objectsRevoked` (each `delete-object` that removed something, plus each key a full transfer dropped altogether — a version bump is a move, not a revocation, and a tombstone for a key never held is reported but not counted), `payloadsIgnored`, `hashlessObjects`, `connectionFailures`, `lastError`. |
-| `DEFAULT_BASE_URI` / `DEFAULT_STREAM_URI` | `'https://sdk.launchdarkly.com'` and `'https://stream.launchdarkly.com'` — where `GET /sdk/poll` and `GET /sdk/stream` go by default. Overrides must be `https://` (plain `http://` only to a loopback host), and redirects from either are refused as a fatal failure. |
+| `writeSkills(skills, root, options?)` | Materialize to `<root>/<key>/SKILL.md`. Accepts `Skill` / `SkillReference` / key strings, or the literal `'*'`. Returns a `ReconcileReport`. Throws for a caller error (an unusable `root`, a bare string other than `'*'`), distinct from the per-skill `error` actions in the report. |
+| `InMemorySkillStore` | An in-memory `SkillStore` for local development and testing: `put(raw)`, `getObject(kind, key, version?)`, `allObjects(kind)`, `addListener(kind, fn)`, `removeListener(kind, fn)`. Holds several versions of a key: `getObject` answers a pin with exactly that version and an omitted version with the newest. `addListener` throws for any kind but `'skill'`. |
+| `FDv2SkillStore(sdkKey, options?)` | The delivery transport: a `SkillStore` fed by LaunchDarkly over the SDK-facing FDv2 channel. `start()`, `waitForSkills(timeoutMs)`, `isInitialized()`, `close()`, `diagnostics`, `failed`, `addListener` / `removeListener`. `close()` is **final** — `start()` throws afterwards. Options (`FDv2SkillStoreOptions`): `mode` (`'stream'` default, or `'poll'`), `baseUri`, `streamUri`, `pollIntervalMs`, `readTimeoutMs`, `initialBackoffMs`, `maxBackoffMs`, `maxConsecutiveFailures`. **Server-side only.** See [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly). |
+| `watchSkills(skills, root, options?)` | `writeSkills` plus a re-reconcile on every delivery change, so revocation takes effect within `debounceMs` rather than at the next restart. Resolves to `{ report, watcher }`; `await watcher.close()` when done. Options (`WatchSkillsOptions`): everything `writeSkills` takes, plus `debounceMs` (milliseconds, default `DEFAULT_DEBOUNCE_MS`) and `onReconcile`. One watcher per root. |
+| `SkillWatcher` | Returned by `watchSkills`: `reconciles` (re-reconciles completed, excluding the initial one), `notify` (the registered change listener), `close()` (idempotent; detaches and awaits any reconcile in flight). |
+| `StoreDiagnostics` | What the transport has seen: `payloadsTransferred`, `skillObjectsReceived`, `objectsIgnored`, `objectsRevoked` (keys removed by a `delete-object` or dropped by a full transfer; a version bump or a tombstone for an unknown key does not count), `payloadsIgnored`, `hashlessObjects`, `connectionFailures`, `lastError`. |
+| `DEFAULT_BASE_URI` / `DEFAULT_STREAM_URI` | `'https://sdk.launchdarkly.com'` and `'https://stream.launchdarkly.com'`, the default hosts for `GET /sdk/poll` and `GET /sdk/stream`. |
 | `DEFAULT_DEBOUNCE_MS` | `500` — the `watchSkills` coalescing window in milliseconds. |
 | `createSkill(init)` / `createSkillReference(init)` | Build frozen `Skill` / `SkillReference` values. Use `createSkill` to hand `writeSkills` content you already have. |
-| `createSkillOutcome(init)` | Build a frozen `SkillOutcome`. Exported for tests and for wrapping your own retrieval in the same shape. |
+| `createSkillOutcome(init)` | Build a frozen `SkillOutcome`, for tests or for wrapping your own retrieval in the same shape. |
 | `SKILL_FILENAME` | `'SKILL.md'`. |
 | `MANIFEST_FILENAME` | `'.launchdarkly-skills.json'` — add this to your `.gitignore` if you do not commit materialized skills. |
 | `MANIFEST_VERSION` | `1`. |
 
-Two further constants exist and are deliberately **not** exported. `MAX_SKILL_CONTENT_BYTES`
-(`10485760`, 10 MiB) is the hard cap above which content is withheld — a local backstop against
-absurd input, set well above the platform's own limit, which is enforced before delivery.
-Exporting it would semver-lock a number this side does not own, and pre-flighting "will my skill
-fit?" against it would read the backstop rather than the real limit; the `over_size_cap` reason
-string reports the bound when it is what withheld content, which is the supported way to learn it.
-`SKILL_OBJECT_KIND` (`'skill'`) is the string this SDK hands a store, and a store adapter maps
-whatever its transport calls a skill onto it — publishing it would advertise an SDK-side seam as
-the wire contract. Both live in this package's `skills-core` module and stay internal to it — the
-package publishes a single entry point, so neither is reachable by a supported import.
+Two internal constants are **not** exported:
 
-`ReconcileReport` exposes `actions`, `ok` (true iff no action is an `error`), and `errors` (the error actions, in order), so callers never re-derive the filter. Each `ReconcileAction` carries `key`, `action` (`written` | `updated` | `skipped_current` | `removed` | `error`), and nullable `version` / `path` / `error`. A failure belonging to the whole run rather than one skill — a corrupt manifest, for instance — carries the **empty string** in `key`.
+- `MAX_SKILL_CONTENT_BYTES` (10 MiB) is a local backstop above which content is withheld. The platform enforces its own, lower limit before delivery, so do not pre-flight against this one. When it withholds content, the `over_size_cap` reason string names the bound.
+- `SKILL_OBJECT_KIND` (`'skill'`) is the kind this SDK passes to a store. A store adapter maps whatever its transport calls a skill onto it; it is not the wire contract.
 
-**Security posture.** `writeSkills` is writing LaunchDarkly-delivered content to your disk, so it fails closed: skill keys are re-validated locally, content is hash-verified again immediately before writing, writes go through a temp file in the target's own directory and an atomic rename at mode `0644`, symlinked roots/directories/targets are refused, a target that is not a regular file (a FIFO, a device node) is refused rather than read, and a corrupt manifest suppresses every destructive action. One limitation is worth stating plainly, and it is a platform bound rather than a detail. Node exposes no `renameat`/`unlinkat`/`openat`, so no destructive step can be addressed relative to a pinned directory descriptor *directly* — and what the SDK can do about that differs by platform:
+`ReconcileReport` exposes `actions`, `ok` (true when no action is an `error`), and `errors` (the error actions, in order). Each `ReconcileAction` has `key`, `action` (`written` | `updated` | `skipped_current` | `removed` | `error`), and nullable `version` / `path` / `error`. A failure that belongs to the whole run, such as a corrupt manifest, has the **empty string** as its `key`.
 
-- **On Linux, the swap window is closed.** The managed root is opened `O_RDONLY|O_DIRECTORY|O_NOFOLLOW` once and that descriptor is held for the whole reconcile, and every child — each `<root>/<key>/`, each `SKILL.md`, each temp file, the manifest — is addressed as `/proc/self/fd/<fd>/<name>`. The kernel resolves that prefix to the inode the descriptor holds rather than to the name it was opened under, which gives it the same property an `*at()` call would: renaming the root, or replacing it with a symlink, after validation cannot redirect a write or a delete.
-- **On macOS and Windows, the window is narrowed but not closed.** There is no traversable descriptor prefix (`/dev/fd/<fd>/<name>` does not resolve), so each check is a per-component `lstat` taken immediately before the path-based operation — a check-then-use race. An attacker who already has **write permission on the managed root, or on any of its ancestor directories**, can win that race and redirect a write or a delete outside the root. Windows additionally has no reparse-point checks (`GetFileAttributesW` / `FILE_FLAG_OPEN_REPARSE_POINT`) in this release and is not a tested platform — there is no Windows CI runner.
+**Security posture.** `writeSkills` fails closed:
 
-So on those two platforms, write permission on the managed root **and on its ancestors** is *the* security boundary here. Keep them writable only by the identity running the reconcile — see [privilege separation](#privilege-separation-the-agent-must-not-be-able-to-rewrite-its-own-skills). The ancestor requirement is not a technicality: for a root of `.claude/skills`, the parent is `.claude`, which an agent identity often owns, and that alone is enough.
+- skill keys are re-validated locally, and content is hash-verified again immediately before writing;
+- writes go to a temp file in the target's own directory, then an atomic rename, at mode `0644`;
+- symlinked roots, directories, and targets are refused, as is a target that is not a regular file (a FIFO, a device node);
+- a corrupt manifest suppresses every destructive action.
 
-**Two constraints on skill keys, imposed here rather than by the data model.** A key becomes a single directory name, so `writeSkills` rejects — as a reported `error` action, on every platform — a key over 255 bytes and the 22 Windows reserved device names (`con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`). Both are checked in the filesystem layer only: a key like `aux` remains valid everywhere else, so an AI Config referencing it still parses and its other skills still materialize. One residual the SDK cannot check for you: the 255-byte bound is per *path component*, not on the total path, so `<root>/<key>/SKILL.md` can still exceed Windows' 260-character `MAX_PATH` if the root is deep and the key is long. The root is yours, so budget for it there.
+Node exposes no `renameat`/`unlinkat`/`openat`, so how well a directory swap is defended depends on the platform:
 
-**Skill content is opaque to the SDK.** A verified `Skill` carries `content` as a `Uint8Array` — the exact bytes that were hashed — and the SDK never parses, decodes, or interprets it anywhere. There is deliberately no frontmatter accessor and no YAML dependency: a consumer that wants the frontmatter decodes the bytes and parses them itself, with whatever parser and bounds it trusts.
+- **On Linux, the swap window is closed.** The managed root is opened once (`O_RDONLY|O_DIRECTORY|O_NOFOLLOW`) and held for the whole reconcile, and every child (each `<root>/<key>/`, `SKILL.md`, temp file, and the manifest) is addressed as `/proc/self/fd/<fd>/<name>`. The kernel resolves that to the inode the descriptor holds, so renaming the root or replacing it with a symlink after validation cannot redirect a write or a delete.
+- **On macOS and Windows, the window is narrowed but not closed.** `/dev/fd/<fd>/<name>` does not resolve, so each step is preceded by a per-component `lstat` — a check-then-use race that an attacker with **write permission on the managed root, or on any of its ancestor directories**, can win to redirect a write or delete outside the root. Windows also has no reparse-point checks (`GetFileAttributesW` / `FILE_FLAG_OPEN_REPARSE_POINT`) in this release and is not a tested platform.
+
+On macOS and Windows, write permission on the managed root **and its ancestors** is therefore *the* security boundary. Keep them writable only by the identity running the reconcile — see [privilege separation](#privilege-separation-the-agent-must-not-be-able-to-rewrite-its-own-skills). For a root of `.claude/skills` the parent is `.claude`, which an agent identity often owns.
+
+**Some valid keys cannot be directory names.** Each key becomes one directory name, so `writeSkills` rejects, as a per-skill `error` action, a key over 255 bytes and the 22 Windows reserved device names (`con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`). The check runs on every platform. The key stays valid everywhere else: an AI Config referencing `aux` still parses, and its other skills still materialize. The 255-byte limit is per path component, so `<root>/<key>/SKILL.md` can still exceed Windows' 260-character `MAX_PATH`; keep the root short.
+
+**Skill content is opaque to the SDK.** `Skill.content` is a `Uint8Array` of the exact bytes that were hashed, and the SDK never parses or decodes it. There is no frontmatter accessor or YAML dependency; decode and parse the bytes yourself with a parser you trust.
 
 **No LaunchDarkly telemetry is emitted for skills.** Signals go through an internal no-op emitter; `client.track()` is never called and no LD context is involved.
 
 #### Receiving skills from LaunchDarkly
 
-`InMemorySkillStore` is for tests and bring-your-own-content. In production, skill content arrives through `FDv2SkillStore`, which speaks LaunchDarkly's SDK-facing FDv2 delivery channel — the same `GET /sdk/poll` and `GET /sdk/stream` endpoints the base SDK's FDv2 data source uses, authenticated with the environment's server-side SDK key. Polling goes to `sdk.launchdarkly.com` and streaming to `stream.launchdarkly.com` by default; set `baseUri` alone to point both at one host, such as a relay or private instance, or `streamUri` as well when the two differ.
+`InMemorySkillStore` is for tests and bring-your-own-content. In production, skill content arrives through `FDv2SkillStore`, which uses LaunchDarkly's SDK-facing FDv2 delivery channel (the `GET /sdk/poll` and `GET /sdk/stream` endpoints the base SDK's FDv2 data source uses), authenticated with the environment's server-side SDK key.
 
 ```ts
 import { FDv2SkillStore, initClient, watchSkills } from '@launchdarkly/ai-server';
@@ -402,67 +398,78 @@ try {
 }
 ```
 
-**A reconcile that runs before delivery answers does not prune.** Through the `SkillStore` seam, a store still waiting for its first payload and an environment that holds no skills give the same answer — an empty one — and `writeSkills('*')` would otherwise read that as every skill having been revoked and delete the files it wrote on a previous run. `FDv2SkillStore` reports readiness through the optional `isInitialized()`, the same fact `waitForSkills` resolves to without the wait, so a reconcile against a store that has not received a payload reports the retrieval unavailable and leaves everything on disk alone. `report.ok` is `false` in that case, and the error names the remedy. A store that does not implement `isInitialized()` is treated as initialized, which is right for `InMemorySkillStore`.
+**A reconcile that runs before delivery answers does not prune.** A store still waiting for its first payload looks the same as an environment with no skills, and `writeSkills('*')` would otherwise treat that as every skill revoked and delete the files from a previous run. `FDv2SkillStore` reports readiness through the optional `isInitialized()`; until it is true, a reconcile reports the retrieval unavailable (`report.ok` is `false`, and the error names the remedy) and leaves the disk alone. A store without `isInitialized()`, such as `InMemorySkillStore`, is treated as initialized.
 
-**`watchSkills` is one watcher per root.** It registers the store's change listener — so the configured store must implement the optional `addListener`, and `watchSkills` throws if it does not, rather than degrading to a one-shot reconcile — then runs `writeSkills` once and returns that report alongside a `SkillWatcher`. Every delivery change after that schedules a re-reconcile, coalesced over `debounceMs` (default `DEFAULT_DEBOUNCE_MS`, 500 ms) so a payload of forty objects runs one reconcile rather than forty; `onReconcile` receives each of those reports, and never the initial one. The watcher exposes `reconciles` (how many re-reconciles have completed), `notify` (the listener it registered, for tests) and `close()`, which detaches and awaits any reconcile in flight. Do not point two watchers at one root, and do not call `writeSkills` on a watched root yourself: a reconcile's contract is one root, one reconcile at a time, and two interleaved runs lose the loser's manifest entries. Note that `debounceMs` is in **milliseconds** while the `timeout` it sits beside in the same options bag is in **seconds**.
+**`watchSkills` is one watcher per root.** It registers the store's change listener, runs `writeSkills` once, and returns that report with a `SkillWatcher`.
 
-**`waitForSkills` orders boot against the first payload.** It resolves `true` once a payload has been committed, or once a `304` confirms the payload already held is the current one. It resolves `false` if the wait times out, the store is closed, or delivery stops for good — a fatal error such as an unauthorized key resolves it right away rather than at the timeout, so a boot gated on the return value does not proceed on a dead store. Neither a closed store nor one that has given up waits at all, whether the wait was already pending when it happened or started afterwards. Read `failed` to tell a store that gave up from one that timed out; a store you closed yourself leaves `failed` as `null`, because closing is not a failure.
+- The store must implement the optional `addListener`; otherwise `watchSkills` throws rather than degrading to a one-shot reconcile.
+- Delivery changes are coalesced over `debounceMs` (default `DEFAULT_DEBOUNCE_MS`, 500 ms), so a payload of forty objects runs one reconcile, not forty. `onReconcile` receives each of those reports, never the initial one.
+- The watcher exposes `reconciles` (re-reconciles completed), `notify` (the registered listener, for tests), and `close()`, which detaches and awaits any reconcile in flight.
+- Do not point two watchers at one root, or call `writeSkills` on a watched root yourself: two interleaved reconciles of one root lose manifest entries.
+- `debounceMs` is in **milliseconds**, while `timeout` in the same options is in **seconds**.
 
-**`close()` is final.** It stops delivery and does not undo it: `start()` throws on a closed store rather than opening a second connection, since a store that looks live and is not is worse than one that plainly refuses. Retrieval needs no restart — a closed store keeps answering from the content it received — so construct a new store if you need delivery again.
+**`waitForSkills` orders boot against the first payload.** It resolves `true` once a payload is committed, or a `304` confirms the held payload is current. It resolves `false` on timeout, or immediately once the store is closed or delivery stops for good (for example, an unauthorized key), including for waits already pending, so a boot gated on it does not proceed on a dead store. Read `failed` to tell a store that gave up from one that timed out; closing a store yourself leaves `failed` as `null`.
 
-**`addListener` observes skill changes only.** The store notifies changes to `'skill'` objects; anything else on the connection is skipped, never dispatched. A listener registered under any other kind therefore throws rather than being accepted and silently never firing. `removeListener` tolerates any kind, so a consumer that detaches on close can do so unconditionally. `watchSkills` is the intended consumer of both.
+**`close()` is final.** `start()` throws on a closed store rather than opening a second connection. A closed store still answers from the content it received, so construct a new store only if you need delivery again.
 
-**A 422 means this connection will never be assigned a skill payload, and delivery stops.** Every request declares the payload it wants (`kinds=agent-skill`), and LaunchDarkly answers HTTP 422 when it will not serve one. The cause you can act on is a **view-scoped SDK key**: a key restricted to a view cannot be assigned a skill payload, so check the key's scoping and use one that is not view-scoped. The other cause is that Agent Skills delivery is not enabled for your account, which is not a setting you control — contact LaunchDarkly support if the key is not the problem. Retrying fixes neither, and LaunchDarkly chose the status so that SDKs stop rather than hammer the fleet, so the store gives up: `failed` carries the reason, `lastError` is populated, `connectionFailures` stays at zero (it counts consecutive *recoverable* failures against the retry bound, which a fatal never spends), and `waitForSkills` resolves `false` immediately instead of at your timeout. It is **not** the answer for an environment that merely has no skills yet — with delivery enabled and a non-view-scoped key, an environment holding zero skills is served an empty payload that commits normally. Because delivery has stopped for good, a process that booted while the cause was in effect picks up skills only after a restart.
+**`addListener` observes skill changes only.** Only `'skill'` objects are dispatched, so registering under any other kind throws rather than silently never firing. `removeListener` accepts any kind, so detaching on close can be unconditional. `watchSkills` is the intended consumer of both.
 
-**Nothing above the store changes.** The accessors, integrity verification, and `writeSkills` are transport-agnostic: they see raw objects through the `SkillStore` seam and cannot tell which store produced them. Everything documented above about verification and reconcile semantics applies unchanged.
+**A 422 means this connection will never be assigned a skill payload, and delivery stops.** Every request declares the payload it wants (`kinds=agent-skill`), and LaunchDarkly answers HTTP 422 when it will not serve one.
+
+- **Causes:** a view-scoped SDK key, which cannot be assigned a skill payload (use a key that is not view-scoped), or Agent Skills delivery not being enabled for your account (contact LaunchDarkly support).
+- **What the store does:** retrying cannot help, so it gives up. `failed` carries the reason, `lastError` is set, and `waitForSkills` resolves `false` immediately instead of at your timeout. The 422 does not count toward `connectionFailures`, which tracks recoverable failures only.
+- **Not the empty case:** an environment with zero skills is served an empty payload that commits normally.
+- **Recovery:** `start()` does nothing on a store that has given up, so a process that booted while the cause was in effect picks up skills only after a restart.
+
+**Nothing above the store changes.** The accessors, integrity verification, and `writeSkills` see raw objects through the `SkillStore` interface and cannot tell which store produced them.
 
 **Server-side only.** Skills are for server-side agent runtimes and skill content is customer-confidential. A mobile key (`mob-…`) or a client-side environment ID throws from the constructor.
 
-**The SDK key goes only where you pointed it.** `baseUri` and `streamUri` must each be `https://` (plain `http://` is refused, except to a loopback host for a local test double), and redirects are never followed, so a 3xx from a proxy or a misconfigured private instance stops delivery rather than forwarding the key to whatever host the `Location` header names.
+**The SDK key goes only where you pointed it.** `baseUri` and `streamUri` must be `https://` (plain `http://` is allowed only to a loopback host, for a local test double). Redirects are never followed, so a 3xx stops delivery instead of forwarding the key to the `Location` host.
 
-**Polling and streaming have separate hosts.** LaunchDarkly serves `/sdk/poll` from `https://sdk.launchdarkly.com` and `/sdk/stream` from `https://stream.launchdarkly.com`, so the defaults are a pair. Pass `baseUri` on its own and it applies to both — what a relay or a private instance serving both endpoints from one host needs — or pass `streamUri` as well to override them independently.
+**Polling and streaming have separate hosts.** By default `/sdk/poll` goes to `https://sdk.launchdarkly.com` and `/sdk/stream` to `https://stream.launchdarkly.com`. Pass `baseUri` alone to use one host for both, or `streamUri` as well to set them independently.
 
-**Streaming is the default, and it is what makes revocation fast.** A `delete-object` reaches a live stream in seconds; with `mode: 'poll'` it arrives within one `pollIntervalMs`. Paired with `watchSkills`, a revoked skill's `SKILL.md` leaves the disk without a restart. During an outage the store keeps serving the last content it received and `writeSkills`' default `onUnavailable: 'keep'` leaves managed files alone — an outage must not read as "everything was revoked".
+**Streaming is the default, and it is what makes revocation fast.** A `delete-object` reaches a live stream in seconds; with `mode: 'poll'` it arrives within one `pollIntervalMs`. With `watchSkills`, a revoked skill's `SKILL.md` leaves the disk without a restart. During an outage the store keeps serving its last content, and `writeSkills`' default `onUnavailable: 'keep'` leaves managed files alone, so an outage does not read as "everything was revoked".
 
-**Without the watcher, the revocation bound is process lifetime.** A deployment that calls `writeSkills` once at boot and never runs `watchSkills` reconciles exactly once, so a skill revoked in LaunchDarkly after boot stays on disk — and in the agent's context — until the process reconciles again. For such a deployment, a restart (or an explicit re-run of `writeSkills`) is the incident-response action when a skill must be pulled immediately. Neither path closes the already-loaded window: content an agent has already read stays in that conversation regardless, and no layer of this SDK can recall it.
+**Without the watcher, the revocation bound is process lifetime.** If you call `writeSkills` once at boot and never run `watchSkills`, a skill revoked after boot stays on disk, and in the agent's context, until the process reconciles again. To pull a skill immediately, restart or re-run `writeSkills`. Neither recalls content an agent has already read into a conversation.
 
-**One network timeout, and its default depends on the mode.** `readTimeoutMs` bounds every step of a request, connecting included. In `mode: 'poll'` it bounds the whole request and defaults to 10 seconds; in `mode: 'stream'` it bounds each wait for the next bytes and defaults to 300 seconds, well beyond LaunchDarkly's heartbeat interval. A stream that goes quiet past it reconnects rather than hanging, and a stream that dies mid-body — a reset, a truncated chunk — reconnects the same way. Every delay between retries, including one the server asks for with `Retry-After`, is capped at `maxBackoffMs`.
+**One network timeout, and its default depends on the mode.** `readTimeoutMs` bounds every step of a request, connecting included. In `mode: 'poll'` it bounds the whole request (default 10 seconds); in `mode: 'stream'` it bounds each wait for the next bytes (default 300 seconds, well beyond LaunchDarkly's heartbeat interval). A stream that goes quiet past it, or dies mid-body, reconnects. Every retry delay, including one requested with `Retry-After`, is capped at `maxBackoffMs`.
 
-**The connection carries only skills.** Every request declares the skill payload, so flag and segment objects no longer arrive on it. Anything that is not a skill is still skipped rather than rejected — this store does no evaluation of any kind — and `diagnostics.objectsIgnored` counts those: a nonzero count means the payload gained an object kind this version does not recognise, not that something failed.
+**The connection carries only skills.** Every request declares the skill payload, so flag and segment objects do not arrive on it. Any other object kind is skipped, not rejected, and counted in `diagnostics.objectsIgnored`; a nonzero count means the payload has a kind this version does not recognise, not that something failed.
 
-> **Beta caveats, worth knowing before you deploy.** Payload signing does not exist on this channel yet, so delivery is TLS-only — the store refuses a cleartext `baseUri`/`streamUri` and refuses to follow a redirect — and the content hash establishes self-consistency, not origin authenticity. The FDv2 protocol is opt-in per account: without it the endpoints return HTTP 403, which the store reports as a fatal error explaining what to do. `ld-relay` does not speak the FDv2 endpoints, so relay-only deployments cannot receive skills.
+> **Beta caveats, worth knowing before you deploy.** Payload signing does not exist on this channel yet, so delivery is TLS-only and the content hash establishes self-consistency, not origin authenticity. The FDv2 protocol is opt-in per account: without it the endpoints return HTTP 403, which the store reports as a fatal error explaining what to do. `ld-relay` does not speak the FDv2 endpoints, so relay-only deployments cannot receive skills.
 
-**If every skill comes back empty, check `diagnostics.hashlessObjects`.** Verification requires `contentHash` on the delivered object and withholds anything without one, so a nonzero count there means hashless objects have arrived — skills are being withheld rather than the environment having none. It is a cumulative count of what the transport has seen, not the current size of the withheld set. The store logs an error per hashless object, and a summary whenever the store it holds becomes wholly hashless or the withheld objects change — both naming the reason, and neither repeated for a payload re-delivered unchanged. There is deliberately no fallback that skips verification: a hash the SDK computed from the content it was handed would certify the content against itself.
+**If every skill comes back empty, check `diagnostics.hashlessObjects`.** Objects without a `contentHash` are withheld, so a nonzero count means skills are being withheld, not that the environment has none. The count is cumulative, not the current size of the withheld set. The store logs an error per hashless object, plus a summary when its contents become wholly hashless or the withheld set changes (not repeated for an unchanged re-delivery). There is no fallback that skips verification.
 
 #### Observability: integrity failures are logged for your SIEM
 
-A skill that fails integrity verification is **withheld** — the accessor returns `null`, `writeSkills` reports an `error` action, and no unverified byte reaches your agent. Every failure additionally writes one line to `console.error` in a fixed, machine-parseable shape, so that withholding is *detectable* and not merely correct:
+A skill that fails integrity verification is **withheld**: the accessor returns `null`, `writeSkills` reports an `error` action, and no unverified byte reaches your agent. Each failure also writes one machine-parseable line to `console.error`:
 
 ```text
 [LaunchDarkly] ld.skills.integrity_failure {"action":"withheld","event":"ld.skills.integrity_failure","expected_hash":"5f2b...","language":"typescript","observed_hash":"9c14...","reason":"content hash mismatch","reason_code":"hash_mismatch","skill_key":"pdf-extraction","version":2}
 ```
 
-The line is a `[LaunchDarkly] ` prefix, the event name, a space, and a single JSON object. To ingest it: match `ld.skills.integrity_failure`, take everything from the first `{`, parse it.
+The line is a `[LaunchDarkly] ` prefix, the event name, a space, and one JSON object. To ingest it, match `ld.skills.integrity_failure` and parse from the first `{`.
 
-**The record is written regardless of how you configure telemetry.** It is not sampled, not batched, and not conditional on a LaunchDarkly connection — no LaunchDarkly telemetry is emitted for skills at all. If you send LaunchDarkly nothing, this log record is your complete detection surface for tampered or malformed skill content.
+**The record is written regardless of telemetry configuration.** It is not sampled, batched, or dependent on a LaunchDarkly connection. If you send LaunchDarkly nothing, this record is your complete detection surface for tampered or malformed skill content.
 
-**`ld.skills.integrity_failure` is a stability commitment.** The event name will not be renamed, and no field will be renamed or removed, outside a major release with a changelog entry. It is safe to build an alert on.
+**`ld.skills.integrity_failure` is a stability commitment.** The event name will not be renamed, and no field will be renamed or removed, outside a major release with a changelog entry.
 
 | Field | Always present | Value |
 |---|---|---|
 | `event` | yes | `ld.skills.integrity_failure`. |
-| `action` | yes | `withheld` — what the SDK did about it. Content that fails verification is never returned and never written to disk. |
-| `skill_key` | yes | The skill key **requested**, or `<invalid-key>` when the key itself failed validation. Keys arrive from the wire, so one is never echoed verbatim. |
-| `reason_code` | yes | A stable token from the closed vocabulary below. Alert on this field, not on `reason`. |
+| `action` | yes | `withheld` — the content was not returned or written to disk. |
+| `skill_key` | yes | The skill key **requested**, or `<invalid-key>` when the key itself failed validation. |
+| `reason_code` | yes | A stable token from the vocabulary below. Alert on this, not on `reason`. |
 | `reason` | yes | Human-readable detail, including byte counts. Wording may change between releases. |
-| `language` | yes | `typescript`. Distinguishes SDKs in a polyglot fleet; the Python SDK emits the same record with `python`. |
-| `served_key` | no | Only on `key_mismatch`: the key the store actually answered under, with the same redaction as `skill_key`. Omitted on every other failure mode. |
-| `served_version` | no | Only on `version_mismatch`: the version the store actually answered with, as an integer — or `<invalid-version>` when it was not one. Omitted on every other failure mode, and never on the same record as `served_key`. |
-| `version` | no | The skill version — the version **requested** on `version_mismatch`, the delivered one everywhere else. Always an integer. Omitted when the delivered version was not an integer >= 1, and on `key_mismatch`. |
-| `expected_hash` | no | The `contentHash` delivered with the content, or `<not-a-sha256-digest>` when it was not 64 lowercase hex characters. Omitted when the failure happened before any hash was read. |
-| `observed_hash` | no | The sha256 this SDK computed locally. Omitted when the failure happened before hashing. |
+| `language` | yes | `typescript`. The Python SDK emits the same record with `python`. |
+| `served_key` | no | Only on `key_mismatch`: the key the store answered under, redacted like `skill_key`. |
+| `served_version` | no | Only on `version_mismatch`: the version the store answered with, as an integer, or `<invalid-version>`. Never on the same record as `served_key`. |
+| `version` | no | The delivered version, or on `version_mismatch` the version **requested**. Always an integer. Omitted when not an integer >= 1, and on `key_mismatch`. |
+| `expected_hash` | no | The delivered `contentHash`, or `<not-a-sha256-digest>` when it was not 64 lowercase hex characters. Omitted when the failure happened before any hash was read. |
+| `observed_hash` | no | The sha256 this SDK computed. Omitted when the failure happened before hashing. |
 
-Optional fields are **omitted, never null** — the absence of `observed_hash` means no hash was computed, which is itself information. Skill content, filesystem paths, and credentials never appear in the record; the key and the expected hash are shape-checked and replaced with the placeholders above when they do not look like what they claim to be, so a hostile store cannot use the log line to exfiltrate a skill body.
+Optional fields are **omitted, never null**, so an absent `observed_hash` means no hash was computed. The record never contains skill content, filesystem paths, or credentials; the key and expected hash are shape-checked and replaced with the placeholders above when malformed, so a hostile store cannot use the log line to exfiltrate a skill body.
 
 | `reason_code` | What happened |
 |---|---|
@@ -472,20 +479,22 @@ Optional fields are **omitted, never null** — the absence of `observed_hash` m
 | `missing_content` | `content` is absent or not a string. |
 | `missing_content_hash` | `contentHash` is absent or not a string. |
 | `not_utf8` | The content has no UTF-8 encoding (a lone surrogate), so there are no bytes LaunchDarkly could have hashed. |
-| `over_size_cap` | The content exceeds the internal `MAX_SKILL_CONTENT_BYTES` cap, so it is inauthentic whatever it hashes to. The reason string names the bound. |
-| `hash_mismatch` | The content does not hash to the `contentHash` delivered alongside it. |
-| `key_mismatch` | The store answered under a different key than the one requested. Carries an extra `served_key` field naming the key it answered under, and records **no** `AgentControl Skill Integrity Failure` signal. |
-| `version_mismatch` | You pinned a version and the store answered with a different one. Carries an extra `served_version` field naming the version it answered with, alongside a `version` field carrying the one you asked for, and records **no** `AgentControl Skill Integrity Failure` signal. The caller-facing outcome for this condition is `wrong_version` — see the table below. |
+| `over_size_cap` | The content exceeds the internal `MAX_SKILL_CONTENT_BYTES` cap, whatever it hashes to. The reason string names the bound. |
+| `hash_mismatch` | The content does not hash to the delivered `contentHash`. |
+| `key_mismatch` | The store answered under a different key than requested. Adds `served_key`; records **no** `AgentControl Skill Integrity Failure` signal. |
+| `version_mismatch` | The store answered a version pin with a different version. Adds `served_version` (`version` is the one requested); records **no** `AgentControl Skill Integrity Failure` signal. Reported to callers as `wrong_version`. |
 
-These ten tokens are the whole vocabulary, and the Python SDK emits the same ten for the same conditions — including identical JSON key order — so one parser and one alert rule cover a polyglot fleet.
+These ten tokens are the whole vocabulary. The Python SDK emits the same ten for the same conditions, with identical JSON key order, so one parser and one alert rule cover both.
 
-**`key_mismatch` and `version_mismatch` are the two codes that reach this log record without also reaching the product signal.** Both are decided after verification has passed, and the usual cause of either is a bug in a custom `SkillStore` adapter — a stale cache entry, a colliding key, a wrong index lookup — rather than tampering, so neither inflates LaunchDarkly's own integrity counter. Both still reach this record, because a store that answers with something other than what was asked for is worth seeing, and your rule on `ld.skills.integrity_failure` catches them without modification.
+**Page on `hash_mismatch`.** It means content and its declared digest disagree, a possible sign of **active tampering** in transit, in a cache, or in whatever backs your `SkillStore`. Most other codes indicate a malformed store, a bad deployment, or a truncated response. If all your content comes from LaunchDarkly, `over_size_cap` and `not_utf8` should never occur and are worth alerting on too.
 
-**`version_mismatch` is worth alerting on even though `wrong_version` is already a `getSkillResult` outcome.** `getSkill` is the simpler default and collapses `wrong_version` to `null` exactly as it collapses an integrity failure, so this record is the only visibility an operator gets when the code calling `getSkill` treats a `null` as "no skill". Neither store shipped with this SDK can produce it — both answer a pin with exactly that version or with nothing at all, which reads as `absent` — so if you see this code, suspect whatever `SkillStore` implementation is in front of it.
+**`key_mismatch` and `version_mismatch` skip the product signal.** Both are detected after verification passes, and the usual cause is a bug in a custom `SkillStore` adapter (a stale cache entry, a colliding key, a wrong index lookup) rather than tampering, so neither inflates LaunchDarkly's integrity counter. Both still write this record, so a rule on `ld.skills.integrity_failure` catches them. Neither is reachable through `FDv2SkillStore`, so if it is your only store, treat them like `hash_mismatch`; behind a custom adapter, suspect the adapter first.
+
+`getSkill` returns `null` for a `version_mismatch` like any other failure, so this record is the only place it is visible unless you use `getSkillResult`, which reports it as the `wrong_version` outcome (below).
 
 #### Fail closed on tampering: `getSkillResult`
 
-The log record above is the *operator's* view. Your application gets the same distinction programmatically from `getSkillResult`, which returns the outcome instead of collapsing it:
+The log record is for operators; `getSkillResult` is for your application. It runs the same retrieval and verification as `getSkill`, but reports which of five outcomes happened instead of collapsing them all to `null`.
 
 ```ts
 import { getSkillResult } from '@launchdarkly/ai-server';
@@ -497,21 +506,19 @@ switch (outcome.reason) {
     return outcome.skill; // non-null exactly here
   case 'integrity_failure':
     // Content and its declared digest disagreed, or the store answered under a
-    // different key than the one requested. Do not proceed on a fallback: the
-    // safe interpretation is that skill delivery is being tampered with.
+    // different key than requested. Treat skill delivery as tampered with.
     console.error(`refusing to start: ${outcome.detail}`);
     process.exit(1);
   case 'absent':
     // Nobody configured this skill, or it was revoked. Ordinary; carry on.
     return null;
   case 'wrong_version':
-    // The store answered the pin with a *different* version. Not a rollout
-    // skew — a pin the store cannot satisfy is `absent` — so this one also
-    // writes an `ld.skills.integrity_failure` record for your SIEM.
+    // The store answered the pin with a *different* version. This also writes
+    // an `ld.skills.integrity_failure` record for your SIEM.
     return null;
   case 'store_unavailable':
-    // The store could not answer. An outage, not an answer of "no" — retry or
-    // run degraded, but do not treat it as a revocation.
+    // The store could not answer. An outage, not a revocation — retry or run
+    // degraded.
     return null;
 }
 ```
@@ -519,29 +526,27 @@ switch (outcome.reason) {
 | `reason` | `skill` | What happened |
 |---|---|---|
 | `ok` | the skill | Retrieved and verified. |
-| `absent` | `null` | The store holds nothing under that key. Not configured, not yet delivered, or revoked. |
-| `integrity_failure` | `null` | Content was delivered and its identity did not verify, so it was withheld. Two cases reach this token, and both write the `ld.skills.integrity_failure` record above: content that failed hash/size/shape verification, which also records the product signal; and a store that answered under a **different key** than the one requested, which writes the record with `reason_code: key_mismatch` and a `served_key` field but records **no** signal (the check runs after verification has already passed, and a mismatch is usually a store-adapter bug rather than tampering). This is the outcome to fail closed on. |
-| `wrong_version` | `null` | A version was pinned and the store answered with a different one. Writes the `ld.skills.integrity_failure` record above with `reason_code: version_mismatch` and a `served_version` field, and — like `key_mismatch` — records **no** product signal. Only a version mismatch reaches this token: a key mismatch is `integrity_failure`, and there is deliberately no `wrong_key`. |
-| `store_unavailable` | `null` | The store threw. Nothing was retrieved, so nothing is known either way. |
+| `absent` | `null` | The store holds nothing under that key: not configured, not yet delivered, or revoked. |
+| `integrity_failure` | `null` | Content was delivered and did not verify, or the store answered under a different key (`reason_code: key_mismatch`), so it was withheld. **The one to fail closed on.** |
+| `store_unavailable` | `null` | The store threw. Nothing was retrieved, so nothing is known either way. An outage, not a deletion. |
+| `wrong_version` | `null` | A version was pinned and the store answered with a different one, so the answer was withheld. Also logged, as `reason_code: version_mismatch`. |
 
-`detail` carries the human-readable reason for every non-`ok` outcome and is `null` for `ok`. It is safe to log or surface: it names the key, the requested and held versions, and the failure category, and never skill content or a filesystem path.
+`detail` is human-readable and safe to log or show an operator: it names the key, the requested and held versions, and the failure category, never skill content or a filesystem path. It is `null` for `ok`. Branch on `reason`, not `detail`.
 
-**`getSkill` is unchanged.** It still resolves to `null` for all four failure outcomes and still rejects only when no store is configured — no existing caller has to change anything. The two accessors run the identical lookup and the identical verification, and differ *only* in what they report: `getSkill` gives you the skill or `null`, `getSkillResult` also gives you the reason. Nothing is retried, cached, or logged twice — by the time either returns, an integrity failure has already written its record — so reaching for `getSkillResult` costs nothing but the wider return type.
+**`getSkill` is unchanged.** It still resolves to `null` for all four failures and rejects only when no store is configured. Both accessors run the same lookup and verification; `getSkillResult` adds no second log record or signal, so switching to it does not double-count anything.
 
-These five tokens are the whole vocabulary, and the Python SDK publishes the same five for the same conditions. There is deliberately no batch equivalent: `getSkills` and `allSkills` still omit entries they could not return, so call `getSkillResult` per key where the outcome matters.
-
-**`hash_mismatch` deserves a page, not a dashboard.** The other codes are consistent with a malformed store, a bad deployment, or a truncated response. `hash_mismatch` means content and its declared digest disagree, which is the shape of active tampering with skill delivery — in transit, in a cache, or in whatever backs your `SkillStore`. If you serve skill content only from LaunchDarkly, `over_size_cap` and `not_utf8` warrant alerts on the same reasoning: neither should ever occur. `key_mismatch` and `version_mismatch` belong in the same tier as `hash_mismatch` **if** you use the SDK's own `FDv2SkillStore` and nothing else, since neither is reachable through it and both would then mean delivery served something other than what was asked for; behind a custom store adapter, suspect the adapter first.
+`getSkills` and `allSkills` have no outcome-reporting form: they omit entries they could not return. Use `getSkillResult` per key when you need the reason.
 
 #### Privilege separation: the agent must not be able to rewrite its own skills
 
-**The recommended deployment runs `writeSkills` as a different identity than the agent.** Reconcile as one user, run the agent as another. Everything the reconcile puts on disk is owner-write-only, and set explicitly rather than inherited from the process umask: skill files and the manifest at `0644` (applied to the open file handle, so it cannot be redirected), the per-skill `<root>/<key>/` directories at `0755`, and the execute bit never set on anything. Those modes are only a defense if the two identities actually differ — under a single identity they describe a directory the agent can freely rewrite.
+**Run `writeSkills` as a different identity than the agent.** Reconcile as one user, run the agent as another. The reconcile sets modes explicitly rather than from the process umask: skill files and the manifest at `0644` (applied to the open file handle, so it cannot be redirected), per-skill `<root>/<key>/` directories at `0755`, and never the execute bit. Those modes only protect anything if the two identities differ.
 
-**What to verify, as the identity that will run the agent.** The SDK cannot check this for you (see below), so make it a deployment step: confirm the agent's identity has no write access to
+**What to verify, as the identity that will run the agent.** The SDK cannot check this for you (see below), so make it a deployment step. The agent's identity must have no write access to:
 
 - the managed root itself,
-- **the managed root's parent, and every ancestor directory above it** — write access to any of them allows the root's own name to be swapped for a symlink, which redirects the reconcile's writes and deletes outside the root on macOS and Windows (on Linux the descriptor pinning described above closes this),
 - the per-skill directories `<root>/<key>/` and the files `<root>/<key>/SKILL.md`,
-- the manifest at `<root>/.launchdarkly-skills.json`.
+- the manifest at `<root>/.launchdarkly-skills.json`,
+- **the root's parent, and every ancestor directory above it.** Write access there lets the root be renamed aside and replaced with a symlink, redirecting the agent's own skill lookups to a directory the agent controls, and on macOS and Windows the reconcile's writes and deletes as well. In the layout `<app>/.claude/skills` the parent is `.claude`, which an agent identity is likely to own.
 
 ```bash
 # Run as the agent's user. Every line should print DENIED.
@@ -563,11 +568,13 @@ for target in $targets; do
 done
 ```
 
-The managed root's own mode is **yours, not the SDK's**: `writeSkills` creates only that one leaf directory, and does so with the process umask, precisely because the root is a path you chose. Own it — `chown reconcile-user:agent-group` plus `chmod 0755` on the root is the shape that makes the rest of the tree's modes mean something. It is also the mitigation for the race described under *Security posture* above: on macOS and Windows that race requires write permission on the managed root or on one of its ancestors, which privilege separation is what denies.
+The managed root's own mode is **yours, not the SDK's**: `writeSkills` creates only that leaf directory, with the process umask, because you chose the path. `chown reconcile-user:agent-group` and `chmod 0755` on the root is what makes the rest of the tree's modes meaningful, and it is what denies the macOS and Windows race described under *Security posture*.
 
-**Why this is the mitigation that matters.** A `SKILL.md` is agent *instructions*. An agent that can write its own skills directory can rewrite its own instructions, and an agent processing untrusted input is exactly the thing that might be induced to do so. Write access to the manifest is worse than write access to a skill, because the manifest is what tells the *next* reconcile which paths the SDK owns and may delete: an agent that can edit it can keep a skill LaunchDarkly has revoked, or aim the SDK's own delete path at something it should not touch. `writeSkills` re-validates every manifest entry from scratch for exactly that reason — it treats that file as untrusted input, never as authorization — but an agent that cannot edit it at all is the stronger position, and only your deployment can provide that.
+**Why this is the mitigation that matters.** A `SKILL.md` is agent *instructions*: an agent that can write its skills directory can rewrite its own instructions, and an agent handling untrusted input may be induced to. The manifest is more sensitive still, because it tells the next reconcile which paths the SDK owns and may delete; editing it can keep a revoked skill or aim the SDK's delete at something else. `writeSkills` re-validates every manifest entry as untrusted input, but an agent that cannot edit it at all is the stronger position.
 
-**The SDK deliberately does not report whether the root is writable.** There is no such field on `ReconcileReport`, and its absence is a decision rather than an oversight. The SDK knows only its own identity, which trivially has write access — it just wrote there. It cannot know which identity will later run the agent, so any check it could make would answer a different question than the one that matters, and would read as reassurance exactly where caution is wanted. You know both identities; the SDK knows one.
+Ancestors matter for the same reason. An identity that can rename a directory above the root can substitute the whole tree, with no race involved, and the agent then loads skills it wrote itself. Descriptor pinning inside `writeSkills` cannot prevent that, because the substituted tree is what the agent reads.
+
+**The SDK does not report whether the root is writable.** It knows only its own identity, which just wrote there. It cannot know which identity will run the agent, so any check would answer the wrong question and look like reassurance where caution is needed.
 
 ---
 
