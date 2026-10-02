@@ -573,6 +573,30 @@ describe('graph() conversation id', () => {
     expect(graphSpan?.attributes[GEN_AI_CONVERSATION_ID]).toBe('thread-graph-stream');
   });
 
+  it.each([
+    'invoke',
+    'stream',
+  ] as const)('gives each %s run its own run id, shared by every graph event in that run', async (mode) => {
+    setupTwoNodeGraph();
+    const g = graph('graph-flag', { handlers: [makeStreamingHandler(['ok'])] });
+
+    const runIds: Set<string>[] = [];
+    for (let i = 0; i < 2; i += 1) {
+      mockTrack.mockClear();
+      if (mode === 'invoke') await g.invoke('hi', mockContext);
+      else await collectStream(g.stream('hi', mockContext));
+      const graphEvents = mockTrack.mock.calls.filter((c: unknown[]) => String(c[0]).startsWith('$ld:ai:graph:'));
+      const names = new Set(graphEvents.map((c: unknown[]) => c[0]));
+      expect(names).toContain('$ld:ai:graph:handoff_success');
+      expect(names).toContain('$ld:ai:graph:invocation_success');
+      runIds.push(new Set(graphEvents.map((c: unknown[]) => (c[2] as { runId: string }).runId)));
+    }
+
+    expect(runIds[0].size).toBe(1);
+    expect(runIds[1].size).toBe(1);
+    expect([...runIds[0]][0]).not.toBe([...runIds[1]][0]);
+  });
+
   it('nests handler spans under launchdarkly.graph on the stream path (single trace)', async () => {
     setupTwoNodeGraph();
     const handler = makeSpanCreatingStreamHandler(['ok']);
