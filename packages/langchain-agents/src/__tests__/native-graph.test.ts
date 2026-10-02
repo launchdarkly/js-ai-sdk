@@ -178,13 +178,25 @@ describe('toLangGraph', () => {
     expect(registeredNames).toContain('leaf');
   });
 
-  it('spreads model.parameters into the default ChatOpenAI constructor', async () => {
+  // ChatOpenAI only reads camelCase, so the graph's default model factory camelizes the
+  // snake_case bag the UI writes — the exact conversion the casing fix adds, so this assertion
+  // changed from `max_tokens: 512` (the old, buggy pass-through) to `maxTokens: 512`.
+  it('spreads model.parameters into the default ChatOpenAI constructor, camelized', async () => {
     const root = makeNode('root', '', []);
     root.config.model.parameters = { temperature: 0.2, max_tokens: 512 };
     const def = makeGraphDef([root], {}, 'root');
     MockChatOpenAI.mockClear();
     await toLangGraph(Promise.resolve(def)).invoke('hi');
-    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, max_tokens: 512, model: 'gpt-4o' });
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
+  });
+
+  it('leaves camelCase model.parameters keys unchanged for the default ChatOpenAI constructor', async () => {
+    const root = makeNode('root', '', []);
+    root.config.model.parameters = { temperature: 0.2, maxTokens: 512 };
+    const def = makeGraphDef([root], {}, 'root');
+    MockChatOpenAI.mockClear();
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
   });
 
   it('wires the root node from START', async () => {

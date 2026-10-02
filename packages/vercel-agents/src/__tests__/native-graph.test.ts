@@ -161,6 +161,34 @@ describe('toVercelAgents', () => {
     );
   });
 
+  it("maps each node's snake_case model.parameters onto that node's ToolLoopAgent call settings", async () => {
+    const graph = makeGraph();
+    (graph.root.config.model as any).parameters = {
+      max_tokens: 128,
+      top_p: 0.7,
+      provider_options: { openai: { reasoning_summary: 'auto' } },
+      instructions: 'bad',
+      tools: {},
+      abort_signal: 'bad',
+    };
+    (graph.getNode('leaf')!.config.model as any).parameters = { temperature: 0.1, max_completion_tokens: 32 };
+    await toVercelAgents(Promise.resolve(graph as any)).invoke('hi');
+    const rootSettings = aiMocks.agentArguments.find((options) => options.model === 'openai/root-model');
+    const leafSettings = aiMocks.agentArguments.find((options) => options.model === 'anthropic/leaf-model');
+    expect(rootSettings).toMatchObject({
+      maxOutputTokens: 128,
+      topP: 0.7,
+      providerOptions: { openai: { reasoning_summary: 'auto' } },
+      instructions: 'Root instructions',
+    });
+    expect(Object.keys(rootSettings.tools)).toEqual(['transfer_to_leaf']);
+    for (const key of ['max_tokens', 'top_p', 'provider_options', 'abort_signal', 'abortSignal']) {
+      expect(rootSettings).not.toHaveProperty(key);
+    }
+    expect(leafSettings).toMatchObject({ temperature: 0.1, maxOutputTokens: 32 });
+    expect(leafSettings).not.toHaveProperty('max_completion_tokens');
+  });
+
   it('resolves the injected model factory independently for every evaluated node', async () => {
     const modelFactory = vi.fn((config: any) => ({ modelId: `resolved:${config.model.name}` }));
     await toVercelAgents(Promise.resolve(makeGraph() as any), { modelFactory } as any).invoke('hi');

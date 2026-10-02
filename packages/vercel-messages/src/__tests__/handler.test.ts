@@ -189,6 +189,116 @@ describe('createVercelMessagesHandler', () => {
     expect(request).not.toHaveProperty('output_format');
   });
 
+  it('maps snake_case model.parameters onto the AI SDK call settings generateText reads', async () => {
+    const parameters = {
+      max_tokens: 256,
+      top_p: 0.9,
+      top_k: 40,
+      presence_penalty: 0.1,
+      frequency_penalty: 0.2,
+      stop_sequences: ['END'],
+      seed: 7,
+      reasoning_effort: 'low',
+      max_retries: 1,
+      tool_choice: 'auto',
+      provider_options: { anthropic: { thinking: { type: 'enabled', budget_tokens: 1024 } } },
+    };
+    await createVercelMessagesHandler()({ ...baseConfig, model: { ...baseConfig.model, parameters } } as any, 'hello');
+    const request = aiMocks.generateText.mock.calls[0][0];
+    expect(request).toMatchObject({
+      maxOutputTokens: 256,
+      topP: 0.9,
+      topK: 40,
+      presencePenalty: 0.1,
+      frequencyPenalty: 0.2,
+      stopSequences: ['END'],
+      seed: 7,
+      reasoning: 'low',
+      maxRetries: 1,
+      toolChoice: 'auto',
+      // Nested values reach the provider untouched, snake_case and all.
+      providerOptions: { anthropic: { thinking: { type: 'enabled', budget_tokens: 1024 } } },
+    });
+    for (const key of Object.keys(parameters).filter((k) => k.includes('_'))) {
+      expect(request).not.toHaveProperty(key);
+    }
+    expect(request).not.toHaveProperty('maxTokens');
+    expect(request).not.toHaveProperty('reasoningEffort');
+  });
+
+  it('maps model.parameters onto streamText the same way', async () => {
+    aiMocks.streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield 'ok';
+      })(),
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    });
+    const parameters = { max_tokens: 64, top_p: 0.5, abort_signal: 'bad', stream: false };
+    await collect(
+      createVercelMessagesHandler().stream?.(
+        { ...baseConfig, model: { ...baseConfig.model, parameters } } as any,
+        'q',
+        {},
+        {},
+      ) as AsyncIterable<any>,
+    );
+    const request = aiMocks.streamText.mock.calls[0][0];
+    expect(request).toMatchObject({ maxOutputTokens: 64, topP: 0.5 });
+    expect(request).not.toHaveProperty('max_tokens');
+    expect(request).not.toHaveProperty('abortSignal');
+    expect(request).not.toHaveProperty('stream');
+  });
+
+  it('resolves the token-limit spellings to maxOutputTokens, explicit max_output_tokens first', async () => {
+    const run = async (parameters: Record<string, unknown>) => {
+      aiMocks.generateText.mockClear();
+      await createVercelMessagesHandler()({ ...baseConfig, model: { ...baseConfig.model, parameters } } as any, 'q');
+      return aiMocks.generateText.mock.calls[0][0].maxOutputTokens;
+    };
+    expect(await run({ max_tokens: 1, max_completion_tokens: 2, max_output_tokens: 3 })).toBe(3);
+    expect(await run({ max_tokens: 1, max_completion_tokens: 2 })).toBe(2);
+    expect(await run({ max_tokens: 1 })).toBe(1);
+    // Both spellings of one key set: snake_case wins, as in every other handler.
+    expect(await run({ maxOutputTokens: 9, max_tokens: 1 })).toBe(1);
+    expect(await run({ maxOutputTokens: 9 })).toBe(9);
+  });
+
+  it('prefers an explicit reasoning over reasoning_effort', async () => {
+    await createVercelMessagesHandler()(
+      {
+        ...baseConfig,
+        model: { ...baseConfig.model, parameters: { reasoning: 'high', reasoning_effort: 'low' } },
+      } as any,
+      'q',
+    );
+    expect(aiMocks.generateText.mock.calls[0][0].reasoning).toBe('high');
+  });
+
+  it('does not forward keys that are not AI SDK call settings', async () => {
+    const parameters = {
+      temperature: 0.3,
+      allowSystemInMessages: true,
+      allow_system_in_messages: true,
+      experimental_telemetry: { isEnabled: true },
+      unknown_setting: 1,
+      abortSignal: 'bad',
+    };
+    await createVercelMessagesHandler()({ ...baseConfig, model: { ...baseConfig.model, parameters } } as any, 'q');
+    const request = aiMocks.generateText.mock.calls[0][0];
+    expect(request.temperature).toBe(0.3);
+    for (const key of [
+      'allowSystemInMessages',
+      'allow_system_in_messages',
+      'experimental_telemetry',
+      'experimentalTelemetry',
+      'unknown_setting',
+      'unknownSetting',
+      'abortSignal',
+    ]) {
+      expect(request).not.toHaveProperty(key);
+    }
+  });
+
   it('uses generateText messages rather than a prompt string', async () => {
     await createVercelMessagesHandler()(baseConfig as any, 'hello');
     const request = aiMocks.generateText.mock.calls[0][0];

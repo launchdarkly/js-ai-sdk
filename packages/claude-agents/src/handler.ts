@@ -5,6 +5,7 @@ import {
   type CanonicalTurn,
   type ConfigTurn,
   type ContentCaptureOptions,
+  camelizeModelParameters,
   composeHistory,
   config,
   contentToText,
@@ -15,6 +16,7 @@ import {
   type MessageContent,
   NATIVE_TOOL_KEY,
   type NativeTool,
+  normalizeModelParameters,
   type ProviderHandler,
   parseTemplate,
   type SpanMessage,
@@ -892,19 +894,30 @@ function buildQueryOptions(
   toolMCP: any,
   // biome-ignore lint/suspicious/noExplicitAny: Claude SDK hooks config type is not publicly exported
   hooks: any,
-  extra?: Record<string, unknown>,
+  /**
+   * The customer's `model.parameters`, with top-level keys camelized for the Claude Agent
+   * SDK (`max_turns` becomes `maxTurns`). Untrusted: it is whatever was
+   * saved on the AI Config, so it is spread FIRST and every handler-owned key below
+   * overrides it. Passed explicitly rather than folded into `internalOptions` so the two
+   * trust levels cannot be confused at a call site.
+   */
+  modelParameters: Record<string, unknown>,
+  /** Options this handler sets for itself, e.g. `includePartialMessages` on the streaming
+   * path. Trusted, so these are spread LAST and win over everything. */
+  internalOptions?: Record<string, unknown>,
 ) {
   const allAllowedTools = [...mcpAllowedTools, ...nativeToolNames];
   return {
     prompt,
     options: {
+      ...modelParameters,
       model: config.model.name,
       tools: nativeToolNames.length > 0 ? nativeToolNames : [],
       allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
       mcpServers: toolMCP ? { [TOOL_MCP_NAME]: toolMCP } : undefined,
       hooks,
-      ...(systemPrompt ? { systemPrompt } : {}),
-      ...extra,
+      systemPrompt,
+      ...internalOptions,
     },
   };
 }
@@ -981,6 +994,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
               mcpAllowedTools,
               toolMCP,
               toolTelemetry?.hooks,
+              camelizeModelParameters(normalizeModelParameters(config.model.parameters)),
             ),
           )) {
             recordConversationId(span, message);
@@ -1107,9 +1121,8 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
             mcpAllowedTools,
             toolMCP,
             toolTelemetry?.hooks,
-            {
-              includePartialMessages: true,
-            },
+            camelizeModelParameters(normalizeModelParameters(config.model.parameters)),
+            { includePartialMessages: true },
           ),
         )) {
           recordConversationId(span, message);
