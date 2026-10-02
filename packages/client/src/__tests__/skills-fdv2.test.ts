@@ -2083,8 +2083,8 @@ describe('failure handling', () => {
   it('counts a server that only ever says goodbye as failing', async () => {
     // A goodbye is exempt from the count because it is how a healthy stream is
     // recycled — but a connection that says goodbye without ever sending a
-    // `server-intent` served nothing. Exempting that too would reconnect at the
-    // initial backoff without `diagnostics` ever saying so.
+    // `server-intent` served nothing. Exempting that too would reconnect
+    // indefinitely without `diagnostics` ever saying so.
     const requester = new GoodbyeOnlyRequester();
     const store = scriptedStreamStore(requester);
     store.start();
@@ -2242,9 +2242,9 @@ describe('failure handling', () => {
   it('counts each drop of a server that announces a transfer and drops before committing (§3.25)', async () => {
     // An `xfer-full` intent is a promise, not a delivery. A server that sends
     // one and drops before `payload-transferred` has delivered nothing, and a
-    // store that counted the announcement as health would retry it forever at
-    // the initial backoff. Only a committed payload or a `none` intent resets
-    // the row of failures.
+    // store that counted the announcement as health would report it healthy
+    // for as long as it kept doing so. Only a committed payload or a `none`
+    // intent resets the row of failures.
     const outcomes: unknown[] = [];
     for (let i = 0; i < 5; i += 1) {
       outcomes.push(asPairs(events(['server-intent', serverIntent('xfer-full')], ['put-object', putSkill()])));
