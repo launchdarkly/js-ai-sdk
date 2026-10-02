@@ -390,6 +390,31 @@ describe('toLangGraph', () => {
     });
   });
 
+  it('keys the graph-level events to the graph, not the root node', async () => {
+    const def = makeGraphDef([makeNode('root', '', [])], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { context: { kind: 'user', key: 'u1' } }).invoke('hi');
+    const graphEvents = mockTrack.mock.calls.filter((c: unknown[]) =>
+      ['$ld:ai:graph:invocation_success', '$ld:ai:graph:duration:total', '$ld:ai:graph:total_tokens'].includes(
+        c[0] as string,
+      ),
+    );
+    expect(graphEvents).toHaveLength(3);
+    for (const call of graphEvents) {
+      expect(call[2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+    }
+  });
+
+  it('keys invocation_failure to the graph, not the root node', async () => {
+    mockCompiledInvoke.mockRejectedValue(new Error('boom'));
+    const def = makeGraphDef([makeNode('root', '', [])], {}, 'root');
+    await expect(
+      toLangGraph(Promise.resolve(def), { context: { kind: 'user', key: 'u1' } }).invoke('hi'),
+    ).rejects.toThrow('boom');
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+  });
+
   it('puts the environment id on every node and graph tracking event', async () => {
     const ctx = { kind: 'user' as const, key: 'u1' };
     const mockModel = {

@@ -299,6 +299,37 @@ describe('toVercelAgents', () => {
     });
   });
 
+  it('keys the graph-level events to the graph, not the root node', async () => {
+    await toVercelAgents(Promise.resolve(makeGraph() as any), { context } as any).invoke('start');
+    const graphEvents = telemetryMocks.track.mock.calls.filter((c: unknown[]) =>
+      ['$ld:ai:graph:invocation_success', '$ld:ai:graph:duration:total', '$ld:ai:graph:total_tokens'].includes(
+        c[0] as string,
+      ),
+    );
+    expect(graphEvents).toHaveLength(3);
+    for (const call of graphEvents) {
+      expect(call[2]).toEqual(
+        expect.objectContaining({ configKey: 'vercel-native-graph', graphKey: 'vercel-native-graph' }),
+      );
+    }
+  });
+
+  it('keys invocation_failure to the graph, not the root node', async () => {
+    aiMocks.generateImplementation = async () => {
+      throw new Error('boom');
+    };
+    await expect(toVercelAgents(Promise.resolve(makeGraph() as any), { context } as any).invoke('hi')).rejects.toThrow(
+      'boom',
+    );
+    const failures = telemetryMocks.track.mock.calls.filter(
+      (c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure',
+    );
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(
+      expect.objectContaining({ configKey: 'vercel-native-graph', graphKey: 'vercel-native-graph' }),
+    );
+  });
+
   it('puts the environment id on every node and graph tracking event', async () => {
     await toVercelAgents(Promise.resolve(makeGraph() as any), { context } as any).invoke('start');
     expect(telemetryMocks.track).toHaveBeenCalled();

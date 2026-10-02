@@ -184,168 +184,173 @@ export const toClaudeAgents = (
     const rawHandlers = opts?.toolHandlers ?? {};
 
     return trace.getTracer('@launchdarkly/ai-claude-agents').startActiveSpan('launchdarkly.graph', async (span) => {
-      span.setAttribute('launchdarkly.graph.key', def.key);
-      const startTime = Date.now();
-      const runId = crypto.randomUUID();
-      setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext });
-
-      const path: string[] = [];
-      const totalUsage = { input: 0, output: 0, total: 0 };
-
-      // Runs a single node either via Claude query() (Anthropic nodes) or via
-      // def.runNode() (any other provider, using the registry/handlers).
-      const runForNode = async (
-        node: GraphNode,
-        nodeInput: string,
-        childSubAgentTools: ReturnType<typeof tool>[],
-        // Root-only: applied to the entry node via the Anthropic-native streamed path (or
-        // forwarded to `runNode` for a non-Anthropic root). Sub-agent calls omit it, so
-        // downstream nodes never receive the original history array.
-        nodeHistory?: Message[],
-      ): Promise<{ output: string; usage: { input: number; output: number; total: number } }> => {
-        if (isAnthropicProvider(node)) {
-          return runQuery(
-            node,
-            nodeInput,
-            variables,
-            rawHandlers,
-            ldContext,
-            def.key,
-            runId,
-            childSubAgentTools,
-            nodeHistory,
-          );
-        }
-        const res = await def.runNode(node, nodeInput, { toolHandlers: rawHandlers, variables, history: nodeHistory });
-        const outputStr = typeof res.response === 'string' ? res.response : JSON.stringify(res.response);
-        return {
-          output: outputStr,
-          usage: { input: res.usage.input, output: res.usage.output, total: res.usage.total },
-        };
-      };
-
-      // biome-ignore lint/suspicious/noExplicitAny: sub-agent tool instances are opaque SDK types from tool()
-      const subAgentToolCtx: Record<string, any> = {};
-
-      // Build leaves → root: each non-root node becomes a sub-agent tool
-      await def.reverseTraverse<void>(async (node) => {
-        // Root is handled separately in the run phase — skip building a tool for it
-        if (node.key === def.root?.key) return;
-
-        const nodeKey = sanitizeName(node.key);
-        const childSubAgentTools = node.edges.map((e) => subAgentToolCtx[e.targetKey]).filter(Boolean);
-
-        // Create a tool that wraps query() (or def.runNode for non-Anthropic) for this node.
-        // The Claude SDK tool() takes a raw Zod shape (Record<string, ZodType>),
-        // not a ZodObject — pass the shape directly.
-        const subAgentTool = tool(
-          nodeKey,
-          node.config.instructions?.slice(0, 120) ?? node.key,
-          { input: z.string().describe('Task or question for this agent') },
-          async ({ input: subInput }: { input: string }) => {
-            if (ldContext) {
-              const trackData = makeNodeTrackData(node, def.key, runId);
-              getClient().track('$ld:ai:graph:handoff_success', ldContext, trackData, 1);
-            }
-
-            if (!path.includes(node.key)) {
-              const index = path.length;
-              path.push(node.key);
-              if (ldContext) {
-                const nodeTrackData = makeNodeTrackData(node, def.key, runId);
-                getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: node.key, index }, 1);
-              }
-            }
-            const nodeStartTime = Date.now();
-
-            const { output, usage } = await runForNode(node, subInput, childSubAgentTools);
-
-            totalUsage.input += usage.input;
-            totalUsage.output += usage.output;
-            totalUsage.total += usage.total;
-
-            if (ldContext) {
-              const trackData = makeNodeTrackData(node, def.key, runId);
-              const duration = Date.now() - nodeStartTime;
-              getClient().track('$ld:ai:duration:total', ldContext, trackData, duration);
-              getClient().track('$ld:ai:generation:success', ldContext, trackData, 1);
-              if (usage.total > 0) getClient().track('$ld:ai:tokens:total', ldContext, trackData, usage.total);
-              if (usage.input > 0) getClient().track('$ld:ai:tokens:input', ldContext, trackData, usage.input);
-              if (usage.output > 0) getClient().track('$ld:ai:tokens:output', ldContext, trackData, usage.output);
-            }
-
-            return { content: [{ type: 'text' as const, text: output }] };
-          },
-        );
-
-        subAgentToolCtx[node.key] = subAgentTool;
-      });
-
-      const root = def.root;
-      if (!root) throw new Error(`Graph "${def.key}" has no root node`);
-
-      // Run the root with its direct children available as sub-agent tools
-      const rootChildSubAgentTools = root.edges.map((e) => subAgentToolCtx[e.targetKey]).filter(Boolean);
-
-      if (!path.includes(root.key)) {
-        const index = path.length;
-        path.push(root.key);
-        if (ldContext) {
-          const nodeTrackData = makeNodeTrackData(root, def.key, runId);
-          getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: root.key, index }, 1);
-        }
-      }
-      const rootStartTime = Date.now();
-
-      let finalOutput = '';
-      let rootUsage = { input: 0, output: 0, total: 0 };
-
       try {
-        const result = await runForNode(root, input, rootChildSubAgentTools, history);
-        finalOutput = result.output;
-        rootUsage = result.usage;
-        span.setStatus({ code: SpanStatusCode.OK });
-      } catch (err) {
-        span.recordException(err instanceof Error ? err : new Error(String(err)));
-        span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
+        const startTime = Date.now();
+        const runId = crypto.randomUUID();
+        setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext });
+
+        const path: string[] = [];
+        const totalUsage = { input: 0, output: 0, total: 0 };
+
+        // Runs a single node either via Claude query() (Anthropic nodes) or via
+        // def.runNode() (any other provider, using the registry/handlers).
+        const runForNode = async (
+          node: GraphNode,
+          nodeInput: string,
+          childSubAgentTools: ReturnType<typeof tool>[],
+          // Root-only: applied to the entry node via the Anthropic-native streamed path (or
+          // forwarded to `runNode` for a non-Anthropic root). Sub-agent calls omit it, so
+          // downstream nodes never receive the original history array.
+          nodeHistory?: Message[],
+        ): Promise<{ output: string; usage: { input: number; output: number; total: number } }> => {
+          if (isAnthropicProvider(node)) {
+            return runQuery(
+              node,
+              nodeInput,
+              variables,
+              rawHandlers,
+              ldContext,
+              def.key,
+              runId,
+              childSubAgentTools,
+              nodeHistory,
+            );
+          }
+          const res = await def.runNode(node, nodeInput, {
+            toolHandlers: rawHandlers,
+            variables,
+            history: nodeHistory,
+          });
+          const outputStr = typeof res.response === 'string' ? res.response : JSON.stringify(res.response);
+          return {
+            output: outputStr,
+            usage: { input: res.usage.input, output: res.usage.output, total: res.usage.total },
+          };
+        };
+
+        // biome-ignore lint/suspicious/noExplicitAny: sub-agent tool instances are opaque SDK types from tool()
+        const subAgentToolCtx: Record<string, any> = {};
+
+        // Build leaves → root: each non-root node becomes a sub-agent tool
+        await def.reverseTraverse<void>(async (node) => {
+          // Root is handled separately in the run phase — skip building a tool for it
+          if (node.key === def.root?.key) return;
+
+          const nodeKey = sanitizeName(node.key);
+          const childSubAgentTools = node.edges.map((e) => subAgentToolCtx[e.targetKey]).filter(Boolean);
+
+          // Create a tool that wraps query() (or def.runNode for non-Anthropic) for this node.
+          // The Claude SDK tool() takes a raw Zod shape (Record<string, ZodType>),
+          // not a ZodObject — pass the shape directly.
+          const subAgentTool = tool(
+            nodeKey,
+            node.config.instructions?.slice(0, 120) ?? node.key,
+            { input: z.string().describe('Task or question for this agent') },
+            async ({ input: subInput }: { input: string }) => {
+              if (ldContext) {
+                const trackData = makeNodeTrackData(node, def.key, runId);
+                getClient().track('$ld:ai:graph:handoff_success', ldContext, trackData, 1);
+              }
+
+              if (!path.includes(node.key)) {
+                const index = path.length;
+                path.push(node.key);
+                if (ldContext) {
+                  const nodeTrackData = makeNodeTrackData(node, def.key, runId);
+                  getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: node.key, index }, 1);
+                }
+              }
+              const nodeStartTime = Date.now();
+
+              const { output, usage } = await runForNode(node, subInput, childSubAgentTools);
+
+              totalUsage.input += usage.input;
+              totalUsage.output += usage.output;
+              totalUsage.total += usage.total;
+
+              if (ldContext) {
+                const trackData = makeNodeTrackData(node, def.key, runId);
+                const duration = Date.now() - nodeStartTime;
+                getClient().track('$ld:ai:duration:total', ldContext, trackData, duration);
+                getClient().track('$ld:ai:generation:success', ldContext, trackData, 1);
+                if (usage.total > 0) getClient().track('$ld:ai:tokens:total', ldContext, trackData, usage.total);
+                if (usage.input > 0) getClient().track('$ld:ai:tokens:input', ldContext, trackData, usage.input);
+                if (usage.output > 0) getClient().track('$ld:ai:tokens:output', ldContext, trackData, usage.output);
+              }
+
+              return { content: [{ type: 'text' as const, text: output }] };
+            },
+          );
+
+          subAgentToolCtx[node.key] = subAgentTool;
+        });
+
+        const root = def.root;
+        if (!root) throw new Error(`Graph "${def.key}" has no root node`);
+
+        // Run the root with its direct children available as sub-agent tools
+        const rootChildSubAgentTools = root.edges.map((e) => subAgentToolCtx[e.targetKey]).filter(Boolean);
+
+        if (!path.includes(root.key)) {
+          const index = path.length;
+          path.push(root.key);
+          if (ldContext) {
+            const nodeTrackData = makeNodeTrackData(root, def.key, runId);
+            getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: root.key, index }, 1);
+          }
+        }
+        const rootStartTime = Date.now();
+
+        let finalOutput = '';
+        let rootUsage = { input: 0, output: 0, total: 0 };
+
+        try {
+          const result = await runForNode(root, input, rootChildSubAgentTools, history);
+          finalOutput = result.output;
+          rootUsage = result.usage;
+          span.setStatus({ code: SpanStatusCode.OK });
+        } catch (err) {
+          span.recordException(err instanceof Error ? err : new Error(String(err)));
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
+          if (ldContext) {
+            const trackData = makeGraphTrackData(def.key, runId);
+            getClient().track('$ld:ai:graph:invocation_failure', ldContext, trackData, 1);
+          }
+          throw err;
+        }
+
+        totalUsage.input += rootUsage.input;
+        totalUsage.output += rootUsage.output;
+        totalUsage.total += rootUsage.total;
+
         if (ldContext) {
           const trackData = makeNodeTrackData(root, def.key, runId);
-          getClient().track('$ld:ai:graph:invocation_failure', ldContext, trackData, 1);
+          const duration = Date.now() - rootStartTime;
+          getClient().track('$ld:ai:duration:total', ldContext, trackData, duration);
+          getClient().track('$ld:ai:generation:success', ldContext, trackData, 1);
+          if (rootUsage.total > 0) getClient().track('$ld:ai:tokens:total', ldContext, trackData, rootUsage.total);
+          if (rootUsage.input > 0) getClient().track('$ld:ai:tokens:input', ldContext, trackData, rootUsage.input);
+          if (rootUsage.output > 0) getClient().track('$ld:ai:tokens:output', ldContext, trackData, rootUsage.output);
         }
+
+        const graphDuration = Date.now() - startTime;
+
+        span.setAttribute('launchdarkly.graph.path', path.join('->'));
+        span.setAttribute('gen_ai.usage.input_tokens', totalUsage.input);
+        span.setAttribute('gen_ai.usage.output_tokens', totalUsage.output);
+        span.setAttribute('gen_ai.usage.total_tokens', totalUsage.total);
+
+        if (ldContext) {
+          const graphTrackData = makeGraphTrackData(def.key, runId);
+          getClient().track('$ld:ai:graph:duration:total', ldContext, graphTrackData, graphDuration);
+          getClient().track('$ld:ai:graph:total_tokens', ldContext, graphTrackData, totalUsage.total);
+          getClient().track('$ld:ai:graph:invocation_success', ldContext, graphTrackData, 1);
+        }
+
+        return { response: finalOutput, usage: totalUsage };
+      } finally {
         span.end();
-        throw err;
       }
-
-      totalUsage.input += rootUsage.input;
-      totalUsage.output += rootUsage.output;
-      totalUsage.total += rootUsage.total;
-
-      if (ldContext) {
-        const trackData = makeNodeTrackData(root, def.key, runId);
-        const duration = Date.now() - rootStartTime;
-        getClient().track('$ld:ai:duration:total', ldContext, trackData, duration);
-        getClient().track('$ld:ai:generation:success', ldContext, trackData, 1);
-        if (rootUsage.total > 0) getClient().track('$ld:ai:tokens:total', ldContext, trackData, rootUsage.total);
-        if (rootUsage.input > 0) getClient().track('$ld:ai:tokens:input', ldContext, trackData, rootUsage.input);
-        if (rootUsage.output > 0) getClient().track('$ld:ai:tokens:output', ldContext, trackData, rootUsage.output);
-      }
-
-      const graphDuration = Date.now() - startTime;
-
-      span.setAttribute('launchdarkly.graph.path', path.join('->'));
-      span.setAttribute('gen_ai.usage.input_tokens', totalUsage.input);
-      span.setAttribute('gen_ai.usage.output_tokens', totalUsage.output);
-      span.setAttribute('gen_ai.usage.total_tokens', totalUsage.total);
-
-      if (ldContext) {
-        const rootTrackData = makeNodeTrackData(root, def.key, runId);
-        getClient().track('$ld:ai:graph:duration:total', ldContext, rootTrackData, graphDuration);
-        getClient().track('$ld:ai:graph:total_tokens', ldContext, rootTrackData, totalUsage.total);
-        getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
-      }
-
-      span.end();
-      return { response: finalOutput, usage: totalUsage };
     });
   };
 

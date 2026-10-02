@@ -130,7 +130,6 @@ export const toVercelAgents = (
     const root = def.root;
 
     return trace.getTracer(TRACER_NAME).startActiveSpan('launchdarkly.graph', async (span) => {
-      span.setAttribute('launchdarkly.graph.key', def.key);
       const startedAt = Date.now();
       const runId = crypto.randomUUID();
       const context = options.context;
@@ -228,7 +227,7 @@ export const toVercelAgents = (
         span.setAttribute('gen_ai.usage.total_tokens', total.total);
 
         if (context) {
-          const trackData = makeNodeTrackData(root, def.key, runId);
+          const trackData = makeGraphTrackData(def.key, runId);
           const client = getClient();
           client.track('$ld:ai:graph:duration:total', context, trackData, Date.now() - startedAt);
           client.track('$ld:ai:graph:total_tokens', context, trackData, total.total);
@@ -242,7 +241,7 @@ export const toVercelAgents = (
         span.recordException(exception);
         span.setStatus({ code: SpanStatusCode.ERROR, message: exception.message });
         if (context) {
-          getClient().track('$ld:ai:graph:invocation_failure', context, makeNodeTrackData(root, def.key, runId), 1);
+          getClient().track('$ld:ai:graph:invocation_failure', context, makeGraphTrackData(def.key, runId), 1);
         }
         throw error;
       } finally {

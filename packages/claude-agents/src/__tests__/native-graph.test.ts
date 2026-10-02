@@ -231,6 +231,41 @@ describe('toClaudeAgents', () => {
     });
   });
 
+  it('keys the graph-level events to the graph, not the root node', async () => {
+    await toClaudeAgents(Promise.resolve(makeGraphDef()), { context: { kind: 'user', key: 'user-1' } }).invoke('hello');
+    const graphEvents = mockTrack.mock.calls.filter((c: unknown[]) =>
+      ['$ld:ai:graph:invocation_success', '$ld:ai:graph:duration:total', '$ld:ai:graph:total_tokens'].includes(
+        c[0] as string,
+      ),
+    );
+    expect(graphEvents).toHaveLength(3);
+    for (const call of graphEvents) {
+      expect(call[2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+    }
+  });
+
+  it('keys invocation_failure to the graph, not the root node', async () => {
+    mockQuery.mockImplementation(async function* () {
+      throw new Error('boom');
+    });
+    await expect(
+      toClaudeAgents(Promise.resolve(makeGraphDef()), { context: { kind: 'user', key: 'user-1' } }).invoke('hello'),
+    ).rejects.toThrow('boom');
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+  });
+
+  it('ends the graph span when building the sub-agent tools throws', async () => {
+    const def = makeGraphDef({
+      reverseTraverse: async () => {
+        throw new Error('setup boom');
+      },
+    });
+    await expect(toClaudeAgents(Promise.resolve(def)).invoke('hello')).rejects.toThrow('setup boom');
+    expect(mockGraphSpan.end).toHaveBeenCalledTimes(1);
+  });
+
   it('puts the environment id on every node and graph tracking event', async () => {
     const def = makeGraphDef();
     await toClaudeAgents(Promise.resolve(def), { context: { kind: 'user', key: 'user-1' } }).invoke('hello');

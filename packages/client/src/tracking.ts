@@ -120,7 +120,12 @@ export const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: stri
  * topology, and `GraphDefinition` does not expose its `_ldMeta`.
  *
  * Native graph adapters pass this to `setLdSpanAttributes` so the
- * `launchdarkly.graph` span can be found by an AI Config Monitoring query.
+ * `launchdarkly.graph` span can be found by an AI Config Monitoring query, and
+ * use it for their graph-level `$ld:ai:graph:*` events.
+ *
+ * @internal Exported for the native graph adapter packages only; not part of
+ * the public API. The signature changes if `GraphDefinition` gains the graph
+ * flag's variation metadata.
  */
 export const makeGraphTrackData = (graphKey: string, runId: string): TrackData => ({
   runId,

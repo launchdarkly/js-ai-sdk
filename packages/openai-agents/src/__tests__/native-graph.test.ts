@@ -293,6 +293,40 @@ describe('toOpenAIAgents', () => {
     });
   });
 
+  it('keys the graph-level events to the graph, not the root node', async () => {
+    await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph()), { context: ldContext }).invoke('hi');
+    const graphEvents = mockTrack.mock.calls.filter((c: unknown[]) =>
+      ['$ld:ai:graph:invocation_success', '$ld:ai:graph:duration:total', '$ld:ai:graph:total_tokens'].includes(
+        c[0] as string,
+      ),
+    );
+    expect(graphEvents).toHaveLength(3);
+    for (const call of graphEvents) {
+      expect(call[2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+    }
+  });
+
+  it('keys invocation_failure to the graph, not the root node', async () => {
+    mockRunnerRun.mockRejectedValue(new Error('boom'));
+    await expect(
+      toOpenAIAgents(Promise.resolve(makeTwoNodeGraph()), { context: ldContext }).invoke('hi'),
+    ).rejects.toThrow('boom');
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+  });
+
+  it('ends the graph span when building the agents throws', async () => {
+    const def = {
+      ...makeTwoNodeGraph(),
+      reverseTraverse: async () => {
+        throw new Error('setup boom');
+      },
+    };
+    await expect(toOpenAIAgents(Promise.resolve(def as any)).invoke('hi')).rejects.toThrow('setup boom');
+    expect(mockSpan.end).toHaveBeenCalledTimes(1);
+  });
+
   it('puts the environment id on every node and graph tracking event', async () => {
     mockRunnerRun.mockImplementation(async () => {
       capturedEventHandlers.agent_start?.({}, { name: 'root-agent' });

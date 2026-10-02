@@ -155,7 +155,6 @@ export const toLangGraph = (
 
     return trace.getTracer('@launchdarkly/ai-langchain-agents').startActiveSpan('launchdarkly.graph', async (span) => {
       try {
-        span.setAttribute('launchdarkly.graph.key', def.key);
         const startTime = Date.now();
         const runId = crypto.randomUUID();
         setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext });
@@ -304,8 +303,7 @@ export const toLangGraph = (
           span.recordException(err instanceof Error ? err : new Error(String(err)));
           span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
           if (ldContext) {
-            // biome-ignore lint/style/noNonNullAssertion: def.root is asserted non-null earlier in this function
-            const trackData = makeNodeTrackData(def.root!, def.key, runId);
+            const trackData = makeGraphTrackData(def.key, runId);
             getClient().track('$ld:ai:graph:invocation_failure', ldContext, trackData, 1);
           }
           throw err;
@@ -332,11 +330,10 @@ export const toLangGraph = (
         span.setAttribute('gen_ai.usage.total_tokens', totalUsage.total);
 
         if (ldContext) {
-          // biome-ignore lint/style/noNonNullAssertion: def.root is asserted non-null earlier in this function
-          const rootTrackData = makeNodeTrackData(def.root!, def.key, runId);
-          getClient().track('$ld:ai:graph:duration:total', ldContext, rootTrackData, duration);
-          getClient().track('$ld:ai:graph:total_tokens', ldContext, rootTrackData, totalUsage.total);
-          getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
+          const graphTrackData = makeGraphTrackData(def.key, runId);
+          getClient().track('$ld:ai:graph:duration:total', ldContext, graphTrackData, duration);
+          getClient().track('$ld:ai:graph:total_tokens', ldContext, graphTrackData, totalUsage.total);
+          getClient().track('$ld:ai:graph:invocation_success', ldContext, graphTrackData, 1);
         }
 
         return { response: finalOutput, usage: totalUsage };
