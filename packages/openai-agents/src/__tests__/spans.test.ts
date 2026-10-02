@@ -308,8 +308,8 @@ describe('openai-agents span tree against the real Runner', () => {
    * the same `usage` aggregate the success path reads. So a failed run has already told us what it
    * spent, and the root — the only span carrying `launchdarkly.config.key` — must report it.
    *
-   * This is not hypothetical: a live run can hit `MaxTurnsExceededError` after ten calls and ~155k
-   * input tokens, and writing the root's usage only on success would report none of them.
+   * A run that hits `MaxTurnsExceededError` may already have made many calls, and writing the
+   * root's usage only on success would report none of their tokens.
    */
   it('reports the run spend the Agents SDK attached to its error on the root', async () => {
     const failure = Object.assign(new Error('Max turns (10) exceeded'), {

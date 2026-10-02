@@ -250,9 +250,8 @@ function marksLocalWork(message: { type: string }): boolean {
  * `query()` reports no request boundaries, and an `assistant` message is not one. The CLI emits a
  * message per content block of a response and dispatches those blocks one at a time, so a single
  * API call surfaces as several messages that share a `request_id` and repeat the same `usage` bag —
- * with tool executions interleaved between them. Measured on a live 8-turn run, treating each
- * message as a call would produce 55 spans for 22 real calls and count every call's tokens two to
- * four times over.
+ * with tool executions interleaved between them. Treating each message as a call would emit
+ * several spans per real call and count every call's tokens two to four times over.
  *
  * So `request_id` is the unit, accumulated across the whole run rather than only while consecutive:
  * the messages of one response are not adjacent in the stream. Usage and identity are written once,
