@@ -440,6 +440,31 @@ export function verifyRawSkill(raw: unknown): Skill | null {
 }
 
 /** The one wording for "the store could not answer", used by every path. */
+/**
+ * Logs one warning per batch when content was withheld, with the counts.
+ *
+ * Makes withholding visible, especially when nothing verified and the empty
+ * result would look like "no skills".
+ */
+export function logWithholdingSummary(subject: string, requested: number, resolved: number): void {
+  const withheld = requested - resolved;
+  if (withheld <= 0) return;
+  if (resolved === 0) {
+    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; an empty result must not read as "no skills"
+    console.warn(
+      `[LaunchDarkly] All ${requested} ${subject} were withheld and no skill content is available. Every ` +
+        'object failed verification — check that the delivered objects carry a contentHash matching the ' +
+        'sha256 of their content.',
+    );
+    return;
+  }
+  // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; withheld skills must be visible
+  console.warn(
+    `[LaunchDarkly] ${withheld} of ${requested} ${subject} were withheld and are unavailable; see the ` +
+      'preceding errors for the per-skill reason.',
+  );
+}
+
 export function storeThrew(error: unknown): string {
   const name = error instanceof Error ? error.constructor.name : 'unknown error';
   const message = error instanceof Error ? error.message : String(error);

@@ -501,16 +501,15 @@ export class SkillObjectSet {
 
   /**
    * The object for `key` at `version`, or the newest held when `version` is null.
-   * Falls back to the version-less entry so verification can report it.
+   *
+   * When only a version-less entry exists it is served so verification can
+   * report it. A pin that misses while valid versions exist is a plain miss.
    */
   get(key: string, version: number | null): RawSkillObject | null {
     const held = this.versions.get(key);
-    if (version !== null) return held?.get(version) ?? this.loose.get(key) ?? null;
-    if (held && held.size > 0) {
-      const newest = Math.max(...held.keys());
-      return held.get(newest) ?? null;
-    }
-    return this.loose.get(key) ?? null;
+    if (!held || held.size === 0) return this.loose.get(key) ?? null;
+    if (version !== null) return held.get(version) ?? null;
+    return held.get(Math.max(...held.keys())) ?? null;
   }
 
   /**
@@ -1533,8 +1532,8 @@ export class FDv2SkillStore implements SkillStore {
    *
    * Does not await: use `waitForSkills` when boot ordering matters.
    *
-   * Throws if the store has been closed. Once delivery has stopped on its own
-   * (`failed` is set), calling `start` again does nothing.
+   * Throws if the store has been closed. A store whose delivery stopped on its
+   * own (`failed` is set) can be started again, with a fresh retry budget.
    */
   start(): this {
     if (this.closed) {
@@ -1543,7 +1542,10 @@ export class FDv2SkillStore implements SkillStore {
           'A closed store still answers from the content it received, so retrieval needs no restart.',
       );
     }
-    if (this.loop !== null) return this;
+    if (this.loop !== null && this.failedReason === null) return this;
+    // A loop that gave up has already returned, so a new one cannot overlap it.
+    this.failedReason = null;
+    this.failures = 0;
     this.controller = new AbortController();
     this.loop = this.run(this.controller.signal);
     return this;
@@ -1627,7 +1629,10 @@ export class FDv2SkillStore implements SkillStore {
     return this.firstPayload;
   }
 
-  /** Why delivery stopped for good, or `null` while it is running. */
+  /**
+   * Why delivery stopped, or `null` while it is running. Cleared when `start`
+   * runs delivery again.
+   */
   get failed(): string | null {
     return this.failedReason;
   }
@@ -1789,7 +1794,8 @@ export class FDv2SkillStore implements SkillStore {
     this.reader.diagnostics.lastError = reason;
     error(
       `Skill delivery has stopped and will not retry: ${reason}. The store keeps serving the last content it ` +
-        'received; skills will not update until the process restarts with a working connection.',
+        'received, and skills will not update until delivery runs again: call start() on this store once the ' +
+        'cause is fixed, or restart the process.',
     );
     // Release `waitForSkills` callers now; they resolve `false`.
     this.releaseWaiters();

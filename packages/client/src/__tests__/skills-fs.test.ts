@@ -29,7 +29,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fsOps, SUPPORTS_DIR_FD, SUPPORTS_PROC_FD } from '../safe-fs.js';
 import { _clearState, _setEmitterForTesting, _setStore, InMemorySkillStore, skillRefs } from '../skills.js';
 import { MAX_SKILL_CONTENT_BYTES, recordRevoked } from '../skills-core.js';
-import { writeSkills } from '../skills-fs.js';
+import { MAX_MANIFEST_BYTES, writeSkills } from '../skills-fs.js';
 import type { RawSkillObject, ReconcileAction, ReconcileReport, Skill, SkillStore } from '../types.js';
 import { createSkill, isValidSkillKey, parseAiConfig } from '../types.js';
 
@@ -1966,6 +1966,39 @@ const CORRUPT_MANIFESTS: Array<[string, unknown]> = [
 ];
 
 const LIVE_ENTRY_MANIFESTS = CORRUPT_MANIFESTS.filter(([name]) => name.endsWith('_live_entries'));
+
+describe('writeSkills oversize manifest', () => {
+  // The manifest is a plain file in a directory the SDK does not own
+  // exclusively, so an unbounded read of it could exhaust the process.
+  it('refuses a manifest over the cap without destroying anything', async () => {
+    const target = await placeManaged(root, 'a', SKILL_BODY);
+    // Derived from the cap, so raising the bound cannot leave this test passing.
+    await writeManifest(root, { manifestVersion: 1, entries: {}, pad: 'x'.repeat(MAX_MANIFEST_BYTES + 1) });
+    const unlinks = interceptUnlink();
+
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(false);
+    expect(errorMessages(report).some((m) => m.includes('cap'))).toBe(true);
+    expect(unlinks).toEqual([]);
+    expect(await readFile(target, 'utf-8')).toBe(SKILL_BODY);
+    // Left for an operator rather than overwritten.
+    expect((await readManifest(root)).pad).toBeDefined();
+  });
+
+  it('still reads a manifest exactly at the cap', async () => {
+    const manifest: Record<string, unknown> = { manifestVersion: 1, entries: {} };
+    const overhead = Buffer.byteLength(JSON.stringify({ ...manifest, pad: '' }), 'utf-8');
+    manifest.pad = 'x'.repeat(MAX_MANIFEST_BYTES - overhead);
+    await writeManifest(root, manifest);
+    expect((await stat(manifestPath(root))).size).toBe(MAX_MANIFEST_BYTES);
+
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(true);
+    expect((await readManifest(root)).pad).toBeDefined();
+  });
+});
 
 describe('writeSkills corrupt manifest', () => {
   it.each(CORRUPT_MANIFESTS)('performs no destructive action and reports an error: %s', async (_label, raw) => {

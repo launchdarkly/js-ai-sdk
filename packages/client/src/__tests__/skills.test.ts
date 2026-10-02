@@ -1218,6 +1218,63 @@ describe('getSkills', () => {
   });
 });
 
+// ─── Withholding summary ───────────────────────────────────────────────
+
+describe('withholding summary', () => {
+  let store: InMemorySkillStore;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  const warnings = (): string[] => warnSpy.mock.calls.map((call) => String(call[0]));
+  const tampered = (key: string): RawSkillObject => rawSkill({ key, contentHash: '0'.repeat(64) });
+
+  beforeEach(() => {
+    store = new InMemorySkillStore();
+    _setStore(store);
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('warns once, naming the content hash, when allSkills withholds everything', async () => {
+    store.put(tampered('a'));
+    expect(await allSkills()).toEqual([]);
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toMatch(/contentHash/);
+  });
+
+  it('warns with the counts when allSkills withholds some', async () => {
+    store.put(rawSkill({ key: 'good' }));
+    store.put(tampered('bad'));
+    expect((await allSkills()).map((s) => s.key)).toEqual(['good']);
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toMatch(/1 of 2/);
+  });
+
+  it('warns once per getSkills batch, not once per skill', async () => {
+    store.put(tampered('a'));
+    store.put(tampered('b'));
+    expect(await getSkills(['a', 'b'])).toEqual([]);
+    expect(warnings()).toHaveLength(1);
+  });
+
+  it('does not warn when nothing was withheld', async () => {
+    store.put(rawSkill({ key: 'a' }));
+    expect(await getSkills(['a'])).toHaveLength(1);
+    expect(await allSkills()).toHaveLength(1);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('does not count a key as withheld when another version of it resolved', async () => {
+    // A malformed object beside a well-formed version of the same key.
+    store.put(rawSkill({ key: 'a', version: 1 }));
+    store.put(rawSkill({ key: 'a', version: 'not-a-version' as unknown as number }));
+    expect((await allSkills()).map((s) => s.key)).toEqual(['a']);
+    expect(warnings()).toEqual([]);
+  });
+});
+
 // ─── allSkills ─────────────────────────────────────────────────────────
 
 describe('allSkills', () => {
