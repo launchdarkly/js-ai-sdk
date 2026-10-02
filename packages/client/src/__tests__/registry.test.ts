@@ -4,9 +4,10 @@ import type { ProviderHandler } from '../types.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-const makeHandler = (provider: string, mode: 'agent' | 'messages'): ProviderHandler => {
+const makeHandler = (provider: string, mode: 'agent' | 'messages', providers?: readonly string[]): ProviderHandler => {
   const h: ProviderHandler = async () => ({ output: 'ok' });
   h.providesFor = [provider, mode];
+  if (providers) h.providers = providers;
   return h;
 };
 
@@ -45,6 +46,57 @@ describe('Registry', () => {
     expect(r.handlers).toHaveLength(1);
     expect(r.handlers[0]).toBe(h2);
     warn.mockRestore();
+  });
+
+  it('keeps scoped wildcards with different provider lists', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = new Registry();
+      const bedrock = makeHandler('*', 'agent', ['Bedrock']);
+      const anthropic = makeHandler('*', 'agent', ['Anthropic']);
+      r.register({ handlers: [bedrock, anthropic] });
+      expect(r.handlers).toEqual([bedrock, anthropic]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps an unscoped wildcard beside a scoped one', () => {
+    const r = new Registry();
+    const unscoped = makeHandler('*', 'agent');
+    const scoped = makeHandler('*', 'agent', ['Bedrock']);
+    r.register({ handlers: [unscoped, scoped] });
+    expect(r.handlers).toEqual([unscoped, scoped]);
+  });
+
+  it('warns and replaces the same provider set regardless of order', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = new Registry();
+      const first = makeHandler('*', 'agent', ['Anthropic', 'Bedrock']);
+      const second = makeHandler('*', 'agent', ['Bedrock', 'Anthropic']);
+      r.register({ handlers: [first] });
+      r.register({ handlers: [second] });
+      expect(r.handlers).toEqual([second]);
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('treats a repeated provider name as the same identity', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = new Registry();
+      const first = makeHandler('*', 'agent', ['Bedrock']);
+      const second = makeHandler('*', 'agent', ['Bedrock', 'Bedrock']);
+      r.register({ handlers: [first, second] });
+      expect(r.handlers).toEqual([second]);
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('always appends handlers without providesFor (no dedup)', () => {
@@ -103,6 +155,25 @@ describe('compose', () => {
     expect(c.handlers).toHaveLength(1);
     expect(c.handlers[0]).toBe(hB);
     warn.mockRestore();
+  });
+
+  it('keeps scoped wildcards with different lists', () => {
+    const bedrock = makeHandler('*', 'agent', ['Bedrock']);
+    const anthropic = makeHandler('*', 'agent', ['Anthropic']);
+    const c = compose(new Registry({ handlers: [bedrock] }), new Registry({ handlers: [anthropic] }));
+    expect(c.handlers).toEqual([bedrock, anthropic]);
+  });
+
+  it('replaces the same provider set', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const first = makeHandler('*', 'agent', ['Bedrock', 'Anthropic']);
+      const second = makeHandler('*', 'agent', ['Anthropic', 'Bedrock']);
+      const c = compose(new Registry({ handlers: [first] }), new Registry({ handlers: [second] }));
+      expect(c.handlers).toEqual([second]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('b tool wins over a on the same tool key', () => {

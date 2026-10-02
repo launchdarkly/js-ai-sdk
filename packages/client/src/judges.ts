@@ -18,7 +18,29 @@ import {
   normalizeMode,
   omitModelStamps,
   parseJSONWithPossibleFences,
+  selectModeHandler,
+  wildcardCovers,
 } from './utils.js';
+
+function parentCovers(handler: ProviderHandler, provider: string | undefined): boolean {
+  if (provider !== undefined && handler.providesFor?.[0] === provider) return true;
+  return wildcardCovers(handler, provider);
+}
+
+/** Exact provider+mode, then the best wildcard of that mode, then an agent-mode fallback for a messages judge. */
+function selectJudgeExecution(
+  handlers: readonly ProviderHandler[],
+  provider: string | undefined,
+  mode: 'agent' | 'messages',
+): { handler: ProviderHandler; collapseMessages: boolean } | undefined {
+  const chosen = selectModeHandler(handlers, provider, mode);
+  if (chosen) return { handler: chosen, collapseMessages: false };
+  if (mode === 'messages') {
+    const agentFallback = selectModeHandler(handlers, provider, 'agent');
+    if (agentFallback) return { handler: agentFallback, collapseMessages: true };
+  }
+  return undefined;
+}
 
 /**
  * Resolves a judge's own AI Config, returning `null` instead of throwing when it
@@ -120,21 +142,11 @@ export const runJudges = async ({
     let judgeHandler: ProviderHandler;
     let collapseMessages = false;
     if (handlers) {
-      const matchesProvider = (h: ProviderHandler) =>
-        h.providesFor?.[0] === judgeProvider || h.providesFor?.[0] === '*';
-
-      const exactMatch = handlers.find((h) => matchesProvider(h) && h.providesFor?.[1] === judgeMode);
-      const agentFallback =
-        judgeMode === 'messages'
-          ? handlers.find((h) => matchesProvider(h) && h.providesFor?.[1] === 'agent')
-          : undefined;
-
-      if (exactMatch) {
-        judgeHandler = exactMatch;
-      } else if (agentFallback) {
-        judgeHandler = agentFallback;
-        collapseMessages = true;
-      } else if (handler.providesFor?.[0] === judgeProvider || handler.providesFor?.[0] === '*') {
+      const selected = selectJudgeExecution(handlers, judgeProvider, judgeMode);
+      if (selected) {
+        judgeHandler = selected.handler;
+        collapseMessages = selected.collapseMessages;
+      } else if (parentCovers(handler, judgeProvider)) {
         judgeHandler = handler;
         collapseMessages = judgeMode === 'messages' && handler.providesFor?.[1] === 'agent';
       } else {
@@ -245,20 +257,10 @@ export const buildJudgeTasks = async ({
 
     let collapseMessages = false;
     if (handlers) {
-      const matchesProvider = (h: ProviderHandler) =>
-        h.providesFor?.[0] === judgeProvider || h.providesFor?.[0] === '*';
-
-      const exactMatch = handlers.find((h) => matchesProvider(h) && h.providesFor?.[1] === judgeMode);
-      const agentFallback =
-        judgeMode === 'messages'
-          ? handlers.find((h) => matchesProvider(h) && h.providesFor?.[1] === 'agent')
-          : undefined;
-
-      if (exactMatch) {
-        collapseMessages = false;
-      } else if (agentFallback) {
-        collapseMessages = true;
-      } else if (handler.providesFor?.[0] === judgeProvider || handler.providesFor?.[0] === '*') {
+      const selected = selectJudgeExecution(handlers, judgeProvider, judgeMode);
+      if (selected) {
+        collapseMessages = selected.collapseMessages;
+      } else if (parentCovers(handler, judgeProvider)) {
         collapseMessages = judgeMode === 'messages' && handler.providesFor?.[1] === 'agent';
       } else {
         // No compatible handler — skip, same as runJudges.
@@ -310,16 +312,9 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
     configKey,
   } = task;
 
-  const matchesProvider = (h: ProviderHandler) => h.providesFor?.[0] === judgeProvider || h.providesFor?.[0] === '*';
-
-  const exactMatch = handlers.find((h) => matchesProvider(h) && h.providesFor?.[1] === judgeMode);
-  const agentFallback =
-    judgeMode === 'messages' && !exactMatch
-      ? handlers.find((h) => matchesProvider(h) && h.providesFor?.[1] === 'agent')
-      : undefined;
-
-  const judgeHandler = exactMatch ?? agentFallback;
-  if (!judgeHandler) return null;
+  const selected = selectJudgeExecution(handlers, judgeProvider, judgeMode);
+  if (!selected) return null;
+  const judgeHandler = selected.handler;
 
   const effectiveConfig = collapseMessages ? collapseMessagesToInstructions(judgeConfig) : judgeConfig;
 

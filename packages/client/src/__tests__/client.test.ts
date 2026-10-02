@@ -371,6 +371,92 @@ describe('config() — multi-handler routing', () => {
     await expect(config({ key: 'flag', handler: [wildcardHandler] }).invoke('q', mockContext)).rejects.toThrow();
   });
 
+  const scoped = (providers: string[], output: string): ProviderHandler => {
+    const handler: ProviderHandler = vi.fn().mockResolvedValue({ output, usage: {} });
+    handler.providesFor = ['*', 'messages'];
+    handler.providers = providers;
+    return handler;
+  };
+
+  it('selects a scoped wildcard when the provider is listed', async () => {
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: { ...mockConfig, provider: { name: 'Bedrock' } },
+      meta: mockMeta,
+    });
+    const handler = scoped(['Bedrock'], 'from bedrock');
+    const result = await config({ key: 'flag', handler: [handler] }).invoke('q', mockContext);
+    expect(result.response).toBe('from bedrock');
+  });
+
+  it('rejects a scoped wildcard when the provider is not listed', async () => {
+    const handler = scoped(['Bedrock'], 'from bedrock');
+    await expect(config({ key: 'flag', handler: [handler] }).invoke('q', mockContext)).rejects.toThrow(/OpenAI/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('routes each provider to its own scoped wildcard', async () => {
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: { ...mockConfig, provider: { name: 'Anthropic' } },
+      meta: mockMeta,
+    });
+    const bedrock = scoped(['Bedrock'], 'bedrock');
+    const anthropic = scoped(['Anthropic'], 'anthropic');
+    const result = await config({ key: 'flag', handler: [bedrock, anthropic] }).invoke('q', mockContext);
+    expect(result.response).toBe('anthropic');
+    expect(bedrock).not.toHaveBeenCalled();
+  });
+
+  it('prefers an exact provider handler over a scoped wildcard', async () => {
+    const wildcard = scoped(['OpenAI'], 'scoped');
+    const explicit = makeHandler('exact');
+    const result = await config({ key: 'flag', handler: [wildcard, explicit] }).invoke('q', mockContext);
+    expect(result.response).toBe('exact');
+    expect(wildcard).not.toHaveBeenCalled();
+  });
+
+  it('falls back to an unscoped wildcard when no scoped list matches', async () => {
+    const bedrock = scoped(['Bedrock'], 'bedrock');
+    const unscoped: ProviderHandler = vi.fn().mockResolvedValue({ output: 'any', usage: {} });
+    unscoped.providesFor = ['*', 'messages'];
+    const result = await config({ key: 'flag', handler: [bedrock, unscoped] }).invoke('q', mockContext);
+    expect(result.response).toBe('any');
+    expect(bedrock).not.toHaveBeenCalled();
+  });
+
+  it('prefers the shorter provider list when both match', async () => {
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: { ...mockConfig, provider: { name: 'Bedrock' } },
+      meta: mockMeta,
+    });
+    const wide = scoped(['Bedrock', 'Anthropic'], 'wide');
+    const narrow = scoped(['Bedrock'], 'narrow');
+    const result = await config({ key: 'flag', handler: [wide, narrow] }).invoke('q', mockContext);
+    expect(result.response).toBe('narrow');
+    expect(wide).not.toHaveBeenCalled();
+  });
+
+  it('keeps the earlier handler when overlapping lists are the same length', async () => {
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: { ...mockConfig, provider: { name: 'Bedrock' } },
+      meta: mockMeta,
+    });
+    const earlier = scoped(['Bedrock', 'Gemini'], 'earlier');
+    const later = scoped(['Bedrock', 'Anthropic'], 'later');
+    const result = await config({ key: 'flag', handler: [earlier, later] }).invoke('q', mockContext);
+    expect(result.response).toBe('earlier');
+    expect(later).not.toHaveBeenCalled();
+  });
+
+  it('a scoped wildcard does not match a different mode', async () => {
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: { ...mockConfig, provider: { name: 'Bedrock' } },
+      meta: { ...mockMeta, mode: 'agent' as const },
+    });
+    const handler = scoped(['Bedrock'], 'bedrock');
+    await expect(config({ key: 'flag', handler: [handler] }).invoke('q', mockContext)).rejects.toThrow(/Bedrock/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('throws a mode-specific error when provider matches but mode does not', async () => {
     const messagesHandler = makeHandler();
     (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({

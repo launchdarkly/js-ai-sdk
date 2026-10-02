@@ -310,6 +310,15 @@ describe('graph().invoke()', () => {
     await expect(graph('graph-flag', {}).invoke('hi', mockContext)).rejects.toThrow(/handlers/i);
   });
 
+  it('does not run a scoped wildcard for a provider outside its list', async () => {
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+    handler.providesFor = ['*', 'messages'];
+    handler.providers = ['Bedrock'];
+    await expect(graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext)).rejects.toThrow(/OpenAI/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('visits all nodes and accumulates usage', async () => {
     setupTwoNodeGraph();
     const handler = makeHandler();
