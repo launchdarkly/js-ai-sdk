@@ -167,6 +167,49 @@ describe('vercelEvaluate', () => {
     );
   });
 
+  it('forwards the model.parameters evaluate accepts and drops generation settings it does not', async () => {
+    serverMocks.inspectConfig.mockResolvedValue({
+      enabled: true,
+      config: {
+        ...config,
+        model: {
+          ...config.model,
+          parameters: {
+            max_retries: 2,
+            headers: { 'x-config': '1' },
+            provider_options: { typesafe: { rounding_mode: 'nearest' } },
+            temperature: 0.2,
+            max_tokens: 10,
+            abort_signal: 'bad',
+          },
+        },
+      },
+      meta,
+    });
+    await vercelEvaluate('flag', 'state', context, { questions });
+    const request = aiMocks.experimental_evaluate.mock.calls[0][0];
+    expect(request).toMatchObject({
+      maxRetries: 2,
+      headers: { 'x-config': '1' },
+      providerOptions: { typesafe: { rounding_mode: 'nearest' } },
+    });
+    for (const key of ['temperature', 'max_tokens', 'maxOutputTokens', 'abortSignal', 'abort_signal', 'max_retries']) {
+      expect(request).not.toHaveProperty(key);
+    }
+  });
+
+  it('lets options passed to vercelEvaluate win over model.parameters', async () => {
+    serverMocks.inspectConfig.mockResolvedValue({
+      enabled: true,
+      config: { ...config, model: { ...config.model, parameters: { max_retries: 2, headers: { 'x-config': '1' } } } },
+      meta,
+    });
+    await vercelEvaluate('flag', 'state', context, { questions, maxRetries: 0, headers: { 'x-caller': '1' } });
+    expect(aiMocks.experimental_evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({ maxRetries: 0, headers: { 'x-caller': '1' } }),
+    );
+  });
+
   it('uses evaluated provider telemetry, preserves the model id, and disables runtime telemetry', async () => {
     await vercelEvaluate('flag', 'state', context, { questions });
     expect(spanMocks.startActiveSpan).toHaveBeenCalledWith('evaluate', expect.any(Function));

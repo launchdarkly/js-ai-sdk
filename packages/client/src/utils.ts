@@ -567,6 +567,11 @@ export function normalizeModelParameters(parameters: unknown): Record<string, un
  * the request shape it maps onto, checked at compile time against the SDK's own base request type
  * so the list cannot silently drift; this helper only owns the picking loop.
  *
+ * The Vercel AI SDK handlers (`vercel-messages`, `vercel-agents`) use it too, for a different
+ * reason: the AI SDK reads a fixed set of camelCase call settings and drops anything else without
+ * an error, so their allowlist is the list of settings that can take effect at all, checked at
+ * compile time against the AI SDK's own call-settings types.
+ *
  * The four framework handlers are the opposite case — their frameworks take an open-ended options
  * bag and already ignore keys they do not recognize, so narrowing it to a key list would silently
  * drop settings that work today. They use `normalizeModelParameters` instead, which forwards the
