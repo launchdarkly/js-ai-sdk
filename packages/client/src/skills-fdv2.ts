@@ -1432,10 +1432,15 @@ export type FDv2SkillStoreOptions = {
    * ({@link DEFAULT_STREAM_READ_TIMEOUT_MS}).
    */
   readonly readTimeoutMs?: number;
+  /**
+   * The first retry delay, in milliseconds; positive, finite, and no greater
+   * than `maxBackoffMs`. Default `1_000`.
+   */
   readonly initialBackoffMs?: number;
   /**
-   * Caps every retry delay, including `Retry-After`. Recoverable failures are
-   * retried for the life of the store; only a fatal status stops delivery.
+   * Caps every retry delay, including `Retry-After`; positive and finite.
+   * Default `30_000`. Recoverable failures are retried for the life of the
+   * store; only a fatal status stops delivery.
    */
   readonly maxBackoffMs?: number;
   /** Replaces the built-in `fetch` transport. Intended for testing. */
@@ -1517,6 +1522,21 @@ export class FDv2SkillStore implements SkillStore {
     }
     this.initialBackoffMs = options.initialBackoffMs ?? 1_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
+    // With no failure bound these two are the only limit on the retry loop: a
+    // zero, negative or `NaN` delay is no wait at all, against a failing server.
+    for (const [name, value] of [
+      ['initialBackoffMs', this.initialBackoffMs],
+      ['maxBackoffMs', this.maxBackoffMs],
+    ] as const) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+        throw new Error(`${name} must be a positive, finite number, got ${String(value)}`);
+      }
+    }
+    if (this.initialBackoffMs > this.maxBackoffMs) {
+      throw new Error(
+        `initialBackoffMs (${this.initialBackoffMs}) must not exceed maxBackoffMs (${this.maxBackoffMs})`,
+      );
+    }
     const baseUri = requireHttpsUri(options.baseUri ?? DEFAULT_BASE_URI);
     // A lone `baseUri` serves both endpoints.
     const streamUri = requireHttpsUri(

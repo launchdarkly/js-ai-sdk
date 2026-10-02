@@ -2252,7 +2252,7 @@ describe('failure handling', () => {
     const store = new FDv2SkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalMs: 10_000,
-      initialBackoffMs: 5_000,
+      initialBackoffMs: 20,
       maxBackoffMs: 20,
       requester,
     });
@@ -3930,6 +3930,39 @@ describe('transport contract', () => {
   ])('rejects a non-positive or non-finite pollIntervalMs (%s)', (value) => {
     // `NaN` is the case a `<= 0` guard misses.
     expect(() => new FDv2SkillStore(SDK_KEY, { mode: 'poll', pollIntervalMs: value })).toThrow(/pollIntervalMs/);
+  });
+
+  describe.each(['initialBackoffMs', 'maxBackoffMs'] as const)('%s', (option) => {
+    // With no failure bound, the backoff options are the only limit on the
+    // retry loop: a zero or negative delay against a failing server is a
+    // reconnect as fast as the network allows, for the life of the process.
+    it.each([
+      0,
+      -1,
+      -5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ])('rejects a non-positive or non-finite value (%s)', (value) => {
+      // The other option is set out of the way, so only the one under test can
+      // be what the constructor refuses.
+      const other = option === 'initialBackoffMs' ? { maxBackoffMs: 30_000 } : { initialBackoffMs: 1 };
+      expect(() => new FDv2SkillStore(SDK_KEY, { ...other, [option]: value })).toThrow(new RegExp(option));
+    });
+  });
+
+  it('rejects an initialBackoffMs greater than maxBackoffMs', () => {
+    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffMs: 5_000, maxBackoffMs: 20 })).toThrow(
+      /initialBackoffMs.*must not exceed maxBackoffMs/,
+    );
+    // Either one alone can produce the inversion against the other's default.
+    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffMs: 60_000 })).toThrow(/must not exceed/);
+    expect(() => new FDv2SkillStore(SDK_KEY, { maxBackoffMs: 500 })).toThrow(/must not exceed/);
+  });
+
+  it('accepts an initialBackoffMs equal to maxBackoffMs, and the defaults', () => {
+    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffMs: 250, maxBackoffMs: 250 })).not.toThrow();
+    expect(() => new FDv2SkillStore(SDK_KEY)).not.toThrow();
   });
 
   it('rejects a non-string credential', () => {
