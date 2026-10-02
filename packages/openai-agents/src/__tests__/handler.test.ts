@@ -598,8 +598,8 @@ describe('createOpenAIAgentHandler', () => {
   it('yields chunk events from raw model text delta events', async () => {
     const streamedResult = {
       [Symbol.asyncIterator]: async function* () {
-        yield { type: 'raw_model_stream_event', data: { type: 'response.output_text.delta', delta: 'Hello' } };
-        yield { type: 'raw_model_stream_event', data: { type: 'response.output_text.delta', delta: ' world' } };
+        yield { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: 'Hello' } };
+        yield { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: ' world' } };
         yield { type: 'run_item_stream_event', item: {} };
       },
       state: { usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 } },
@@ -615,7 +615,7 @@ describe('createOpenAIAgentHandler', () => {
   it('yields a done event with correct usage', async () => {
     const streamedResult = {
       [Symbol.asyncIterator]: async function* () {
-        yield { type: 'raw_model_stream_event', data: { type: 'response.output_text.delta', delta: 'hi' } };
+        yield { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: 'hi' } };
       },
       state: { usage: { inputTokens: 4, outputTokens: 6, totalTokens: 10 } },
       finalOutput: 'hi',

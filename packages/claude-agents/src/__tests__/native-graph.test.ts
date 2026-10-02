@@ -167,6 +167,11 @@ describe('toClaudeAgents', () => {
       expect.objectContaining({ configKey: 'leaf' }),
       1,
     );
+    const leafNodes = mockTrack.mock.calls.filter(
+      (c: unknown[]) => c[0] === '$ld:ai:graph:node' && (c[2] as { nodeKey?: string }).nodeKey === 'leaf',
+    );
+    expect(leafNodes).toHaveLength(1);
+    expect(leafNodes[0][3]).toBe(1);
   });
 
   // T8: invocation_success tracking
@@ -181,6 +186,18 @@ describe('toClaudeAgents', () => {
       { kind: 'user', key: 'user-1' },
       expect.any(Object),
       1,
+    );
+    expect(mockTrack).toHaveBeenCalledWith(
+      '$ld:ai:graph:node',
+      { kind: 'user', key: 'user-1' },
+      expect.objectContaining({ nodeKey: 'root', index: 0 }),
+      1,
+    );
+    expect(mockTrack).not.toHaveBeenCalledWith(
+      '$ld:ai:graph:path',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
     );
   });
 

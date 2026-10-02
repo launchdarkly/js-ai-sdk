@@ -151,8 +151,8 @@ export const toLangGraph = (
         }));
     const ldContext = opts?.context;
 
-    return trace.getTracer('@launchdarkly/ai-langchain-agents').startActiveSpan('ld.ai.graph', async (span) => {
-      span.setAttribute('ld.ai.graph.key', def.key);
+    return trace.getTracer('@launchdarkly/ai-langchain-agents').startActiveSpan('launchdarkly.graph', async (span) => {
+      span.setAttribute('launchdarkly.graph.key', def.key);
       const startTime = Date.now();
       const runId = crypto.randomUUID();
 
@@ -194,7 +194,14 @@ export const toLangGraph = (
 
         // Node function: run the model, track LD events, return state update
         const nodeFunction = async (state: WorkflowState) => {
-          path.push(node.key);
+          if (!path.includes(node.key)) {
+            const index = path.length;
+            path.push(node.key);
+            if (ldContext) {
+              const nodeTrackData = makeNodeTrackData(node, def.key, runId);
+              getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: node.key, index }, 1);
+            }
+          }
           const nodeStartTime = Date.now();
 
           const systemPrompt = buildSystemPrompt(node, variables);
@@ -315,7 +322,7 @@ export const toLangGraph = (
             : ''
         : '';
 
-      span.setAttribute('ld.ai.graph.path', path.join('->'));
+      span.setAttribute('launchdarkly.graph.path', path.join('->'));
       span.setAttribute('gen_ai.usage.input_tokens', totalUsage.input);
       span.setAttribute('gen_ai.usage.output_tokens', totalUsage.output);
       span.setAttribute('gen_ai.usage.total_tokens', totalUsage.total);
@@ -325,7 +332,6 @@ export const toLangGraph = (
         const rootTrackData = makeNodeTrackData(def.root!, def.key, runId);
         getClient().track('$ld:ai:graph:duration:total', ldContext, rootTrackData, duration);
         getClient().track('$ld:ai:graph:total_tokens', ldContext, rootTrackData, totalUsage.total);
-        getClient().track('$ld:ai:graph:path', ldContext, rootTrackData, path.length);
         getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
       }
 

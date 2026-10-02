@@ -484,32 +484,6 @@ export function setLdSpanAttributes(span: Span, variables: Record<string, unknow
 }
 
 /**
- * Sets OpenLLMetry-style indexed prompt attributes on a span.
- * Gonfalon's LLM Summary tab reads `gen_ai.prompt.N.role` / `.content`
- * (attribute-based, takes precedence over span events).
- */
-export function setOpenLLMetryPrompt(span: Span, messages: Array<{ role: string; content: string }>): void {
-  for (let i = 0; i < messages.length; i++) {
-    span.setAttribute(`gen_ai.prompt.${i}.role`, messages[i].role);
-    span.setAttribute(`gen_ai.prompt.${i}.content`, messages[i].content);
-  }
-}
-
-/**
- * Sets OpenLLMetry-style indexed completion attributes. Gonfalon reads
- * `gen_ai.completion.0.role` / `.content`.
- *
- * The token aliases this used to write moved to `setUsageSpanAttributes`, the one place usage is
- * written. They were computed at each call site straight off the provider's `input_tokens`, which on
- * Anthropic excludes cached tokens — so the alias disagreed with `gen_ai.usage.input_tokens` on the
- * same span, and Gonfalon prefers the alias. One writer, one number.
- */
-export function setOpenLLMetryCompletion(span: Span, completion: string): void {
-  span.setAttribute('gen_ai.completion.0.role', 'assistant');
-  span.setAttribute('gen_ai.completion.0.content', completion);
-}
-
-/**
  * When only an agent handler is available for a messages-mode config, collapse
  * all messages into a single `instructions` string so the agent handler receives
  * a well-formed prompt without requiring a separate messages client to be

@@ -78,7 +78,7 @@ export const wrapToolHandlers = (
  * from every `$ld:ai:*` event payload.
  *
  * @internal Exported for the client package's own tests; adapters should use
- * {@link makeNodeTrackData} instead.
+ * {@link makeRunTrackData} or {@link makeNodeTrackData} instead.
  */
 export const modelStampsFromMeta = (
   meta: VariationMeta | null | undefined,
@@ -130,6 +130,35 @@ function tryGetEnvironmentId(): string | undefined {
   }
 }
 
+/**
+ * Builds the tracking payload for one run of an AI Config: a fresh run ID, the
+ * variation identity, `_ldMeta` model stamps, and the environment ID that the
+ * Monitoring tab needs to correlate traces. Adapters that run a config outside
+ * `config().invoke()` (e.g. `vercelEvaluate`) use this so their events and spans
+ * match the SDK's own.
+ */
+export const makeRunTrackData = ({
+  configKey,
+  config,
+  meta,
+  graphKey,
+}: {
+  configKey: string;
+  config: AiConfigRep;
+  meta: VariationMeta | null | undefined;
+  graphKey?: string;
+}): TrackData => ({
+  runId: crypto.randomUUID(),
+  configKey,
+  variationKey: meta?.variationKey ?? '',
+  version: meta?.version ?? 1,
+  modelName: config.model.name ?? '',
+  providerName: config.provider?.name ?? '',
+  ...modelStampsFromMeta(meta),
+  ...(graphKey ? { graphKey } : {}),
+  environmentId: tryGetEnvironmentId(),
+});
+
 export const executeAndTrack = async ({
   configKey,
   config,
@@ -153,17 +182,7 @@ export const executeAndTrack = async ({
   graphKey?: string;
   history?: Message[];
 }): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData }> => {
-  const trackData: TrackData = {
-    runId: crypto.randomUUID(),
-    configKey,
-    variationKey: meta.variationKey ?? '',
-    version: meta.version ?? 1,
-    modelName: config.model.name ?? '',
-    providerName: config.provider?.name ?? '',
-    ...modelStampsFromMeta(meta),
-    ...(graphKey ? { graphKey } : {}),
-    environmentId: tryGetEnvironmentId(),
-  };
+  const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
   const trackedToolHandlers = wrapToolHandlers(toolHandlers, userContext, trackData);
 
@@ -234,17 +253,7 @@ export async function* executeAndStream({
   graphKey?: string;
   history?: Message[];
 }): AsyncGenerator<ExecuteStreamEvent> {
-  const trackData: TrackData = {
-    runId: crypto.randomUUID(),
-    configKey,
-    variationKey: meta.variationKey ?? '',
-    version: meta.version ?? 1,
-    modelName: config.model.name ?? '',
-    providerName: config.provider?.name ?? '',
-    ...modelStampsFromMeta(meta),
-    ...(graphKey ? { graphKey } : {}),
-    environmentId: tryGetEnvironmentId(),
-  };
+  const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
   const trackedToolHandlers = wrapToolHandlers(toolHandlers, userContext, trackData);
   const mergedVariables = { ...variables, ldContext: { ...userContext }, __ld: trackData };
