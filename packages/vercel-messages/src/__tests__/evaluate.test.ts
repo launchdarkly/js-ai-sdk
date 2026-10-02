@@ -178,6 +178,22 @@ describe('vercelEvaluate', () => {
     expect(aiMocks.experimental_evaluate.mock.calls[0][0]).not.toHaveProperty('experimental_telemetry');
   });
 
+  it('tags the span with the run identity so LaunchDarkly can link the trace to the config', async () => {
+    const result = await vercelEvaluate('refund-classifier', 'state', context, { questions });
+    expect(spanMocks.root.setAttribute).toHaveBeenCalledWith('launchdarkly.operation.type', 'gen_ai');
+    expect(spanMocks.root.setAttribute).toHaveBeenCalledWith('launchdarkly.config.key', 'refund-classifier');
+    expect(spanMocks.root.setAttribute).toHaveBeenCalledWith('launchdarkly.variation.key', 'var-1');
+    expect(spanMocks.root.setAttribute).toHaveBeenCalledWith('launchdarkly.run.id', result.trackData.runId);
+    expect(spanMocks.root.setAttribute).toHaveBeenCalledWith('context.contextKeys.user', 'user-1');
+    expect(spanMocks.root.addEvent).toHaveBeenCalledWith(
+      'feature_flag',
+      expect.objectContaining({
+        'feature_flag.key': 'refund-classifier',
+        'feature_flag.provider.name': 'LaunchDarkly',
+      }),
+    );
+  });
+
   it('records state, questions, and answers when captureContent is on', async () => {
     await vercelEvaluate('flag', 'issued a refund', context, { questions, captureContent: true });
     expect(spanMocks.root.setAttribute).toHaveBeenCalledWith(

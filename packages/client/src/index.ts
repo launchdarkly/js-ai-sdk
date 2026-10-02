@@ -41,7 +41,7 @@ export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';
 export { registerAiSdkPackage } from './sdk-info.js';
-export { makeGraphTrackData, makeNodeTrackData } from './tracking.js';
+export { makeGraphTrackData, makeNodeTrackData, makeRunTrackData } from './tracking.js';
 export type {
   ConfigArgs,
   ConfigMessage,

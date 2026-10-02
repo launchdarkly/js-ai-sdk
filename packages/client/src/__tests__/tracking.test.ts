@@ -17,6 +17,7 @@ import {
   executeAndTrack,
   makeGraphTrackData,
   makeNodeTrackData,
+  makeRunTrackData,
   modelStampsFromMeta,
   wrapToolHandlers,
 } from '../tracking.js';
@@ -579,5 +580,60 @@ describe('makeGraphTrackData', () => {
       graphKey: 'graph-key',
       environmentId: 'env-abc',
     });
+  });
+});
+
+// ─── makeRunTrackData ────────────────────────────────────────────────────────
+
+describe('makeRunTrackData', () => {
+  const config = { model: { name: 'gpt-4o' }, provider: { name: 'OpenAI' }, instructions: 'x' } as any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getClient).mockReturnValue({
+      _featureStore: { getInitMetaData: () => ({ environmentId: 'env-abc' }) },
+    } as any);
+  });
+
+  it('builds the run payload with model stamps, graphKey, and the environment id', () => {
+    const td = makeRunTrackData({
+      configKey: 'my-flag',
+      config,
+      meta: { variationKey: 'v1', version: 2, modelKey: 'my-model', modelVersion: 3 },
+      graphKey: 'graph-key',
+    });
+    expect(td).toEqual({
+      runId: expect.any(String),
+      configKey: 'my-flag',
+      variationKey: 'v1',
+      version: 2,
+      modelName: 'gpt-4o',
+      providerName: 'OpenAI',
+      modelKey: 'my-model',
+      modelVersion: 3,
+      graphKey: 'graph-key',
+      environmentId: 'env-abc',
+    });
+  });
+
+  it('gives each call a fresh run id', () => {
+    const args = { configKey: 'my-flag', config, meta: { variationKey: 'v1' } };
+    expect(makeRunTrackData(args).runId).not.toBe(makeRunTrackData(args).runId);
+  });
+
+  it('falls back to defaults when meta is null', () => {
+    const td = makeRunTrackData({ configKey: 'my-flag', config, meta: null });
+    expect(td.variationKey).toBe('');
+    expect(td.version).toBe(1);
+    expect('modelKey' in td).toBe(false);
+    expect('graphKey' in td).toBe(false);
+  });
+
+  it('leaves environmentId undefined when the client cannot provide one', () => {
+    vi.mocked(getClient).mockImplementation(() => {
+      throw new Error('not initialized');
+    });
+    const td = makeRunTrackData({ configKey: 'my-flag', config, meta: { variationKey: 'v1' } });
+    expect(td.environmentId).toBeUndefined();
   });
 });
