@@ -841,12 +841,60 @@ describe('protocol reader', () => {
     expect(outcome.fatal).toBeTruthy();
   });
 
-  it('holds everything and commits on transfer-none', () => {
+  it('holds everything and commits nothing on transfer-none', () => {
+    // `none` is the server saying the payload held is current, so nothing is
+    // applied and nothing is committed. It is a *completed exchange* — which is
+    // what breaks a row of failures, and what lets the next request offer the
+    // body's etag — but it is not a payload. Publishing one would make
+    // `isInitialized()` true over whatever the store happens to hold, and that is
+    // the fact `writeSkills('*')` prunes on.
     const held = new SkillObjectSet();
     const reader = new ProtocolReader(held);
     drive(reader, fullPayload([['put-object', putSkill()]]));
-    drive(reader, events(['server-intent', serverIntent('none')], ['payload-transferred', transferred('basis-2')]));
+    const [intent, outcome] = drive(
+      reader,
+      events(['server-intent', serverIntent('none')], ['payload-transferred', transferred('basis-2')]),
+    );
     expect(held.size).toBe(1);
+    expect(intent?.healthy).toBe(true);
+    expect(outcome?.committed).not.toBe(true);
+    // The intent event above already carried the up-to-date answer; the transfer
+    // completing it adds nothing to report.
+    expect(outcome?.healthy).not.toBe(true);
+    // Nor does it move the resume point. `basis-2` names a payload this store was
+    // never sent, and resuming from it would ask every later connection for
+    // changes since a payload it never applied.
+    expect(outcome?.basis).toBeNull();
+  });
+
+  it('does not report a commit for a transfer that applied nothing', () => {
+    // Three shapes reach `payload-transferred` with no pending set to apply: an
+    // intent code this SDK does not recognise, a `none` intent, and a lone
+    // transfer under no intent at all. None of them applied anything, so none of
+    // them claims anything — neither a commit, which is what publishes the first
+    // payload `writeSkills('*')` prunes on, nor an up-to-date answer, which only
+    // the server can give and only the `none` intent does, on its own event.
+    //
+    // The transfer is still a wire fact, counted either way.
+    const shapes = [
+      events(
+        ['server-intent', serverIntent('xfer-future')],
+        ['put-object', putSkill()],
+        ['payload-transferred', transferred('basis-1')],
+      ),
+      events(['server-intent', serverIntent('none')], ['payload-transferred', transferred('basis-1')]),
+      events(['payload-transferred', transferred('basis-1')]),
+    ];
+    for (const shape of shapes) {
+      const held = new SkillObjectSet();
+      const reader = new ProtocolReader(held);
+      const outcome = drive(reader, shape).at(-1);
+      expect(outcome?.committed).not.toBe(true);
+      expect(outcome?.healthy).not.toBe(true);
+      expect(outcome?.basis).toBeNull();
+      expect(held.size).toBe(0);
+      expect(reader.diagnostics.payloadsTransferred).toBe(1);
+    }
   });
 
   it('treats an object arriving with no intent as a delta', () => {
@@ -1362,15 +1410,59 @@ describe('polling against the endpoint', () => {
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
     expect(store.diagnostics.payloadsTransferred).toBe(1);
     expect(store.failed).toBeNull();
+    // A payload arrived, and a 304 does not take that back.
+    expect(store.isInitialized()).toBe(true);
   });
 
-  it('releases waitForSkills on a 304 before any payload', async () => {
-    // A reconnect with a cached basis has nothing to transfer; boot must not
-    // block on a payload the server has no reason to send.
+  it('confirms a payload on a 304 but cannot establish one', async () => {
+    // A 304 answers for content this store already holds, and the etag that asked
+    // for it is only ever adopted from a body that completed an exchange.
+    // Reaching one with nothing held therefore takes a server answering a request
+    // that carried no etag at all, and that 304 says nothing about a payload this
+    // store never received.
+    //
+    // Releasing `waitForSkills` on it would make `isInitialized()` true over an
+    // empty committed set — the fact `writeSkills('*')` prunes on — so a reconcile
+    // that raced delivery would delete every managed skill on disk instead of
+    // reporting the retrieval unavailable (§3.21). Failing closed costs a boot
+    // that is genuinely waiting nothing it was not already waiting for.
     endpoint.queuePoll([], { status: 304 });
     const store = pollStore();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills(500)).toBe(false);
+    expect(store.isInitialized()).toBe(false);
+    // Not a failure either: the poll was answered, and the store is still asking.
+    expect(store.failed).toBeNull();
+    expect(endpoint.requests[0].ifNoneMatch).toBeUndefined();
+  });
+
+  it('does not lend the etag of an intent it cannot apply to a 304', async () => {
+    // The chain this closes: a body under a future intent code announces and
+    // transfers a payload this SDK cannot apply, its etag is adopted as though the
+    // body had been applied in full, and the next 304 reports the empty store it
+    // left behind as current. That store is initialized, healthy, and authorizes a
+    // prune of every managed skill on disk, with nothing in the 304 to notice it
+    // on.
+    //
+    // An etag is adopted only from a body that completed an exchange, so the
+    // second request carries none and the endpoint's standing 304 cannot answer
+    // for content that never arrived.
+    endpoint.queuePoll(
+      events(
+        ['server-intent', serverIntent('xfer-future')],
+        ['put-object', putSkill()],
+        ['payload-transferred', transferred('basis-1')],
+      ),
+      { etag: 'W/"v1"' },
+    );
+    const store = pollStore();
+    store.start();
+    expect(await waitUntil(() => endpoint.requests.length >= 2)).toBe(true);
+    expect(store.isInitialized()).toBe(false);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).toBeNull();
+    expect(endpoint.requests[1].ifNoneMatch).toBeUndefined();
+    // Nor is the selector of a payload it could not apply a resume point.
+    expect(endpoint.requests.slice(0, 2).map((r) => r.query.basis)).toEqual([undefined, undefined]);
   });
 
   it('yields only the skill from a mixed payload', async () => {
@@ -3337,12 +3429,22 @@ describe('lifecycle', () => {
     expect(delivering.isInitialized()).toBe(true);
   });
 
-  it('a 304 counts as initialized — the payload held is confirmed current', async () => {
+  it('stays initialized across a 304 that confirms the payload held', async () => {
+    // The 304 the store can actually reach: it offers an etag earned by a body it
+    // applied in full, and the answer confirms that content is still current. A
+    // payload arrived, and a 304 does not take that back.
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]], 'basis-1'), { etag: 'W/"v1"' });
+    // The unconditional poll that follows a commit, answered `none`: a completed
+    // exchange, so its etag is the one the third request gets to offer.
+    endpoint.queuePoll(events(['server-intent', serverIntent('none')]), { etag: 'W/"v2"' });
     endpoint.queuePoll([], { status: 304 });
     const store = pollStore();
     store.start();
     expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await waitUntil(() => endpoint.requests.length >= 3)).toBe(true);
+    expect(endpoint.requests[2].ifNoneMatch).toBe('W/"v2"');
     expect(store.isInitialized()).toBe(true);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
 
   it('times out waitForSkills rather than hanging', async () => {
