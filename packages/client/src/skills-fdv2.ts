@@ -984,9 +984,8 @@ export class ProtocolReader {
     // and the transfer that completes it still names a payload whose selector
     // must not become the resume point if it is not the payload skills arrive on.
     const foreign = this.isForeignPayload(payloadId);
-    // Whether this transfer moved the committed set. A `none` intent builds no
-    // pending set, nor does an intent code this SDK does not recognise, and a
-    // foreign payload's contents are declined below.
+    // A `none` intent builds no pending set, nor does an intent code this SDK
+    // does not recognise, and a foreign payload's contents are declined below.
     const applied = !foreign && this.pending !== null;
     if (foreign) {
       this.warnForeignPayload(payloadId);
@@ -1019,33 +1018,12 @@ export class ProtocolReader {
     this.changes = [];
     this.diagnostics.payloadsTransferred += 1;
     if (!applied) {
-      // A transfer that applied nothing claims nothing: not a commit, and not an
-      // up-to-date answer either.
-      //
-      // Not a commit, because a commit publishes a first payload, and
-      // `isInitialized()` is the fact `writeSkills('*')` prunes on. An empty
-      // committed set reported as a payload reads as an environment whose every
-      // skill was revoked, which deletes the last known good copy on disk.
-      //
-      // Not up to date either, because only the server can say that, and only the
-      // `none` intent does — on its own event, which has already reported it by
-      // the time a transfer completing it arrives. An intent code this SDK does
-      // not recognise says the opposite: the body carried objects this reader
-      // dropped, so the content held is *not* what that body describes, and an
-      // etag adopted from it would let a 304 report the store as current for as
-      // long as the server kept re-announcing it. Claiming nothing is what leaves
-      // the poll unconditional, so the body keeps arriving and keeps being visible
-      // — counted under `objectsIgnored`, with the warning that names the intent.
-      //
-      // The selector goes the same way: resuming from a payload this store never
-      // applied would ask every later connection for changes since content it
-      // does not hold, with every diagnostic reading healthy.
-      //
-      // The transfer is still a wire fact: `payloadsTransferred` counts it above
-      // either way.
-      //
-      // `changes` and `basis` are stated rather than left off: Python's defaults
-      // make them an empty list and null, and this is the same outcome object.
+      // Nothing applied, so nothing to report — and in particular not a commit,
+      // because a commit publishes the first payload, and `isInitialized()` (what
+      // `writeSkills('*')` authorizes a prune on) must not go true over a store
+      // that received nothing. Not up to date either: only the `none` intent says
+      // that, on its own event. The selector is withheld too — it names a payload
+      // never applied.
       return { changes: [], basis: null };
     }
     return {
@@ -2271,15 +2249,10 @@ export class FDv2SkillStore implements SkillStore {
     const etag = this.etagBasis === basis ? this.etag : null;
     const result = await this.requester.poll(basis, etag, signal);
     if (result.notModified) {
-      // A 304 *confirms* the payload this store holds. It cannot establish one,
-      // and it is not a first payload: the exchange it stands in for is the
-      // `none` intent, which does not publish one either (see `apply`), and a 304
-      // carries nothing a store holding nothing could be initialized from.
-      // Publishing here would make `isInitialized()` true over an empty committed
-      // set, which is what authorizes `writeSkills('*')` to prune, so a 304
-      // answering a request that carried no etag — the only way to reach one with
-      // nothing held — would delete the last known good copy on disk. `run`
-      // counts the poll as a healthy answer either way.
+      // A 304 confirms the payload this store holds; it cannot establish one.
+      // `isInitialized()` stays false until something commits, so a store that
+      // has received nothing never authorizes a prune of the files on disk. `run`
+      // counts the poll as a healthy answer.
       return;
     }
     let completed = false;
@@ -2289,19 +2262,11 @@ export class FDv2SkillStore implements SkillStore {
       this.dispatch(outcome);
     }
     if (!completed) {
-      // Adopted only from a body that completed an exchange: one that committed a
-      // payload, or a `none` intent, which is the server saying the content held
-      // is what the etag describes. A body that threw partway — an `error` or
-      // `goodbye` after an announced transfer — never reaches here. One that
-      // merely transferred nothing, under an intent code this SDK does not
-      // recognise, reaches here having committed nothing: its etag describes a
-      // body whose contents this store does not hold, and keeping it would let
-      // the next `304` report a store missing that payload as current and
-      // healthy.
-      //
-      // The etag already held is left alone rather than cleared: it was earned by
-      // a body that did complete, and it still validates that content for as long
-      // as the basis it was paired with holds.
+      // An etag describes the body it came with, so it is adopted only when that
+      // body is also what the store now holds: a commit, or a `none` intent. A
+      // transfer this SDK could not apply is neither, and keeping its etag would
+      // let the next 304 confirm content never applied. Any etag already held
+      // stays valid, so it is left alone, not cleared.
       return;
     }
     this.etag = result.etag;
