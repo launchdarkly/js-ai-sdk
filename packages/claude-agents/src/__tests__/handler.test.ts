@@ -56,6 +56,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 
 import { type Message, NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
 import { buildPrompt, buildToolMCP, createClaudeAgentsHandler, partitionTools } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -242,20 +243,86 @@ describe('createClaudeAgentsHandler', () => {
     expect(options.fallbackModel).toBe('claude-haiku');
   });
 
-  it('forwards unrecognized model.parameters keys through to query options rather than dropping them', async () => {
-    // The LaunchDarkly UI already constrains which keys can be saved, so an unsupported key
-    // reaching query() is expected to surface as a CLI/provider error, not be silently dropped.
-    // The key here has no underscore, so the snake_case->camelCase conversion this handler now
-    // applies leaves it alone — this test is about the allowlist, not casing.
+  it('drops model.parameters keys that are not on the query options allowlist', async () => {
     mockQuery.mockImplementation(makeResultMessage());
     const config = {
       ...baseConfig,
-      model: { ...baseConfig.model, parameters: { temperature: 0.7, someUnknownKey: 100 } },
+      model: { ...baseConfig.model, parameters: { temperature: 0.7, someUnknownKey: 100, maxTurns: 2 } },
     };
     await createClaudeAgentsHandler()(config as any, 'q');
     const { options } = mockQuery.mock.calls[0][0];
-    expect(options.temperature).toBe(0.7);
-    expect(options.someUnknownKey).toBe(100);
+    expect(options.temperature).toBeUndefined();
+    expect(options.someUnknownKey).toBeUndefined();
+    expect(options.maxTurns).toBe(2);
+  });
+
+  it('never forwards credentials, endpoints, remote tools or host-process settings to query options', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    // mcpServers and hooks are set by the handler itself; the deep check proves neither carries
+    // the config's value.
+    expectNoNeverForwardedValue(options, ['mcpServers', 'hooks']);
+  });
+
+  it('never forwards them on the streaming path either', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+    });
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
+    await collectStream(createClaudeAgentsHandler().stream?.(config as any, 'q', {}, {}));
+    const { options } = mockQuery.mock.calls[0][0];
+    expectNoNeverForwardedValue(options, ['mcpServers', 'hooks']);
+  });
+
+  it('forwards every allowed key under the Claude Agent SDK name and shape', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const schema = { type: 'object', properties: { answer_text: { type: 'string' } } };
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          max_turns: 4,
+          max_thinking_tokens: 2048,
+          thinking: { type: 'enabled', budget_tokens: 1024, display: 'summarized', extra_key: 'dropped' },
+          effort: 'high',
+          max_budget_usd: 1.5,
+          fallback_model: 'claude-haiku',
+          output_format: { type: 'json_schema', schema, extra_key: 'dropped' },
+          betas: ['context-1m-2025-08-07'],
+        },
+      },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options).toMatchObject({
+      maxTurns: 4,
+      maxThinkingTokens: 2048,
+      effort: 'high',
+      maxBudgetUsd: 1.5,
+      fallbackModel: 'claude-haiku',
+      betas: ['context-1m-2025-08-07'],
+    });
+    // The SDK's ThinkingEnabled reads budgetTokens, not the Messages API's budget_tokens.
+    expect(options.thinking).toEqual({ type: 'enabled', budgetTokens: 1024, display: 'summarized' });
+    // The JSON schema itself is passed through as written.
+    expect(options.outputFormat).toEqual({ type: 'json_schema', schema });
+  });
+
+  it('accepts a camelCase thinking.budgetTokens and drops a thinking value without a type', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const run = async (thinking: unknown) => {
+      mockQuery.mockClear();
+      const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { thinking } } };
+      await createClaudeAgentsHandler()(config as any, 'q');
+      return mockQuery.mock.calls[0][0].options.thinking;
+    };
+    expect(await run({ type: 'enabled', budgetTokens: 512 })).toEqual({ type: 'enabled', budgetTokens: 512 });
+    expect(await run({ type: 'adaptive' })).toEqual({ type: 'adaptive' });
+    expect(await run({ budget_tokens: 512 })).toBeUndefined();
+    expect(await run('enabled')).toBeUndefined();
   });
 
   it('does not let model.parameters override model, tools, allowedTools, mcpServers, hooks, or systemPrompt', async () => {
