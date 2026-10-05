@@ -167,25 +167,15 @@ describe('atomicWrite', () => {
 });
 
 /**
- * On Node the identity re-check is the *whole* defense against a directory swapped
- * between validation and the destructive call: there is no `*at()` family, so the
- * rename and the unlink resolve their directory by path.
+ * Off `SUPPORTS_PROC_FD` the identity re-check is the *whole* defense against a
+ * directory swapped between validation and the destructive call: Node exposes no
+ * `*at()` family, so the rename and the unlink resolve their directory by path.
+ * The swap races in `skills-fs.test.ts` fire after the check and cannot reach it,
+ * so the swap is staged here: pin the handle, replace the directory, then invoke
+ * each primitive (both re-check independently).
  *
- * Off `SUPPORTS_PROC_FD` it is the *whole* defense against a directory swapped
- * between validation and the destructive call: Node exposes no `*at()` family, so
- * the rename and the unlink resolve their directory by path. The swap-race cases
- * in `skills-fs.test.ts` cannot reach it — they fire the swap from the
- * rename/unlink hook, which by construction runs *after* the check. Verified by
- * mutation: with the check neutered, the entire suite stays green.
- *
- * So the swap is staged here instead: pin the handle, then replace the directory,
- * then invoke the primitive. Both primitives re-check independently, so both
- * halves are required.
- *
- * These call the primitives with a plain path, which is what keeps them
- * meaningful on Linux too: the check is skipped only for a directory addressed
- * through `directoryAddress`, so passing a path exercises the floor on every
- * platform rather than testing nothing wherever the fast path exists.
+ * These pass a plain path, which exercises the floor on every platform — the
+ * check is skipped only for a directory addressed through `directoryAddress`.
  */
 describe('pinned-directory identity re-check', () => {
   /** Moves `dir` aside and leaves a symlink to `outside` in its place. */
@@ -248,20 +238,12 @@ describe('pinned-directory identity re-check', () => {
 /**
  * The Linux fast path's own positive control.
  *
- * The block above tests the *floor* — deliberately, by passing a plain path, so it
- * exercises the identity re-check on every platform. That leaves the fast path
- * itself unproven by anything: on Linux the defense lives in how the call is
- * *addressed* rather than in a check a test can observe failing, and the §3.23.2
- * swap races in `skills-fs.test.ts` and `skills-fs-root-swap.test.ts` go through
- * the materialization layer, where the shared path check and the primitive's own
- * `O_NOFOLLOW` both stand in the way — so they pass when either layer alone works
- * and prove the pair rather than either member.
- *
- * So assert the property directly and at this layer: nothing else establishes that
- * `directoryAddress()` resolves from the inode the handle is pinned to rather than
- * from whatever the directory's *name* resolves to when the call is made. This is
- * the positive mirror of the floor tests — there the contract is a refusal, here it
- * is that the write lands in the right place despite the swap.
+ * The block above tests the *floor*. On Linux the defense lives in how the call
+ * is *addressed*, and the swap races in `skills-fs.test.ts` and
+ * `skills-fs-root-swap.test.ts` pass when either the path check or `O_NOFOLLOW`
+ * works alone. So this asserts directly that `directoryAddress()` resolves from
+ * the pinned inode, not from the directory's name: the write lands in the right
+ * place despite the swap.
  *
  * Gated on `SUPPORTS_PROC_FD` because it tests that capability, not the floor;
  * that makes it **Linux-only**, and a green macOS run is no evidence about it.

@@ -5,8 +5,8 @@
  * about what happens *inside* a single reconcile rather than about its report:
  *
  * - the adoption comparison read is **bounded** at the resolved content's length
- *   plus one byte (§3.22), and
- * - the bytes that were hashed are the bytes that get **written** (§3.21) — the
+ *   plus one byte, and
+ * - the bytes that were hashed are the bytes that get **written** — the
  *   content is snapshotted before hashing, so a caller mutating `skill.content`
  *   during the awaits in between cannot substitute bytes nothing verified.
  *
@@ -140,7 +140,7 @@ afterEach(async () => {
 // ─── The bounded comparison read ─────────────────────────────────────────────
 
 /**
- * Adoption (§3.22) reads the file at `<root>/<key>/SKILL.md` and compares its
+ * Adoption reads the file at `<root>/<key>/SKILL.md` and compares its
  * hash against the resolved content's. That read deliberately reaches files the
  * manifest does **not** vouch for — that is the whole crash-recovery self-heal —
  * so the file it opens may be one an attacker with write access to the root
@@ -237,16 +237,16 @@ describe('the adoption comparison read is bounded', () => {
     expect(hook.reads.get(SKILL_MD)).toBe(encoded.byteLength);
   });
 
-  it('reads the manifest unbounded, because its length is not predictable', async () => {
-    // The counterpart: `maxBytes` is opt-in, and the manifest does not opt in.
-    // It is parsed rather than compared, no caller can predict its length, and it
-    // is the one file under the root this SDK writes itself.
+  it('reads the manifest through a bounded read, not to EOF', async () => {
+    // Its length is not predictable, but it lives in a directory the SDK does not
+    // own exclusively, so the read is capped at `MAX_MANIFEST_BYTES`.
     await writeSkills([skill('a')], root);
     disarm();
 
     await writeSkills([skill('a')], root);
 
-    expect(hook.wholeFileReads.has('.launchdarkly-skills.json')).toBe(true);
+    expect(hook.wholeFileReads.has('.launchdarkly-skills.json')).toBe(false);
+    expect(hook.reads.get('.launchdarkly-skills.json')).toBeGreaterThan(0);
   });
 });
 

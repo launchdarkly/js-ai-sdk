@@ -100,9 +100,8 @@ function rawSkill(overrides: Partial<RawSkillObject> & { key?: unknown } = {}): 
 /**
  * One over-cap string for the whole file.
  *
- * At 10 MiB this costs real time and memory to allocate and to hash, and §3.21
- * asks for one true over-cap case rather than one per test — so the cases that
- * need it share this.
+ * At 10 MiB this costs real time and memory to allocate and to hash, so the cases
+ * that need a true over-cap value share this one.
  */
 const OVERSIZE = 'x'.repeat(MAX_SKILL_CONTENT_BYTES + 1);
 
@@ -334,9 +333,8 @@ describe('package exports', () => {
   });
 
   it('exports the delivery transport, the watcher, and their defaults from the package root', () => {
-    // §3.25 / §3.26: the transport and the watcher are root exports in both
-    // languages; the base-URI and debounce defaults are TypeScript-only root
-    // exports (A.12).
+    // The transport and the watcher are root exports in both languages; the
+    // base-URI and debounce defaults are TypeScript-only root exports.
     expect(typeof packageIndex.FDv2SkillStore).toBe('function');
     expect(typeof packageIndex.watchSkills).toBe('function');
     expect(typeof packageIndex.SkillWatcher).toBe('function');
@@ -1231,6 +1229,95 @@ describe('getSkills', () => {
 
   it('returns an empty list for an empty input', async () => {
     expect(await getSkills([])).toEqual([]);
+  });
+});
+
+// ─── Withholding summary ───────────────────────────────────────────────
+
+describe('withholding summary', () => {
+  let store: InMemorySkillStore;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  const warnings = (): string[] => warnSpy.mock.calls.map((call) => String(call[0]));
+  const tampered = (key: string): RawSkillObject => rawSkill({ key, contentHash: '0'.repeat(64) });
+
+  beforeEach(() => {
+    store = new InMemorySkillStore();
+    _setStore(store);
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('warns once, naming the content hash, when allSkills withholds everything', async () => {
+    store.put(tampered('a'));
+    expect(await allSkills()).toEqual([]);
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toMatch(/contentHash/);
+  });
+
+  it('warns with the counts when allSkills withholds some', async () => {
+    store.put(rawSkill({ key: 'good' }));
+    store.put(tampered('bad'));
+    expect((await allSkills()).map((s) => s.key)).toEqual(['good']);
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toMatch(/1 of 2/);
+  });
+
+  it('warns once per getSkills batch, not once per skill', async () => {
+    store.put(tampered('a'));
+    store.put(tampered('b'));
+    expect(await getSkills(['a', 'b'])).toEqual([]);
+    expect(warnings()).toHaveLength(1);
+  });
+
+  it('does not warn when getSkills asks for keys the store does not hold', async () => {
+    // An empty store at boot is not an integrity problem.
+    expect(await getSkills(['a', 'b'])).toEqual([]);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('does not warn when a getSkills pin misses', async () => {
+    store.put(rawSkill({ key: 'a', version: 2 }));
+    expect(await getSkills([{ key: 'a', version: 1 }])).toEqual([]);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('does not warn when the store throws during getSkills', async () => {
+    const throwing: SkillStore = {
+      getObject: () => {
+        throw new Error('down');
+      },
+      allObjects: () => ({}),
+    };
+    _setStore(throwing);
+    expect(await getSkills(['a'])).toEqual([]);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('counts only what the store served when getSkills mixes misses and withholding', async () => {
+    store.put(rawSkill({ key: 'good' }));
+    store.put(tampered('bad'));
+    expect((await getSkills(['good', 'bad', 'missing'])).map((s) => s.key)).toEqual(['good']);
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toMatch(/1 of 2/);
+  });
+
+  it('does not warn when nothing was withheld', async () => {
+    store.put(rawSkill({ key: 'a' }));
+    expect(await getSkills(['a'])).toHaveLength(1);
+    expect(await allSkills()).toHaveLength(1);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('does not count a key as withheld when another version of it resolved', async () => {
+    // A malformed object beside a well-formed version of the same key.
+    store.put(rawSkill({ key: 'a', version: 1 }));
+    store.put(rawSkill({ key: 'a', version: 'not-a-version' as unknown as number }));
+    expect((await allSkills()).map((s) => s.key)).toEqual(['a']);
+    expect(warnings()).toEqual([]);
   });
 });
 

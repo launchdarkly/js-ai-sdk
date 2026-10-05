@@ -1,37 +1,20 @@
 /**
  * Agent Skills — the FDv2 delivery transport.
  *
- * The store implementation that talks to LaunchDarkly. It sits *below* the
- * `SkillStore` seam: it produces raw wire objects in the shape `skills-core.ts`
- * documents, and everything above — the accessors, integrity verification, the
- * `Skill` type, materialization — is unaware of it.
+ * `FDv2SkillStore` is the `SkillStore` that receives skills from LaunchDarkly
+ * over `GET /sdk/poll` or `GET /sdk/stream`, authenticated with the
+ * environment's server-side SDK key. It holds raw wire objects and serves them to
+ * the accessors; it uses only platform globals (`fetch`, `AbortController`,
+ * `TextDecoder`).
  *
- * Layering:
+ * What it does not do:
  *
- * ```
- * @launchdarkly/ai-server
- *   └─ SkillStore (types.ts)              ── structurally typed accessor surface
- *         └─ FDv2SkillStore (this file)   ── deserialize, hold, serve
- *               └─ the SDK-facing FDv2 channel
- *                  GET /sdk/poll, GET /sdk/stream, authenticated with the
- *                  environment's server-side SDK key
- * ```
- *
- * Dependencies run one way. This module imports `skills-core.ts` for the seam's
- * kind constant and nothing else from the feature; `skills.ts` and `skills-fs.ts`
- * do not import it. It uses only platform globals — `fetch`, `AbortController`,
- * `TextDecoder` — so the content path adds no dependency.
- *
- * What this module does *not* do, on purpose:
- *
- * - **It does not verify content.** Verification lives at the accessor boundary
- *   in `skills-core.ts` so that it applies to every store equally, including
- *   `InMemorySkillStore` and a customer's own.
- * - **It does not skip verification when the wire envelope has no
- *   `contentHash`.** A hashless object is stored verbatim and *withheld* by
- *   verification with `missing_content_hash`; this module makes that outcome
- *   loud rather than papering over it.
- * - **It does not evaluate anything.** No flags, no segments, no targeting.
+ * - **Verify content.** Integrity verification happens at the accessor boundary,
+ *   so it applies to every store, including one you supply yourself.
+ * - **Work around a missing `contentHash`.** Such an object is held as-is and
+ *   then withheld by verification with `missing_content_hash`; the store logs an
+ *   error and counts it in {@link StoreDiagnostics.hashlessObjects}.
+ * - **Evaluate flags.** Non-skill objects are skipped and counted.
  */
 
 import { SKILL_OBJECT_KIND } from './skills-core.js';
@@ -43,56 +26,34 @@ import { isValidSkillVersion } from './types.js';
 // ---------------------------------------------------------------------------
 
 /**
- * The FDv2 `kind` skills are delivered under.
+ * The FDv2 object `kind` of a skill (exact, lower-case match).
  *
- * Object kinds on the SDK-facing channel are open strings: every object in the
- * agent-skill payload carries the kind its producer registered, which for skills
- * is the bare category name. Delivery lower-cases the kind, so an exact
- * comparison is the whole test. The kind happens to equal `SKILL_OBJECT_KIND`
- * today; they are still separate constants, because one is a wire value
- * LaunchDarkly owns and the other is an SDK seam.
- *
- * Not to be confused with {@link FDV2_PAYLOAD_KIND}: this is the kind of the
- * *objects*, that one the kind of the *payload* they arrive in.
+ * Distinct from {@link FDV2_PAYLOAD_KIND}, the kind of the payload skills arrive in.
  */
 export const FDV2_OBJECT_KIND = 'skill';
 
 /**
- * The kind of the FDv2 payload skills are delivered in, declared on every
- * request as `?kinds=`.
+ * The FDv2 payload kind declared on every request as `?kinds=`.
  *
- * Delivery narrows a connection to the payload kinds it declares and defaults to
- * flags, so this is not an optimisation: a request that omits it receives the
- * environment's flag payload and no skills at all. Declaring it is also what
- * makes the connection carry exactly one payload — the shape
- * {@link ProtocolReader} is built for — since a skill-enabled environment
- * assigns both the flag payload and this one.
- *
- * The wire accepts a comma-separated list, but this store wants the skill
- * payload and nothing else, so it declares this one kind alone.
+ * Required: a request without it is served the flag payload and no skills.
  */
 export const FDV2_PAYLOAD_KIND = 'agent-skill';
 
 /**
- * What separates a skill's key from its version inside the object's wire `key`.
- *
- * A generic object is identified on the wire as `<key>:<version>` — the skill's
- * own key, one delimiter, the skill's own version — because each version of a
- * skill is a distinct object in the payload. Delivery forbids the delimiter
- * inside a registered category and skill keys cannot contain it, so a
- * well-formed wire key has exactly one.
+ * Separates key from version in a skill object's wire `key`
+ * (`<key>:<version>`). Each version of a skill is a separate object.
  */
 export const FDV2_KEY_DELIMITER = ':';
 
 /**
- * Where `GET /sdk/poll` is served. Overridable for Federal instances, private
- * instances, and relay deployments.
+ * Where `GET /sdk/poll` is served. Override for Federal, private, or relay
+ * deployments.
  */
 export const DEFAULT_BASE_URI = 'https://sdk.launchdarkly.com';
 
 /**
- * Where `GET /sdk/stream` is served. LaunchDarkly serves streaming from a
- * different host than polling, matching the base server-side SDK's defaults.
+ * Where `GET /sdk/stream` is served. LaunchDarkly streams from a different host
+ * than it polls from; a `baseUri` given without a `streamUri` is used for both.
  */
 export const DEFAULT_STREAM_URI = 'https://stream.launchdarkly.com';
 
@@ -121,23 +82,14 @@ const INTENT_TRANSFER_CHANGES = 'xfer-changes';
 const INTENT_TRANSFER_NONE = 'none';
 
 /**
- * The skill object envelope's fields, copied through verbatim.
- *
- * `contentHash` is listed here and is the field the whole content path waits on.
- * Nothing here is coerced, defaulted, or normalized — everything a store serves
- * is untrusted input and is revalidated above the seam, so a transport that
- * "helpfully" filled in a field would be forging the very thing verification
- * exists to check.
+ * Envelope fields copied verbatim. Never coerced or defaulted: filling in a
+ * missing field would forge what verification checks.
  */
 const ENVELOPE_FIELDS = ['contentType', 'content', 'contentHash', 'name', 'description'] as const;
 
 /**
- * The payload identity inside a transfer's selector, `(p:<id>:<version>)`.
- *
- * The selector is the only place a completed transfer names its own payload:
- * `put-object`, `delete-object` and `payload-transferred` carry no payload id of
- * their own. `ProtocolReader` reads it as a fallback for an intent that named no
- * `id`.
+ * The payload id inside a transfer's selector, `(p:<id>:<version>)`. Used when
+ * the intent named no `id`.
  */
 const PAYLOAD_SELECTOR = /\(p:([^:()]+):\d+\)/;
 
@@ -146,12 +98,13 @@ export type FDv2Mode = 'stream' | 'poll';
 const MOBILE_KEY_PREFIX = 'mob-';
 const SERVER_KEY_PREFIX = 'sdk-';
 
-/**
- * A client-side environment ID: bare lowercase hex, no prefix. Server-side keys
- * and mobile keys both carry a prefix, so "hex with no prefix" is an unambiguous
- * client-side credential rather than a heuristic.
- */
+/** A client-side environment ID: unprefixed lowercase hex. */
 const CLIENT_SIDE_ID = /^[0-9a-f]{20,}$/;
+
+function debug(message: string): void {
+  // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; routine events log at debug
+  console.debug(`[LaunchDarkly] ${message}`);
+}
 
 function warn(message: string): void {
   // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; delivery problems must be visible
@@ -168,15 +121,11 @@ function error(message: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Refuses a mobile key or a client-side environment ID.
+ * Throws for a missing key, a mobile key, or a client-side environment ID;
+ * returns the key trimmed.
  *
- * Skills are for server-side agent runtimes and skill content is
- * customer-confidential. A client-side credential may succeed against these
- * endpoints, so the SDK refuses one up front rather than deliver skill content
- * to a client-side process.
- *
- * Throws rather than warning, because there is no degraded mode that is correct:
- * a store built on the wrong credential should not exist.
+ * Skill content is confidential, and the server may not refuse a client-side
+ * credential itself, so the SDK does.
  */
 export function requireServerSideCredential(sdkKey: unknown): string {
   if (typeof sdkKey !== 'string' || sdkKey.trim() === '') {
@@ -198,10 +147,7 @@ export function requireServerSideCredential(sdkKey: unknown): string {
     );
   }
   if (!key.startsWith(SERVER_KEY_PREFIX)) {
-    // Not rejected: private instances and test doubles issue credentials that do
-    // not carry the public prefix, and refusing them would break a deployment
-    // that is perfectly correct. The two shapes above are refused because they
-    // are unambiguously *not* server-side.
+    // Warn only: private instances and test doubles may use unprefixed keys.
     warn(
       'The credential given to FDv2SkillStore does not look like a LaunchDarkly server-side SDK key (sdk-...). ' +
         'Skills are delivered only to server-side credentials; if this is a client-side or mobile credential the ' +
@@ -215,17 +161,11 @@ export function requireServerSideCredential(sdkKey: unknown): string {
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '::1']);
 
 /**
- * Refuses a URI that would send the SDK key in cleartext.
+ * Throws for a URI that would send the SDK key in cleartext; returns it trimmed.
  *
- * Every request carries the environment's server-side SDK key in
- * `Authorization`, so the transport is `https://` only. The one exception is
- * `http://` to a loopback host (`localhost`, `127.0.0.1`, `::1`), which never
- * leaves the machine and is what a local test double listens on. Throws rather
- * than warns, for the same reason the credential check does: a store that would
- * leak its key should not exist.
- *
- * Returns the URI trimmed. The check is on the store, not on the socket it
- * happens to open, so it runs whether or not a `Requester` was injected.
+ * Requires `https://` with a host; plain `http://` is allowed only to a loopback
+ * host (`localhost`, `127.0.0.1`, `::1`) for local test doubles. Applies even
+ * when a custom `requester` is supplied.
  */
 export function requireHttpsUri(uri: unknown, option: 'baseUri' | 'streamUri' = 'baseUri'): string {
   if (typeof uri !== 'string' || uri.trim() === '') {
@@ -238,8 +178,7 @@ export function requireHttpsUri(uri: unknown, option: 'baseUri' | 'streamUri' = 
   } catch {
     parsed = null;
   }
-  // WHATWG `hostname` keeps the brackets on an IPv6 literal; the loopback list
-  // names the address, as the Python SDK's does.
+  // WHATWG `hostname` keeps the brackets on an IPv6 literal; strip them.
   const hostname = parsed?.hostname.replace(/^\[(.*)\]$/, '$1') ?? '';
   if (parsed?.protocol === 'https:' && hostname !== '') return trimmed;
   if (parsed?.protocol === 'http:' && LOOPBACK_HOSTS.has(hostname)) return trimmed;
@@ -258,68 +197,43 @@ export function requireHttpsUri(uri: unknown, option: 'baseUri' | 'streamUri' = 
 }
 
 // ---------------------------------------------------------------------------
-// Diagnostics — and the contentHash gap in particular
+// Diagnostics
 // ---------------------------------------------------------------------------
 
 /**
- * What the transport has seen. Read-only from a caller's perspective.
+ * Counters describing what the transport has seen. Read-only.
  *
- * Not part of the `SkillStore` seam — nothing above the seam reads this — but the
- * difference between "this environment has no skills" and "every skill was
- * withheld" is the single most confusing failure this feature can produce, and a
- * counter a caller can assert on beats reading logs.
+ * Useful for telling "this environment has no skills" apart from "every skill
+ * was withheld".
  */
 export type StoreDiagnostics = {
   /** Completed `payload-transferred` commits since the store started. */
   readonly payloadsTransferred: number;
   /** `put-object` events identified as skills, across all payloads. */
   readonly skillObjectsReceived: number;
-  /**
-   * Objects skipped because they were not skills. With the skill payload
-   * declared on every request, this counts an object kind this version does not
-   * recognise rather than the environment's flags. Skipping is the contract,
-   * not a failure.
-   */
+  /** Objects skipped because they were not skills. */
   readonly objectsIgnored: number;
   /**
-   * Skill revocations applied: every `delete-object` event, plus every skill key
-   * a full transfer dropped altogether.
-   *
-   * A key whose version merely moved does not count. A full transfer states the
-   * whole payload, so a version bump arrives as a put for the new version and an
-   * absence where the old one was; both halves still reach listeners, because a
-   * listener that reads versions needs them, but a key that survives under a new
-   * version was never revoked.
+   * Skill revocations: each `delete-object` that removed something, plus each
+   * key a full transfer dropped entirely (not a key whose version moved).
    */
   readonly objectsRevoked: number;
   /**
-   * Transfers not applied because they completed a payload other than the one
-   * skills arrive on. Zero while delivery sends one payload per connection.
+   * Transfers not applied because they completed a payload other than the
+   * skill payload. Normally zero.
    */
   readonly payloadsIgnored: number;
   /**
-   * Skill objects whose envelope carried no `contentHash`, across all payloads.
+   * Skill objects whose envelope carried no `contentHash`.
    *
-   * Verification withholds a hashless object with `missing_content_hash`, so a
-   * nonzero count means such objects have arrived and the skills they carry will
-   * not resolve. The field exists so that outcome is a number a caller can read
-   * rather than an empty store they have to explain.
-   *
-   * Like the rest of this type it is **cumulative and never decreases.** Objects
-   * are counted as their events are read, so the count includes objects from a
-   * payload that never committed, and in polling mode it rises again every time
-   * an unchanged payload is re-delivered. Read it as "this has happened", not as
-   * the size of the currently withheld set.
+   * **Nonzero means skills are being withheld** with `missing_content_hash`.
+   * Cumulative: read it as "this has happened", not as the current count.
    */
   readonly hashlessObjects: number;
   /**
-   * Recoverable transport failures in a row. Back to zero on a completed
-   * exchange — a committed payload, or a `none` intent saying the payload held
-   * is current — and not raised by a connection the server closes normally
-   * after reaching that point, which is how a long-lived stream is recycled. A
-   * parsed transfer intent alone does not reset it: an announced transfer that
-   * never commits delivered nothing. A connection closed without ever getting
-   * there delivered nothing either, and does raise it.
+   * Recoverable transport failures in a row; reset by a completed exchange (a
+   * commit or a `none` intent). A server-initiated `goodbye` after such an
+   * exchange is not counted.
    */
   readonly connectionFailures: number;
   /** The most recent transport error, if any. Human-readable; do not parse. */
@@ -331,10 +245,8 @@ const HASHLESS_ADVICE =
   "'missing_content_hash' and its content will not resolve. Contact LaunchDarkly support.";
 
 /**
- * Ceiling on remembered hashless reports, so a process whose skills are
- * versioned often cannot accumulate an entry per version indefinitely. Oldest
- * out first; an evicted object can be reported a second time, which is the
- * cheaper of the two failure modes.
+ * Ceiling on remembered hashless reports (oldest evicted first). An evicted
+ * object may be reported again.
  */
 const HASHLESS_MEMORY_LIMIT = 512;
 
@@ -342,14 +254,9 @@ const HASHLESS_MEMORY_LIMIT = 512;
 const SUMMARY_MARKER = '\u0000summary\u0000';
 
 /**
- * What one reader has already reported hashless: one entry per
- * `(key, version)`, plus one describing the store-wide summary last spoken.
- *
- * Held **per `ProtocolReader`** — so per store — rather than at module scope.
- * Each error is then one per object per store rather than one per re-delivered
- * payload, which matters most in polling mode where the same payload arrives on
- * every interval; and two stores in one process do not share a memory, so a
- * second store seeing the same broken object is told about it too.
+ * Which hashless objects (and which store-wide summary) one reader has already
+ * logged. Per store, so a re-delivered payload is not re-reported and each
+ * store reports independently.
  */
 class HashlessMemory {
   readonly seen = new Set<string>();
@@ -365,11 +272,8 @@ class HashlessMemory {
   }
 
   /**
-   * One error per `(key, version)` whose envelope had no `contentHash`.
-   *
-   * At error level rather than warn, and per object rather than once per store,
-   * because this is the difference between a broken deployment and an
-   * empty-by-design one.
+   * One error per `(key, version)` whose envelope had no `contentHash`, so
+   * withheld skills are not mistaken for an environment with none.
    */
   warnHashless(raw: RawSkillObject): void {
     const identity = `${String(raw.key)}:${String(raw.version)}`;
@@ -389,23 +293,15 @@ class HashlessMemory {
   }
 
   /**
-   * One error per *distinct* committed store in which nothing held can possibly
-   * verify.
+   * One error per distinct committed state in which *nothing* held can verify.
    *
-   * Fires at delivery time, so the condition is visible in a process that
-   * boots, materializes nothing, and exits — which is the shape a skills
-   * deployment fails in. The accessor boundary's own withholding summary only
-   * speaks once a caller asks.
-   *
-   * Spoken when the condition becomes true and whenever the hashless objects
-   * change, and not again for a store that has not moved: an unchanging payload
-   * re-delivered on every poll describes one problem, not one per interval. A
-   * store that recovers and relapses is reported again.
+   * Fires at delivery time, so it shows even in a process that never reads a
+   * skill. Repeated only when the set of hashless objects changes, or after a
+   * recovery and relapse.
    */
   warnIfNothingCanVerify(held: RawSkillObject[]): void {
     const hashless = held.filter((raw) => typeof raw.contentHash !== 'string');
     if (hashless.length === 0) {
-      // Everything held verifies, so there is nothing outstanding to remember.
       this.seen.clear();
       return;
     }
@@ -431,7 +327,7 @@ class HashlessMemory {
 }
 
 // ---------------------------------------------------------------------------
-// Deserialization — where the skill's version lives in the key, not in version
+// Deserialization
 // ---------------------------------------------------------------------------
 
 /** A `delete-object` narrowed to the identity it revokes. */
@@ -440,11 +336,8 @@ export type Tombstone = { readonly key: string; readonly objectVersion: number |
 /**
  * Whether one `put-object` / `delete-object` payload is a skill.
  *
- * The kind alone decides it. Every other kind is **ignored, not rejected**. The
- * `kinds` declaration means a flag or segment object should no longer arrive at
- * all, but the skip stays: erroring on an unrecognised kind would turn a payload
- * that gained one into a reconnect loop, which is the outage this feature must
- * not cause.
+ * Other kinds are ignored rather than rejected, so an unrecognised kind cannot
+ * cause a reconnect loop.
  */
 export function isSkillEvent(data: unknown): boolean {
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return false;
@@ -463,22 +356,17 @@ export type WireIdentity = { readonly key: string; readonly hasVersion: boolean;
 const DIGITS_ONLY = /^[0-9]+$/;
 
 /**
- * Reads `<key>:<version>` off one object's wire `key`.
+ * Splits `<key>:<version>` from one object's wire `key`.
  *
- * Lenient where leniency keeps the object diagnosable and strict only where
- * there is nothing to diagnose:
+ * Malformed versions are kept so verification can report them under a
+ * recognisable key:
  *
- * - No delimiter: the whole wire key is the skill key and there is no version,
- *   so the object is held version-less and verification reports
- *   `invalid_version` under a key the caller can recognise.
- * - A version that is not a run of ASCII digits (`"pdf:latest"`, `"pdf:"`,
- *   `"a:1:2"`): the text is carried through *as the version*, for the same
- *   reason — the caller learns that `pdf` arrived broken, not that it is absent.
- * - An empty key before the delimiter (`":3"`): there is no identity to hold it
- *   under, so `null`, and the caller drops it.
+ * - No delimiter: no version; verification reports `invalid_version`.
+ * - Non-digit version (`"pdf:latest"`, `"pdf:"`, `"a:1:2"`): the text is kept
+ *   as the version.
+ * - Empty key (`":3"`): `null`; the object is dropped.
  *
- * Leading zeros are accepted (`"pdf:03"` is version 3) since the number is the
- * identity a reference pins, not the spelling.
+ * Leading zeros are accepted (`"pdf:03"` is version 3).
  */
 export function splitWireKey(wireKey: unknown): WireIdentity | null {
   if (typeof wireKey !== 'string' || wireKey === '') return null;
@@ -492,29 +380,18 @@ export function splitWireKey(wireKey: unknown): WireIdentity | null {
 }
 
 /**
- * Translates one FDv2 skill `put-object` into a seam-shaped raw object.
- *
- * **The translation this whole module exists to get right:**
+ * Translates one FDv2 skill `put-object` into a raw `SkillStore` object.
  *
  * ```
- * wire `key`      →  seam `key` and `version`   (split on `:`)
- * wire `version`  →  dropped                    (the *payload* version)
+ * wire `key`      →  stored `key` and `version`  (split on `:`)
+ * wire `version`  →  dropped                     (the *payload* version)
  * ```
  *
- * Each version of a skill is its own object on the wire, identified as
- * `<key>:<version>`; that version is what a `{key, version}` reference pins. The
- * event's `version` field is the version of the payload the object arrived in and
- * moves whenever anything in the environment moves, including a flag that has
- * nothing to do with skills. Confusing them fails silently: the object verifies,
- * the hash matches, and the caller is handed a skill under a version number that
- * means nothing.
+ * The event's `version` is the payload's version, not the skill's; using it
+ * would serve content under a meaningless version number.
  *
- * `null` only when the wire `key` carries no skill key at all, since such an
- * object has no identity to store it under. Every other defect is carried through
- * verbatim so that *verification* withholds it, with a reason code and an
- * integrity signal, rather than the transport dropping it silently. A silent drop
- * is indistinguishable from "no such skill" and would additionally let a prune
- * delete the last known-good copy on disk.
+ * Returns `null` only when the wire `key` has no skill key. Other defects are
+ * carried through so verification withholds them with a reason code.
  */
 export function seamObjectFromPut(data: Record<string, unknown>): RawSkillObject | null {
   const identity = splitWireKey(data.key);
@@ -528,8 +405,7 @@ export function seamObjectFromPut(data: Record<string, unknown>): RawSkillObject
 
   const raw: RawSkillObject = { key: identity.key };
 
-  // Absent stays absent and malformed stays malformed, so verification sees what
-  // arrived (as `invalid_version`) rather than something invented here.
+  // Absent or malformed versions pass through for verification to report.
   if (identity.hasVersion) raw.version = identity.version;
 
   const envelope = data.object;
@@ -556,19 +432,11 @@ function payloadIdFromSelector(state: unknown): string | null {
 }
 
 /**
- * Narrows one FDv2 skill `delete-object` to the identity it revokes, reading the
- * wire `key` the same way a put does.
+ * Narrows one FDv2 skill `delete-object` to the identity it revokes.
  *
- * A delete for a skill **is revocation** — the object leaves the payload, this
- * store drops it, the accessors stop resolving it, and the next reconcile prunes
- * its files.
- *
- * An `objectVersion` of `null` means the delete named no usable version, and is
- * read as "revoke every version of this key". That is the safe direction: the
- * alternative is ignoring an unparseable revocation and continuing to serve
- * content LaunchDarkly has withdrawn. It also removes whatever a malformed put of
- * the same wire key left held, since that was stored version-less under the same
- * skill key.
+ * A delete with no usable version (`objectVersion: null`) revokes every version
+ * of the key, including a version-less malformed entry. Erring this way avoids
+ * serving withdrawn content.
  */
 export function tombstoneFromDelete(data: Record<string, unknown>): Tombstone | null {
   const identity = splitWireKey(data.key);
@@ -589,15 +457,9 @@ export function tombstoneFromDelete(data: Record<string, unknown>): Tombstone | 
 /**
  * Raw skill objects held in memory, keyed by `(key, version)`.
  *
- * Several versions of one key coexist, because they coexist in a real payload:
- * the newest version of every skill plus every version a variation currently
- * pins. An object too malformed to carry a usable version is still held, under
- * its key alone, so verification withholds it with a signal rather than the
- * transport dropping it into indistinguishable absence.
- *
- * `snapshot` collapses to one object per key at its newest version, because
- * `<root>/<key>/SKILL.md` is a single path and `allSkills` should return one
- * entry per skill. `get` still resolves a pinned version out of the full set.
+ * Several versions of a key can coexist (the newest plus any pinned by a
+ * variation). An object with no usable version is held under its key alone so
+ * verification can withhold it with a reason.
  */
 export class SkillObjectSet {
   private versions = new Map<string, Map<number, RawSkillObject>>();
@@ -617,9 +479,7 @@ export class SkillObjectSet {
 
   /**
    * Removes what `tombstone` revokes; returns the raw objects that went away.
-   *
-   * A tombstone with no usable version removes every version of the key — see
-   * {@link tombstoneFromDelete} for why that is the safe reading.
+   * A `null` version removes every version of the key.
    */
   delete(tombstone: Tombstone): RawSkillObject[] {
     const removed: RawSkillObject[] = [];
@@ -647,27 +507,20 @@ export class SkillObjectSet {
   /**
    * The object for `key` at `version`, or the newest held when `version` is null.
    *
-   * Falls through to the version-less entry when the pin matches nothing
-   * well-formed, so a malformed object reaches verification and is withheld with a
-   * signal rather than reading as simply absent.
+   * When only a version-less entry exists it is served so verification can
+   * report it. A pin that misses while valid versions exist is a plain miss.
    */
   get(key: string, version: number | null): RawSkillObject | null {
     const held = this.versions.get(key);
-    if (version !== null) return held?.get(version) ?? this.loose.get(key) ?? null;
-    if (held && held.size > 0) {
-      const newest = Math.max(...held.keys());
-      return held.get(newest) ?? null;
-    }
-    return this.loose.get(key) ?? null;
+    if (!held || held.size === 0) return this.loose.get(key) ?? null;
+    if (version !== null) return held.get(version) ?? null;
+    return held.get(Math.max(...held.keys())) ?? null;
   }
 
   /**
-   * One entry per skill key, at its newest version, keyed by the bare skill key.
-   *
-   * The key must be the skill key, never the wire `key:version`: `writeSkills('*')`
-   * derives its prune keep-set from these keys, and a key it cannot parse as a
-   * skill key drops out of the keep-set and takes the copy already on disk with
-   * it. Use `allRaw` to see every held `(key, version)`.
+   * One entry per skill key, at its newest version, keyed by the bare skill key
+   * (never `key:version`: `writeSkills('*')` prunes by these keys). Use `allRaw`
+   * for every held `(key, version)`.
    */
   snapshot(): Record<string, RawSkillObject> {
     const out: Record<string, RawSkillObject> = {};
@@ -683,7 +536,7 @@ export class SkillObjectSet {
     return out;
   }
 
-  /** Every object held, one per `(key, version)`. Diagnostics, not the seam. */
+  /** Every object held, one per `(key, version)`. */
   allRaw(): RawSkillObject[] {
     const out: RawSkillObject[] = [];
     for (const held of this.versions.values()) out.push(...held.values());
@@ -723,38 +576,28 @@ export type TransferOutcome = {
   fatal?: string | null;
   disconnect?: string | null;
   /**
-   * Set by an event that proves the connection reached a working server and
-   * completed an exchange with it: the `none` intent, which commits nothing
-   * because the payload held is already current. A transfer intent does not
-   * set it — an announced transfer that never commits is not health, and the
-   * commit itself is reported through `committed`.
+   * A `none` intent: the content held is current. Counts as a healthy exchange
+   * though it commits nothing, like a 304 to a poll.
    */
   healthy?: boolean;
   /**
-   * Set on a `disconnect` the server asked for while serving normally — a
-   * non-catastrophic `goodbye`. The connection still ends and is retried. The
-   * caller decides whether it counts as a failure, since only a connection that
-   * had reached a working server was being served normally at all.
+   * Set on a non-catastrophic `goodbye`. Still a disconnect; the caller decides
+   * whether it counts as a failure.
    */
   expected?: boolean;
 };
 
-/**
- * `(key, version)` as one comparable string. Objects with no usable version
- * compare alike, which is what holding them under their key alone already means.
- */
+/** One object's comparable `(key, version)`; an unusable version is empty. */
 function identityOf(raw: RawSkillObject): string {
   return `${String(raw.key)}\u0000${isValidSkillVersion(raw.version) ? raw.version : ''}`;
 }
 
 /**
- * Tombstones for every object `next` no longer holds.
+ * Tombstones for every `(key, version)` `next` no longer holds.
  *
- * A full transfer states the whole payload, so its revocations arrive as an
- * absence rather than as an event; this recovers them. At `(key, version)`
- * granularity to match `delete-object`, so a key whose version moved yields both
- * a put for the arrival and a tombstone for the departure — what a listener that
- * reads versions needs, and harmless to one that only needs "something changed".
+ * A full transfer revokes by omission; this recovers those revocations. A key
+ * whose version moved yields a put for the new version and a tombstone for the
+ * old one.
  */
 function revocationsBetween(current: SkillObjectSet, next: SkillObjectSet): RawSkillObject[] {
   const surviving = new Set(next.allRaw().map(identityOf));
@@ -765,11 +608,9 @@ function revocationsBetween(current: SkillObjectSet, next: SkillObjectSet): RawS
 }
 
 /**
- * How many of `revoked` are true revocations rather than version moves.
+ * How many keys in `revoked` left the payload entirely (not version moves).
  *
- * Counted per key, not per tombstone: a key `next` still holds under some other
- * version has moved, and only a key that left the payload entirely is gone. This
- * is what `objectsRevoked` counts; `changes` carries every tombstone regardless.
+ * This is what `objectsRevoked` counts; `changes` carries every tombstone.
  */
 function keysFullyRevoked(revoked: RawSkillObject[], next: SkillObjectSet): number {
   const departed = new Set<string>();
@@ -796,25 +637,14 @@ function freshDiagnostics(): MutableDiagnostics {
 }
 
 /**
- * Applies FDv2 events to an object set. Pure — no sockets, no timers, no clock.
+ * Applies FDv2 events to an object set. Pure: no sockets, timers, or clock.
  *
- * Kept free of transport concerns so the protocol can be driven without a
- * server: the HTTP layer above it only has to turn bytes into
- * `[event name, data]` pairs.
- *
- * **Changes are buffered and committed at `payload-transferred`.** A payload
- * version is the unit of consistency: applying half of one would publish a state
- * the server never described, and on a full transfer it would briefly empty the
- * store — which, with pruning on, is the difference between a reconcile and
- * deleting a customer's skill files. Listeners therefore fire at commit — once
- * per changed object, all of them at `payload-transferred`.
- *
- * **The first payload intent is read, and is assumed to be the skill payload**,
- * as the protocol requires. Because an `xfer-full` for a different payload would
- * otherwise empty the skill set, this layer learns which payload skills arrive
- * on and declines to apply a transfer of any other, once at warning level and
- * counted. The first transfer of a connection is always applied: before a skill
- * has arrived there is nothing to compare a payload against.
+ * - **Changes commit at `payload-transferred`**, never half-applied, so a full
+ *   transfer never briefly empties the store and listeners fire only at commit.
+ * - **Only the first payload intent is read**, as the protocol requires, and it
+ *   is taken to be the skill payload. The reader learns which payload carries
+ *   skills and declines transfers of any other, which would otherwise empty the
+ *   skill set.
  */
 export class ProtocolReader {
   readonly diagnostics = freshDiagnostics();
@@ -822,15 +652,12 @@ export class ProtocolReader {
   /** What this reader has reported hashless. Exposed for tests; not API. */
   readonly _warnedHashless: Set<string> = this.hashless.seen;
   private intent: string | null = null;
-  // Whether this intent's unknown code has been warned about. Reset per
-  // `server-intent`, so the warning is once per announcement rather than once
-  // per object or once per reader.
+  // Reset per `server-intent`: one warning per announcement.
   private warnedUnknownIntent = false;
   private pending: SkillObjectSet | null = null;
   private changes: RawSkillObject[] = [];
-  // The payload the current intent describes, and the payload skills have
-  // actually arrived on. Kept apart so a transfer of some other payload can be
-  // recognised and declined.
+  // The payload the current intent describes, and the one skills arrive on;
+  // kept apart so a transfer of another payload can be declined.
   private intentPayloadId: string | null = null;
   private skillPayloadId: string | null = null;
   private skillsInPayload = 0;
@@ -876,46 +703,36 @@ export class ProtocolReader {
     this.skillsInPayload = 0;
     this.warnedUnknownIntent = false;
     if (intent === INTENT_TRANSFER_FULL) {
-      // A fresh set: the payload about to arrive replaces everything held. Built
-      // alongside the live set rather than in place, so an interrupted transfer
-      // leaves last-known-good intact.
+      // Built beside the live set so an interrupted transfer keeps it.
       this.pending = new SkillObjectSet();
     } else if (intent === INTENT_TRANSFER_CHANGES) {
       this.pending = this.committed.copy();
     } else if (intent === INTENT_TRANSFER_NONE) {
-      // The payload we hold is current. Nothing to apply, nothing to replace.
+      // The basis is current, and later edits on this connection arrive as
+      // objects with no second intent: read on as a delta with nothing pending.
+      this.intent = INTENT_TRANSFER_CHANGES;
       this.pending = null;
     } else {
-      // Any future intent code. Ignored rather than guessed at, for the same
-      // reason an unknown kind is: guessing could empty the store.
+      // Unknown intent codes are ignored; guessing could empty the store.
       this.pending = null;
     }
-    // Only the `none` intent is a completed exchange: the payload held is
-    // current, and nothing more will follow, so it is the one sign of health a
-    // connection that commits nothing can give. An `xfer-full` or
-    // `xfer-changes` intent is a promise, not a delivery — a server that
-    // announces a transfer and drops before `payload-transferred`, every time,
-    // has delivered nothing, and counting the announcement as health would
-    // retry it forever at the initial backoff.
+    // Only `none` is a completed exchange; a transfer intent is not health
+    // until it commits.
     return { healthy: intent === INTENT_TRANSFER_NONE };
   }
 
   private target(): SkillObjectSet | null {
     if (this.pending === null && (this.intent === INTENT_TRANSFER_FULL || this.intent === INTENT_TRANSFER_CHANGES)) {
-      // An object arrived before any server-intent. Treat it as a delta against
-      // what we hold rather than dropping it.
+      // An object with no preceding server-intent is treated as a delta.
       this.pending = this.committed.copy();
     }
     return this.pending;
   }
 
   /**
-   * A skill object arrived under an intent this reader cannot apply — a future
-   * intent code, or `none`, under which no objects should arrive at all.
-   *
-   * Dropped rather than guessed at, since guessing could empty the store; but
-   * dropped **visibly**: counted under `objectsIgnored`, with one warning per
-   * intent announcement so a payload of many objects is one line, not many.
+   * Drops a skill object that arrived under an intent this reader cannot apply
+   * (an unknown code). Counted under `objectsIgnored`, with one
+   * warning per intent.
    */
   private ignoreUnderUnknownIntent(): TransferOutcome {
     this.diagnostics.objectsIgnored += 1;
@@ -963,16 +780,10 @@ export class ProtocolReader {
 
     const tombstone = tombstoneFromDelete(data as Record<string, unknown>);
     if (tombstone === null) return {};
-    // Counted only when the delete removed something. A tombstone for a key
-    // never held is still reported to listeners below, but `objectsRevoked` is
-    // read precisely when somebody is working out whether a revocation landed,
-    // and a delete of nothing would inflate the one number that answers that.
+    // Counted only if it removed something; listeners see it either way.
     if (target.delete(tombstone).length > 0) this.diagnostics.objectsRevoked += 1;
-    // A revocation identifies the payload as ours just as a put does.
+    // A revocation identifies the skill payload just as a put does.
     this.skillsInPayload += 1;
-    // A tombstone, not a skill object: it carries identity and no content, so a
-    // listener that only needs "something changed" works unchanged while one that
-    // reads content sees no `content` field. Documented on `addListener`.
     this.changes.push({ key: tombstone.key, version: tombstone.objectVersion });
     return {};
   }
@@ -980,30 +791,29 @@ export class ProtocolReader {
   private payloadTransferred(data: unknown): TransferOutcome {
     const state = (data as { state?: unknown } | null)?.state;
     const payloadId = this.intentPayloadId ?? payloadIdFromSelector(state);
-    // Regardless of whether a pending set exists: a `none` intent builds none,
-    // and the transfer that completes it still names a payload whose selector
-    // must not become the resume point if it is not the payload skills arrive on.
+    // Checked even with no pending set (a `none` intent), so a foreign payload's
+    // selector never becomes the resume point.
     const foreign = this.isForeignPayload(payloadId);
+    // Nothing is applied without a pending set — a `none` intent no object
+    // followed, or an intent code this SDK does not recognise — and a foreign
+    // payload's contents are declined below.
+    const applied = !foreign && this.pending !== null;
     if (foreign) {
       this.warnForeignPayload(payloadId);
       this.diagnostics.payloadsIgnored += 1;
       this.changes = [];
     } else if (this.pending !== null) {
-      // A full transfer revokes by omission: whatever it did not carry is gone,
-      // and no `delete-object` ever says so. Diffed before the swap, so those
-      // departures reach listeners as tombstones like any other revocation.
+      // A full transfer revokes by omission. Diff before the swap so those
+      // departures reach listeners as tombstones.
       if (this.intent === INTENT_TRANSFER_FULL) {
         const revoked = revocationsBetween(this.committed, this.pending);
         this.changes.push(...revoked);
-        // Every departure is reported; only a key that left counts as revoked.
         this.diagnostics.objectsRevoked += keysFullyRevoked(revoked, this.pending);
       }
       this.committed.replaceWith(this.pending);
       this.hashless.warnIfNothingCanVerify(this.committed.allRaw());
       if (this.skillsInPayload > 0 && payloadId !== null) {
-        // Learnt, not configured: nothing below the seam is told which payload
-        // is which, so the payload that carried a skill put or revocation is
-        // the payload skills arrive on.
+        // The payload that carried a skill put or delete is the skill payload.
         this.skillPayloadId = payloadId;
       }
     }
@@ -1014,14 +824,19 @@ export class ProtocolReader {
     const { changes } = this;
     this.changes = [];
     this.diagnostics.payloadsTransferred += 1;
+    if (!applied) {
+      // Nothing applied, so nothing to report — and in particular not a commit,
+      // because a commit publishes the first payload, and `isInitialized()` (what
+      // `writeSkills('*')` authorizes a prune on) must not go true over a store
+      // that received nothing. Not up to date either: only the `none` intent says
+      // that, on its own event. The selector is withheld too — it names a payload
+      // never applied.
+      return { changes: [], basis: null };
+    }
     return {
       committed: true,
       changes,
-      // A declined payload must not move the resume point. Adopting the selector
-      // of a transfer whose contents this layer just threw away would ask the
-      // next poll or stream to resume from someone else's payload, and skill
-      // updates could stop arriving while every diagnostic still read healthy.
-      basis: foreign || typeof state !== 'string' || state === '' ? null : state,
+      basis: typeof state !== 'string' || state === '' ? null : state,
     };
   }
 
@@ -1043,36 +858,31 @@ export class ProtocolReader {
   private goodbye(data: unknown): TransferOutcome {
     const parsed = (data ?? {}) as { reason?: unknown; silent?: unknown; catastrophe?: unknown };
     this.abandonInFlight();
+    // Debug only: a goodbye after a completed exchange is a routine recycle, and
+    // the reader cannot tell. The delivery loop warns for one that counts.
     if (parsed.silent !== true) {
-      warn(`FDv2 connection closing: ${String(parsed.reason)}`);
+      debug(`FDv2 connection closing: ${String(parsed.reason)}`);
     }
     if (parsed.catastrophe === true) {
       return { fatal: `server sent a catastrophic goodbye: ${String(parsed.reason)}` };
     }
-    // Expected: the server is closing a connection it was serving, which is how
-    // a long-lived stream gets recycled.
+    // How the server recycles a long-lived stream.
     return { disconnect: `server said goodbye: ${String(parsed.reason)}`, expected: true };
   }
 
   // -- payload identity ----------------------------------------------------
 
   /**
-   * Whether a transfer completes a payload other than the one skills arrive on.
-   *
-   * `false` unless both payloads are known, so one-payload delivery and the
-   * first transfer of a connection are always applied.
+   * Whether a transfer completes a payload other than the skill payload.
+   * `false` unless both payload ids are known.
    */
   private isForeignPayload(payloadId: string | null): boolean {
     return this.skillPayloadId !== null && payloadId !== null && payloadId !== this.skillPayloadId;
   }
 
   /**
-   * One warning per reader for an intent describing more than one payload.
-   *
-   * Not an error: reading only the first is what the protocol asks for. But it
-   * means the first payload is no longer *guaranteed* to be the skill payload,
-   * and an intent for another payload arriving before any skill has been seen is
-   * the one case `isForeignPayload` cannot catch.
+   * One warning per reader for an intent describing more than one payload: the
+   * first is then not guaranteed to be the skill payload.
    */
   private warnMultiplePayloads(payloads: unknown[]): void {
     if (this.warnedMultiplePayloads) return;
@@ -1105,20 +915,14 @@ export class ProtocolReader {
 /** A failure retrying cannot fix: bad credential, forbidden, wrong URI. */
 export class FatalTransportError extends Error {}
 
-/**
- * A connection that ended and is worth retrying. Carries a server-requested
- * delay when given one.
- */
+/** A failure worth retrying. Carries a server-requested delay when given one. */
 export class RecoverableTransportError extends Error {
   constructor(
     message: string,
     readonly retryAfterMs: number | null = null,
     /**
-     * Whether the server closed a connection it had been serving normally —
-     * a `goodbye` on a connection that reached a working server. Retried like
-     * any other, but neither logged as a failure nor counted against
-     * `maxConsecutiveFailures`. A `goodbye` on a connection that never got that
-     * far is not expected: it delivered nothing, so it counts.
+     * A `goodbye` after a completed exchange: retried, but not logged as a
+     * failure or counted in `connectionFailures`.
      */
     readonly expected = false,
   ) {
@@ -1127,10 +931,9 @@ export class RecoverableTransportError extends Error {
 }
 
 /**
- * An HTTP 400 for a request carrying client state — the `basis` selector, or an
- * `If-None-Match` etag. That state is the one part of the request that can go
- * stale, so it is dropped and a full transfer requested once before the status
- * is treated as fatal.
+ * An HTTP 400. If the request carried client state (`basis` or an
+ * `If-None-Match` etag), that state is dropped and a full transfer requested
+ * once; a 400 for a request with no state is fatal.
  */
 export class StaleRequestStateError extends RecoverableTransportError {}
 
@@ -1143,29 +946,25 @@ const FORBIDDEN_ADVICE =
   'The FDv2 protocol is opt-in per LaunchDarkly account and is served as HTTP 403 while it is off. Skill ' +
   'delivery needs it enabled; contact LaunchDarkly support to enable it for your account.';
 
-/** `Retry-After` in milliseconds, when the server sent a usable one. */
+/**
+ * `Retry-After` in milliseconds, or `null` when absent or unusable (blank, the
+ * HTTP-date form, or a non-finite number), in which case normal backoff applies.
+ */
 export function retryAfterMs(headers: Headers | null | undefined): number | null {
   const raw = headers?.get('Retry-After');
   if (raw === null || raw === undefined) return null;
   const value = raw.trim();
-  // A blank header is not a delay of zero. `Number('')` is 0 and finite, and a
-  // proxy that sends the header empty would otherwise collapse every backoff.
+  // `Number('')` is 0, so a blank header would otherwise read as no delay.
   if (value === '') return null;
   const seconds = Number(value);
-  // The HTTP-date form is legal and rare; falling back to our own backoff is
-  // better than parsing a date to honour it approximately.
   if (!Number.isFinite(seconds)) return null;
   return Math.max(0, seconds * 1000);
 }
 
 /**
- * The fatal error for a 3xx. Both fetches are sent with `redirect: 'manual'`,
- * because the default `'follow'` copies every request header onto the
- * redirected request, `Authorization` included, so a 3xx from a proxy or a
- * misconfigured private instance would hand the SDK key to whatever host
- * `Location` names. Same-host redirects are refused too: the endpoints this
- * module calls do not redirect, and a 304 is not a redirect and never reaches
- * here.
+ * The fatal error for a 3xx. Requests use `redirect: 'manual'` because following
+ * a redirect would forward the `Authorization` header (the SDK key) to whatever
+ * host `Location` names. The FDv2 endpoints never redirect.
  */
 function redirectRefused(status: string): FatalTransportError {
   return new FatalTransportError(
@@ -1176,10 +975,8 @@ function redirectRefused(status: string): FatalTransportError {
 }
 
 /**
- * The error for a response `fetch` answered with `redirect: 'manual'`, or
- * `null` when it was not a redirect. A runtime that withholds the status of a
- * redirect answers with an `opaqueredirect` response instead; that is still a
- * redirect and still refused.
+ * The error for a redirect response (including an `opaqueredirect`), or `null`
+ * when the response is not a redirect.
  */
 function refusedRedirect(response: Response): FatalTransportError | null {
   if (response.type === 'opaqueredirect') return redirectRefused('a 3xx status');
@@ -1200,17 +997,17 @@ export function classifyStatus(status: number, headers?: Headers | null): Error 
   if (status === 403) return new FatalTransportError(`LaunchDarkly returned HTTP 403. ${FORBIDDEN_ADVICE}`);
   if (status >= 300 && status < 400 && status !== 304) return redirectRefused(`HTTP ${status}`);
   if (status === 404) {
+    // Typically a mistyped base URI; retrying will not help.
     return new FatalTransportError(
       'LaunchDarkly returned HTTP 404 for the FDv2 endpoint. Check the base URI, and that this instance serves ' +
         '/sdk/poll and /sdk/stream.',
     );
   }
-  // A 400 is the one rejection the adapter can act on: the selector it sent may
-  // be one the server no longer accepts. Recoverable so the selector can be
-  // dropped and a full transfer requested; fatal once that has been tried.
+  // The selector sent may be stale: recoverable once (see `StaleRequestStateError`).
   if (status === 400) return new StaleRequestStateError(`LaunchDarkly returned HTTP 400. ${REQUEST_ADVICE}`);
 
-  // View-scoped SDK keys can't carry skills payloads yet, so that is the most likely cause of a 422
+  // No payload matching the declared kinds is available on this connection,
+  // most often because of a view-scoped SDK key. Fatal.
   if (status === 422) {
     return new FatalTransportError(
       'LaunchDarkly will not deliver Agent Skills on this connection (HTTP 422). The usual cause is a view-scoped ' +
@@ -1232,17 +1029,11 @@ export type PollResult = {
 };
 
 /**
- * Reads a whole poll body, holding no more than `limit` UTF-16 code units of it.
+ * Reads a whole poll body in chunks, abandoning it as soon as it exceeds `limit`
+ * UTF-16 code units (fatal; see {@link MAX_RESPONSE_CHARS}).
  *
- * Read in chunks rather than all at once so a body that is never going to be
- * accepted is abandoned as soon as it crosses the bound, instead of being
- * buffered whole by `response.text()` and measured after — which is no bound at
- * all, because by then the allocation has already happened.
- *
- * Deliberately does not touch the caller's {@link ReadDeadline}. In `'poll'`
- * mode that deadline bounds the whole request, body included; touching it per
- * read would silently turn it into the per-read gap that `'stream'` mode wants
- * and polling does not.
+ * Does not touch the {@link ReadDeadline}, so in `'poll'` mode the timeout
+ * bounds the whole request.
  */
 async function readBoundedText(body: ReadableStream<Uint8Array>, limit: number): Promise<string> {
   const reader = body.getReader();
@@ -1254,20 +1045,16 @@ async function readBoundedText(body: ReadableStream<Uint8Array>, limit: number):
       if (done) break;
       text += decoder.decode(value, { stream: true });
       if (text.length > limit) {
-        throw new RecoverableTransportError(
+        throw new FatalTransportError(
           `polling response exceeded the ${limit} character transport bound ` +
-            `(at least ${text.length} received); nothing from it was applied`,
+            `(at least ${text.length} received); nothing from it was applied. ${OVERSIZED_ADVICE}`,
         );
       }
     }
-    // Flushes a truncated multi-byte sequence at the very end of the body as
-    // U+FFFD rather than dropping it, so a cut-short body fails in `JSON.parse`
-    // as the malformed payload it is.
+    // Flush a truncated trailing sequence as U+FFFD so `JSON.parse` rejects it.
     return text + decoder.decode();
   } finally {
-    // Same contract as `iterSse`: cancelling closes the connection underneath,
-    // so a body abandoned at the bound does not leave a socket open behind the
-    // retry. Best effort — the stream may already be errored or closed.
+    // Close the connection so an abandoned body leaves no socket open.
     reader.cancel().catch(() => {});
     try {
       reader.releaseLock();
@@ -1278,11 +1065,8 @@ async function readBoundedText(body: ReadableStream<Uint8Array>, limit: number):
 }
 
 /**
- * Unwraps `{"events": [...]}`.
- *
- * Polling and streaming carry the *identical* event objects — polling just wraps
- * them in an envelope — which is why the protocol state machine above is shared
- * and neither mode has its own copy of the semantics.
+ * Unwraps `{"events": [...]}`. Poll and stream events are identical, so both
+ * modes share one protocol reader.
  */
 export function decodePollBody(body: string): Array<[string, unknown]> {
   let parsed: unknown;
@@ -1309,10 +1093,9 @@ export function decodePollBody(body: string): Array<[string, unknown]> {
 /**
  * A signal that aborts when `parent` does, or when `ms` pass without `touch()`.
  *
- * This is the one network timeout. In `'poll'` mode nothing touches it, so it
- * bounds the whole request; in `'stream'` mode every completed read touches it,
- * so it bounds the gap between reads. `expired` tells the two abort causes
- * apart: a store closing is not a failure, a stream gone quiet is.
+ * The one network timeout: untouched in `'poll'` mode (bounds the whole
+ * request), touched per read in `'stream'` mode (bounds the gap between reads).
+ * `expired` distinguishes a timeout from the store closing.
  */
 export type ReadDeadline = {
   readonly signal: AbortSignal;
@@ -1344,8 +1127,7 @@ export function readDeadline(parent: AbortSignal, ms: number): ReadDeadline {
       expired = true;
       controller.abort(new Error(`no response within ${ms}ms`));
     }, ms);
-    // Unreffed for the same reason the backoff timer is: a background store is
-    // not a reason for `node` to keep running.
+    // Unreffed so the timer never keeps the process alive.
     (timer as unknown as { unref?: () => void }).unref?.();
   };
   if (parent.aborted) controller.abort(parent.reason);
@@ -1367,16 +1149,9 @@ export function readDeadline(parent: AbortSignal, ms: number): ReadDeadline {
 }
 
 /**
- * Presents a failed body read as retryable — unless the store is closing, in
- * which case the abort is passed through untouched so the delivery loop reads it
- * as the shutdown it is.
- *
- * A live stream dies mid-body far more often than it refuses to open: a read
- * timeout on a stream that went quiet, a reset, a truncated chunk. Each of those
- * arrives as whatever `fetch` threw, and the delivery loop retries only the
- * transport errors this module defines — anything else it reads as a bug and
- * stops for the process lifetime. Connecting is already wrapped in
- * `FetchRequester.stream`; this is the same promise for the body.
+ * Wraps a failed request or read as `RecoverableTransportError`, unless the store
+ * is closing (the abort passes through). The delivery loop treats other errors
+ * as bugs and stops.
  */
 function readFailure(cause: unknown, what: string, deadline: ReadDeadline | undefined): unknown {
   if (deadline?.parent.aborted) return cause;
@@ -1385,47 +1160,29 @@ function readFailure(cause: unknown, what: string, deadline: ReadDeadline | unde
 }
 
 /**
- * The most the transport will hold in memory from one response, in UTF-16 code
- * units: one whole poll body, or one streamed event — the unterminated tail of
- * its current line plus its accumulated `data:` lines.
+ * The most the transport holds in memory from one poll body or one streamed
+ * event, in UTF-16 code units.
  *
- * A memory backstop, not a content limit. Verification caps each skill's content
- * at 10 MiB (`MAX_SKILL_CONTENT_BYTES`) in `skills-core`, and content rides
- * inline in the `put-object` envelope, so this bound has to sit *above* that one
- * or a legitimate large skill becomes undeliverable: the decoder would reject
- * it, the rejection is deterministic, and every retried connection would meet it
- * again until the failure budget ran out and delivery gave up for the process
- * lifetime. It is set far above any payload LaunchDarkly legitimately serves —
- * the two bound different things and move independently.
- *
- * What it is really for is the unbounded case: a server or proxy that never sends
- * a newline, one event whose data never ends, a poll body with no end in sight.
- * Each of those would otherwise grow memory without limit. Crossing the bound is
- * a recoverable transport failure, so the connection is dropped and retried and
- * nothing from the payload in flight is committed, rather than the store giving
- * up.
- *
- * The same number as Python's `MAX_RESPONSE_BYTES`, deliberately, so the two
- * SDKs document one bound. The units are not identical and cannot be: Python
- * counts bytes off the socket, this counts UTF-16 code units after decoding, so
- * non-ASCII content is measured slightly differently either side. Acceptable in
- * a backstop this far above real payloads; it would not be in a limit either SDK
- * enforced as a contract.
+ * A memory backstop set far above any real payload, separate from the per-skill
+ * content limit verification enforces. Crossing it is fatal, like a 422: nothing
+ * is applied and the store keeps its current content, but delivery stops. The
+ * payload's size belongs to the environment, not the connection, so a retry
+ * would download up to this much again on every backoff step and be refused the
+ * same way.
  */
 export const MAX_RESPONSE_CHARS = 64 * 1024 * 1024;
+
+const OVERSIZED_ADVICE =
+  'The payload is larger than this SDK will hold in memory, and a retry would be refused the same way. Contact ' +
+  'LaunchDarkly support.';
 
 /**
  * Decodes an SSE byte stream into `[event name, data]` pairs.
  *
- * Minimal on purpose — this consumes one LaunchDarkly endpoint, not the whole
- * spec: `event:`/`data:` fields, multi-line `data` joined with newlines, a blank
- * line dispatching, and `:` comments skipped. Bounded by
- * {@link MAX_RESPONSE_CHARS} per event.
- *
- * Only the read itself is wrapped as recoverable (see {@link readFailure}).
- * Whatever the consumer's loop body throws while this generator is suspended at
- * a `yield` — a protocol reader bug, a fatal goodbye — passes through `finally`
- * untouched and still surfaces as what it is.
+ * Minimal: `event:`/`data:` fields, multi-line `data` joined with newlines,
+ * blank line dispatches, `:` comments skipped. An event over
+ * {@link MAX_RESPONSE_CHARS} throws a fatal error. Only read failures are
+ * wrapped; errors thrown by the consumer pass through unchanged.
  */
 export async function* iterSse(
   body: ReadableStream<Uint8Array>,
@@ -1438,19 +1195,13 @@ export async function* iterSse(
   let dataLines: string[] = [];
   let dataChars = 0;
 
-  // Two distinct quantities, deliberately not summed into one predicate. The
-  // data already accumulated for the current event is bounded on its own; the
-  // unterminated tail is bounded only once every complete line in the read has
-  // been consumed, at which point the tail is the current event's next line and
-  // adding the two is the honest measure of what one event holds. Summing them
-  // mid-split would measure whole finished events still waiting to be parsed.
+  // Checked separately: the tail is only added to the event's data once every
+  // complete line in the buffer has been consumed.
   const dataOverBound = (): boolean => dataChars > MAX_RESPONSE_CHARS;
   const tailOverBound = (): boolean => buffer.length + dataChars > MAX_RESPONSE_CHARS;
 
-  // Every block that ends clears the buffered fields, whether or not it turns
-  // into an event: a block with no `event:` field is the default `message`
-  // event, which this endpoint never sends, so dropping it is right — but its
-  // `data:` lines must not be left behind to corrupt the block that follows.
+  // Clears the buffered fields at every block end. A block with no `event:`
+  // field is dropped.
   const dispatch = (): [string, unknown] | null => {
     const eventName = name;
     const payload = dataLines.join('\n');
@@ -1496,8 +1247,9 @@ export async function* iterSse(
             dataLines.push(value2);
             dataChars += value2.length + 1;
             if (dataOverBound()) {
-              throw new RecoverableTransportError(
-                `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters of data for one event`,
+              throw new FatalTransportError(
+                `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters of data for one event; ` +
+                  `nothing from it was applied. ${OVERSIZED_ADVICE}`,
               );
             }
           }
@@ -1505,16 +1257,15 @@ export async function* iterSse(
         newline = buffer.indexOf('\n');
       }
       if (tailOverBound()) {
-        throw new RecoverableTransportError(
-          `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters without completing an event`,
+        throw new FatalTransportError(
+          `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters without completing an event; ` +
+            `nothing from it was applied. ${OVERSIZED_ADVICE}`,
         );
       }
     }
   } finally {
     deadline?.clear();
-    // Cancelling closes the connection underneath, so a consumer that stops
-    // early — a goodbye, an error event — does not leave a socket open behind
-    // the reconnect. Best effort: the stream may already be errored or closed.
+    // Close the connection so a consumer that stops early leaves no socket open.
     reader.cancel().catch(() => {});
     try {
       reader.releaseLock();
@@ -1531,12 +1282,10 @@ export type Requester = {
 };
 
 /**
- * The only place this module opens a connection. Uses platform globals only, so
- * the content path adds no HTTP client dependency.
+ * The only place this module opens a connection.
  *
- * `readTimeoutMs` is applied to every request through a {@link ReadDeadline}:
- * connecting, waiting for headers and each body read are all bounded by the
- * same value, and there is deliberately no separate connect timeout.
+ * `readTimeoutMs` bounds every request through a {@link ReadDeadline} (connect,
+ * headers, body); there is no separate connect timeout.
  */
 export class FetchRequester implements Requester {
   /** Origin `GET /sdk/poll` is sent to. */
@@ -1555,17 +1304,11 @@ export class FetchRequester implements Requester {
   }
 
   /**
-   * The request URL: the path, the payload kind this store accepts, and `basis`
-   * once a payload has committed.
+   * The request URL: `?kinds=` on every request (see {@link FDV2_PAYLOAD_KIND}),
+   * plus `basis` once a payload has committed.
    *
-   * `kinds` is on every request, including the first one, because it selects
-   * what the connection is served rather than describing what it already holds
-   * (see {@link FDV2_PAYLOAD_KIND}).
-   *
-   * Deliberately no `mv` (data model version). That parameter selects the *flag*
-   * data model; delivery overrides whatever a request asks for with the
-   * payload's own default for any non-flagging payload, so sending it would
-   * state a preference that is ignored.
+   * No `mv` parameter: it selects the flag data model and does not apply to
+   * skills.
    */
   private url(origin: string, path: string, basis: string | null): string {
     const params = new URLSearchParams({ kinds: FDV2_PAYLOAD_KIND });
@@ -1573,34 +1316,25 @@ export class FetchRequester implements Requester {
     return `${origin}${path}?${params.toString()}`;
   }
 
-  /**
-   * One `GET /sdk/poll`. Honours `If-None-Match` and returns 304 as a
-   * first-class outcome rather than as an error.
-   */
+  /** One `GET /sdk/poll`. A 304 is a first-class outcome, not an error. */
   async poll(basis: string | null, etag: string | null, signal: AbortSignal): Promise<PollResult> {
     const headers: Record<string, string> = { Authorization: this.sdkKey, Accept: 'application/json' };
     if (etag) headers['If-None-Match'] = etag;
 
-    // Nothing touches the deadline, so it bounds the whole request: connect,
-    // headers and body together.
+    // Never touched, so it bounds the whole request.
     const deadline = readDeadline(signal, this.readTimeoutMs);
     try {
-      // `redirect: 'manual'`: a 3xx comes back as itself and is refused below,
-      // rather than being followed with the SDK key attached.
       const response = await fetch(this.url(this.baseUri, POLL_PATH, basis), {
         headers,
         signal: deadline.signal,
         redirect: 'manual',
       });
-      // A 304 is a current answer, not a redirect; it is settled before either
-      // check below can see it.
+      // Handled before the redirect check: a 304 means "unchanged".
       if (response.status === 304) return { notModified: true, events: [], etag };
       const redirect = refusedRedirect(response);
       if (redirect) throw redirect;
       if (!response.ok) throw classifyStatus(response.status, response.headers);
-      // A 200 with no body at all is not a payload; `decodePollBody` rejects the
-      // empty string as the malformed response it is, under the same recoverable
-      // error as any other unusable body.
+      // An empty body fails in `decodePollBody` as a recoverable error.
       const body = response.body === null ? '' : await readBoundedText(response.body, MAX_RESPONSE_CHARS);
       return {
         notModified: false,
@@ -1623,8 +1357,7 @@ export class FetchRequester implements Requester {
       'Cache-Control': 'no-cache',
     };
 
-    // The same deadline bounds the connect and then, touched by `iterSse` on
-    // every read, the gap between reads.
+    // Bounds the connect, then (touched by `iterSse`) the gap between reads.
     const deadline = readDeadline(signal, this.readTimeoutMs);
     let response: Response;
     try {
@@ -1661,16 +1394,24 @@ export class FetchRequester implements Requester {
 // ---------------------------------------------------------------------------
 
 /**
- * Exponential backoff with decorrelating jitter, capped at `maximumMs`.
+ * Exponential backoff with jitter, capped at `maximumMs`.
  *
- * Jitter is subtractive over the *whole* range rather than added on top, so the
- * cap is a real ceiling: a fleet of agent processes restarted together must not
- * reconnect in lockstep, and must not exceed the interval the cap promises.
+ * Jitter is subtracted, never added, so `maximumMs` is a true ceiling.
  */
 export function backoffDelayMs(attempt: number, baseMs: number, maximumMs: number, jitter = 0.5): number {
-  const ceiling = Math.min(maximumMs, baseMs * 2 ** Math.max(0, attempt - 1));
+  // Retries are unbounded, so the attempt number is too. Clamped so the power
+  // stays finite; 2^30 of any base passes any cap. The constructor refuses a
+  // non-positive base, so a zero delay never comes out of here.
+  const exponent = Math.min(Math.max(0, attempt - 1), 30);
+  const ceiling = Math.min(maximumMs, baseMs * 2 ** exponent);
   return ceiling * (1 - jitter * Math.random());
 }
+
+/**
+ * How long a stream must stay open for the reconnect after it to start again at
+ * `initialBackoffMs`, as in the base server-side SDKs. Internal, not an option.
+ */
+export const BACKOFF_RESET_INTERVAL_MS = 60_000;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -1682,8 +1423,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       signal.removeEventListener('abort', onAbort);
       resolve();
     }, ms);
-    // Unreffed so a pending backoff never holds the process open: the store is a
-    // background concern, not a reason for `node` to keep running.
+    // Unreffed so a pending backoff never keeps the process alive.
     (timer as unknown as { unref?: () => void }).unref?.();
     const onAbort = (): void => {
       clearTimeout(timer);
@@ -1699,60 +1439,43 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 
 export type FDv2SkillStoreOptions = {
   /**
-   * `'stream'` by default. Prefer it: a `delete-object` reaches a live stream in
-   * seconds. `'poll'` exists for environments that cannot hold a long-lived
-   * connection, and a revocation there arrives within one `pollIntervalMs`.
+   * `'stream'` (default, recommended: revocations arrive in seconds) or
+   * `'poll'` (revocations arrive within one `pollIntervalMs`).
    */
   readonly mode?: FDv2Mode;
   /**
-   * Origin for `GET /sdk/poll`. Default {@link DEFAULT_BASE_URI}. When given
-   * without `streamUri`, it is used for streaming too, which is what a relay or
-   * private instance serving both endpoints from one host needs.
+   * Origin for `GET /sdk/poll` (default {@link DEFAULT_BASE_URI}). Given without
+   * `streamUri`, it is used for streaming too (relays and private instances).
    *
-   * Must be `https://`; the constructor throws otherwise, because every request
-   * carries the server-side SDK key in `Authorization`. Plain `http://` is
-   * accepted only for a loopback host (`localhost`, `127.0.0.1`, `::1`) serving
-   * a local test double. Redirects from it are never followed.
+   * Must be `https://`; `http://` is accepted only for `localhost`, `127.0.0.1`
+   * or `::1`. The constructor throws otherwise.
    */
   readonly baseUri?: string;
   /**
-   * Origin for `GET /sdk/stream`. Default {@link DEFAULT_STREAM_URI}, or
-   * `baseUri` when that is given, since LaunchDarkly serves streaming from a
-   * separate host but a relay or private instance usually does not.
-   *
-   * Held to the same rule as `baseUri`: `https://`, or plain `http://` to a
-   * loopback host only, and redirects from it are never followed.
+   * Origin for `GET /sdk/stream` (default {@link DEFAULT_STREAM_URI}, or
+   * `baseUri` when that is given). Same `https://` rule as `baseUri`.
    */
   readonly streamUri?: string;
+  /** Milliseconds between polls; positive and finite. Default `30_000`. */
   readonly pollIntervalMs?: number;
   /**
-   * The only network timeout, in milliseconds. Its meaning and default follow
-   * the mode: in `'poll'` it bounds the whole request
-   * ({@link DEFAULT_POLL_TIMEOUT_MS}); in `'stream'` it bounds each wait for the
-   * next bytes ({@link DEFAULT_STREAM_READ_TIMEOUT_MS}), so a stream that goes
-   * quiet reconnects instead of hanging. Must be positive and finite when given.
+   * The only network timeout, in milliseconds; positive and finite. In `'poll'`
+   * mode it bounds the whole request ({@link DEFAULT_POLL_TIMEOUT_MS}); in
+   * `'stream'` mode, each wait for more bytes
+   * ({@link DEFAULT_STREAM_READ_TIMEOUT_MS}).
    */
   readonly readTimeoutMs?: number;
+  /**
+   * The first retry delay, in milliseconds; positive, finite, and no greater
+   * than `maxBackoffMs`. Default `1_000`.
+   */
   readonly initialBackoffMs?: number;
   /**
-   * Caps every delay between retries, including one the server asks for with
-   * `Retry-After`. The header may come from a proxy rather than LaunchDarkly,
-   * and a value in the hours would park revocation for that long.
+   * Caps every retry delay, including `Retry-After`; positive and finite.
+   * Default `30_000`. Recoverable failures are retried for the life of the
+   * store; only a fatal status stops delivery.
    */
   readonly maxBackoffMs?: number;
-  /**
-   * Bounds the retry loop. On exceeding it the transport stops, logs an error,
-   * and the store keeps serving last known good rather than pretending to be
-   * live — `failed` reports it. Only failures in a row count: a committed
-   * payload or a `none` intent resets the count, and a connection the server
-   * closes normally after that is exempt, so a stream being recycled never
-   * approaches the bound, as is the one request built from nothing after a
-   * stale selector is refused. A connection closed before either — including
-   * one that announced a transfer and dropped before committing it — is a
-   * failure like any other, which is what bounds a server that does nothing
-   * but close connections.
-   */
-  readonly maxConsecutiveFailures?: number;
   /** Replaces the built-in `fetch` transport. Intended for testing. */
   readonly requester?: Requester;
 };
@@ -1760,8 +1483,8 @@ export type FDv2SkillStoreOptions = {
 /**
  * A `SkillStore` fed by LaunchDarkly's SDK-facing FDv2 delivery channel.
  *
- * The transport half of Agent Skills. Constructed with the environment's
- * server-side SDK key, started explicitly, and passed to `initClient`:
+ * Constructed with the environment's server-side SDK key, started explicitly,
+ * and passed to `initClient`:
  *
  * ```ts
  * const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
@@ -1773,31 +1496,18 @@ export type FDv2SkillStoreOptions = {
  * await store.close();
  * ```
  *
- * **Server-side only.** Skills are for server-side agent runtimes and skill
- * content is customer-confidential. A mobile key or a client-side environment ID
- * throws from the constructor.
- *
- * **The SDK key goes only where it was pointed.** `baseUri` and `streamUri` must
- * each be `https://` — plain `http://` is refused except to a loopback host, for
- * local test doubles — and redirects are never followed, so a 3xx from a proxy
- * or a private instance is a fatal failure rather than a request carrying the
- * key to whatever host `Location` named.
- *
- * **Delivery is in the background; retrieval is not.** A background task owns
- * the connection and fills memory, and `getObject` only ever reads what has
- * already arrived. A process that calls `getSkill` immediately after `start()`
- * may see an empty store; `waitForSkills` orders boot against the first payload.
- *
- * **Last known good survives an outage.** A transport failure never empties the
- * store and never makes `getObject` throw: it keeps serving what it last
- * received, which is what makes `writeSkills({ onUnavailable: 'keep' })` correct.
- * `diagnostics` and `failed` report the degradation.
- *
- * **What arrives is untrusted.** This store holds raw wire objects verbatim and
- * verifies nothing — integrity verification lives at the accessor boundary so it
- * applies to every store equally. In particular an object with no `contentHash`
- * is held and then *withheld* by verification; see
- * {@link StoreDiagnostics.hashlessObjects}.
+ * - **Server-side only.** A mobile key or client-side environment ID throws.
+ * - **The SDK key stays where you point it.** URIs must be `https://` (`http://`
+ *   only to loopback) and redirects are never followed.
+ * - **Delivery runs in the background.** `getObject` reads only what has
+ *   arrived. Use `waitForSkills` or `isInitialized` before relying on content.
+ * - **Last known good survives an outage.** A transport failure never empties
+ *   the store or makes `getObject` throw; `diagnostics` and `failed` report it.
+ * - **`close` is final.** A closed store still serves what it received, but
+ *   `start` throws; construct a new store instead.
+ * - **Content is verified by the accessors, not here.** An object with no
+ *   `contentHash` is held and then withheld; see
+ *   {@link StoreDiagnostics.hashlessObjects}.
  */
 export class FDv2SkillStore implements SkillStore {
   private readonly objects = new SkillObjectSet();
@@ -1808,41 +1518,34 @@ export class FDv2SkillStore implements SkillStore {
   private readonly pollIntervalMs: number;
   private readonly initialBackoffMs: number;
   private readonly maxBackoffMs: number;
-  private readonly maxConsecutiveFailures: number;
 
   private basis: string | null = null;
   private etag: string | null = null;
-  /**
-   * The basis the current `etag` was issued against.
-   *
-   * An ETag validates one representation of one resource, and the basis is part
-   * of the request that names it. Holding the pair is what lets `pollOnce` tell
-   * an etag that still answers the question it is about to ask from one that
-   * answers a question it has stopped asking.
-   */
+  /** The basis `etag` was issued for; the etag is only sent with it. */
   private etagBasis: string | null = null;
   private controller: AbortController | null = null;
   private loop: Promise<void> | null = null;
   private failedReason: string | null = null;
-  // Set by `close`, and deliberately not folded into `failedReason`: closing is
-  // the caller's own decision, not a delivery failure, so `failed` stays `null`.
-  // It is what lets `waitForSkills` answer a closed store immediately and
-  // `start` refuse to reopen one.
+  // Set by `close`. Separate from `failedReason`: closing is not a failure.
   private closed = false;
   private firstPayload = false;
   private readonly firstPayloadWaiters: Array<() => void> = [];
-  // Recoverable failures in a row, cleared by a completed exchange with a
-  // working server: a payload that committed, or a `none` intent. Not cleared
-  // by a transfer intent that never commits, and not cleared when a connection
-  // returns, because a stream never returns normally — it only ends by being
-  // dropped, which is a failure, or by a goodbye, which is a failure only when
-  // the connection saying it never completed an exchange.
+  // Recoverable failures in a row; reset by a completed exchange, not by a
+  // connection ending (a stream only ends by being dropped or a goodbye).
   private failures = 0;
-  // Whether the connection now open has completed an exchange with a working
-  // server. Reset per attempt: it is what tells a stream being recycled from
-  // one that says goodbye having delivered nothing, and only the former escapes
-  // the bound.
+  // Whether the current attempt completed an exchange, which separates a
+  // recycled healthy stream from a failed one.
   private reachedServer = false;
+  // The backoff step, kept apart from `failures`: a completed exchange does not
+  // reset it, or a server that answers and then drops would be reconnected at
+  // `initialBackoffMs` for as long as it stayed degraded. It resets after a
+  // stream outlives `_backoffResetIntervalMs`, or a completed poll.
+  private backoffAttempt = 0;
+  // When the current stream connection opened (`performance.now()`), or `null`
+  // before it has.
+  private connectedAt: number | null = null;
+  /** {@link BACKOFF_RESET_INTERVAL_MS}. Exposed for tests; not API. */
+  _backoffResetIntervalMs = BACKOFF_RESET_INTERVAL_MS;
 
   constructor(sdkKey: string, options: FDv2SkillStoreOptions = {}) {
     const key = requireServerSideCredential(sdkKey);
@@ -1851,7 +1554,7 @@ export class FDv2SkillStore implements SkillStore {
       throw new Error(`mode must be 'stream' or 'poll', got ${JSON.stringify(options.mode)}`);
     }
     this.pollIntervalMs = options.pollIntervalMs ?? 30_000;
-    // `NaN` passes a bare `<= 0` guard, and `setTimeout(fn, NaN)` fires at once.
+    // `NaN` passes a `<= 0` check, and `setTimeout(fn, NaN)` fires at once.
     if (typeof this.pollIntervalMs !== 'number' || !Number.isFinite(this.pollIntervalMs) || this.pollIntervalMs <= 0) {
       throw new Error(`pollIntervalMs must be a positive, finite number, got ${String(options.pollIntervalMs)}`);
     }
@@ -1862,10 +1565,23 @@ export class FDv2SkillStore implements SkillStore {
     }
     this.initialBackoffMs = options.initialBackoffMs ?? 1_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
-    this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? 10;
+    // With no failure bound these two are the only limit on the retry loop: a
+    // zero, negative or `NaN` delay is no wait at all, against a failing server.
+    for (const [name, value] of [
+      ['initialBackoffMs', this.initialBackoffMs],
+      ['maxBackoffMs', this.maxBackoffMs],
+    ] as const) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+        throw new Error(`${name} must be a positive, finite number, got ${String(value)}`);
+      }
+    }
+    if (this.initialBackoffMs > this.maxBackoffMs) {
+      throw new Error(
+        `initialBackoffMs (${this.initialBackoffMs}) must not exceed maxBackoffMs (${this.maxBackoffMs})`,
+      );
+    }
     const baseUri = requireHttpsUri(options.baseUri ?? DEFAULT_BASE_URI);
-    // A custom `baseUri` alone means one host serves both endpoints; only the
-    // LaunchDarkly defaults split them.
+    // A lone `baseUri` serves both endpoints.
     const streamUri = requireHttpsUri(
       options.streamUri ?? (options.baseUri === undefined ? DEFAULT_STREAM_URI : baseUri),
       'streamUri',
@@ -1880,10 +1596,9 @@ export class FDv2SkillStore implements SkillStore {
    *
    * Does not await: use `waitForSkills` when boot ordering matters.
    *
-   * Throws once the store has been closed. `close` is final — a store is not a
-   * connection to be reopened — and restarting delivery on one would produce a
-   * store that looks live and is not, which is the failure this whole surface is
-   * built to refuse. Construct a new store instead.
+   * Throws if the store has been closed. A store whose delivery stopped on its
+   * own (`failed` is set) can be started again, with its failure count and
+   * backoff started over.
    */
   start(): this {
     if (this.closed) {
@@ -1892,28 +1607,24 @@ export class FDv2SkillStore implements SkillStore {
           'A closed store still answers from the content it received, so retrieval needs no restart.',
       );
     }
-    if (this.loop !== null) return this;
+    if (this.loop !== null && this.failedReason === null) return this;
+    // A loop that gave up has already returned, so a new one cannot overlap it.
+    this.failedReason = null;
+    this.failures = 0;
+    this.reader.diagnostics.connectionFailures = 0;
+    this.backoffAttempt = 0;
     this.controller = new AbortController();
     this.loop = this.run(this.controller.signal);
     return this;
   }
 
   /**
-   * Stops delivery. Idempotent, and safe to call twice.
+   * Stops delivery and resolves once the delivery loop has exited. Idempotent.
    *
-   * Held content is *not* dropped: a closed store still answers from what it
-   * received, so shutting the transport down does not turn into an integrity
-   * failure or an empty reconcile mid-flight. `shutdown()` is what detaches the
-   * store from the accessors.
-   *
-   * Final, and one-way: `start` throws afterwards rather than opening a second
-   * delivery loop. `failed` stays `null` — closing is not a failure — and
-   * `waitForSkills` answers `false` at once rather than waiting out its timeout
-   * for a payload that cannot arrive.
-   *
-   * Aborting the signal is what interrupts an open stream: the delivery task
-   * spends its life awaiting a read, and a flag it never checks would leave a
-   * healthy stream running until the process exited.
+   * **Final:** `start` throws afterwards; construct a new store to resume.
+   * Held content is kept, so a closed store still serves what it received.
+   * `failed` stays `null`, and pending `waitForSkills` calls resolve at once.
+   * `shutdown()` detaches the store from the accessors.
    */
   async close(): Promise<void> {
     this.closed = true;
@@ -1925,32 +1636,25 @@ export class FDv2SkillStore implements SkillStore {
   }
 
   /**
-   * Resolves once the first payload has been committed, or sooner if delivery
-   * stops for good, or after `timeoutMs`.
+   * Resolves once the first payload arrives, or after `timeoutMs`.
    *
-   * `true` means a payload committed, or a 304 confirmed the payload already
-   * held is the current one — not that any skill in it verified, and not that
-   * the environment has any skills. `false` means the wait timed out, the store
-   * was closed, or delivery stopped for good and no payload will arrive; see
-   * `failed` to tell the last case from the others. Boot ordering is all this
-   * answers; `diagnostics` answers the rest.
+   * Resolves `true` once a payload has committed or a 304 confirmed the one held
+   * is current. That does not mean any skill verified, or that the environment
+   * has skills; see `diagnostics`.
    *
-   * Neither a closed store nor one whose delivery has stopped for good waits:
-   * both answer immediately, whether the wait was already pending when it
-   * happened or started afterwards. A store that did receive a payload still
-   * answers `true` after close, matching what it will still serve.
+   * Resolves `false` on timeout, or immediately if delivery has ended (`close`,
+   * or a failure that will not be retried; `failed` tells them apart). Rejects
+   * for a negative or non-finite `timeoutMs`.
    */
   waitForSkills(timeoutMs = 10_000): Promise<boolean> {
     if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs < 0) {
-      // `setTimeout(fn, NaN)` fires at once, which would read as "timed out" —
-      // a wrong answer rather than a wrong wait.
+      // `setTimeout(fn, NaN)` fires at once and would read as a timeout.
       return Promise.reject(
         new Error(`waitForSkills timeoutMs must be a non-negative, finite number, got ${String(timeoutMs)}`),
       );
     }
     if (this.firstPayload) return Promise.resolve(true);
-    // A closed store, and delivery that has already stopped for good, both have
-    // no payload left to wait for: answer now rather than after the timeout.
+    // No payload can arrive any more.
     if (this.closed || this.failedReason !== null) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
       const waiter = (): void => {
@@ -1958,8 +1662,7 @@ export class FDv2SkillStore implements SkillStore {
         resolve(this.firstPayload);
       };
       const timer = setTimeout(() => {
-        // The timed-out waiter takes itself out of the list. Left in, every
-        // expired wait would be retained for the lifetime of the store.
+        // Remove the expired waiter so it is not retained.
         this.dropWaiter(waiter);
         resolve(this.firstPayload);
       }, timeoutMs);
@@ -1983,24 +1686,20 @@ export class FDv2SkillStore implements SkillStore {
   }
 
   /**
-   * Whether a payload has arrived, so reads reflect delivery rather than an
-   * empty store still waiting for its first one.
+   * Whether a payload has arrived: `waitForSkills` without the wait.
    *
-   * The optional half of the `SkillStore` seam, and the same fact
-   * `waitForSkills` resolves to — without the wait. `writeSkills('*')` consults
-   * it so a reconcile that runs before delivery reports the retrieval
-   * unavailable rather than pruning every managed skill as though the
-   * environment had revoked it.
-   *
-   * Stays `true` once a payload has arrived, including after `close`: a closed
-   * store still answers from what it received, and a later reconcile against
-   * that content is a reconcile against real delivery.
+   * Optional `SkillStore` method. `writeSkills('*')` checks it so a reconcile
+   * before first delivery reports "unavailable" instead of pruning every skill.
+   * Stays `true` after `close`.
    */
   isInitialized(): boolean {
     return this.firstPayload;
   }
 
-  /** Why delivery stopped for good, or `null` while it is running. */
+  /**
+   * Why delivery stopped, or `null` while it is running. Cleared when `start`
+   * runs delivery again.
+   */
   get failed(): string | null {
     return this.failedReason;
   }
@@ -2010,7 +1709,7 @@ export class FDv2SkillStore implements SkillStore {
     return { ...this.reader.diagnostics };
   }
 
-  // -- the SkillStore seam ----------------------------------------------
+  // -- the SkillStore interface -----------------------------------------
 
   getObject(kind: string, key: string, version?: number | null): RawSkillObject | null {
     if (kind !== SKILL_OBJECT_KIND) return null;
@@ -2023,27 +1722,18 @@ export class FDv2SkillStore implements SkillStore {
   }
 
   /**
-   * Registers `fn` to be called for each changed object, at commit.
+   * Registers `fn` to be called once per changed object, when a payload commits
+   * (never mid-transfer).
    *
-   * Fires **once per changed object at payload-transferred**, not as objects
-   * stream in, so a listener never observes a half-applied transfer.
-   * `watchSkills` is the intended consumer.
+   * - A put passes the raw skill object.
+   * - A revocation passes a `{ key, version }` tombstone with no `content`;
+   *   check for `content` before reading it.
    *
-   * A put notifies with the raw skill object. A revocation notifies with a
-   * `{ key, version }` tombstone — it names what went away and carries no
-   * content, since there is none. A listener that only needs "something changed"
-   * works with both; one that reads content must check for `content` rather than
-   * assume it.
+   * `fn` runs inline on the delivery task: keep it cheap and non-blocking.
+   * Errors it throws (or rejections, if async) are logged and swallowed.
    *
-   * `fn` runs inline on the delivery task. Keep it cheap and non-blocking: work
-   * done there delays the next event. An exception it throws is logged and
-   * swallowed, because a broken listener must not be able to kill delivery.
-   *
-   * Throws for any `kind` but `'skill'`. This store notifies skill changes and
-   * nothing else — anything else on the connection is skipped, never dispatched
-   * — so accepting a listener on another kind would hand back a watcher that
-   * silently never fires, which is indistinguishable from one whose objects
-   * never changed.
+   * Throws for any `kind` other than `'skill'`, since such a listener would
+   * never fire.
    */
   addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void {
     if (kind !== SKILL_OBJECT_KIND) {
@@ -2058,14 +1748,9 @@ export class FDv2SkillStore implements SkillStore {
   }
 
   /**
-   * Unregisters `fn` from `kind`. Safe to call from inside a listener: a removal
-   * during one commit takes effect from the next.
-   *
-   * Removes one occurrence; removing a callable that is not registered is a
-   * no-op, so `SkillWatcher.close` can detach unconditionally. Unlike
-   * `addListener` this tolerates any `kind` — a kind that holds no listeners is
-   * simply nothing to remove — so detaching never has to know which kind it
-   * attached under.
+   * Unregisters one occurrence of `fn` from `kind`; a no-op if it is not
+   * registered (any `kind` is accepted). Safe inside a listener (takes effect
+   * from the next commit).
    */
   removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void {
     const listeners = this.listeners.get(kind);
@@ -2075,8 +1760,7 @@ export class FDv2SkillStore implements SkillStore {
   }
 
   private notify(changes: RawSkillObject[]): void {
-    // A copy, so a listener removed mid-commit does not shift its neighbours
-    // out from under the iteration.
+    // Copied so a removal mid-commit does not disturb iteration.
     const listeners = [...(this.listeners.get(SKILL_OBJECT_KIND) ?? [])];
     const report = (cause: unknown): void => {
       error(
@@ -2089,9 +1773,7 @@ export class FDv2SkillStore implements SkillStore {
       for (const listener of listeners) {
         try {
           const result = listener(raw);
-          // An `async` listener rejects later rather than throwing now. Caught
-          // and logged the same way, so it cannot become an unhandled rejection
-          // — which in Node is a process-level event, not a delivery one.
+          // Catch async rejections too, so they never go unhandled.
           if (result instanceof Promise) result.catch(report);
         } catch (cause) {
           report(cause);
@@ -2106,14 +1788,16 @@ export class FDv2SkillStore implements SkillStore {
     while (!signal.aborted) {
       try {
         this.reachedServer = false;
+        this.connectedAt = null;
         if (this.mode === 'stream') await this.streamOnce(signal);
         else await this.pollOnce(signal);
-        // A return because the store is closing is not the server answering.
         if (signal.aborted) return;
-        // A poll that returned is a current answer even when it committed
-        // nothing (HTTP 304). A stream never returns normally; its successes
-        // are counted in `apply`, at each `none` intent and each commit.
+        // A returned poll is a current answer, even a 304. Stream successes are
+        // recorded in `apply`.
         this.recordSuccess();
+        // `pollIntervalMs` already spaces the requests, so a completed poll
+        // also starts the backoff over.
+        this.backoffAttempt = 0;
       } catch (cause) {
         if (signal.aborted) return;
         if (cause instanceof FatalTransportError) {
@@ -2124,13 +1808,9 @@ export class FDv2SkillStore implements SkillStore {
           this.giveUp(`unexpected error in skill delivery: ${cause instanceof Error ? cause.message : String(cause)}`);
           return;
         }
-        let repairingState = false;
         if (cause instanceof StaleRequestStateError) {
-          // The selector and etag are the only client state in the request, so
-          // a rejection of a request carrying neither is the request itself
-          // being refused, and retrying cannot fix it. Carrying one, the state
-          // may be stale: drop it, ask for a full transfer, and let the next
-          // 400 be the fatal one.
+          // With no basis or etag to drop, the 400 is fatal. Otherwise drop them
+          // and request a full transfer once.
           if (this.basis === null && this.etag === null) {
             this.giveUp(cause.message);
             return;
@@ -2138,42 +1818,35 @@ export class FDv2SkillStore implements SkillStore {
           this.basis = null;
           this.etag = null;
           this.etagBasis = null;
-          repairingState = true;
         }
-        // A connection the server closed while serving it normally ended
-        // without being a failure — see `dispatch` for which ones qualify. It
-        // reconnects like one, but it neither counts against
-        // `maxConsecutiveFailures` nor shows up in the diagnostics: every
-        // recycle of an up-to-date stream arrives this way, so counting them
-        // would expire an environment whose skills never change.
+        // A routine stream recycle (see `dispatch`) reconnects without counting
+        // as a failure.
         if (!cause.expected) {
           this.failures += 1;
           this.reader.diagnostics.connectionFailures = this.failures;
           this.reader.diagnostics.lastError = cause.message;
-          // The one request built from nothing after a stale selector is
-          // refused is exempt from the bound, so an outage that has already
-          // spent the budget cannot swallow the one repair available. It
-          // cannot unbound the loop either: the repaired request carries no
-          // state, so a second 400 is fatal on its own, and any other failure
-          // after it meets a budget still over the bound.
-          if (this.failures > this.maxConsecutiveFailures && !repairingState) {
-            this.giveUp(`gave up after ${this.failures} consecutive failures; last error: ${cause.message}`);
-            return;
-          }
         }
+        // Every reconnect advances the step, a recycle included. Only a stream
+        // that stayed open long enough starts it over.
+        if (this.connectedAt !== null && performance.now() - this.connectedAt >= this._backoffResetIntervalMs) {
+          this.backoffAttempt = 0;
+        }
+        this.backoffAttempt += 1;
         const requested = cause.retryAfterMs;
         const delay = Math.min(
           requested !== null && Number.isFinite(requested)
-            ? // A server asking for no delay still gets one: honouring
-              // `Retry-After: 0` literally would reconnect in a loop and burn
-              // the whole retry bound in milliseconds.
+            ? // Floor at `initialBackoffMs` so `Retry-After: 0` cannot cause a
+              // tight reconnect loop.
               Math.max(requested, this.initialBackoffMs)
-            : backoffDelayMs(this.failures, this.initialBackoffMs, this.maxBackoffMs),
-          // `Retry-After` is a request and `maxBackoffMs` is a promise.
+            : backoffDelayMs(this.backoffAttempt, this.initialBackoffMs, this.maxBackoffMs),
+          // Cap at `maxBackoffMs` even if `Retry-After` asks for more.
           this.maxBackoffMs,
         );
         if (!cause.expected) {
           warn(`Skill delivery failed (${cause.message}); retrying in ${Math.round(delay)}ms`);
+        } else {
+          // A routine recycle: nothing above debug.
+          debug(`Skill delivery reconnecting (${cause.message}) in ${Math.round(delay)}ms`);
         }
         await sleep(delay, signal);
         continue;
@@ -2193,20 +1866,18 @@ export class FDv2SkillStore implements SkillStore {
     this.reader.diagnostics.lastError = reason;
     error(
       `Skill delivery has stopped and will not retry: ${reason}. The store keeps serving the last content it ` +
-        'received; skills will not update until the process restarts with a working connection.',
+        'received, and skills will not update until delivery runs again: call start() on this store once the ' +
+        'cause is fixed, or restart the process.',
     );
-    // Release anyone waiting on a first payload that is never coming, rather than
-    // making them eat the full timeout. They resolve `false`: nothing arrived.
+    // Release `waitForSkills` callers now; they resolve `false`.
     this.releaseWaiters();
   }
 
   private apply(name: string, data: unknown): TransferOutcome {
     const outcome = this.reader.handle(name, data);
-    // A completed exchange breaks the row of consecutive failures. A reconnect
-    // whose basis is already current is answered with the `none` intent and
-    // commits nothing, so waiting for a commit alone would leave an unchanging
-    // environment counting healthy connections against its bound — but an
-    // `xfer-*` intent is only a promise, so it does not count until it commits.
+    // A commit or a `none` intent is a completed exchange. Counting `none` keeps
+    // a stream for an unchanging environment from reading as failing. Neither
+    // resets the backoff step; see `backoffAttempt`.
     if (outcome.healthy || outcome.committed) this.reachedServer = true;
     if (outcome.healthy) this.recordSuccess();
     if (outcome.committed) {
@@ -2221,11 +1892,8 @@ export class FDv2SkillStore implements SkillStore {
   private dispatch(outcome: TransferOutcome): void {
     if (outcome.fatal) throw new FatalTransportError(outcome.fatal);
     if (outcome.disconnect) {
-      // A goodbye is only a normal end of service for a connection that got
-      // there: one that says goodbye without ever sending a `server-intent`
-      // delivered nothing, and is retried as the failure it is, under the bound.
-      // Exempting it would let a server that only ever says goodbye reconnect
-      // without limit and without any of it reaching `diagnostics` or `failed`.
+      // A goodbye is routine only after a completed exchange; otherwise it
+      // counts as a failure, so a server that only says goodbye is backed off.
       const expected = outcome.expected === true && this.reachedServer;
       throw new RecoverableTransportError(outcome.disconnect, null, expected);
     }
@@ -2233,41 +1901,43 @@ export class FDv2SkillStore implements SkillStore {
 
   private async pollOnce(signal: AbortSignal): Promise<void> {
     const basis = this.basis;
-    // Only while the pair still holds. The basis is part of the request, so an
-    // etag issued before the basis moved validates a payload we have stopped
-    // asking for, and a server that answered it `304` would be answering the
-    // previous question. One unconditional request after each commit is the
-    // whole cost: a payload that changed was never going to be a 304 anyway.
+    // Send the etag only with the basis it was issued for; a 304 to a stale pair
+    // would describe the previous request.
     const etag = this.etagBasis === basis ? this.etag : null;
     const result = await this.requester.poll(basis, etag, signal);
     if (result.notModified) {
-      // A 304 is a successful, current answer: the payload we hold is the payload
-      // the server has, because the etag that asked for it was issued for a body
-      // this store applied in full. It counts as a first payload so a boot that
-      // reconnects with a cached basis is not blocked on a transfer the server
-      // has no reason to send.
-      this.markFirstPayload();
+      // A 304 confirms the payload this store holds; it cannot establish one.
+      // `isInitialized()` stays false until something commits, so a store that
+      // has received nothing never authorizes a prune of the files on disk. `run`
+      // counts the poll as a healthy answer.
       return;
     }
+    let completed = false;
     for (const [name, data] of result.events) {
-      this.dispatch(this.apply(name, data));
+      const outcome = this.apply(name, data);
+      completed = completed || outcome.committed === true || outcome.healthy === true;
+      this.dispatch(outcome);
     }
-    // Adopted only once the whole body has been applied. A body that threw
-    // partway — an `error` or `goodbye` after an announced transfer — left the
-    // payload it described unapplied, and keeping its etag would let the next
-    // `304` report a store that is missing that payload as current and healthy.
+    if (!completed) {
+      // An etag describes the body it came with, so it is adopted only when that
+      // body is also what the store now holds: a commit, or a `none` intent. A
+      // transfer this SDK could not apply is neither, and keeping its etag would
+      // let the next 304 confirm content never applied. Any etag already held
+      // stays valid, so it is left alone, not cleared.
+      return;
+    }
     this.etag = result.etag;
     this.etagBasis = basis;
   }
 
   private async streamOnce(signal: AbortSignal): Promise<void> {
     const events = await this.requester.stream(this.basis, signal);
+    this.connectedAt = performance.now();
     for await (const [name, data] of events) {
       if (signal.aborted) return;
       this.dispatch(this.apply(name, data));
     }
-    // A stream that ends without a goodbye is a dropped connection, not a
-    // completed operation: reconnect through the backoff path.
+    // A stream that ends without a goodbye is a dropped connection.
     throw new RecoverableTransportError('the FDv2 stream closed unexpectedly');
   }
 }

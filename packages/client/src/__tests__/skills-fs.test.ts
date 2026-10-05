@@ -29,7 +29,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fsOps, SUPPORTS_DIR_FD, SUPPORTS_PROC_FD } from '../safe-fs.js';
 import { _clearState, _setEmitterForTesting, _setStore, InMemorySkillStore, skillRefs } from '../skills.js';
 import { MAX_SKILL_CONTENT_BYTES, recordRevoked } from '../skills-core.js';
-import { writeSkills } from '../skills-fs.js';
+import { MAX_MANIFEST_BYTES, writeSkills } from '../skills-fs.js';
 import type { RawSkillObject, ReconcileAction, ReconcileReport, Skill, SkillStore } from '../types.js';
 import { createSkill, isValidSkillKey, parseAiConfig } from '../types.js';
 
@@ -807,7 +807,7 @@ describe('writeSkills resilience', () => {
   });
 
   it('does not prune when one of two references resolved and the other failed', async () => {
-    // The spec-mandated shape for the second suppression condition, and the one
+    // The second suppression condition, and the one
     // the whole-store-outage case above cannot stand in for: here the run *did*
     // retrieve something, so an implementation that gated pruning on "did we get
     // anything at all" passes that test and fails this one. One reference
@@ -893,7 +893,7 @@ describe('writeSkills resilience', () => {
     // Not *reached*, rather than reached and refused: the prune phase was
     // suppressed outright, so `stale` carries no action at all. This is the
     // assertion that separates the suppression gate from the per-entry deadline
-    // check inside the prune loop (§3.22 resilience), which would have reported
+    // check inside the prune loop, which would have reported
     // a timeout error for the same entry and left the same file on disk.
     expect(byKey.stale).toBeUndefined();
     expect(await readFile(stale, 'utf-8')).toBe(SKILL_BODY);
@@ -1447,7 +1447,7 @@ describe('writeSkills clobber protection', () => {
   });
 
   it('distinguishes the adoption carve-out from an unmanaged file it must refuse', async () => {
-    // Adoption (§3.22) is the one carve-out in this row, and it does not weaken
+    // Adoption is the one carve-out in this row, and it does not weaken
     // it: the only file ever claimed is one whose bytes *already are* the
     // LaunchDarkly-resolved content. So the two have to be asserted against the
     // same setup — the same root, the same absent manifest, the same
@@ -1958,7 +1958,7 @@ const CORRUPT_MANIFESTS: Array<[string, unknown]> = [
   ['version_not_int', { manifestVersion: '1', entries: {} }],
   ['future_version_live_entries', { manifestVersion: 2, entries: liveEntries() }],
   ['version_not_int_live_entries', { manifestVersion: '1', entries: liveEntries() }],
-  // §3.22: the version gate is bounded below as well as above. No release ever
+  // The version gate is bounded below as well as above. No release ever
   // wrote a version under 1, so these are not older schemas this release can
   // still read — they are schemas that never existed.
   ['version_zero_live_entries', { manifestVersion: 0, entries: liveEntries() }],
@@ -1966,6 +1966,39 @@ const CORRUPT_MANIFESTS: Array<[string, unknown]> = [
 ];
 
 const LIVE_ENTRY_MANIFESTS = CORRUPT_MANIFESTS.filter(([name]) => name.endsWith('_live_entries'));
+
+describe('writeSkills oversize manifest', () => {
+  // The manifest is a plain file in a directory the SDK does not own
+  // exclusively, so an unbounded read of it could exhaust the process.
+  it('refuses a manifest over the cap without destroying anything', async () => {
+    const target = await placeManaged(root, 'a', SKILL_BODY);
+    // Derived from the cap, so raising the bound cannot leave this test passing.
+    await writeManifest(root, { manifestVersion: 1, entries: {}, pad: 'x'.repeat(MAX_MANIFEST_BYTES + 1) });
+    const unlinks = interceptUnlink();
+
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(false);
+    expect(errorMessages(report).some((m) => m.includes('cap'))).toBe(true);
+    expect(unlinks).toEqual([]);
+    expect(await readFile(target, 'utf-8')).toBe(SKILL_BODY);
+    // Left for an operator rather than overwritten.
+    expect((await readManifest(root)).pad).toBeDefined();
+  });
+
+  it('still reads a manifest exactly at the cap', async () => {
+    const manifest: Record<string, unknown> = { manifestVersion: 1, entries: {} };
+    const overhead = Buffer.byteLength(JSON.stringify({ ...manifest, pad: '' }), 'utf-8');
+    manifest.pad = 'x'.repeat(MAX_MANIFEST_BYTES - overhead);
+    await writeManifest(root, manifest);
+    expect((await stat(manifestPath(root))).size).toBe(MAX_MANIFEST_BYTES);
+
+    const report = await writeSkills([], root);
+
+    expect(report.ok).toBe(true);
+    expect((await readManifest(root)).pad).toBeDefined();
+  });
+});
 
 describe('writeSkills corrupt manifest', () => {
   it.each(CORRUPT_MANIFESTS)('performs no destructive action and reports an error: %s', async (_label, raw) => {
@@ -2544,7 +2577,7 @@ describe('writeSkills telemetry', () => {
     // entry first (see the test above), so this branch is unreachable end to
     // end. It is still the parity requirement and the defense that holds if that
     // guard is ever relaxed — and it asserts the placeholder's *effect*, the
-    // body being absent, rather than its exact spelling, which no spec fixes.
+    // body being absent, rather than its exact spelling.
     const emitter = new RecordingEmitter();
     _setEmitterForTesting(emitter);
 
@@ -2650,9 +2683,8 @@ describe('writeSkills telemetry', () => {
 // ─── Readiness: a store that has not heard yet must not authorize a prune ────
 
 /**
- * §3.21 "`isInitialized()` is the optional readiness half of the seam" and
- * §3.22 "Pruning is suppressed whenever the run cannot tell what is still
- * current" — the third of the four conditions.
+ * `isInitialized()` is the optional readiness half of the store seam, and
+ * pruning is suppressed whenever the run cannot tell what is still current.
  *
  * Through `allObjects` there is no difference between "this environment holds
  * no skills" and "delivery has not answered yet": both are an empty result.

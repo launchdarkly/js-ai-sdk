@@ -1,50 +1,31 @@
 /**
- * Agent Skills — the internals `skills` and `skills-fs` both need.
+ * Agent Skills internals shared by `skills` and `skills-fs`: the configured
+ * store, telemetry, integrity verification, and store resolution.
  *
- * Everything here is package-internal — nothing in this module is exported from
- * the package index except the two constants that are public API — and the
- * dependency runs one way: this module imports neither `skills` nor `skills-fs`.
+ * Package-internal: nothing here is exported from the package index. This module
+ * imports neither `skills` nor `skills-fs`.
  *
- * What lives here, and why it has to be one copy:
- *
- * - **The store seam and the configured store.** One place holds the store, so
- *   the accessors and the materialization path cannot disagree about whether one
- *   is configured.
- * - **The telemetry seam.** Every signal the feature can emit is constructed by a
- *   `record*` function in this file and nowhere else, which is what makes the
- *   three-signal allowlist enforceable by reading one section. `emit` is never
- *   called from outside this module. The documented `ld.skills.integrity_failure`
- *   log record is built in the same place and for the same reason: it is a
- *   customer-facing detection contract, so it has exactly one construction site.
- * - **Integrity verification.** `verifiedBytes` runs twice per skill by design —
- *   once at the accessor boundary, and again immediately before a write, since a
- *   `Skill` can also be constructed directly by a caller. Sharing the
- *   implementation keeps the two passes from drifting: the integrity signal's
- *   property keys must not depend on which layer caught the defect.
- * - **Store resolution.** `resolveFromStore` is the fetch-and-verify sequence the
- *   accessors and the reconcile share.
- *
- * The store and emitter are injected through `skills._setStore` and
- * `skills._setEmitterForTesting`, which delegate here.
+ * **Everything a store returns is untrusted.** Key, version, size and content
+ * hash are revalidated on every pass, and no store-supplied value reaches a
+ * signal or log line without a shape check.
  */
 
 import { createHash } from 'node:crypto';
 import type { RawSkillObject, Skill, SkillOutcomeReason, SkillReference, SkillStore } from './types.js';
 import { createSkill, isValidSkillKey, isValidSkillVersion } from './types.js';
 
-/** FDv2 object kind that carries skill content. */
+/**
+ * The kind the SDK passes to `SkillStore.getObject` and `SkillStore.allObjects`.
+ * A store adapter may map it onto whatever its transport uses.
+ */
 export const SKILL_OBJECT_KIND = 'skill';
 
 /**
- * Hard cap on skill content. Legitimately delivered skills are well under this
- * bound, so anything larger is withheld regardless of whether its hash checks
- * out.
+ * Hard cap on skill content; anything larger is withheld even if its hash matches.
  *
- * Set well above the platform's own limit on purpose. This is a backstop against
- * absurd input, not a second enforcement of the real bound: the platform refuses
- * oversized skills before they are ever delivered, and a client-side number
- * sitting just above that one would turn every backend increase into an SDK
- * release. The headroom lets the real limit grow without this constant moving.
+ * A backstop against absurd input, set well above LaunchDarkly's own limit so that
+ * limit can grow without this changing. Not the real limit, so do not pre-flight
+ * skill sizes against it.
  */
 export const MAX_SKILL_CONTENT_BYTES = 10 * 1024 * 1024;
 
@@ -52,8 +33,7 @@ const LANGUAGE = 'typescript';
 
 /**
  * What a legitimate content hash looks like. Anything else is redacted before it
- * reaches telemetry — `contentHash` is attacker-controlled, and a store that put
- * the skill body there would otherwise leak it into a signal.
+ * reaches telemetry, so a store cannot leak the skill body through `contentHash`.
  */
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
@@ -62,38 +42,18 @@ const SIGNAL_MATERIALIZED = 'AgentControl Skill Materialized';
 const SIGNAL_REVOKED = 'AgentControl Skill Revoked Received';
 
 /**
- * Stable event identity for the local integrity-failure log record.
- *
- * Documented for customers as something to ingest and alert on, which makes this
- * string a compatibility surface: it must never be renamed. The local record is
- * the *primary* detection path rather than a fallback — the LaunchDarkly-side
- * signal is product telemetry a customer may switch off, and in some instances no
- * LaunchDarkly-side signal is possible even in principle.
+ * Stable event name for the local integrity-failure log record. SIEM rules match
+ * on it, so it must never be renamed.
  */
 const EVENT_INTEGRITY_FAILURE = 'ld.skills.integrity_failure';
 
 /**
- * Why a skill was withheld: a closed vocabulary of ten tokens.
+ * The closed, stable `reason_code` vocabulary for integrity failures; detection
+ * rules can match on these tokens, and every SDK language emits the same ones.
  *
- * Customers alert on these tokens, and every language implementation emits the
- * same ten for the same conditions, so a polyglot fleet writes one detection
- * rule rather than two. An eleventh token is a cross-SDK change — add it
- * everywhere, or not at all.
- *
- * Eight of the ten are one per call site of `recordIntegrityFailure`, decided
- * inside `verifyRawSkill` over a single object, and they fire **both** detection
- * surfaces. `key_mismatch` and `version_mismatch` are the exceptions on both
- * counts: they come from `recordKeyMismatch` and `recordVersionMismatch` at the
- * retrieval boundary, after verification has already passed, and they fire the
- * log record only. They share this vocabulary anyway because a customer's
- * detection rule cares that integrity failed, not about which layer noticed —
- * see `recordKeyMismatch` for why the signal stays out of both.
- *
- * This is a **finer** vocabulary than `SkillOutcomeReason`, which stays five
- * tokens, and the version mismatch is the one condition with a token in each:
- * `version_mismatch` is the code that says which check failed, `wrong_version`
- * the outcome that says what the caller got. The spellings differ deliberately —
- * see `recordVersionMismatch`.
+ * Eight come from `verifyRawSkill` and fire both the log record and the signal.
+ * `key_mismatch` and `version_mismatch` are detected after verification and fire
+ * the log record only (see `recordKeyMismatch`).
  */
 export type IntegrityReasonCode =
   | 'hash_mismatch'
@@ -107,7 +67,10 @@ export type IntegrityReasonCode =
   | 'over_size_cap'
   | 'version_mismatch';
 
-/** What the accessors report when no store is configured. */
+/**
+ * What the accessors report when no store is configured. Callers match on
+ * "skill store"; keep that phrase if the wording changes.
+ */
 export const NO_STORE_MESSAGE =
   'No skill store is configured, so skill content cannot be retrieved. Configure one with ' +
   'initClient({ skillStore: store }) — FDv2SkillStore receives content from LaunchDarkly, and ' +
@@ -118,13 +81,9 @@ export const NO_STORE_MESSAGE =
 // ---------------------------------------------------------------------------
 
 /**
- * The internal telemetry emitter. Private: not exported from the package index.
- *
- * No skills telemetry leaves the process in this release. `client.track()` is the
- * wrong channel — it needs an LD context, spends the customer's event volume, and
- * lands in their data export — and the diagnostic-event channel that would be
- * right has no wrapper-SDK extension point yet. Signals are recorded through this
- * seam so the eventual transport drops in behind it without touching a call site.
+ * The internal telemetry emitter. The default is a no-op: no skills telemetry
+ * leaves the process. Signals are still built, so a transport can be installed
+ * without touching call sites.
  */
 type TelemetryEmitter = {
   record(signal: string, properties: Record<string, unknown>): void;
@@ -137,15 +96,9 @@ const NOOP_EMITTER: TelemetryEmitter = { record: () => undefined };
 // ---------------------------------------------------------------------------
 
 /**
- * Held on a symbol-keyed slot on `globalThis` rather than in a module-level
- * variable, for the same reason `lifecycle.ts` does it for the client singleton:
- * several workspace packages each importing `@launchdarkly/ai-server` resolve
- * separate module instances through their own symlinks, and a module-local store
- * would let `initClient({ skillStore })` called through one of them configure a
- * store that `getSkill` called through another could not see.
- *
- * A separate symbol from the client singleton's, so this module imports nothing
- * from `lifecycle.ts` and the dependency graph stays acyclic.
+ * State lives on a `globalThis` symbol slot rather than in a module variable, so
+ * that separate module instances of `@launchdarkly/ai-server` (e.g. in a
+ * workspace with several symlinked copies) share one configured store.
  */
 const SKILLS_STATE_KEY = Symbol.for('@launchdarkly/ai-server:skills');
 
@@ -164,10 +117,7 @@ function state(): SkillsState {
   return current;
 }
 
-/**
- * Replaces the configured store. Reached through `skills._setStore`; see that
- * function for who calls it.
- */
+/** Replaces the configured store. Reached through `skills._setStore`. */
 export function setStore(store: SkillStore): void {
   state().store = store;
 }
@@ -198,20 +148,9 @@ export function requireStore(): SkillStore {
 /**
  * Whether `store` has received its initial data.
  *
- * `true` for a store that does not implement the optional `isInitialized`,
- * since a hand-populated store is never waiting for anything. Probed rather
- * than required on the seam for the reason `SkillStore` gives: a required
- * member would reject every store without it.
- *
- * This is what keeps `writeSkills('*')` from reading a store that has not yet
- * received a payload as an environment whose every skill was revoked. Retrieval
- * through such a store is reported unavailable, which suppresses pruning — the
- * same treatment a throwing store gets, and for the same reason: deleting a
- * customer's files because content could not be retrieved would turn a slow
- * boot into data loss.
- *
- * A probe that throws counts as not initialized. A store that cannot answer
- * whether it is ready is not one to authorize deletions on.
+ * `true` if the store has no `isInitialized()`. A probe that throws counts as not
+ * initialized. An uninitialized store is reported unavailable, which suppresses
+ * pruning so a slow start cannot delete managed files.
  */
 export function storeIsInitialized(store: SkillStore): boolean {
   const probe = (store as { isInitialized?: unknown }).isInitialized;
@@ -228,8 +167,8 @@ export function storeIsInitialized(store: SkillStore): boolean {
 }
 
 /**
- * Records one signal. Never throws into the calling operation — a broken emitter
- * must not be able to fail a retrieval or a reconcile.
+ * Records one signal. Never throws: a broken emitter must not fail a retrieval or
+ * reconcile.
  */
 function emit(signal: string, properties: Record<string, unknown>): void {
   const emitter = state().emitter ?? NOOP_EMITTER;
@@ -242,23 +181,11 @@ function emit(signal: string, properties: Record<string, unknown>): void {
 }
 
 /**
- * Records an integrity failure: one machine-parseable local log record, and one
- * telemetry signal.
+ * Records an integrity failure as one local log record and one signal.
  *
- * The log record is the load-bearing half. It is written on every failure
- * regardless of how the customer configured telemetry, because it is the only
- * detection surface a customer with telemetry off has, and the only one that can
- * exist at all where no telemetry destination is reachable. Its field set is a
- * documented contract — see the README's observability subsection and `agents.md`
- * — so renaming a key, dropping a field, or emitting a null is a breaking change
- * to a security control, and a new `reason_code` token is a cross-SDK one.
- *
- * Two rules hold across both halves. Neither the skill body nor any filesystem
- * path ever appears: hashes, byte counts, the redacted key, and the fixed reason
- * vocabulary only. And the record's keys are inserted in **alphabetical order**
- * deliberately, so the emitted JSON is byte-identical across SDKs for the same
- * failure, modulo `language`: sorted keys, and no whitespace around the
- * separators. Do not reorder.
+ * Carries hashes and byte counts only, never the skill body. The log record works
+ * even with telemetry off; it adds the event name, action, reason and
+ * `reason_code`. Its fields are a documented contract.
  */
 export function recordIntegrityFailure(
   skillKey: unknown,
@@ -266,11 +193,8 @@ export function recordIntegrityFailure(
   reason: string,
   extra: { version?: unknown; expectedHash?: unknown; observedHash?: string } = {},
 ): void {
-  // Both the key and the expected hash come off the wire, so neither may be
-  // echoed verbatim: a store that set contentHash (or key) to the skill body
-  // would otherwise publish the body itself. Shape-check, then redact — once,
-  // for both the signal and the log record, so the two cannot disagree about how
-  // much of an untrusted string escapes.
+  // Key and expected hash are store-supplied and could carry the skill body:
+  // shape-check, then redact, once for both the signal and the log record.
   const safeKey = isValidSkillKey(skillKey) ? skillKey : '<invalid-key>';
   let safeExpectedHash: string | null = null;
   if (typeof extra.expectedHash === 'string') {
@@ -282,12 +206,10 @@ export function recordIntegrityFailure(
   if (safeExpectedHash !== null) properties.expected_hash = safeExpectedHash;
   if (extra.observedHash !== undefined) properties.observed_hash = extra.observedHash;
 
-  // `reason_code` is deliberately absent from `properties` above: the three
-  // signal names and their property keys are a documented allowlist, and the
-  // vocabulary belongs to the customer-owned detection path, not to LD's counter.
-  //
-  // Absent fields are omitted rather than emitted as null, so a consumer reads
-  // "no hash was computed yet" off the key's absence rather than off a null.
+  // `reason_code` is log-record only; signal properties are a fixed allowlist.
+  // Absent fields are omitted, never null. Keys are inserted in alphabetical
+  // order so the JSON is identical across SDK languages (apart from `language`).
+  // Do not reorder.
   const record: Record<string, unknown> = { action: 'withheld', event: EVENT_INTEGRITY_FAILURE };
   if (safeExpectedHash !== null) record.expected_hash = safeExpectedHash;
   record.language = LANGUAGE;
@@ -297,16 +219,8 @@ export function recordIntegrityFailure(
   record.skill_key = safeKey;
   if (isValidSkillVersion(extra.version)) record.version = extra.version;
 
-  // Emitted twice over, and both forms are required. The message text carries the
-  // event identity verbatim followed by the compact sorted-key JSON, which is the
-  // only form a plain `console.error` transport shows and what makes the line
-  // greppable and byte-comparable across SDKs. The same mapping goes out as a
-  // second argument, which is what a structured-console transport picks up as
-  // data rather than as text to re-parse — the counterpart to Python's
-  // `extra={"ld_skills": record}`. Neither alone is sufficient: a text-only
-  // record is invisible to a structured pipeline, and a structured-only one is
-  // invisible under the default setup, where severity cannot discriminate it from
-  // the other store-failure paths in this module that also log at error level.
+  // Logged as text (for plain consoles and grep) and as a second structured
+  // argument (for structured-console transports). Both are needed.
   // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; integrity failures must be visible
   console.error(`[LaunchDarkly] ${EVENT_INTEGRITY_FAILURE} ${JSON.stringify(record)}`, record);
   emit(SIGNAL_INTEGRITY_FAILURE, properties);
@@ -315,61 +229,28 @@ export function recordIntegrityFailure(
 /**
  * Records a store answering under a key other than the one requested.
  *
- * **Log record only — no product signal.** One of the two integrity failures
- * that fire one surface rather than both — `recordVersionMismatch` is the
- * other, for the same reasons — and the asymmetry is the decision rather than
- * an oversight.
+ * **Log record only, no signal.** A substituted skill may indicate tampering, so
+ * it is logged under `EVENT_INTEGRITY_FAILURE` for existing SIEM rules to catch.
+ * The usual cause, though, is a broken store adapter (stale cache, colliding
+ * key), so it is kept out of product telemetry. `recordVersionMismatch` follows
+ * the same rule.
  *
- * The record fires because a substituting store is a genuine tampering
- * indicator, and the record is the customer-owned detection path — the only one
- * that works when telemetry is opt-out or the instance has no telemetry
- * destination at all. It reuses `EVENT_INTEGRITY_FAILURE` deliberately: that
- * string is a documented compatibility surface a customer's SIEM matches on, so
- * reusing it means an existing rule catches this case without being rewritten,
- * with `reason_code` distinguishing it.
- *
- * The signal stays out because the overwhelmingly common cause of a key mismatch
- * is not an attacker but a **broken store adapter** — a stale cache entry, a
- * colliding key, a wrong index lookup. Counting those as integrity failures in
- * LaunchDarkly's own product counter is the same false positive
- * `resolveFromStore` already refuses when a pinned `getObject` answers with a
- * non-object: it reads that as `absent` rather than inventing a tampering
- * signal from a merely broken adapter.
- *
- * Lives here, beside `recordIntegrityFailure`, so the single-emission-site rule
- * still holds by reading one module.
- *
- * Both keys are shape-checked and redacted on the same rule as every other key
- * that reaches a surface. `served` cannot actually be hostile on the path that
- * calls this — `verifyRawSkill` accepted it first — but that is a property of
- * the current call order rather than of this function, and the check is what
- * stops a future reordering from publishing a body here.
+ * Both keys are shape-checked and redacted, regardless of call order.
  */
 export function recordKeyMismatch(requested: unknown, served: unknown): void {
   const record: Record<string, unknown> = {
     action: 'withheld',
     event: EVENT_INTEGRITY_FAILURE,
     language: LANGUAGE,
-    // Named apart from the eight so a reader of the line can tell the retrieval
-    // boundary from a verification failure without consulting the spec.
     reason: 'the skill store answered under a different key than the one requested',
     reason_code: 'key_mismatch' satisfies IntegrityReasonCode,
-    // The key the store answered under: the one datum that makes a broken
-    // adapter diagnosable, so it is a parseable field rather than prose buried
-    // in `reason`. Record-only, and never added to the signal's allowlist.
+    // The key the store answered under, for diagnosing the adapter.
     served_key: isValidSkillKey(served) ? served : '<invalid-key>',
-    // `skill_key` keeps the meaning it has on every other record — the key the
-    // *caller asked for* — so a rule that groups by it keeps working.
+    // The key the caller asked for, as on every other record.
     skill_key: isValidSkillKey(requested) ? requested : '<invalid-key>',
   };
-  // No `expected_hash` or `observed_hash`: verification passed, so there is no
-  // hash disagreement to report, and an absent field stays absent rather than
-  // being emitted as null. No `version` either — the object's version verified
-  // fine and is not what disqualified the answer.
-  //
-  // Keys above are in alphabetical order, as in `recordIntegrityFailure`, so the
-  // emitted line is byte-identical across SDKs for the same input. Do not
-  // reorder.
+  // No hashes or version: verification passed, so neither disqualified it.
+  // Keys are alphabetical, as in `recordIntegrityFailure`. Do not reorder.
   //
   // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; integrity failures must be visible
   console.error(`[LaunchDarkly] ${EVENT_INTEGRITY_FAILURE} ${JSON.stringify(record)}`, record);
@@ -378,97 +259,37 @@ export function recordKeyMismatch(requested: unknown, served: unknown): void {
 /**
  * Records a store answering a version pin with a different version.
  *
- * **Log record only — no product signal**, the same split `recordKeyMismatch`
- * makes and for the same reason: both are decided at the retrieval boundary
- * after verification has passed, both name a store that answered *something
- * other than what was asked for*, and the overwhelmingly common cause of either
- * is a **broken custom store adapter** rather than an attacker. LaunchDarkly's
- * own counter must not fill up with customers' adapter bugs. The two stay in
- * step: a change that gives one of them a signal has to justify it for both.
+ * **Log record only, no signal**, for the reason `recordKeyMismatch` gives. The
+ * built-in stores answer a pin with that version or `null`, so only a custom
+ * adapter reaches this. `getSkill` returns `null` for `wrong_version`, so this
+ * record is what makes it visible.
  *
- * The record fires even though neither shipped store can reach this path.
- * `FDv2SkillStore` and `InMemorySkillStore` both answer a pin with exactly that
- * version or with `null`, so a pin that misses reads as `absent`; getting here
- * means the store was asked for version N and answered with a well-formed object
- * at version M. The population that does that is the one `key_mismatch` got its
- * record for, and the record is the customer-owned detection path — the only one
- * that works with telemetry off.
- *
- * It is **not** made redundant by `wrong_version` being a public
- * `SkillOutcomeReason`. That token only reaches a caller who used
- * `getSkillResult`; `getSkill` is the documented default and collapses
- * `wrong_version` to `null` exactly as it collapses `integrity_failure`, so
- * without this record an operator on `getSkill` has *zero* visibility into a
- * store answering pins with the wrong version.
- *
- * The `reason_code` is `version_mismatch`, deliberately not `wrong_version`.
- * It keeps the `*_mismatch` family consistent — `hash_mismatch`, `key_mismatch`,
- * `version_mismatch` all say "this check found two values that disagree" — and
- * it keeps one string out of two closed vocabularies with two meanings, so a
- * detection rule matching `wrong_version` cannot be ambiguous about which
- * surface it was written against. Widening `SkillOutcomeReason` is not part of
- * this: the public outcome vocabulary stays five tokens, and only the detection
- * surface changed.
- *
- * Lives here, beside `recordKeyMismatch`, so the single-emission-site rule still
- * holds by reading one module.
- *
- * The key and `served` are shape-checked and redacted on the same rule as every
- * other value that reaches a surface; `requested` is not, and the asymmetry is
- * deliberate. `served` cannot actually be hostile on the path that calls this —
- * `verifyRawSkill`'s `invalid_version` check accepted it first — but that is a
- * property of the current call order rather than of this function, exactly as it
- * is for `recordKeyMismatch`'s `served_key`. The check is also what keeps the
- * field an **integer**, which the sorted-key JSON needs to stay byte-comparable
- * across SDKs: `3` and `"3"` are not the same line. `requested` is the caller's
- * own pin rather than a store-controlled value, so it cannot carry skill content,
- * and coercing a mistyped one would hide the caller's own mistake from their log.
+ * `served` is shape-checked, which also keeps it an integer in the JSON.
+ * `requested` is the caller's own pin and is logged as given.
  */
 export function recordVersionMismatch(key: unknown, requested: number, served: unknown): void {
   const record: Record<string, unknown> = {
     action: 'withheld',
     event: EVENT_INTEGRITY_FAILURE,
     language: LANGUAGE,
-    // Named apart from the eight, as the key mismatch is, so a reader of the
-    // line can tell the retrieval boundary from a verification failure.
     reason: 'the skill store answered with a different version than the one requested',
     reason_code: 'version_mismatch' satisfies IntegrityReasonCode,
-    // The version the store answered with: record-only, paralleling
-    // `served_key`, and never added to the signal's allowlist. Burying it in the
-    // prose `reason` would leave the one datum that makes a broken adapter
-    // diagnosable unparseable. Shape-checked for the reason the doc comment
-    // gives — and the Python SDK emits the same placeholder for the same input.
+    // The version the store answered with, for diagnosing the adapter.
     served_version: isValidSkillVersion(served) ? served : '<invalid-version>',
-    // `skill_key` keeps the meaning it has on every other record — the key the
-    // *caller asked for*. Here it is not what disagreed, but the record still
-    // has to name the skill it is about.
     skill_key: isValidSkillKey(key) ? key : '<invalid-key>',
-    // `version` likewise keeps its meaning everywhere else: the version
-    // **requested**, so a rule that groups or filters on it keeps working. That
-    // this record carries `version` while `recordKeyMismatch`'s does not is
-    // deliberate — there identity is what disagreed and any pin was incidental;
-    // here the two versions *are* the disagreement, so a record naming only one
-    // of them would be undiagnosable.
+    // The version requested, as `version` means on every other record.
     version: requested,
   };
-  // No `expected_hash` or `observed_hash`: verification passed, so the hashes
-  // are not what disqualified the answer and an absent field stays absent
-  // rather than being emitted as null.
-  //
-  // Keys above are in alphabetical order, as in `recordIntegrityFailure`, so the
-  // emitted line is byte-identical across SDKs for the same input. Note that
-  // `served_key` and `served_version` sort adjacently, so a reader who knows one
-  // record's shape can predict the other's. Do not reorder.
+  // No hashes: verification passed, so they did not disqualify it.
+  // Keys are alphabetical, as in `recordIntegrityFailure`. Do not reorder.
   //
   // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; integrity failures must be visible
   console.error(`[LaunchDarkly] ${EVENT_INTEGRITY_FAILURE} ${JSON.stringify(record)}`, record);
 }
 
 /**
- * Records a materialization. Deliberately carries no `target_path` and no
- * filesystem path of any kind — the same reasoning that keeps the skill body out
- * of telemetry keeps the customer's directory layout out. Paths live in the
- * returned `ReconcileReport`, which is user-facing API rather than telemetry.
+ * Records a materialization. Carries no filesystem path; paths are reported in
+ * the returned `ReconcileReport` instead.
  */
 export function recordMaterialized(
   skillKey: string,
@@ -485,28 +306,16 @@ export function recordMaterialized(
   });
 }
 
-/**
- * Records a revocation — a prune that removed a formerly managed skill.
- *
- * Lives here with the other two recorders rather than at the prune site so the
- * allowlist is maintained in one place: every signal this SDK can emit is visible
- * in this section of this module, and nothing outside it touches `emit`.
- */
+/** Records a revocation: a prune that removed a formerly managed skill. */
 export function recordRevoked(skillKey: unknown, version: unknown): void {
-  // Both fields come off the manifest, which is a file on disk anything with
-  // write access to the root can author — exactly as attacker-controlled as a
-  // wire object. Same rule as `recordIntegrityFailure`: shape-check, then
-  // redact, so a hand-edited manifest cannot plant an arbitrary string in a
-  // signal that is otherwise body-free.
+  // Both fields come from the manifest, which is untrusted: shape-check, then
+  // redact.
   const safeKey = isValidSkillKey(skillKey) ? skillKey : '<invalid-key>';
   const properties: Record<string, unknown> = {
     skill_key: safeKey,
     removed_from_disk: true,
     language: LANGUAGE,
   };
-  // Omitted rather than emitted as null: a consumer reads "the manifest entry
-  // recorded no usable version" off the key's absence, and the signal never
-  // carries a null for a field that was not known.
   if (isValidSkillVersion(version)) properties.version = version;
   emit(SIGNAL_REVOKED, properties);
 }
@@ -531,35 +340,18 @@ export function isVerificationFailure(result: VerifiedContent | VerificationFail
 }
 
 /**
- * The whole content half of integrity verification: encode (when the content
- * arrives as a wire string), size, hash.
+ * Verifies content: size cap, then UTF-8 encoding, then sha256 hash.
  *
- * The wire object delivers `content` as a JSON string; this is the one place it
- * is encoded to UTF-8 bytes, and everything downstream — the hash, the `Skill`,
- * the file on disk — carries those bytes. A `Skill` already holds bytes, and they
- * are **snapshotted** here before being hashed, which is load-bearing rather than
- * defensive copying for its own sake: `createSkill` freezes the wrapper but a
- * TypedArray's elements cannot be frozen, so a `Skill` shares its buffer with
- * whoever constructed it (`types.ts` says so). On the write path the hash is
- * computed here and the rename happens several `await`s later — the existence
- * check and the comparison read sit in between — so without the copy a caller
- * mutating `skill.content` during that window writes bytes that were never
- * hashed, which defeats verify-then-write entirely. The snapshot is what makes
- * "the bytes that were hashed are the bytes that get written" true rather than
- * merely likely. Python gets the same guarantee for free, its `bytes` being
- * immutable.
+ * The fixed order means content failing several checks always reports the same
+ * `reason_code`. A `string` (from the wire) is UTF-8 encoded here; a `Uint8Array`
+ * (a `Skill.content`) is copied before hashing, because a `Skill`'s bytes can be
+ * mutated by whoever created it, and the bytes written must be the bytes hashed.
  *
- * Returns the verbatim bytes and their locally computed sha256, or a
- * human-readable reason — having already recorded the integrity signal, so the
- * signal's property set cannot depend on which caller noticed. The hash handed
- * back is the one computed here, never the caller's expected value: the two are
- * equal on this path by construction, and returning the locally derived one keeps
- * an attacker-supplied string out of `Skill`.
+ * Returns the verbatim bytes and the locally computed hash, or a
+ * `VerificationFailure` after recording the integrity failure.
  *
- * This runs twice per skill by design: once at the accessor boundary, and again
- * immediately before a write, because a `Skill` can also be constructed directly
- * by a caller. Sharing the implementation is what keeps those two passes from
- * drifting.
+ * Runs at the accessor boundary and again before a write, because callers can
+ * construct a `Skill` directly. Do not skip the second pass.
  */
 export function verifiedBytes(
   key: string,
@@ -567,16 +359,8 @@ export function verifiedBytes(
   expectedHash: string,
   version: number,
 ): VerifiedContent | VerificationFailure {
-  // A copy on the bytes path, not a bare reference: see the docblock. A string is
-  // already immutable and `encode` allocates, so that path needs no copy.
-  //
-  // `new Uint8Array(content)` rather than `content.slice()`, and the difference is
-  // not stylistic: `Buffer` is a `Uint8Array` subclass, a caller may perfectly
-  // legally hand one to `createSkill`, and `Buffer.prototype.slice` is the legacy
-  // spelling that returns a **view over the same memory** instead of a copy. So
-  // `slice()` would snapshot a plain `Uint8Array` and silently fail to snapshot a
-  // `Buffer` — the fix would look present and not be. The constructor copies for
-  // either, and normalizes a pooled `Buffer` view to a standalone buffer besides.
+  // `new Uint8Array(content)`, not `content.slice()`: `Buffer.prototype.slice`
+  // returns a view over the same memory rather than a copy.
   const encoded = typeof content === 'string' ? new TextEncoder().encode(content) : new Uint8Array(content);
 
   if (encoded.byteLength > MAX_SKILL_CONTENT_BYTES) {
@@ -585,24 +369,16 @@ export function verifiedBytes(
     return { reason };
   }
 
-  // A lone surrogate has no UTF-8 encoding; TextEncoder substitutes U+FFFD for
-  // it rather than throwing, so the round-trip is what detects it. There are no
-  // bytes the server could have hashed, so this is not authentic content — and
-  // the substituted bytes must never be allowed to satisfy the hash comparison.
-  // Only a wire string can carry a lone surrogate; bytes are already just bytes.
-  //
-  // `ignoreBOM: true` is load-bearing: a default decoder consumes a leading
-  // U+FEFF, so authentic content that starts with a BOM would round-trip to a
-  // shorter string and be withheld as `not_utf8` even though its bytes hash
-  // correctly. It does not weaken the surrogate check, which is what this is for.
+  // A lone surrogate has no UTF-8 encoding; TextEncoder silently substitutes
+  // U+FFFD, so a decode round-trip detects it before the hash check.
+  // `ignoreBOM: true` keeps a leading BOM from failing the round-trip.
   if (typeof content === 'string' && new TextDecoder('utf-8', { ignoreBOM: true }).decode(encoded) !== content) {
     const reason = 'content is not encodable as UTF-8';
     recordIntegrityFailure(key, 'not_utf8', reason, { version, expectedHash });
     return { reason };
   }
 
-  // sha256, lowercase hex, over the verbatim bytes — no canonicalization and no
-  // parsing of any kind anywhere in the integrity path.
+  // sha256, lowercase hex, over the verbatim bytes; no canonicalization.
   const observedHash = createHash('sha256').update(encoded).digest('hex');
   if (observedHash !== expectedHash) {
     recordIntegrityFailure(key, 'hash_mismatch', 'content hash mismatch', { version, expectedHash, observedHash });
@@ -613,11 +389,10 @@ export function verifiedBytes(
 }
 
 /**
- * Turns one untrusted raw store object into a `Skill`, or withholds it.
+ * Turns one untrusted raw store object into a `Skill`, or returns `null`.
  *
- * On any failure the skill is treated as missing, the integrity signal is
- * recorded, and an error is logged. No unverified content is ever returned to
- * user code.
+ * On failure, records the integrity failure and logs an error. Unverified
+ * content is never returned.
  */
 export function verifyRawSkill(raw: unknown): Skill | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -664,6 +439,31 @@ export function verifyRawSkill(raw: unknown): Skill | null {
   });
 }
 
+/**
+ * Logs one warning per batch when content was withheld, with the counts.
+ *
+ * Makes withholding visible, especially when nothing verified and the empty
+ * result would look like "no skills".
+ */
+export function logWithholdingSummary(subject: string, requested: number, resolved: number): void {
+  const withheld = requested - resolved;
+  if (withheld <= 0) return;
+  if (resolved === 0) {
+    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; an empty result must not read as "no skills"
+    console.warn(
+      `[LaunchDarkly] All ${requested} ${subject} were withheld and no skill content is available. Every ` +
+        'object failed verification — check that the delivered objects carry a contentHash matching the ' +
+        'sha256 of their content.',
+    );
+    return;
+  }
+  // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; withheld skills must be visible
+  console.warn(
+    `[LaunchDarkly] ${withheld} of ${requested} ${subject} were withheld and are unavailable; see the ` +
+      'preceding errors for the per-skill reason.',
+  );
+}
+
 /** The one wording for "the store could not answer", used by every path. */
 export function storeThrew(error: unknown): string {
   const name = error instanceof Error ? error.constructor.name : 'unknown error';
@@ -681,15 +481,10 @@ export type RawListing = {
 /**
  * Lists every raw object the store holds, or reports why it could not.
  *
- * A throwing store is caught here rather than propagated so that `allSkills` and
- * the `'*'` reconcile path log and word the failure identically. Letting the
- * exception out instead would make each of them re-derive the log line and the
- * message, which is the drift this module exists to prevent.
- *
- * An answer that is not an object is a broken store, on the same footing as one
- * that threw — **not** an empty one. Collapsing it to `{}` would make a store
- * that served nothing usable indistinguishable from a store that holds no
- * skills, which reads downstream as "every skill was revoked".
+ * One entry per (key, version); use `newestByKey` for one per key. A throwing
+ * store is caught and reported in `error`. A non-object answer is treated as a
+ * broken store, not an empty one, so it cannot read downstream as "every skill
+ * was revoked".
  */
 export function allRawObjects(store: SkillStore): RawListing {
   let objects: unknown;
@@ -717,30 +512,15 @@ export type ServedObject = {
 };
 
 /**
- * One raw object per skill key — the highest version of each, paired with the
- * store key it was served under.
+ * The highest version of each skill key, paired with its store key (used to
+ * attribute failures when the object's own key is unusable).
  *
- * `allObjects` may hold several versions of one key, and both callers that
- * consume the whole store want one skill per key: `allSkills` because a list
- * holding two versions of one key is not a set of skills, and the `'*'`
- * reconcile because `<root>/<key>/SKILL.md` is a single path and writing it twice
- * in one run is a bug rather than a policy.
- *
- * The store key is carried through rather than discarded because the reconcile
- * attributes a failure to it when the object's own key is unusable.
- *
- * An object too malformed to carry a usable key and version is **kept**, so
- * verification is what withholds it: a silently dropped object falls out of the
- * requested set, and prune would then delete the last known-good copy already on
- * disk. The exception is an object whose skill key resolved anyway from another
- * version — there the resolved object already holds the key in the requested
- * set, so keeping the malformed one would only report a withholding for a key
- * that in fact resolved.
+ * Objects without a usable key and version are **kept** so verification reports
+ * them; dropping them would let prune delete the last good copy on disk. They are
+ * dropped only when their key resolved from another version.
  */
 export function newestByKey(objects: Record<string, RawSkillObject>): ServedObject[] {
-  // The winning version is carried beside the object rather than re-read off it:
-  // `RawSkillObject.version` is `unknown`, and narrowing it once at the point it
-  // was validated is what keeps the comparison from needing a cast.
+  // The validated version is kept beside the object so the comparison needs no cast.
   const best = new Map<string, { served: ServedObject; version: number }>();
   const unusable: ServedObject[] = [];
   for (const [objectKey, raw] of Object.entries(objects)) {
@@ -753,11 +533,6 @@ export function newestByKey(objects: Record<string, RawSkillObject>): ServedObje
     const held = best.get(key);
     if (held === undefined || version > held.version) best.set(key, { served: { objectKey, raw }, version });
   }
-  // An unusable object whose own key resolved from another version is dropped
-  // here rather than passed on: the resolved object already holds that key in
-  // the requested set, so prune is already held off the copy on disk and the
-  // only thing the malformed sibling could still add is a withholding reported
-  // against a key that resolved.
   const withheld = unusable.filter(({ raw }) => {
     const key = typeof raw === 'object' && raw !== null ? raw.key : undefined;
     return !(isValidSkillKey(key) && best.has(key));
@@ -774,46 +549,24 @@ export type Resolution = {
   readonly skill?: Skill | null;
   readonly error?: string | null;
   /**
-   * Which of the five public outcomes this resolution is.
-   *
-   * Stated explicitly at every construction site, never derived from `error`.
-   * `getSkillResult` publishes this token as API and customers branch on it, so
-   * pattern-matching a prose string to decide what a fail-closed branch sees is
-   * exactly the fragility the typed outcome exists to remove — and it is why the
-   * field is required: a sixth internal outcome has to choose a public token
-   * rather than inherit `'absent'` by omission.
-   *
-   * Distinct from `unavailable`, which is narrower and answers a different
-   * question. See below.
+   * Which of the five public outcomes this is; `getSkillResult` publishes it.
+   * Required, so every construction site must choose one.
    */
   readonly reason: SkillOutcomeReason;
   /**
-   * `true` when the *store* could not answer — it threw — rather than when it
-   * answered "no". Only the former suppresses pruning: deleting managed files
-   * because a lookup failed would turn an outage into data loss.
-   *
-   * Kept alongside `reason` rather than folded into it: the materialization path
-   * also sets it for conditions that never reach an accessor (an exhausted
-   * deadline, an absent store), so the two fields are not redundant.
+   * `true` when the store could not answer, rather than answered "no"; set
+   * exactly when `reason` is `store_unavailable`. Suppresses pruning, so an
+   * outage cannot delete managed files.
    */
   readonly unavailable?: boolean;
 };
 
 /**
- * Fetches one key and verifies it — the sequence the accessors and the
- * materialization path share.
+ * Fetches one key from `store` and verifies it.
  *
- * Written once on purpose: three call sites would otherwise each carry a copy,
- * and the raising-store policy is exactly the kind of detail that drifts.
- *
- * `wantedVersion` goes *into* the lookup, because a store may hold several
- * versions of one key and only it can pick between them; `null` asks for the
- * newest. The equality check afterwards is kept as a **defense**, not as the
- * selection mechanism: the store is untrusted, so an answer that is not the
- * version that was asked for is withheld rather than returned. The key is
- * checked the same way and for the same reason: identity is read off the object
- * itself, so an answer served under a different key would otherwise be returned
- * under the caller's key while carrying its own.
+ * `wantedVersion` is passed to the store (`null` for the newest). Because the
+ * store is untrusted, an answer with a different key or version is still
+ * withheld.
  */
 export function resolveFromStore(store: SkillStore, key: string, wantedVersion: number | null): Resolution {
   let raw: RawSkillObject | null | undefined;
@@ -834,19 +587,8 @@ export function resolveFromStore(store: SkillStore, key: string, wantedVersion: 
     return { error: `skill '${key}' failed integrity verification and was withheld`, reason: 'integrity_failure' };
   }
   if (skill.key !== key) {
-    // `integrity_failure` rather than `absent`: content was delivered and its
-    // identity did not verify, which is the one token a caller is expected to
-    // fail closed on. Reporting `absent` would file a store that substitutes one
-    // skill for another in the bucket the same caller is invited to tolerate. It
-    // is not `wrong_version` either — that token names a version mismatch
-    // specifically, and there is deliberately no `wrong_key` to parallel it.
-    //
-    // Records the log surface but not the product signal. `verifyRawSkill` has
-    // already passed, so this is not a verification failure and does not go
-    // through `recordIntegrityFailure`; see `recordKeyMismatch` for why the two
-    // surfaces part company here. The asymmetry is pinned by a test in both
-    // directions, because an implementation that emitted the signal too would
-    // look correct from every other angle.
+    // `integrity_failure`, not `absent`: a substituted skill is something
+    // callers should fail closed on. Log record only; see `recordKeyMismatch`.
     recordKeyMismatch(key, skill.key);
     return {
       error: `skill '${key}' is not available: the store answered under key '${skill.key}'`,
@@ -854,18 +596,7 @@ export function resolveFromStore(store: SkillStore, key: string, wantedVersion: 
     };
   }
   if (wantedVersion !== null && skill.version !== wantedVersion) {
-    // Records the log surface but not the product signal, the same split the key
-    // mismatch above makes and for the same reason — see
-    // `recordVersionMismatch`. The asymmetry is pinned by a test in both
-    // directions, because an implementation that emitted the signal too would
-    // look correct from every other angle.
-    //
-    // Recorded even though neither shipped store can get here: reaching this
-    // branch means the store answered a pin with a well-formed object at another
-    // version, which is a broken custom adapter. `wrong_version` being a public
-    // outcome token is not a substitute — `getSkill` collapses it to `null`
-    // exactly as it collapses `integrity_failure`, so the record is the only
-    // visibility an operator on the default accessor has.
+    // Log record only; see `recordVersionMismatch`.
     recordVersionMismatch(key, wantedVersion, skill.version);
     return {
       error: `skill '${key}' version ${wantedVersion} is not available (the store holds version ${skill.version})`,
@@ -876,9 +607,8 @@ export function resolveFromStore(store: SkillStore, key: string, wantedVersion: 
 }
 
 /**
- * Normalizes a reference-or-key into `[key, wanted version]`.
- *
- * A bare string means "the latest version the store holds".
+ * Normalizes a reference or bare key into `[key, wanted version]`; a bare key
+ * wants the newest version.
  */
 export function referenceTarget(item: SkillReference | string): [string, number | null] {
   return typeof item === 'string' ? [item, null] : [item.key, item.version];
