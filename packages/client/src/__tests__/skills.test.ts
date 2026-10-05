@@ -774,10 +774,9 @@ describe('store configuration', () => {
     // afterwards. Both halves
     // are asserted on the same pair of calls; each is meaningless alone.
     //
-    // The second call takes the *options* overload, which is where TypeScript's
-    // early return lives: `initClient(client)` deliberately replaces the
-    // singleton on this side, so a second BYOC call would not prove the store
-    // was applied before an early return.
+    // The second call takes the *options* overload, so it cannot reach the
+    // Node SDK path without returning early: with no LD_SDK_KEY set it would
+    // throw.
     const first = new InMemorySkillStore();
     first.put(rawSkill({ key: 'first' }));
     const second = new InMemorySkillStore();

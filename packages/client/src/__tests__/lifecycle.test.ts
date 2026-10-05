@@ -385,6 +385,55 @@ describe('lifecycle', () => {
       await expect(initClient()).rejects.toThrow('timeout');
     });
 
+    it('does not re-run telemetry setup on a repeat BYOC call', async () => {
+      // The repeat call's options cannot take effect: OTel's globals are
+      // already held. Both the early return and setupTelemetry's one-provider
+      // guard keep the first call's configuration.
+      const { initClient } = await import('../lifecycle.js');
+      const byocClient = makeMockClient();
+      await initClient(byocClient, { serviceName: 'first', otlpEndpoint: 'https://first.test' });
+      await initClient(byocClient, { serviceName: 'second', otlpEndpoint: 'https://second.test' });
+      await initClient(byocClient);
+
+      expect(mockOTLPTraceExporter).toHaveBeenCalledOnce();
+      expect(mockOTLPTraceExporter).toHaveBeenCalledWith(
+        expect.objectContaining({ url: 'https://first.test/v1/traces' }),
+      );
+      expect(mockResourceFromAttributes).toHaveBeenCalledOnce();
+      expect(mockResourceFromAttributes).toHaveBeenCalledWith(expect.objectContaining({ 'service.name': 'first' }));
+    });
+
+    it('returns the first client on a repeat BYOC call rather than swapping it', async () => {
+      const { initClient, getClient } = await import('../lifecycle.js');
+      const first = makeMockClient();
+      const second = makeMockClient();
+      expect(await initClient(first)).toBe(first);
+      expect(await initClient(second)).toBe(first);
+      expect(getClient()).toBe(first);
+    });
+
+    it('swaps in a new BYOC client after shutdown', async () => {
+      const { initClient, getClient, shutdown } = await import('../lifecycle.js');
+      const first = makeMockClient();
+      const second = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      await initClient(first);
+      await shutdown();
+      expect(await initClient(second)).toBe(second);
+      expect(getClient()).toBe(second);
+    });
+
+    it('flushes registered AI package information on a repeat BYOC call', async () => {
+      const client = makeMockClient();
+      const { initClient } = await import('../lifecycle.js');
+      await initClient(client);
+      client.track.mockClear();
+      registerAiSdkPackage('@launchdarkly/ai-openai-agents', '0.1.1');
+      await initClient(client);
+
+      expect(client.track).toHaveBeenCalledOnce();
+      expect(client.track.mock.calls[0][2].aiSdkName).toBe('@launchdarkly/ai-openai-agents');
+    });
+
     it('flushes registered AI package information on the BYOC path', async () => {
       const client = makeMockClient();
       registerAiSdkPackage('@launchdarkly/ai-server', '0.1.1');
@@ -614,7 +663,7 @@ describe('lifecycle', () => {
     it('builds one provider across repeat BYOC calls', async () => {
       // A second provider would be refused registration yet replace the handle
       // shutdown flushes, so the live provider would leak and never flush.
-      const byocClient = { ...makeMockClient(), variation: vi.fn() };
+      const byocClient = makeMockClient();
       const { initClient, shutdown } = await import('../lifecycle.js');
       await initClient(byocClient);
       await initClient(byocClient);
