@@ -101,6 +101,11 @@ const SERVER_KEY_PREFIX = 'sdk-';
 /** A client-side environment ID: unprefixed lowercase hex. */
 const CLIENT_SIDE_ID = /^[0-9a-f]{20,}$/;
 
+function debug(message: string): void {
+  // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; routine events log at debug
+  console.debug(`[LaunchDarkly] ${message}`);
+}
+
 function warn(message: string): void {
   // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; delivery problems must be visible
   console.warn(`[LaunchDarkly] ${message}`);
@@ -703,6 +708,9 @@ export class ProtocolReader {
     } else if (intent === INTENT_TRANSFER_CHANGES) {
       this.pending = this.committed.copy();
     } else if (intent === INTENT_TRANSFER_NONE) {
+      // The basis is current, and later edits on this connection arrive as
+      // objects with no second intent: read on as a delta with nothing pending.
+      this.intent = INTENT_TRANSFER_CHANGES;
       this.pending = null;
     } else {
       // Unknown intent codes are ignored; guessing could empty the store.
@@ -723,7 +731,7 @@ export class ProtocolReader {
 
   /**
    * Drops a skill object that arrived under an intent this reader cannot apply
-   * (an unknown code, or `none`). Counted under `objectsIgnored`, with one
+   * (an unknown code). Counted under `objectsIgnored`, with one
    * warning per intent.
    */
   private ignoreUnderUnknownIntent(): TransferOutcome {
@@ -839,8 +847,10 @@ export class ProtocolReader {
   private goodbye(data: unknown): TransferOutcome {
     const parsed = (data ?? {}) as { reason?: unknown; silent?: unknown; catastrophe?: unknown };
     this.abandonInFlight();
+    // Debug only: a goodbye after a completed exchange is a routine recycle, and
+    // the reader cannot tell. The delivery loop warns for one that counts.
     if (parsed.silent !== true) {
-      warn(`FDv2 connection closing: ${String(parsed.reason)}`);
+      debug(`FDv2 connection closing: ${String(parsed.reason)}`);
     }
     if (parsed.catastrophe === true) {
       return { fatal: `server sent a catastrophic goodbye: ${String(parsed.reason)}` };
@@ -901,7 +911,7 @@ export class RecoverableTransportError extends Error {
     readonly retryAfterMs: number | null = null,
     /**
      * A `goodbye` after a completed exchange: retried, but not logged as a
-     * failure or counted against `maxConsecutiveFailures`.
+     * failure or counted in `connectionFailures`.
      */
     readonly expected = false,
   ) {
@@ -1009,7 +1019,7 @@ export type PollResult = {
 
 /**
  * Reads a whole poll body in chunks, abandoning it as soon as it exceeds `limit`
- * UTF-16 code units.
+ * UTF-16 code units (fatal; see {@link MAX_RESPONSE_CHARS}).
  *
  * Does not touch the {@link ReadDeadline}, so in `'poll'` mode the timeout
  * bounds the whole request.
@@ -1024,9 +1034,9 @@ async function readBoundedText(body: ReadableStream<Uint8Array>, limit: number):
       if (done) break;
       text += decoder.decode(value, { stream: true });
       if (text.length > limit) {
-        throw new RecoverableTransportError(
+        throw new FatalTransportError(
           `polling response exceeded the ${limit} character transport bound ` +
-            `(at least ${text.length} received); nothing from it was applied`,
+            `(at least ${text.length} received); nothing from it was applied. ${OVERSIZED_ADVICE}`,
         );
       }
     }
@@ -1143,17 +1153,24 @@ function readFailure(cause: unknown, what: string, deadline: ReadDeadline | unde
  * event, in UTF-16 code units.
  *
  * A memory backstop set far above any real payload, separate from the per-skill
- * content limit verification enforces. Crossing it is a recoverable failure:
- * nothing is applied, the store keeps its current content, and delivery retries.
+ * content limit verification enforces. Crossing it is fatal, like a 422: nothing
+ * is applied and the store keeps its current content, but delivery stops. The
+ * payload's size belongs to the environment, not the connection, so a retry
+ * would download up to this much again on every backoff step and be refused the
+ * same way.
  */
 export const MAX_RESPONSE_CHARS = 64 * 1024 * 1024;
+
+const OVERSIZED_ADVICE =
+  'The payload is larger than this SDK will hold in memory, and a retry would be refused the same way. Contact ' +
+  'LaunchDarkly support.';
 
 /**
  * Decodes an SSE byte stream into `[event name, data]` pairs.
  *
  * Minimal: `event:`/`data:` fields, multi-line `data` joined with newlines,
  * blank line dispatches, `:` comments skipped. An event over
- * {@link MAX_RESPONSE_CHARS} throws a recoverable error. Only read failures are
+ * {@link MAX_RESPONSE_CHARS} throws a fatal error. Only read failures are
  * wrapped; errors thrown by the consumer pass through unchanged.
  */
 export async function* iterSse(
@@ -1219,8 +1236,9 @@ export async function* iterSse(
             dataLines.push(value2);
             dataChars += value2.length + 1;
             if (dataOverBound()) {
-              throw new RecoverableTransportError(
-                `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters of data for one event`,
+              throw new FatalTransportError(
+                `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters of data for one event; ` +
+                  `nothing from it was applied. ${OVERSIZED_ADVICE}`,
               );
             }
           }
@@ -1228,8 +1246,9 @@ export async function* iterSse(
         newline = buffer.indexOf('\n');
       }
       if (tailOverBound()) {
-        throw new RecoverableTransportError(
-          `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters without completing an event`,
+        throw new FatalTransportError(
+          `the FDv2 stream sent more than ${MAX_RESPONSE_CHARS} characters without completing an event; ` +
+            `nothing from it was applied. ${OVERSIZED_ADVICE}`,
         );
       }
     }
@@ -1369,9 +1388,19 @@ export class FetchRequester implements Requester {
  * Jitter is subtracted, never added, so `maximumMs` is a true ceiling.
  */
 export function backoffDelayMs(attempt: number, baseMs: number, maximumMs: number, jitter = 0.5): number {
-  const ceiling = Math.min(maximumMs, baseMs * 2 ** Math.max(0, attempt - 1));
+  // Retries are unbounded, so the attempt number is too. Clamped so the power
+  // stays finite; 2^30 of any base passes any cap. The constructor refuses a
+  // non-positive base, so a zero delay never comes out of here.
+  const exponent = Math.min(Math.max(0, attempt - 1), 30);
+  const ceiling = Math.min(maximumMs, baseMs * 2 ** exponent);
   return ceiling * (1 - jitter * Math.random());
 }
+
+/**
+ * How long a stream must stay open for the reconnect after it to start again at
+ * `initialBackoffMs`, as in the base server-side SDKs. Internal, not an option.
+ */
+export const BACKOFF_RESET_INTERVAL_MS = 60_000;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -1425,16 +1454,17 @@ export type FDv2SkillStoreOptions = {
    * ({@link DEFAULT_STREAM_READ_TIMEOUT_MS}).
    */
   readonly readTimeoutMs?: number;
-  readonly initialBackoffMs?: number;
-  /** Caps every retry delay, including `Retry-After`. */
-  readonly maxBackoffMs?: number;
   /**
-   * After this many failures in a row, delivery stops, logs an error, and
-   * `failed` is set; the store keeps serving last known good. A completed
-   * exchange (a commit or a `none` intent) resets the count, and a server
-   * `goodbye` after one is not counted.
+   * The first retry delay, in milliseconds; positive, finite, and no greater
+   * than `maxBackoffMs`. Default `1_000`.
    */
-  readonly maxConsecutiveFailures?: number;
+  readonly initialBackoffMs?: number;
+  /**
+   * Caps every retry delay, including `Retry-After`; positive and finite.
+   * Default `30_000`. Recoverable failures are retried for the life of the
+   * store; only a fatal status stops delivery.
+   */
+  readonly maxBackoffMs?: number;
   /** Replaces the built-in `fetch` transport. Intended for testing. */
   readonly requester?: Requester;
 };
@@ -1477,7 +1507,6 @@ export class FDv2SkillStore implements SkillStore {
   private readonly pollIntervalMs: number;
   private readonly initialBackoffMs: number;
   private readonly maxBackoffMs: number;
-  private readonly maxConsecutiveFailures: number;
 
   private basis: string | null = null;
   private etag: string | null = null;
@@ -1496,6 +1525,16 @@ export class FDv2SkillStore implements SkillStore {
   // Whether the current attempt completed an exchange, which separates a
   // recycled healthy stream from a failed one.
   private reachedServer = false;
+  // The backoff step, kept apart from `failures`: a completed exchange does not
+  // reset it, or a server that answers and then drops would be reconnected at
+  // `initialBackoffMs` for as long as it stayed degraded. It resets after a
+  // stream outlives `_backoffResetIntervalMs`, or a completed poll.
+  private backoffAttempt = 0;
+  // When the current stream connection opened (`performance.now()`), or `null`
+  // before it has.
+  private connectedAt: number | null = null;
+  /** {@link BACKOFF_RESET_INTERVAL_MS}. Exposed for tests; not API. */
+  _backoffResetIntervalMs = BACKOFF_RESET_INTERVAL_MS;
 
   constructor(sdkKey: string, options: FDv2SkillStoreOptions = {}) {
     const key = requireServerSideCredential(sdkKey);
@@ -1515,7 +1554,21 @@ export class FDv2SkillStore implements SkillStore {
     }
     this.initialBackoffMs = options.initialBackoffMs ?? 1_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
-    this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? 10;
+    // With no failure bound these two are the only limit on the retry loop: a
+    // zero, negative or `NaN` delay is no wait at all, against a failing server.
+    for (const [name, value] of [
+      ['initialBackoffMs', this.initialBackoffMs],
+      ['maxBackoffMs', this.maxBackoffMs],
+    ] as const) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+        throw new Error(`${name} must be a positive, finite number, got ${String(value)}`);
+      }
+    }
+    if (this.initialBackoffMs > this.maxBackoffMs) {
+      throw new Error(
+        `initialBackoffMs (${this.initialBackoffMs}) must not exceed maxBackoffMs (${this.maxBackoffMs})`,
+      );
+    }
     const baseUri = requireHttpsUri(options.baseUri ?? DEFAULT_BASE_URI);
     // A lone `baseUri` serves both endpoints.
     const streamUri = requireHttpsUri(
@@ -1533,7 +1586,8 @@ export class FDv2SkillStore implements SkillStore {
    * Does not await: use `waitForSkills` when boot ordering matters.
    *
    * Throws if the store has been closed. A store whose delivery stopped on its
-   * own (`failed` is set) can be started again, with a fresh retry budget.
+   * own (`failed` is set) can be started again, with its failure count and
+   * backoff started over.
    */
   start(): this {
     if (this.closed) {
@@ -1546,6 +1600,8 @@ export class FDv2SkillStore implements SkillStore {
     // A loop that gave up has already returned, so a new one cannot overlap it.
     this.failedReason = null;
     this.failures = 0;
+    this.reader.diagnostics.connectionFailures = 0;
+    this.backoffAttempt = 0;
     this.controller = new AbortController();
     this.loop = this.run(this.controller.signal);
     return this;
@@ -1721,12 +1777,16 @@ export class FDv2SkillStore implements SkillStore {
     while (!signal.aborted) {
       try {
         this.reachedServer = false;
+        this.connectedAt = null;
         if (this.mode === 'stream') await this.streamOnce(signal);
         else await this.pollOnce(signal);
         if (signal.aborted) return;
         // A returned poll is a current answer, even a 304. Stream successes are
         // recorded in `apply`.
         this.recordSuccess();
+        // `pollIntervalMs` already spaces the requests, so a completed poll
+        // also starts the backoff over.
+        this.backoffAttempt = 0;
       } catch (cause) {
         if (signal.aborted) return;
         if (cause instanceof FatalTransportError) {
@@ -1737,7 +1797,6 @@ export class FDv2SkillStore implements SkillStore {
           this.giveUp(`unexpected error in skill delivery: ${cause instanceof Error ? cause.message : String(cause)}`);
           return;
         }
-        let repairingState = false;
         if (cause instanceof StaleRequestStateError) {
           // With no basis or etag to drop, the 400 is fatal. Otherwise drop them
           // and request a full transfer once.
@@ -1748,7 +1807,6 @@ export class FDv2SkillStore implements SkillStore {
           this.basis = null;
           this.etag = null;
           this.etagBasis = null;
-          repairingState = true;
         }
         // A routine stream recycle (see `dispatch`) reconnects without counting
         // as a failure.
@@ -1756,25 +1814,28 @@ export class FDv2SkillStore implements SkillStore {
           this.failures += 1;
           this.reader.diagnostics.connectionFailures = this.failures;
           this.reader.diagnostics.lastError = cause.message;
-          // The one stateless retry after a 400 is exempt, so an exhausted
-          // budget cannot block that repair.
-          if (this.failures > this.maxConsecutiveFailures && !repairingState) {
-            this.giveUp(`gave up after ${this.failures} consecutive failures; last error: ${cause.message}`);
-            return;
-          }
         }
+        // Every reconnect advances the step, a recycle included. Only a stream
+        // that stayed open long enough starts it over.
+        if (this.connectedAt !== null && performance.now() - this.connectedAt >= this._backoffResetIntervalMs) {
+          this.backoffAttempt = 0;
+        }
+        this.backoffAttempt += 1;
         const requested = cause.retryAfterMs;
         const delay = Math.min(
           requested !== null && Number.isFinite(requested)
             ? // Floor at `initialBackoffMs` so `Retry-After: 0` cannot cause a
               // tight reconnect loop.
               Math.max(requested, this.initialBackoffMs)
-            : backoffDelayMs(this.failures, this.initialBackoffMs, this.maxBackoffMs),
+            : backoffDelayMs(this.backoffAttempt, this.initialBackoffMs, this.maxBackoffMs),
           // Cap at `maxBackoffMs` even if `Retry-After` asks for more.
           this.maxBackoffMs,
         );
         if (!cause.expected) {
           warn(`Skill delivery failed (${cause.message}); retrying in ${Math.round(delay)}ms`);
+        } else {
+          // A routine recycle: nothing above debug.
+          debug(`Skill delivery reconnecting (${cause.message}) in ${Math.round(delay)}ms`);
         }
         await sleep(delay, signal);
         continue;
@@ -1804,7 +1865,8 @@ export class FDv2SkillStore implements SkillStore {
   private apply(name: string, data: unknown): TransferOutcome {
     const outcome = this.reader.handle(name, data);
     // A commit or a `none` intent is a completed exchange. Counting `none` keeps
-    // a stream for an unchanging environment from exhausting its budget.
+    // a stream for an unchanging environment from reading as failing. Neither
+    // resets the backoff step; see `backoffAttempt`.
     if (outcome.healthy || outcome.committed) this.reachedServer = true;
     if (outcome.healthy) this.recordSuccess();
     if (outcome.committed) {
@@ -1820,7 +1882,7 @@ export class FDv2SkillStore implements SkillStore {
     if (outcome.fatal) throw new FatalTransportError(outcome.fatal);
     if (outcome.disconnect) {
       // A goodbye is routine only after a completed exchange; otherwise it
-      // counts as a failure, so a server that only says goodbye stays bounded.
+      // counts as a failure, so a server that only says goodbye is backed off.
       const expected = outcome.expected === true && this.reachedServer;
       throw new RecoverableTransportError(outcome.disconnect, null, expected);
     }
@@ -1849,6 +1911,7 @@ export class FDv2SkillStore implements SkillStore {
 
   private async streamOnce(signal: AbortSignal): Promise<void> {
     const events = await this.requester.stream(this.basis, signal);
+    this.connectedAt = performance.now();
     for await (const [name, data] of events) {
       if (signal.aborted) return;
       this.dispatch(this.apply(name, data));

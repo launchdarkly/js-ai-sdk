@@ -410,9 +410,10 @@ function isSkill(item: Skill | SkillReference | string): item is Skill {
 /**
  * Turns the caller's input into one request per skill.
  *
- * Also reports whether any retrieval was incomplete (absent, uninitialized or
- * throwing store, or an exhausted timeout). That flag suppresses pruning, so an
- * outage never deletes managed files.
+ * Also reports whether any retrieval was incomplete (no store, an uninitialized
+ * or throwing store, or an exhausted timeout). An `absent` reference is not
+ * incomplete; it stays requested, so it is not pruned either. The flag
+ * suppresses pruning, so an outage never deletes managed files.
  */
 async function resolveRequests(
   skills: ReadonlyArray<Skill | SkillReference | string> | '*',
@@ -458,8 +459,8 @@ function isBlocked(result: SkillStore | RetrievalBlocked): result is RetrievalBl
  * The configured store, or why retrieval must not be attempted.
  *
  * The single gate for both single references and `'*'`. It blocks on an
- * exhausted deadline, an absent store, or a store without its initial data; each
- * marks the run incomplete, which suppresses pruning.
+ * exhausted deadline, no configured store, or a store without its initial data;
+ * each marks the run incomplete, which suppresses pruning.
  */
 function availableStore(deadline: number, subject: string): SkillStore | RetrievalBlocked {
   if (performance.now() >= deadline) {

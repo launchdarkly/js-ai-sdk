@@ -97,16 +97,19 @@ The `3` after the delimiter is what a `{key, version}` reference pins; it become
 
 - `iterSse` wraps read failures (a reset, a truncated chunk, the read deadline) as `RecoverableTransportError`, since a live stream dies mid-body far more often than it refuses to open. The delivery loop treats anything else as a bug and stops for the process lifetime.
 - An error thrown by the consumer's loop body while the generator is suspended at a `yield` passes through unwrapped, so a bug still surfaces as one.
-- Every retry delay is clamped to `maxBackoffMs` and floored at `initialBackoffMs`, so `Retry-After: 0` cannot burn the retry bound in milliseconds. A blank `Retry-After` means "no delay given", not zero (`Number("")` is `0`).
+- A poll body or streamed event over `MAX_RESPONSE_CHARS` is a `FatalTransportError`, not a read failure, and takes the give-up path like a 422 (`failed` and `lastError` set, `connectionFailures` untouched). The size belongs to the environment, so a retry would re-download up to 64 Mi characters on every backoff step, from every process, and never set `failed`.
+- Every retry delay is clamped to `maxBackoffMs` and floored at `initialBackoffMs`, so `Retry-After: 0` cannot cause a tight reconnect loop. A blank `Retry-After` means "no delay given", not zero (`Number("")` is `0`).
 
-**What resets the failure counter, and what escapes it.**
+**What resets the failure counter, and what escapes it.** The counter is reported as `connectionFailures`; it bounds nothing, and it no longer drives the backoff (see the next paragraph). Recoverable failures are retried for the life of the store, and there is no `maxConsecutiveFailures` option: a count bound would turn a short outage into a process that never sees another revocation. Only a fatal status stops delivery.
 
 - **It resets only on a completed exchange** — a committed payload, or a `none` intent — not when a connection returns. A stream only ever ends by being dropped, so resetting on return would count every healthy, server-recycled connection as a failure.
-- **`none` counts** because a reconnect whose basis is already current is answered with `none` and commits nothing; requiring a commit would expire an environment whose skills never change.
-- **A parsed `xfer-full` or `xfer-changes` intent does not reset it.** A server that announces a transfer and drops before `payload-transferred`, every time, has delivered nothing, and would otherwise be retried forever at the initial backoff (pinned by the `gives up on a server that announces a transfer and drops` test).
-- **A non-catastrophic `goodbye` is exempt from the counter** only on a connection that completed such an exchange, tracked per attempt by `reachedServer`. Otherwise a server that says goodbye before sending any intent could reconnect without limit, never reaching `diagnostics` or `failed`.
+- **`none` counts** because a reconnect whose basis is already current is answered with `none` and commits nothing; requiring a commit would report a healthy stream for an environment whose skills never change as failing.
+- **A parsed `xfer-full` or `xfer-changes` intent does not reset it.** A server that announces a transfer and drops before `payload-transferred`, every time, has delivered nothing, and would otherwise read as healthy in `connectionFailures` for as long as it kept doing so (pinned by the `counts each drop of a server that announces a transfer and drops` test).
+- **A non-catastrophic `goodbye` is exempt from the counter** only on a connection that completed such an exchange, tracked per attempt by `reachedServer`. Otherwise a server that says goodbye before sending any intent could reconnect without limit, never reaching `diagnostics` or `failed`. An exempt `goodbye` sets no `lastError` and logs nothing above debug: `ProtocolReader` cannot tell a recycle from a failure, so it logs the goodbye at debug and leaves the warning to the delivery loop, which warns only for a disconnect that counts.
 
 Keep both halves — the reset rule and the `reachedServer` qualifier.
+
+**The backoff step is not the failure counter.** `backoffAttempt` advances on every reconnect after a failure or a dropped stream, a `goodbye` recycle included, and returns to the first step only when the stream that just ended had been open for `BACKOFF_RESET_INTERVAL_MS` (60 s, as js-core's `Backoff` and the Python SDK's `BACKOFF_RESET_INTERVAL`), or when a poll completes (`pollIntervalMs` already spaces polls). Resetting it on a commit or a `none` instead would let a degraded server that answers and then drops be reconnected at `initialBackoffMs` by every process for as long as it stayed degraded, and with no failure bound nothing else would stop that. The interval is not an option; tests shorten it through the instance's `_backoffResetIntervalMs`.
 
 **The SDK key goes only where it was pointed, enforced in two places.** Every request carries the server-side SDK key in `Authorization`.
 
@@ -126,7 +129,7 @@ The Python SDK enforces the same pair with the same wording; change both or neit
 **The store refuses two things loudly rather than degrading.**
 
 - `addListener` throws for any kind but `'skill'`, in `FDv2SkillStore` and `InMemorySkillStore` alike: a listener on another kind would silently never fire. `removeListener` accepts any kind, so a consumer can detach unconditionally.
-- `close` is final: `start` throws afterwards rather than opening a second delivery loop. A store that gave up on its own is different: `start` runs delivery again with a fresh retry budget and clears `failed`, and is a no-op while delivery is running. Closing leaves `failed` as `null` (it is the caller's decision, not a delivery failure), and both a closed store and one that gave up answer `waitForSkills` immediately.
+- `close` is final: `start` throws afterwards rather than opening a second delivery loop. A store that gave up on its own is different: `start` runs delivery again with the failure count and backoff started over, and clears `failed`, and is a no-op while delivery is running. Closing leaves `failed` as `null` (it is the caller's decision, not a delivery failure), and both a closed store and one that gave up answer `waitForSkills` immediately.
 
 ---
 
@@ -486,7 +489,7 @@ It is in **seconds**, defaulting to `10`. The signature is a cross-language cont
 
 Prune is **suppressed** — not merely empty — whenever the run cannot tell what is still current:
 
-- an incomplete retrieval (a reference that did not resolve, a store that threw, an exhausted timeout);
+- an incomplete retrieval (no store configured, a store that threw, an exhausted timeout);
 - a store whose `isInitialized()` answers `false` (delivery has not sent a payload yet);
 - a withholding that could not be attributed to a key (the `'*'` form's run-level `error`);
 - a corrupt manifest.
@@ -498,6 +501,8 @@ Each case puts an `error` action in the report, sets `ok` to `false`, and prunes
 Run one reconcile per root at a time. Two interleaved runs read the same manifest and each writes it back from its own picture, so the loser's entries vanish while its files stay on disk unmanaged. `SkillWatcher` serializes its own reconciles, but cannot see a second watcher on the same root or a caller's own `writeSkills` against it. Do neither.
 
 ### 4d. Expecting revocation to reach a boot-only `writeSkills` deployment
+
+With an explicit list, `watchSkills` does not close the gap either. A requested skill the store answers `absent` for stays in the requested set as an `error` action and is not pruned, and the watcher listens only to the skill store, so unpinning a skill from an AI Config is not seen. Only `watchSkills('*', …)` removes a revoked skill from disk without a re-run.
 
 Without `watchSkills`, the revocation bound is process lifetime: a skill revoked after boot stays on disk until the process reconciles again, so a restart (or an explicit re-run of `writeSkills`) is the incident-response action — and content an agent has already read into a conversation is out of reach at this layer either way.
 
