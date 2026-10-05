@@ -3,7 +3,6 @@ import {
   type CanonicalTurn,
   type ConfigTurn,
   type ContentCaptureOptions,
-  camelizeModelParameters,
   composeHistory,
   config,
   contentToText,
@@ -14,7 +13,6 @@ import {
   type Message,
   type MessageContent,
   type NativeTool,
-  normalizeModelParameters,
   type ProviderHandler,
   parseTemplate,
   type SpanMessage,
@@ -35,13 +33,13 @@ import type {
   ModelProvider,
   ModelRequest,
   ModelResponse,
-  ModelSettings,
   RunRawModelStreamEvent,
   StreamEvent,
   StreamedRunResult,
 } from '@openai/agents';
 import { Agent, Runner, tool } from '@openai/agents';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
+import { buildMaxTurns, buildModelSettings } from './model-parameters.js';
 import { buildOutputType } from './utils.js';
 
 const TRACER_NAME = '@launchdarkly/ai-openai-agents';
@@ -496,28 +494,6 @@ function configConversationTurns(config: AiConfigRep, variables: Record<string, 
   return (config.messages ?? [])
     .filter((m) => m.role !== 'system')
     .map((m) => ({ role: m.role as 'user' | 'assistant', content: parseTemplate(m.content, variables) }));
-}
-
-/**
- * `config.model.parameters`, top-level keys camelized (`top_p` becomes `topP`) and passed as the
- * Agents SDK's `ModelSettings`, unchanged
- * otherwise: no default temperature, no default cap — a config that sets nothing here produces
- * `undefined`, so the Agent is constructed exactly as it always has been.
- */
-function buildModelSettings(parameters: AiConfigRep['model']['parameters']): ModelSettings | undefined {
-  const settings = camelizeModelParameters(normalizeModelParameters(parameters));
-  return Object.keys(settings).length > 0 ? (settings as ModelSettings) : undefined;
-}
-
-/**
- * `maxTurns` is a `Runner.run` option, not a `ModelSettings` field — it caps the agentic loop
- * rather than tuning any single model call — so it is read out of `model.parameters` separately
- * and forwarded to `run()` instead of the `Agent` constructor. The bag is camelized first so a
- * config that saves `max_turns` (the UI's convention) is read here too, not just `maxTurns`.
- */
-function buildMaxTurns(parameters: AiConfigRep['model']['parameters']): number | undefined {
-  const maxTurns = camelizeModelParameters(normalizeModelParameters(parameters)).maxTurns;
-  return typeof maxTurns === 'number' ? maxTurns : undefined;
 }
 
 function buildAgentAndPrompt(

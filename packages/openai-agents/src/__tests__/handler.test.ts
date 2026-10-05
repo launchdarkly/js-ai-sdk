@@ -101,6 +101,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 
 import { openaiGraph } from '../graph.js';
 import { createOpenAIAgentHandler } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -249,17 +250,87 @@ describe('createOpenAIAgentHandler', () => {
     });
   });
 
-  it('forwards unrecognized model.parameters keys through to modelSettings rather than dropping them', async () => {
-    // The LaunchDarkly UI already constrains which keys can be saved, so an unsupported key
-    // reaching the Agents SDK is expected to surface as a provider error, not be silently dropped.
+  it('drops model.parameters keys that are not ModelSettings fields', async () => {
     mockRun.mockResolvedValue(mockRunResult());
     const config = {
       ...baseConfig,
-      model: { ...baseConfig.model, parameters: { someUnknownKey: 'nope', anotherOne: 42 } },
+      model: { ...baseConfig.model, parameters: { someUnknownKey: 'nope', anotherOne: 42, temperature: 0.1 } },
     };
     await createOpenAIAgentHandler()(config as any, 'q');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
-    expect(agentArgs.modelSettings).toEqual({ someUnknownKey: 'nope', anotherOne: 42 });
+    expect(agentArgs.modelSettings).toEqual({ temperature: 0.1 });
+  });
+
+  it('never forwards request headers, body or query overrides, credentials or retry policy', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    expect(agentArgs.modelSettings).toBeUndefined();
+    expectNoNeverForwardedValue(agentArgs);
+    expect(mockRun.mock.calls[0][2]).toBeUndefined();
+  });
+
+  it('forwards every allowed ModelSettings field under its SDK name and shape', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          temperature: 0.4,
+          top_p: 0.9,
+          frequency_penalty: 0.1,
+          presence_penalty: 0.2,
+          tool_choice: 'auto',
+          parallel_tool_calls: false,
+          truncation: 'auto',
+          max_tokens: 256,
+          store: false,
+          prompt_cache_retention: '24h',
+          reasoning: { effort: 'low', summary: 'auto', extra_key: 'dropped' },
+          verbosity: 'low',
+          context_management: [
+            { type: 'compaction', compact_threshold: 1000, extra_key: 'dropped' },
+            { type: 'compaction', compactThreshold: 2000 },
+            { compact_threshold: 3000 },
+            'not-an-entry',
+          ],
+          retry: { maxRetries: 5 },
+          provider_data: { extra_headers: { Authorization: 'Bearer ATTACKER' } },
+        },
+      },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({
+      temperature: 0.4,
+      topP: 0.9,
+      frequencyPenalty: 0.1,
+      presencePenalty: 0.2,
+      toolChoice: 'auto',
+      parallelToolCalls: false,
+      truncation: 'auto',
+      maxTokens: 256,
+      store: false,
+      promptCacheRetention: '24h',
+      reasoning: { effort: 'low', summary: 'auto' },
+      text: { verbosity: 'low' },
+      // Entries are rebuilt as { type, compactThreshold }; ones without a type are dropped.
+      contextManagement: [
+        { type: 'compaction', compactThreshold: 1000 },
+        { type: 'compaction', compactThreshold: 2000 },
+      ],
+    });
+  });
+
+  it('prefers an explicit text.verbosity over a top-level verbosity', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { verbosity: 'low', text: { verbosity: 'high', format: 'x' } } },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ text: { verbosity: 'high' } });
   });
 
   it('does not set modelSettings or maxTurns when model.parameters is absent', async () => {
@@ -290,7 +361,8 @@ describe('createOpenAIAgentHandler', () => {
     };
     await createOpenAIAgentHandler()(config as any, 'q');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
-    expect(agentArgs.modelSettings).toEqual({ maxTurns: 4, topP: 0.9, maxTokens: 256 });
+    // maxTurns is a Runner.run option, so it is not left in modelSettings.
+    expect(agentArgs.modelSettings).toEqual({ topP: 0.9, maxTokens: 256 });
     const runOptions = mockRun.mock.calls[0][2];
     expect(runOptions).toEqual({ maxTurns: 4 });
   });
@@ -641,13 +713,8 @@ describe('createOpenAIAgentHandler', () => {
     };
     const handler = createOpenAIAgentHandler();
     await collectStream(handler.stream?.(config as any, 'q', {}, {}));
-    // `maxTurns` is read separately for Runner.run, but the whole bag (including it) also passes
-    // straight through to modelSettings now that there is no allowlist filtering it out.
-    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({
-      temperature: 0.5,
-      maxTurns: 5,
-      unknownKey: 'nope',
-    });
+    // `maxTurns` goes to Runner.run only; the unknown key is dropped.
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ temperature: 0.5 });
     const runOptions = mockRun.mock.calls[0][2];
     expect(runOptions).toMatchObject({ maxTurns: 5 });
   });
@@ -662,7 +729,7 @@ describe('createOpenAIAgentHandler', () => {
     const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_turns: 6, top_p: 0.8 } } };
     const handler = createOpenAIAgentHandler();
     await collectStream(handler.stream?.(config as any, 'q', {}, {}));
-    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ maxTurns: 6, topP: 0.8 });
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ topP: 0.8 });
     const runOptions = mockRun.mock.calls[0][2];
     expect(runOptions).toMatchObject({ maxTurns: 6 });
   });
