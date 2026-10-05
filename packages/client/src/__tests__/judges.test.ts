@@ -77,7 +77,7 @@ describe('runJudges', () => {
       llmResponse: 'world',
       baseTrackData,
     });
-    expect(result).toEqual({});
+    expect(result).toEqual({ judgeResults: {}, judgeDiagnostics: [] });
     expect(mockExecuteAndTrack).not.toHaveBeenCalled();
   });
 
@@ -96,7 +96,7 @@ describe('runJudges', () => {
       llmResponse: 'world',
       baseTrackData,
     });
-    expect(result).toEqual({});
+    expect(result).toEqual({ judgeResults: {}, judgeDiagnostics: [] });
     expect(mockExecuteAndTrack).not.toHaveBeenCalled();
   });
 
@@ -216,7 +216,7 @@ describe('runJudges', () => {
     expect(callArgs.config).toBe(mockJudgeConfig);
   });
 
-  it('skips a judge when no compatible handler is found (mismatched provider, no wildcard)', async () => {
+  it('reports judge_config_failed when no compatible handler is found (mismatched provider, no wildcard)', async () => {
     const openaiHandler = makeHandler(); // ['OpenAI', 'messages']
     mockExtractVariation.mockResolvedValue({
       config: { ...mockJudgeConfig, provider: { name: 'Anthropic' } },
@@ -230,7 +230,7 @@ describe('runJudges', () => {
       judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
     };
 
-    await runJudges({
+    const result = await runJudges({
       config,
       userContext: mockContext,
       handler: openaiHandler,
@@ -240,8 +240,39 @@ describe('runJudges', () => {
       baseTrackData,
     });
 
-    // Judge should be skipped — OpenAI handler cannot service Anthropic judge
+    // The OpenAI handler cannot service an Anthropic judge, so it never runs, and says so.
     expect(mockExecuteAndTrack).not.toHaveBeenCalled();
+    expect(result.judgeResults).toEqual({});
+    expect(result.judgeDiagnostics).toEqual([
+      { judgeKey: 'judge-flag', status: 'failed', stage: 'config', code: 'judge_config_failed' },
+    ]);
+  });
+
+  it('reports judge_config_failed for malformed judge entries instead of throwing', async () => {
+    const config = {
+      model: { name: 'gpt-4o' },
+      provider: { name: 'OpenAI' },
+      instructions: 'Be helpful.',
+      judgeConfiguration: {
+        judges: [null, { key: 42, samplingRate: 1 }, { key: 'bad-rate', samplingRate: 'often' }],
+      },
+    } as unknown as Parameters<typeof runJudges>[0]['config'];
+
+    const result = await runJudges({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    expect(mockExecuteAndTrack).not.toHaveBeenCalled();
+    expect(result.judgeDiagnostics).toEqual([
+      { status: 'failed', stage: 'config', code: 'judge_config_failed' },
+      { status: 'failed', stage: 'config', code: 'judge_config_failed' },
+      { judgeKey: 'bad-rate', status: 'failed', stage: 'config', code: 'judge_config_failed' },
+    ]);
   });
 
   it('does not forward toolHandlers to judge executeAndTrack calls', async () => {
@@ -295,7 +326,10 @@ describe('runJudges', () => {
       baseTrackData,
     });
 
-    expect(results).toEqual({});
+    expect(results.judgeResults).toEqual({});
+    expect(results.judgeDiagnostics).toEqual([
+      { judgeKey: 'judge-flag', status: 'failed', stage: 'config', code: 'judge_config_failed' },
+    ]);
     expect(mockExecuteAndTrack).not.toHaveBeenCalled();
     expect(consoleError).toHaveBeenCalledWith("Judge 'judge-flag' skipped:", 'Variation judge-flag is not enabled');
 
@@ -333,8 +367,11 @@ describe('runJudges', () => {
     });
 
     // The disabled judge is absent; the healthy one still produced a score.
-    expect(Object.keys(results)).toEqual(['working-judge']);
-    expect(results['working-judge']?.score).toBe(0.9);
+    expect(Object.keys(results.judgeResults)).toEqual(['working-judge']);
+    expect(results.judgeResults['working-judge']?.score).toBe(0.9);
+    expect(results.judgeDiagnostics).toEqual([
+      { judgeKey: 'disabled-judge', status: 'failed', stage: 'config', code: 'judge_config_failed' },
+    ]);
     expect(mockExecuteAndTrack).toHaveBeenCalledTimes(1);
 
     consoleError.mockRestore();
@@ -399,7 +436,8 @@ describe('runJudges strips outputFormat before it reaches a handler', () => {
       baseTrackData,
     });
 
-    expect(result['judge-flag'].score).toBe(0.9);
+    expect(result.judgeResults['judge-flag'].score).toBe(0.9);
+    expect(result.judgeDiagnostics).toEqual([]);
   });
 
   it('logs the reason exactly once per judge, naming the judge key, only when outputFormat was present', async () => {
@@ -510,9 +548,10 @@ describe('buildJudgeTasks strips outputFormat from the stored JudgeTask', () => 
       baseTrackData,
     });
 
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].judgeConfig.outputFormat).toBeUndefined();
-    expect(tasks[0].judgeConfig.model).toEqual(judgeConfigWithSchema.model);
+    expect(tasks.judgeTasks).toHaveLength(1);
+    expect(tasks.judgeTasks[0].judgeConfig.outputFormat).toBeUndefined();
+    expect(tasks.judgeTasks[0].judgeConfig.model).toEqual(judgeConfigWithSchema.model);
+    expect(tasks.judgeDiagnostics).toEqual([]);
   });
 });
 
