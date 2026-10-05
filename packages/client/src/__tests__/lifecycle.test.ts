@@ -510,7 +510,66 @@ describe('lifecycle', () => {
       await expect(initClient()).resolves.toBe(second);
       expect(mockLdInit).toHaveBeenCalledTimes(2);
       resolveFirst();
-      await inFlight;
+      await expect(inFlight).rejects.toThrow(/abandoned/);
+    });
+
+    it('does not let an abandoned init replace the client that came after it', async () => {
+      // shutdown() drops an in-flight attempt so the next call starts fresh,
+      // but the attempt keeps running. When it finishes it must not overwrite
+      // the newer client — leaking that one's connection — and must close its
+      // own instead.
+      let resolveFirst: () => void = () => {};
+      const first = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      first.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      );
+      const second = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      mockLdInit.mockReturnValueOnce(first).mockReturnValueOnce(second);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, shutdown, getClient } = await import('../lifecycle.js');
+      const inFlight = initClient();
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      await shutdown();
+      await initClient();
+
+      resolveFirst();
+      await expect(inFlight).rejects.toThrow(/abandoned/);
+      expect(getClient()).toBe(second);
+      expect(first.close).toHaveBeenCalledOnce();
+      expect(second.close).not.toHaveBeenCalled();
+    });
+
+    it('abandons an in-flight init when a pre-initialized client is passed meanwhile', async () => {
+      let resolveFirst: () => void = () => {};
+      const first = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      first.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      );
+      mockLdInit.mockReturnValueOnce(first);
+      process.env.LD_SDK_KEY = 'test-key';
+      const byocClient = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+
+      const { initClient, getClient } = await import('../lifecycle.js');
+      const inFlight = initClient();
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      await initClient(byocClient);
+
+      resolveFirst();
+      await expect(inFlight).rejects.toThrow(/abandoned/);
+      expect(getClient()).toBe(byocClient);
+      expect(first.close).toHaveBeenCalledOnce();
+      expect(byocClient.close).not.toHaveBeenCalled();
+      // The BYOC call reused the in-flight attempt's provider, so it stays.
+      expect(tracerProviders).toHaveLength(1);
+      expect(mockTracerProviderShutdown).not.toHaveBeenCalled();
+      expect(otel.held.trace).toBe(tracerProviders[0]);
     });
 
     it('is a no-op (does not throw) when called without a prior initClient', async () => {
@@ -662,6 +721,80 @@ describe('lifecycle', () => {
       expect(getClient()).toBe(client);
       expect(tracerProviders).toHaveLength(2);
       expect(otel.held.trace).toBe(tracerProviders[1]);
+    });
+
+    it('tears down the provider of an init in flight at shutdown, so the next init builds its own', async () => {
+      // shutdown() used to return early without a client, leaving the in-flight
+      // attempt's provider registered for the next init to reuse — with the
+      // abandoned attempt's sdkKey as highlight.project_id.
+      let resolveFirst: () => void = () => {};
+      const first = makeMockClient();
+      first.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      );
+      mockLdInit.mockReturnValueOnce(first).mockReturnValueOnce(makeMockClient());
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      const inFlight = initClient({ sdkKey: 'first-key' });
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      await shutdown();
+      expect(mockTracerProviderShutdown.mock.contexts).toEqual([tracerProviders[0]]);
+      expect(otel.held).toEqual({ trace: null, context: null, propagation: null });
+
+      await initClient({ sdkKey: 'second-key' });
+      expect(tracerProviders).toHaveLength(2);
+      expect(otel.held.trace).toBe(tracerProviders[1]);
+      expect(mockResourceFromAttributes).toHaveBeenLastCalledWith(
+        expect.objectContaining({ 'highlight.project_id': 'second-key' }),
+      );
+
+      resolveFirst();
+      await expect(inFlight).rejects.toThrow(/abandoned/);
+      // Abandoning it leaves the newer provider alone.
+      expect(otel.held.trace).toBe(tracerProviders[1]);
+      expect(mockTracerProviderShutdown).toHaveBeenCalledOnce();
+    });
+
+    it('does not let an abandoned init that then fails tear down the newer provider', async () => {
+      // The newer attempt is still in flight, so there is no client yet to
+      // say the current provider is spoken for: only its identity does.
+      let rejectFirst: (err: Error) => void = () => {};
+      const first = makeMockClient();
+      first.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((_, reject) => {
+            rejectFirst = reject;
+          }),
+      );
+      let resolveSecond: () => void = () => {};
+      const second = makeMockClient();
+      second.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveSecond = resolve;
+          }),
+      );
+      mockLdInit.mockReturnValueOnce(first).mockReturnValueOnce(second);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, shutdown, getClient } = await import('../lifecycle.js');
+      const abandoned = initClient();
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      await shutdown();
+      const current = initClient();
+      await vi.waitFor(() => expect(second.waitForInitialization).toHaveBeenCalled());
+
+      rejectFirst(new Error('timeout'));
+      await expect(abandoned).rejects.toThrow('timeout');
+      expect(otel.held.trace).toBe(tracerProviders[1]);
+      expect(mockTracerProviderShutdown.mock.contexts).toEqual([tracerProviders[0]]);
+
+      resolveSecond();
+      await expect(current).resolves.toBe(second);
+      expect(getClient()).toBe(second);
     });
 
     it('builds the retry its own provider, with the options the retry passed', async () => {
