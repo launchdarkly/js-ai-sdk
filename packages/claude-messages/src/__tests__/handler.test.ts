@@ -58,6 +58,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 });
 
 import { createClaudeMessagesHandler } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -1449,6 +1450,16 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     expect(Array.isArray(call.messages)).toBe(true);
     expect(call.messages.at(-1).content).toBe('hi');
     expect(call.tools).toBeUndefined();
+  });
+
+  it('never forwards credentials, endpoints, request overrides or remote tools from model.parameters', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
+    await createClaudeMessagesHandler()(cfg as any, 'hi');
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+    for (const arg of mockMessagesCreate.mock.calls[0]) {
+      expectNoNeverForwardedValue(arg);
+    }
   });
 
   it('drops an unrecognized model.parameters key rather than forwarding it', async () => {

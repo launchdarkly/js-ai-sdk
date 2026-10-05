@@ -57,6 +57,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 });
 
 import { createOpenAIHandler } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -317,6 +318,16 @@ describe('createOpenAIHandler', () => {
     expect(call.temperature).toBe(0.4);
     expect(call.top_p).toBe(0.9);
     expect(call.max_output_tokens).toBe(256);
+  });
+
+  it('never forwards credentials, endpoints, request overrides or remote tools from model.parameters', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
+    await createOpenAIHandler()(cfg as any, 'hi');
+    expect(mockResponsesCreate).toHaveBeenCalledTimes(1);
+    for (const arg of mockResponsesCreate.mock.calls[0]) {
+      expectNoNeverForwardedValue(arg);
+    }
   });
 
   it('drops an unrecognized model.parameters key rather than forwarding it', async () => {
