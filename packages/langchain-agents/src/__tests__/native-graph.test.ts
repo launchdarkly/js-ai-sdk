@@ -484,6 +484,25 @@ describe('toLangGraph', () => {
     expect(mockSpan.end).toHaveBeenCalledTimes(1);
   });
 
+  it('records a compile error on the span, tracks it as a failure, and ends the span once', async () => {
+    mockCompile.mockImplementation(() => {
+      throw new Error('compile boom');
+    });
+    const def = makeGraphDef([makeNode('root', '', [])], {}, 'root');
+    await expect(
+      toLangGraph(Promise.resolve(def), { context: { kind: 'user', key: 'u1' } }).invoke('hi'),
+    ).rejects.toThrow('compile boom');
+    expect(mockCompiledInvoke).not.toHaveBeenCalled();
+    expect(mockSpan.end).toHaveBeenCalledTimes(1);
+    expect(mockSpan.recordException).toHaveBeenCalledTimes(1);
+    expect(mockSpan.recordException).toHaveBeenCalledWith(expect.any(Error));
+    expect(mockSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR, message: 'compile boom' });
+    expect(mockSpan.setStatus).not.toHaveBeenCalledWith({ code: SpanStatusCode.OK });
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+  });
+
   // ── Root null guard ──────────────────────────────────────────────────────────
 
   it('throws when def.root is null', async () => {

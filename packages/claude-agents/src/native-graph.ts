@@ -184,9 +184,11 @@ export const toClaudeAgents = (
     const rawHandlers = opts?.toolHandlers ?? {};
 
     return trace.getTracer('@launchdarkly/ai-claude-agents').startActiveSpan('launchdarkly.graph', async (span) => {
+      const startTime = Date.now();
+      const runId = crypto.randomUUID();
+      // One try covers setup and the run, so a setup error (a sub-agent tool that fails to build)
+      // is recorded on the span and tracked as an invocation failure, like a run error.
       try {
-        const startTime = Date.now();
-        const runId = crypto.randomUUID();
         setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext });
 
         const path: string[] = [];
@@ -301,23 +303,12 @@ export const toClaudeAgents = (
         }
         const rootStartTime = Date.now();
 
-        let finalOutput = '';
-        let rootUsage = { input: 0, output: 0, total: 0 };
-
-        try {
-          const result = await runForNode(root, input, rootChildSubAgentTools, history);
-          finalOutput = result.output;
-          rootUsage = result.usage;
-          span.setStatus({ code: SpanStatusCode.OK });
-        } catch (err) {
-          span.recordException(err instanceof Error ? err : new Error(String(err)));
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
-          if (ldContext) {
-            const trackData = makeGraphTrackData(def.key, runId);
-            getClient().track('$ld:ai:graph:invocation_failure', ldContext, trackData, 1);
-          }
-          throw err;
-        }
+        const { output: finalOutput, usage: rootUsage } = await runForNode(
+          root,
+          input,
+          rootChildSubAgentTools,
+          history,
+        );
 
         totalUsage.input += rootUsage.input;
         totalUsage.output += rootUsage.output;
@@ -347,7 +338,16 @@ export const toClaudeAgents = (
           getClient().track('$ld:ai:graph:invocation_success', ldContext, graphTrackData, 1);
         }
 
+        span.setStatus({ code: SpanStatusCode.OK });
         return { response: finalOutput, usage: totalUsage };
+      } catch (err) {
+        const exception = err instanceof Error ? err : new Error(String(err));
+        span.recordException(exception);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: exception.message });
+        if (ldContext) {
+          getClient().track('$ld:ai:graph:invocation_failure', ldContext, makeGraphTrackData(def.key, runId), 1);
+        }
+        throw err;
       } finally {
         span.end();
       }

@@ -1,4 +1,5 @@
 import type { GraphDefinition, GraphEdge, GraphNode } from '@launchdarkly/ai-server';
+import { SpanStatusCode } from '@opentelemetry/api';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -256,14 +257,24 @@ describe('toClaudeAgents', () => {
     expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
   });
 
-  it('ends the graph span when building the sub-agent tools throws', async () => {
+  it('records a sub-agent build error on the graph span, tracks it as a failure, and ends the span once', async () => {
     const def = makeGraphDef({
       reverseTraverse: async () => {
         throw new Error('setup boom');
       },
     });
-    await expect(toClaudeAgents(Promise.resolve(def)).invoke('hello')).rejects.toThrow('setup boom');
+    await expect(
+      toClaudeAgents(Promise.resolve(def), { context: { kind: 'user', key: 'user-1' } }).invoke('hello'),
+    ).rejects.toThrow('setup boom');
+    expect(mockQuery).not.toHaveBeenCalled();
     expect(mockGraphSpan.end).toHaveBeenCalledTimes(1);
+    expect(mockGraphSpan.recordException).toHaveBeenCalledTimes(1);
+    expect(mockGraphSpan.recordException).toHaveBeenCalledWith(expect.any(Error));
+    expect(mockGraphSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR, message: 'setup boom' });
+    expect(mockGraphSpan.setStatus).not.toHaveBeenCalledWith({ code: SpanStatusCode.OK });
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
   });
 
   it('puts the environment id on every node and graph tracking event', async () => {

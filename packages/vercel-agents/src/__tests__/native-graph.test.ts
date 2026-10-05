@@ -357,6 +357,28 @@ describe('toVercelAgents', () => {
     expect(telemetryMocks.span.end).toHaveBeenCalledOnce();
   });
 
+  it('records a setup error on the graph span, tracks it as a failure, and ends the span once', async () => {
+    const modelFactory = () => {
+      throw new Error('model boom');
+    };
+    await expect(
+      toVercelAgents(Promise.resolve(makeGraph() as any), { context, modelFactory } as any).invoke('hi'),
+    ).rejects.toThrow('model boom');
+    expect(aiMocks.agents).toHaveLength(0);
+    expect(telemetryMocks.span.end).toHaveBeenCalledOnce();
+    expect(telemetryMocks.span.recordException).toHaveBeenCalledOnce();
+    expect(telemetryMocks.span.recordException).toHaveBeenCalledWith(expect.any(Error));
+    expect(telemetryMocks.span.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR, message: 'model boom' });
+    expect(telemetryMocks.span.setStatus).not.toHaveBeenCalledWith({ code: SpanStatusCode.OK });
+    const failures = telemetryMocks.track.mock.calls.filter(
+      (c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure',
+    );
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(
+      expect.objectContaining({ configKey: 'vercel-native-graph', graphKey: 'vercel-native-graph' }),
+    );
+  });
+
   it('ends the graph span when native generation is cancelled', async () => {
     const cancellation = new DOMException('cancelled', 'AbortError');
     aiMocks.generateImplementation = async () => {

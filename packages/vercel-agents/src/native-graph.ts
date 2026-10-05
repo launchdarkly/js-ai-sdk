@@ -133,7 +133,6 @@ export const toVercelAgents = (
       const startedAt = Date.now();
       const runId = crypto.randomUUID();
       const context = options.context;
-      setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext: context });
       const handlers = options.toolHandlers ?? {};
       const selectedTargets = new Map<string, string>();
       const nodes = new Map<string, GraphNode>();
@@ -141,6 +140,7 @@ export const toVercelAgents = (
       const path: string[] = [];
 
       try {
+        setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext: context });
         await def.traverse(async (node) => {
           nodes.set(node.key, node);
           const regularTools = Object.entries(node.config.tools ?? {}).filter(

@@ -154,9 +154,11 @@ export const toLangGraph = (
     const ldContext = opts?.context;
 
     return trace.getTracer('@launchdarkly/ai-langchain-agents').startActiveSpan('launchdarkly.graph', async (span) => {
+      const startTime = Date.now();
+      const runId = crypto.randomUUID();
+      // One try covers setup and the run, so a setup error (a graph that fails to compile)
+      // is recorded on the span and tracked as an invocation failure, like a run error.
       try {
-        const startTime = Date.now();
-        const runId = crypto.randomUUID();
         setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext });
 
         const path: string[] = [];
@@ -294,20 +296,7 @@ export const toLangGraph = (
             ? toLangChainMessages(composeHistory({ history, userInput: input }))
             : [new HumanMessage(input)];
 
-        // biome-ignore lint/suspicious/noImplicitAnyLet: assigned immediately in try; catch always re-throws
-        let result;
-        try {
-          result = await compiled.invoke({ messages: initialMessages });
-          span.setStatus({ code: SpanStatusCode.OK });
-        } catch (err) {
-          span.recordException(err instanceof Error ? err : new Error(String(err)));
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
-          if (ldContext) {
-            const trackData = makeGraphTrackData(def.key, runId);
-            getClient().track('$ld:ai:graph:invocation_failure', ldContext, trackData, 1);
-          }
-          throw err;
-        }
+        const result = await compiled.invoke({ messages: initialMessages });
 
         const duration = Date.now() - startTime;
 
@@ -336,7 +325,16 @@ export const toLangGraph = (
           getClient().track('$ld:ai:graph:invocation_success', ldContext, graphTrackData, 1);
         }
 
+        span.setStatus({ code: SpanStatusCode.OK });
         return { response: finalOutput, usage: totalUsage };
+      } catch (err) {
+        const exception = err instanceof Error ? err : new Error(String(err));
+        span.recordException(exception);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: exception.message });
+        if (ldContext) {
+          getClient().track('$ld:ai:graph:invocation_failure', ldContext, makeGraphTrackData(def.key, runId), 1);
+        }
+        throw err;
       } finally {
         span.end();
       }

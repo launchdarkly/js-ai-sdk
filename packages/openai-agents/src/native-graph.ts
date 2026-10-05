@@ -127,9 +127,11 @@ export const toOpenAIAgents = (
     const ldContext = opts?.context;
 
     return trace.getTracer('@launchdarkly/ai-openai-agents').startActiveSpan('launchdarkly.graph', async (span) => {
+      const startTime = Date.now();
+      const runId = crypto.randomUUID();
+      // One try covers setup and the run, so a setup error (an agent that was not built)
+      // is recorded on the span and tracked as an invocation failure, like a run error.
       try {
-        const startTime = Date.now();
-        const runId = crypto.randomUUID();
         setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext });
 
         const path: string[] = [];
@@ -217,21 +219,8 @@ export const toOpenAIAgents = (
         // handoffs and receive their context from the Runner, not from `history`.
         const rootInput = history && history.length > 0 ? toRunnerInput(history, input) : input;
 
-        // biome-ignore lint/suspicious/noImplicitAnyLet: assigned immediately in try; catch always re-throws
-        let result;
-        try {
-          // biome-ignore lint/suspicious/noExplicitAny: Runner.run accepts string | AgentInputItem[]; our item shape is structurally compatible
-          result = await runner.run(rootAgent, rootInput as any);
-          span.setStatus({ code: SpanStatusCode.OK });
-        } catch (err) {
-          span.recordException(err instanceof Error ? err : new Error(String(err)));
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
-          if (ldContext) {
-            const trackData = makeGraphTrackData(def.key, runId);
-            getClient().track('$ld:ai:graph:invocation_failure', ldContext, trackData, 1);
-          }
-          throw err;
-        }
+        // biome-ignore lint/suspicious/noExplicitAny: Runner.run accepts string | AgentInputItem[]; our item shape is structurally compatible
+        const result = await runner.run(rootAgent, rootInput as any);
 
         const finalOutput = String(result.finalOutput ?? '');
         const usage = result.state.usage;
@@ -256,6 +245,14 @@ export const toOpenAIAgents = (
 
         span.setStatus({ code: SpanStatusCode.OK });
         return { response: finalOutput, usage: totalUsage };
+      } catch (err) {
+        const exception = err instanceof Error ? err : new Error(String(err));
+        span.recordException(exception);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: exception.message });
+        if (ldContext) {
+          getClient().track('$ld:ai:graph:invocation_failure', ldContext, makeGraphTrackData(def.key, runId), 1);
+        }
+        throw err;
       } finally {
         span.end();
       }

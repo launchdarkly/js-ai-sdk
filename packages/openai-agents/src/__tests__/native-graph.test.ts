@@ -316,15 +316,24 @@ describe('toOpenAIAgents', () => {
     expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
   });
 
-  it('ends the graph span when building the agents throws', async () => {
-    const def = {
-      ...makeTwoNodeGraph(),
-      reverseTraverse: async () => {
-        throw new Error('setup boom');
-      },
-    };
-    await expect(toOpenAIAgents(Promise.resolve(def as any)).invoke('hi')).rejects.toThrow('setup boom');
+  it('records a setup error on the graph span, tracks it as a failure, and ends the span once', async () => {
+    // A traversal that builds nothing leaves the root agent unbuilt, so setup throws before the run.
+    const def = { ...makeTwoNodeGraph(), reverseTraverse: async () => {} };
+    await expect(toOpenAIAgents(Promise.resolve(def as any), { context: ldContext }).invoke('hi')).rejects.toThrow(
+      'Root agent "root-agent" was not built',
+    );
+    expect(mockRunnerRun).not.toHaveBeenCalled();
     expect(mockSpan.end).toHaveBeenCalledTimes(1);
+    expect(mockSpan.recordException).toHaveBeenCalledTimes(1);
+    expect(mockSpan.recordException).toHaveBeenCalledWith(expect.any(Error));
+    expect(mockSpan.setStatus).toHaveBeenCalledWith({
+      code: SpanStatusCode.ERROR,
+      message: 'Root agent "root-agent" was not built',
+    });
+    expect(mockSpan.setStatus).not.toHaveBeenCalledWith({ code: SpanStatusCode.OK });
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
   });
 
   it('puts the environment id on every node and graph tracking event', async () => {
