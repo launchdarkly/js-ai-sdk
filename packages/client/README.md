@@ -84,7 +84,7 @@ await shutdown();
 | `getClient()` | Return the initialized `LDClientInterface`. Throws if `initClient` has not completed. |
 | `shutdown()` | Flush all events and telemetry, then close the client. Call before process exit. |
 | `waitForTelemetry()` | Wait for the OTel provider to be ready. Useful to avoid dropping early spans. |
-| `shutdownTelemetry()` | Flush and stop the OTel exporter independently of the LD client. |
+| `shutdownTelemetry()` | Flush and stop the OTel exporter independently of the LD client, and release the OTel globals the SDK registered. |
 | `inspectConfig(key, context)` | Read an AI Config variation without invoking the model. Never throws. Returns `{ enabled, config, meta }`. |
 
 ### `config(args)`

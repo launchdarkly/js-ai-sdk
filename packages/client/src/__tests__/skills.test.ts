@@ -13,7 +13,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@opentelemetry/sdk-trace-node', () => ({
   NodeTracerProvider: class {
-    register = vi.fn();
     shutdown = vi.fn().mockResolvedValue(undefined);
   },
 }));
@@ -21,7 +20,12 @@ vi.mock('@opentelemetry/sdk-trace-base', () => ({ BatchSpanProcessor: class {} }
 vi.mock('@opentelemetry/exporter-trace-otlp-http', () => ({ OTLPTraceExporter: class {} }));
 vi.mock('@opentelemetry/otlp-exporter-base', () => ({ CompressionAlgorithm: { GZIP: 'gzip' } }));
 vi.mock('@opentelemetry/resources', () => ({ resourceFromAttributes: () => ({}) }));
-vi.mock('@opentelemetry/context-async-hooks', () => ({ AsyncLocalStorageContextManager: class {} }));
+vi.mock('@opentelemetry/context-async-hooks', () => ({
+  AsyncLocalStorageContextManager: class {
+    enable = vi.fn();
+    disable = vi.fn();
+  },
+}));
 vi.mock('@opentelemetry/core', () => ({
   CompositePropagator: class {},
   W3CBaggagePropagator: class {},
@@ -29,8 +33,9 @@ vi.mock('@opentelemetry/core', () => ({
 }));
 vi.mock('@opentelemetry/api', () => ({
   createContextKey: (name: string) => Symbol(name),
-  trace: { getTracerProvider: () => ({ _delegate: {} }) },
-  propagation: { setGlobalPropagator: vi.fn() },
+  trace: { getTracerProvider: () => ({ _delegate: {} }), setGlobalTracerProvider: () => true, disable: vi.fn() },
+  context: { setGlobalContextManager: () => true, disable: vi.fn() },
+  propagation: { setGlobalPropagator: () => true, disable: vi.fn() },
 }));
 vi.mock('dotenv/config', () => ({}));
 

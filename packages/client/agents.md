@@ -360,6 +360,8 @@ This is an OTel context value, not W3C baggage, so the id does not leak onto out
 
 The core client owns all OTel initialization. `initClient()` sets up a `NodeTracerProvider` with `ConversationIdSpanProcessor` and a `BatchSpanProcessor` plus an OTLP HTTP exporter when the optional OTel peer deps are installed.
 
+It registers the provider, an `AsyncLocalStorageContextManager` and the W3C propagators as OTel's process globals, and records which of the three it actually took: each global is one-shot, so one another library registered first stays theirs (a refused tracer provider logs a `console.warn`, since the telemetry options then have no effect). `shutdownTelemetry()` — and so `shutdown()` — releases only the globals it took, which lets a later `initClient()` register afresh without tearing down a host application's own provider. An init that fails after building its provider tears it down, so the retry builds its own with the retry's options.
+
 **Required packages (via `@launchdarkly/ai-otel` or installed manually):**
 
 ```sh

@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { trace } from '@opentelemetry/api';
+import { context, propagation, trace } from '@opentelemetry/api';
 import { ConversationIdSpanProcessor } from './conversation.js';
 import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
 import { _clearState, _setStore } from './skills.js';
@@ -22,6 +22,27 @@ function env(name: string): string | undefined {
 // biome-ignore lint/suspicious/noExplicitAny: OTel tracer provider loaded via dynamic import with no static type
 let tracerProvider: any | null = null;
 
+interface OtelGlobals {
+  trace: boolean;
+  context: boolean;
+  propagation: boolean;
+}
+
+const NO_OTEL_GLOBALS: OtelGlobals = { trace: false, context: false, propagation: false };
+
+/**
+ * Which of OTel's process-global registrations `setupTelemetry` actually took.
+ *
+ * Each global is one-shot: a second registration is refused, with an
+ * "Attempted duplicate registration of API" diag error, until the first is
+ * disabled. So `shutdownTelemetry` must release them, or an init/shutdown/init
+ * cycle routes every later span to the provider it just shut down. But it may
+ * release only these: having built a provider does not mean we own the global,
+ * since another library may have registered first, and disabling theirs would
+ * tear down the host application's tracing.
+ */
+let ownedOtelGlobals: OtelGlobals = NO_OTEL_GLOBALS;
+
 const LD_OTEL_PEER_DEPS = [
   '@opentelemetry/sdk-trace-node',
   '@opentelemetry/sdk-trace-base',
@@ -37,8 +58,11 @@ const LD_OTEL_PEER_DEPS = [
  * The OTel SDK packages are optional peer dependencies loaded via dynamic import.
  * If any are missing, telemetry is silently disabled and a console.warn is emitted
  * with the npm install command to enable it.
+ *
+ * Resolves `true` only when this call built a provider, so a failed init knows
+ * whether there is one of its own to tear down.
  */
-async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): Promise<void> {
+async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): Promise<boolean> {
   // biome-ignore lint/suspicious/noExplicitAny: optional OTel peer deps loaded via dynamic import with no static types
   let NodeTracerProvider: any,
     // biome-ignore lint/suspicious/noExplicitAny: optional OTel peer deps loaded via dynamic import with no static types
@@ -73,8 +97,16 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
         'packages are not installed. To enable, run:\n' +
         `  npm install ${LD_OTEL_PEER_DEPS}`,
     );
-    return;
+    return false;
   }
+
+  // One provider at a time. A second would be refused the global registration,
+  // so it would receive no spans while replacing the handle `shutdownTelemetry`
+  // flushes, leaking the live one. A repeat BYOC call reuses the existing
+  // provider, as OTel itself would; a failed init has already torn its own down.
+  // Checked after the imports, since nothing between here and the assignment
+  // below awaits.
+  if (tracerProvider) return false;
 
   const baseEndpoint = options.otlpEndpoint ?? env('OTEL_EXPORTER_OTLP_ENDPOINT') ?? LD_DEFAULT_OTLP_ENDPOINT;
 
@@ -92,16 +124,37 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
       : {}),
   });
 
-  tracerProvider = new NodeTracerProvider({
+  const provider = new NodeTracerProvider({
     resource,
     spanProcessors: [new ConversationIdSpanProcessor(), new BatchSpanProcessor(exporter)],
   });
-  tracerProvider.register({
-    contextManager: new AsyncLocalStorageContextManager(),
-    propagator: new CompositePropagator({
-      propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()],
-    }),
-  });
+
+  // What `provider.register()` does, one global at a time, because each setter
+  // reports whether it took the global and `register()` discards that.
+  const contextManager = new AsyncLocalStorageContextManager();
+  contextManager.enable();
+  const owned: OtelGlobals = {
+    trace: trace.setGlobalTracerProvider(provider),
+    context: context.setGlobalContextManager(contextManager),
+    propagation: propagation.setGlobalPropagator(
+      new CompositePropagator({
+        propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()],
+      }),
+    ),
+  };
+  if (!owned.context) contextManager.disable();
+  if (!owned.trace) {
+    // biome-ignore lint/suspicious/noConsole: OTel's own refusal goes to its diag logger, which is unset by default
+    console.warn(
+      '[LaunchDarkly] An OpenTelemetry tracer provider was already registered by something ' +
+        "else in this process, so LaunchDarkly's telemetry options are not in effect; spans " +
+        'go wherever that provider sends them.',
+    );
+  }
+
+  tracerProvider = provider;
+  ownedOtelGlobals = owned;
+  return true;
 }
 
 /**
@@ -128,13 +181,23 @@ export async function waitForTelemetry(timeoutMs = 5000): Promise<void> {
 }
 
 /**
- * Flushes and shuts down the OTel tracer provider.
+ * Flushes and shuts down the OTel tracer provider, then releases the OTel
+ * globals this SDK registered, so a later `initClient` can register its own.
  * Must be called before process.exit() to ensure all pending spans are exported.
  */
 export async function shutdownTelemetry(): Promise<void> {
-  if (tracerProvider) {
-    await tracerProvider.shutdown();
-    tracerProvider = null;
+  const provider = tracerProvider;
+  const owned = ownedOtelGlobals;
+  tracerProvider = null;
+  ownedOtelGlobals = NO_OTEL_GLOBALS;
+  if (!provider) return;
+  try {
+    await provider.shutdown();
+  } finally {
+    // See `ownedOtelGlobals`: only what our own registration took.
+    if (owned.trace) trace.disable();
+    if (owned.context) context.disable();
+    if (owned.propagation) propagation.disable();
   }
 }
 
@@ -170,8 +233,26 @@ async function initBaseClient(options: InitBaseClientOptions = {}): Promise<LDCl
     throw new Error('LD_SDK_KEY is not set');
   }
 
-  await setupTelemetry(options, sdkKey);
+  const builtTelemetry = await setupTelemetry(options, sdkKey);
+  try {
+    return await startBaseClient(sdkKey, options);
+  } catch (err) {
+    // A rejected init is retried rather than cached, and the retry may bring
+    // different options (another sdkKey is another highlight.project_id), so
+    // drop the provider this attempt built instead of leaving the retry to reuse
+    // it. Unless a BYOC call has adopted it for its own client meanwhile.
+    if (builtTelemetry && !getSingleton().client) {
+      try {
+        await shutdownTelemetry();
+      } catch {
+        // The init failure is the error worth reporting.
+      }
+    }
+    throw err;
+  }
+}
 
+async function startBaseClient(sdkKey: string, options: InitBaseClientOptions): Promise<LDClientInterface> {
   // biome-ignore lint/suspicious/noExplicitAny: @launchdarkly/node-server-sdk loaded via dynamic import
   let init: any;
   try {
