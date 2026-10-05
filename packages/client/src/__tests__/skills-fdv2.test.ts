@@ -1308,6 +1308,16 @@ describe('the held object set', () => {
     expect(filled().get('malformed', 7)?.content).toBe('q');
   });
 
+  it('misses a pin for a missing version rather than serving a version-less entry', () => {
+    // With valid versions held, the version-less entry is not this pin's object:
+    // serving it would record an integrity failure against a healthy skill.
+    const set = filled();
+    set.put({ key: 'a', version: 'not-a-version', content: 'q' });
+    expect(set.get('a', 99)).toBeNull();
+    expect(set.get('a', 1)?.content).toBe('x');
+    expect(set.get('a', null)?.content).toBe('y');
+  });
+
   it('answers null for a key it does not hold', () => {
     expect(filled().get('missing', null)).toBeNull();
     expect(filled().get('a', 99)).toBeNull();
@@ -2679,6 +2689,48 @@ describe('failure handling', () => {
     expect(report.actions.some((action) => action.action === 'removed')).toBe(false);
     expect(existsSync(path.join(stale, 'SKILL.md'))).toBe(true);
     expect(await readFile(path.join(stale, 'SKILL.md'), 'utf8')).toBe('not ours to delete');
+  });
+
+  it('resumes a store that gave up on a 422 when start is called again', async () => {
+    // A 422 is never retried on its own, but once the cause is fixed (a new key,
+    // or delivery enabled for the account) the application can resume the same
+    // store without restarting the process.
+    endpoint.defaultPollStatus = 422;
+    const store = pollStore();
+    store.start();
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+    expect(store.start()).toBe(store);
+    expect(store.failed).toBeNull();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(store.getObject('skill', 'pdf-extraction')).not.toBeNull();
+  });
+
+  it('points the give-up log line at start(), not only a process restart', async () => {
+    endpoint.defaultPollStatus = 422;
+    const store = pollStore();
+    store.start();
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    expect(consoleErrors()).toMatch(/call start\(\) on this store/);
+  });
+
+  it('starts the failure count over when a store is restarted', async () => {
+    // Recoverable failures before the fatal one are history once delivery runs
+    // again, so a restarted store does not report them as its own.
+    endpoint.queuePoll([], { status: 500 });
+    endpoint.defaultPollStatus = 422;
+    const store = pollStore();
+    store.start();
+    expect(await waitUntil(() => store.failed !== null)).toBe(true);
+    expect(store.diagnostics.connectionFailures).toBe(1);
+
+    endpoint.defaultPollStatus = 304;
+    endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
+    store.start();
+    expect(store.diagnostics.connectionFailures).toBe(0);
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(store.failed).toBeNull();
   });
 
   /**

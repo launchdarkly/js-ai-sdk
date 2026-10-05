@@ -71,6 +71,13 @@ export const MANIFEST_FILENAME = '.launchdarkly-skills.json';
 /** Manifest schema version this release writes, and the highest it can read. */
 export const MANIFEST_VERSION = 1;
 
+/**
+ * Hard cap on the manifest read, far above any real manifest. A larger file is
+ * treated as corrupt rather than read into memory. Not exported from the
+ * package index.
+ */
+export const MAX_MANIFEST_BYTES = 8 * 1024 * 1024;
+
 /** The single file each skill materializes to, under `<root>/<key>/`. */
 export const SKILL_FILENAME = 'SKILL.md';
 
@@ -622,9 +629,9 @@ async function loadManifest(
 ): Promise<{ manifest: Record<string, unknown>; error: string | null }> {
   const fresh = { manifestVersion: MANIFEST_VERSION, entries: {} };
 
-  let text: string;
+  let raw: Buffer;
   try {
-    text = (await readRegularFile(path.join(root.address, MANIFEST_FILENAME))).toString('utf-8');
+    raw = await readRegularFile(path.join(root.address, MANIFEST_FILENAME), MAX_MANIFEST_BYTES);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { manifest: fresh, error: null };
     return {
@@ -632,6 +639,14 @@ async function loadManifest(
       error: `the skills manifest ${MANIFEST_FILENAME} could not be read: ${messageOf(error)}`,
     };
   }
+  // The read stops one byte past the cap, which is enough to detect an overage.
+  if (raw.byteLength > MAX_MANIFEST_BYTES) {
+    return {
+      manifest: {},
+      error: `the skills manifest ${MANIFEST_FILENAME} is larger than the ${MAX_MANIFEST_BYTES} byte cap; refusing every destructive action`,
+    };
+  }
+  const text = raw.toString('utf-8');
 
   // Non-UTF-8 bytes decode as U+FFFD, so they surface as invalid JSON.
   let data: unknown;
@@ -851,18 +866,17 @@ async function writeOne(
  * - `O_NOFOLLOW`: refuses a trailing symlink.
  * - The type check uses `stat` on the handle, not the path.
  *
- * With `maxBytes`, reads at most `maxBytes + 1` bytes; the extra byte keeps a
- * longer file from hashing equal to its prefix. `undefined` reads to EOF.
+ * Reads at most `maxBytes + 1` bytes; the extra byte keeps a longer file from
+ * hashing equal to its prefix. `maxBytes` is required so no call site can read
+ * unbounded.
  *
  * Throws for anything the caller must turn into a refusal.
  */
-async function readRegularFile(target: string, maxBytes?: number): Promise<Buffer> {
+async function readRegularFile(target: string, maxBytes: number): Promise<Buffer> {
   const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
   const handle = await open(target, flags);
   try {
     if (!(await handle.stat()).isFile()) throw new Error('the path is not a regular file');
-    if (maxBytes === undefined) return await handle.readFile();
-
     // Buffer sized to the bound, not the file; looped since `read` may return short.
     const limit = maxBytes + 1;
     const buffer = Buffer.alloc(limit);

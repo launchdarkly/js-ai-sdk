@@ -237,16 +237,16 @@ describe('the adoption comparison read is bounded', () => {
     expect(hook.reads.get(SKILL_MD)).toBe(encoded.byteLength);
   });
 
-  it('reads the manifest unbounded, because its length is not predictable', async () => {
-    // The counterpart: `maxBytes` is opt-in, and the manifest does not opt in.
-    // It is parsed rather than compared, no caller can predict its length, and it
-    // is the one file under the root this SDK writes itself.
+  it('reads the manifest through a bounded read, not to EOF', async () => {
+    // Its length is not predictable, but it lives in a directory the SDK does not
+    // own exclusively, so the read is capped at `MAX_MANIFEST_BYTES`.
     await writeSkills([skill('a')], root);
     disarm();
 
     await writeSkills([skill('a')], root);
 
-    expect(hook.wholeFileReads.has('.launchdarkly-skills.json')).toBe(true);
+    expect(hook.wholeFileReads.has('.launchdarkly-skills.json')).toBe(false);
+    expect(hook.reads.get('.launchdarkly-skills.json')).toBeGreaterThan(0);
   });
 });
 
