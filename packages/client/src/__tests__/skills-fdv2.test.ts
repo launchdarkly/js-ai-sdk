@@ -871,32 +871,52 @@ describe('protocol reader', () => {
   });
 
   it('does not report a commit for a transfer that applied nothing', () => {
-    // Three shapes reach `payload-transferred` with no pending set to apply: an
-    // intent code this SDK does not recognise, a `none` intent, and a lone
-    // transfer under no intent at all. None of them applied anything, so none of
-    // them claims anything — neither a commit, which is what publishes the first
-    // payload `writeSkills('*')` prunes on, nor an up-to-date answer, which only
-    // the server can give and only the `none` intent does, on its own event.
+    // Four shapes reach `payload-transferred` with nothing to apply: an intent
+    // code this SDK does not recognise, a `none` intent, a lone transfer under no
+    // intent at all, and a foreign payload, which built a pending set and threw
+    // it away. None of them applied anything, so none of them claims anything —
+    // neither a commit, which is what publishes the first payload
+    // `writeSkills('*')` prunes on, nor an up-to-date answer, which only the
+    // server can give and only the `none` intent does, on its own event.
     //
     // The transfer is still a wire fact, counted either way.
-    const shapes = [
-      events(
-        ['server-intent', serverIntent('xfer-future')],
-        ['put-object', putSkill()],
-        ['payload-transferred', transferred('basis-1')],
-      ),
-      events(['server-intent', serverIntent('none')], ['payload-transferred', transferred('basis-1')]),
-      events(['payload-transferred', transferred('basis-1')]),
+    const shapes: Array<{ prior: WireEvent[]; shape: WireEvent[] }> = [
+      {
+        prior: [],
+        shape: events(
+          ['server-intent', serverIntent('xfer-future')],
+          ['put-object', putSkill()],
+          ['payload-transferred', transferred('basis-1')],
+        ),
+      },
+      {
+        prior: [],
+        shape: events(['server-intent', serverIntent('none')], ['payload-transferred', transferred('basis-1')]),
+      },
+      { prior: [], shape: events(['payload-transferred', transferred('basis-1')]) },
+      {
+        // A payload is foreign only once the skill payload is known, which takes
+        // a commit first.
+        prior: fullPayload([['put-object', putSkill()]], 'basis-skills'),
+        shape: events(
+          ['server-intent', serverIntent('xfer-full', 'env-flags')],
+          ['put-object', putSkill('other')],
+          ['payload-transferred', transferred('basis-flags')],
+        ),
+      },
     ];
-    for (const shape of shapes) {
+    for (const { prior, shape } of shapes) {
       const held = new SkillObjectSet();
       const reader = new ProtocolReader(held);
+      drive(reader, prior);
+      const before = held.allRaw();
+      const transfers = reader.diagnostics.payloadsTransferred;
       const outcome = drive(reader, shape).at(-1);
       expect(outcome?.committed).not.toBe(true);
       expect(outcome?.healthy).not.toBe(true);
       expect(outcome?.basis).toBeNull();
-      expect(held.size).toBe(0);
-      expect(reader.diagnostics.payloadsTransferred).toBe(1);
+      expect(held.allRaw()).toEqual(before);
+      expect(reader.diagnostics.payloadsTransferred).toBe(transfers + 1);
     }
   });
 
