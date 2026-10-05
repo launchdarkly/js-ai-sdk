@@ -276,7 +276,8 @@ export async function getSkillResult(key: string, options: { version?: number } 
  * @param refs `SkillReference` values and/or bare key strings (a string means the
  *   newest version).
  * @returns The skills found, in input order. Entries that are missing, at the
- *   wrong version, or fail verification are omitted, and a warning logs how many.
+ *   wrong version, or fail verification are omitted. A warning logs how many
+ *   failed verification; misses are not counted.
  * @throws TypeError if `refs` is a single string; pass `[key]` instead.
  * @throws Error if no skill store is configured.
  */
@@ -291,12 +292,16 @@ export async function getSkills(refs: ReadonlyArray<SkillReference | string>): P
   const store = requireStore();
 
   const skills: Skill[] = [];
+  // Only what the store served counts toward the summary: a miss or an outage is
+  // not a verification failure, and the summary would report it as one.
+  let served = 0;
   for (const ref of refs) {
     const [key, wanted] = referenceTarget(ref);
-    const { skill } = resolveFromStore(store, key, wanted);
+    const { skill, reason } = resolveFromStore(store, key, wanted);
     if (skill) skills.push(skill);
+    if (reason === 'ok' || reason === 'integrity_failure') served += 1;
   }
-  logWithholdingSummary('requested skills', refs.length, skills.length);
+  logWithholdingSummary('requested skills the store served', served, skills.length);
   return skills;
 }
 

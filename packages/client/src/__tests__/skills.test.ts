@@ -1259,6 +1259,38 @@ describe('withholding summary', () => {
     expect(warnings()).toHaveLength(1);
   });
 
+  it('does not warn when getSkills asks for keys the store does not hold', async () => {
+    // An empty store at boot is not an integrity problem.
+    expect(await getSkills(['a', 'b'])).toEqual([]);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('does not warn when a getSkills pin misses', async () => {
+    store.put(rawSkill({ key: 'a', version: 2 }));
+    expect(await getSkills([{ key: 'a', version: 1 }])).toEqual([]);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('does not warn when the store throws during getSkills', async () => {
+    const throwing: SkillStore = {
+      getObject: () => {
+        throw new Error('down');
+      },
+      allObjects: () => ({}),
+    };
+    _setStore(throwing);
+    expect(await getSkills(['a'])).toEqual([]);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('counts only what the store served when getSkills mixes misses and withholding', async () => {
+    store.put(rawSkill({ key: 'good' }));
+    store.put(tampered('bad'));
+    expect((await getSkills(['good', 'bad', 'missing'])).map((s) => s.key)).toEqual(['good']);
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toMatch(/1 of 2/);
+  });
+
   it('does not warn when nothing was withheld', async () => {
     store.put(rawSkill({ key: 'a' }));
     expect(await getSkills(['a'])).toHaveLength(1);
