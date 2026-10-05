@@ -88,14 +88,14 @@ export const CHAT_ANTHROPIC_FORWARDED_KEYS = [
  * after camelizing the bag. Mirrors the Python SDK's `ChatBedrockConverse` list, minus
  * `region_name`, which is connection configuration.
  *
- * Never forwarded: `region`, `credentials`, `bedrockApiKey`, `bedrockApiSecret`,
+ * Never forwarded: `additionalModelRequestFields` (merged into the request body as written),
+ * `region`, `credentials`, `bedrockApiKey`, `bedrockApiSecret`,
  * `bedrockApiSessionToken`, the AWS credential-provider settings (`profile`, `roleArn`, ...),
  * `endpointHost`, `client`, `clientOptions`, `defaultHeaders`, `model`, and
  * `applicationInferenceProfile` (which replaces the model the handler resolved).
  */
 export const CHAT_BEDROCK_CONVERSE_FORWARDED_KEYS = [
   ...BASE_CHAT_MODEL_KEYS,
-  'additionalModelRequestFields',
   'guardrailConfig',
   'maxTokens',
   'performanceConfig',

@@ -79,6 +79,8 @@ export const NEVER_FORWARDED_KEYS = [
   'modelKwargs',
   'invocation_kwargs',
   'invocationKwargs',
+  'additional_model_request_fields',
+  'additionalModelRequestFields',
   'provider_data',
   'providerData',
   'provider_options',
