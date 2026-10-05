@@ -45,9 +45,14 @@ be built after evaluation:
 ```ts
 const handler = createLangChainHandler((config) => new ChatAnthropic({
   model: config.model.name,
-  ...config.model.parameters,
+  temperature: typeof config.model.parameters?.temperature === 'number' ? config.model.parameters.temperature : undefined,
 }));
 ```
+
+Pick out the settings you want by name. Don't spread `config.model.parameters` into the constructor:
+it comes from the AI Config, and a spread would let it set constructor options such as `apiKey`,
+`anthropicApiUrl` or `clientOptions`. If you pass no model, the handler builds one itself and
+forwards only an allowlist of generation settings.
 
 ### Convenience wrapper
 
