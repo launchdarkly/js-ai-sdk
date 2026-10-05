@@ -199,9 +199,7 @@ describe('createVercelMessagesHandler', () => {
       stop_sequences: ['END'],
       seed: 7,
       reasoning_effort: 'low',
-      max_retries: 1,
       tool_choice: 'auto',
-      provider_options: { anthropic: { thinking: { type: 'enabled', budget_tokens: 1024 } } },
     };
     await createVercelMessagesHandler()({ ...baseConfig, model: { ...baseConfig.model, parameters } } as any, 'hello');
     const request = aiMocks.generateText.mock.calls[0][0];
@@ -214,10 +212,7 @@ describe('createVercelMessagesHandler', () => {
       stopSequences: ['END'],
       seed: 7,
       reasoning: 'low',
-      maxRetries: 1,
       toolChoice: 'auto',
-      // Nested values reach the provider untouched, snake_case and all.
-      providerOptions: { anthropic: { thinking: { type: 'enabled', budget_tokens: 1024 } } },
     });
     for (const key of Object.keys(parameters).filter((k) => k.includes('_'))) {
       expect(request).not.toHaveProperty(key);

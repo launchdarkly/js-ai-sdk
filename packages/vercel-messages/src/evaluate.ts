@@ -16,7 +16,6 @@ import {
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { type Experimental_EvaluationModel, type Experimental_EvaluationQuestion, experimental_evaluate } from 'ai';
 import { gatewayModelId } from './model-id.js';
-import { buildEvaluateParameterOptions } from './model-parameters.js';
 
 const TRACER_NAME = '@launchdarkly/ai-vercel-messages';
 
@@ -116,8 +115,6 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
 
     try {
       const result = await experimental_evaluate({
-        // Config first, so a value the caller passes to vercelEvaluate explicitly wins.
-        ...buildEvaluateParameterOptions(config.model.parameters),
         model,
         state,
         questions: options.questions,

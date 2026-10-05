@@ -12,7 +12,6 @@ const parameters = {
   max_tokens: 321,
   top_p: 0.42,
   stop_sequences: ['END'],
-  max_retries: 0,
 };
 
 const baseConfig = {

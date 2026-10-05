@@ -4,7 +4,7 @@ import {
   normalizeModelParameters,
   pickForwardedModelParameters,
 } from '@launchdarkly/ai-server';
-import type { experimental_evaluate, generateText, LanguageModelCallOptions, RequestOptions } from 'ai';
+import type { generateText, LanguageModelCallOptions, RequestOptions } from 'ai';
 
 /**
  * AI SDK call settings this package's `generateText` / `streamText` calls take from
@@ -12,37 +12,39 @@ import type { experimental_evaluate, generateText, LanguageModelCallOptions, Req
  *
  * The AI SDK drops any call setting it does not recognize without an error, so a key that is
  * not spelled exactly as below (snake_case `max_tokens`, `top_p`) reaches nothing. This list is
- * every `LanguageModelCallOptions` and `RequestOptions` field, minus the exclusions below, plus
- * the two `generateText` fields a config can meaningfully set as JSON: `toolChoice` and
- * `providerOptions`.
+ * the `LanguageModelCallOptions` generation settings plus `toolChoice`.
  *
  * Handler-owned (set by the handler from the config and the call shape, never from
  * `model.parameters`): `model`, `messages`, `prompt`, `system`, `instructions`, `tools`,
  * `stopWhen`, `output`.
  *
- * Excluded: `abortSignal`, which cannot be expressed in a JSON config and belongs to the caller.
+ * Never forwarded, because they configure the request rather than the model and a config must not
+ * be able to change them:
+ * - `headers`: call-level headers win over the provider's own, so a config could replace the
+ *   customer's `Authorization` header.
+ * - `providerOptions`: the Vercel AI Gateway reads credentials (`gateway.byok`) and routing
+ *   (`gateway.order`, `gateway.only`, `gateway.models`) from it.
+ * - `maxRetries`, `timeout`: client retry and timeout policy.
+ * - `abortSignal`: cannot be expressed in a JSON config and belongs to the caller.
+ *
  * Every other `generateText` field (callbacks, telemetry, tool repair, approval, `activeTools`,
  * `include`, ...) is either a function or wiring this handler does not expose, so it is not
- * forwarded.
+ * forwarded either.
  */
 const FORWARDED_MODEL_PARAMETER_KEYS = [
   'frequencyPenalty',
-  'headers',
   'maxOutputTokens',
-  'maxRetries',
   'presencePenalty',
-  'providerOptions',
   'reasoning',
   'seed',
   'stopSequences',
   'temperature',
-  'timeout',
   'toolChoice',
   'topK',
   'topP',
 ] as const satisfies ReadonlyArray<keyof Parameters<typeof generateText>[0]>;
 
-type VercelExcludedKeys = 'abortSignal';
+type VercelExcludedKeys = 'abortSignal' | 'headers' | 'maxRetries' | 'providerOptions' | 'timeout';
 // If the AI SDK adds a call setting and it is not classified above as forwarded or excluded,
 // this type resolves to something other than `never` and the assignment below fails to compile,
 // naming the unclassified key.
@@ -76,32 +78,4 @@ export function buildModelParameterOptions(parameters: AiConfigRep['model']['par
   if (maxOutputTokens !== undefined) renamed.max_output_tokens = maxOutputTokens;
   if (reasoning_effort !== undefined && renamed.reasoning === undefined) renamed.reasoning = reasoning_effort;
   return pickForwardedModelParameters(camelizeModelParameters(renamed), FORWARDED_MODEL_PARAMETER_KEYS);
-}
-
-/**
- * `experimental_evaluate` request fields `vercelEvaluate` takes from `config.model.parameters`.
- * The evaluate call accepts no generation settings at all (no temperature, no token limit), so
- * those are not forwarded here.
- *
- * Handler-owned: `model`, `state`, `questions`. Excluded: `abortSignal`, as above.
- */
-const FORWARDED_EVALUATE_PARAMETER_KEYS = ['headers', 'maxRetries', 'providerOptions'] as const;
-
-type EvaluateHandlerOwnedKeys = 'model' | 'questions' | 'state';
-type EvaluateExcludedKeys = 'abortSignal';
-type EvaluateUndecidedModelParameterKeys = Exclude<
-  keyof Parameters<typeof experimental_evaluate>[0],
-  EvaluateHandlerOwnedKeys | EvaluateExcludedKeys | (typeof FORWARDED_EVALUATE_PARAMETER_KEYS)[number]
->;
-const _evaluateModelParameterKeysExhaustive: Record<EvaluateUndecidedModelParameterKeys, never> = {} as Record<
-  never,
-  never
->;
-
-/** `config.model.parameters`, camelized, narrowed to what `experimental_evaluate` accepts. */
-export function buildEvaluateParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
-  return pickForwardedModelParameters(
-    camelizeModelParameters(normalizeModelParameters(parameters)),
-    FORWARDED_EVALUATE_PARAMETER_KEYS,
-  );
 }

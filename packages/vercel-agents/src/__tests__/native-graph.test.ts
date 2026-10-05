@@ -69,6 +69,7 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
 });
 
 import { toVercelAgents } from '../native-graph.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 function makeNode(
   key: string,
@@ -178,15 +179,26 @@ describe('toVercelAgents', () => {
     expect(rootSettings).toMatchObject({
       maxOutputTokens: 128,
       topP: 0.7,
-      providerOptions: { openai: { reasoning_summary: 'auto' } },
       instructions: 'Root instructions',
     });
     expect(Object.keys(rootSettings.tools)).toEqual(['transfer_to_leaf']);
-    for (const key of ['max_tokens', 'top_p', 'provider_options', 'abort_signal', 'abortSignal']) {
+    for (const key of ['max_tokens', 'top_p', 'provider_options', 'providerOptions', 'abort_signal', 'abortSignal']) {
       expect(rootSettings).not.toHaveProperty(key);
     }
     expect(leafSettings).toMatchObject({ temperature: 0.1, maxOutputTokens: 32 });
     expect(leafSettings).not.toHaveProperty('max_completion_tokens');
+  });
+
+  it('never forwards credentials, endpoints, headers or host settings from any node', async () => {
+    const graph = makeGraph();
+    (graph.root.config.model as any).parameters = { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 };
+    (graph.getNode('leaf')!.config.model as any).parameters = NEVER_FORWARDED_PARAMETERS;
+    await toVercelAgents(Promise.resolve(graph as any)).invoke('hi');
+    const rootSettings = aiMocks.agentArguments.find((options) => options.model === 'openai/root-model');
+    expect(rootSettings.temperature).toBe(0.3);
+    for (const settings of aiMocks.agentArguments) {
+      expectNoNeverForwardedValue(settings);
+    }
   });
 
   it('resolves the injected model factory independently for every evaluated node', async () => {

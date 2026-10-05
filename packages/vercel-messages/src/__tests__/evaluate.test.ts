@@ -57,6 +57,7 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
 });
 
 import { vercelEvaluate } from '../evaluate.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 const questions = {
   refunded: { type: 'boolean' as const, instructions: 'Was a refund issued?' },
@@ -167,43 +168,28 @@ describe('vercelEvaluate', () => {
     );
   });
 
-  it('forwards the model.parameters evaluate accepts and drops generation settings it does not', async () => {
+  it('does not forward model.parameters to experimental_evaluate', async () => {
+    // experimental_evaluate takes no generation settings, and the request settings it does take
+    // (headers, maxRetries, providerOptions) are never read from a config: call-level headers
+    // replace the provider's Authorization header, and the Gateway reads credentials and routing
+    // from providerOptions.
     serverMocks.inspectConfig.mockResolvedValue({
       enabled: true,
       config: {
         ...config,
-        model: {
-          ...config.model,
-          parameters: {
-            max_retries: 2,
-            headers: { 'x-config': '1' },
-            provider_options: { typesafe: { rounding_mode: 'nearest' } },
-            temperature: 0.2,
-            max_tokens: 10,
-            abort_signal: 'bad',
-          },
-        },
+        model: { ...config.model, parameters: { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.2, max_tokens: 10 } },
       },
       meta,
     });
     await vercelEvaluate('flag', 'state', context, { questions });
     const request = aiMocks.experimental_evaluate.mock.calls[0][0];
-    expect(request).toMatchObject({
-      maxRetries: 2,
-      headers: { 'x-config': '1' },
-      providerOptions: { typesafe: { rounding_mode: 'nearest' } },
-    });
-    for (const key of ['temperature', 'max_tokens', 'maxOutputTokens', 'abortSignal', 'abort_signal', 'max_retries']) {
+    expectNoNeverForwardedValue(request);
+    for (const key of ['temperature', 'max_tokens', 'maxOutputTokens']) {
       expect(request).not.toHaveProperty(key);
     }
   });
 
-  it('lets options passed to vercelEvaluate win over model.parameters', async () => {
-    serverMocks.inspectConfig.mockResolvedValue({
-      enabled: true,
-      config: { ...config, model: { ...config.model, parameters: { max_retries: 2, headers: { 'x-config': '1' } } } },
-      meta,
-    });
+  it('passes options given to vercelEvaluate through', async () => {
     await vercelEvaluate('flag', 'state', context, { questions, maxRetries: 0, headers: { 'x-caller': '1' } });
     expect(aiMocks.experimental_evaluate).toHaveBeenCalledWith(
       expect.objectContaining({ maxRetries: 0, headers: { 'x-caller': '1' } }),

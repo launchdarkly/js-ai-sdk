@@ -189,9 +189,7 @@ describe('createVercelAgentsHandler', () => {
       stop_sequences: ['END'],
       seed: 7,
       reasoning_effort: 'low',
-      max_retries: 1,
       tool_choice: 'auto',
-      provider_options: { anthropic: { thinking: { type: 'enabled', budget_tokens: 1024 } } },
     };
     await createVercelAgentsHandler()({ ...baseConfig, model: { ...baseConfig.model, parameters } } as any, 'hello');
     const settings = aiMocks.agentArguments[0];
@@ -204,10 +202,7 @@ describe('createVercelAgentsHandler', () => {
       stopSequences: ['END'],
       seed: 7,
       reasoning: 'low',
-      maxRetries: 1,
       toolChoice: 'auto',
-      // Nested values reach the provider untouched, snake_case and all.
-      providerOptions: { anthropic: { thinking: { type: 'enabled', budget_tokens: 1024 } } },
     });
     for (const key of Object.keys(parameters).filter((k) => k.includes('_'))) {
       expect(settings).not.toHaveProperty(key);

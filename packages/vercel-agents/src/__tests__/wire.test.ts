@@ -11,7 +11,7 @@ import { createVercelAgentsHandler } from '../handler.js';
 const baseConfig = {
   model: {
     name: 'openai/gpt-5',
-    parameters: { max_tokens: 321, top_p: 0.42, stop_sequences: ['END'], max_retries: 0 },
+    parameters: { max_tokens: 321, top_p: 0.42, stop_sequences: ['END'] },
   },
   provider: { name: 'OpenAI' },
   instructions: 'You are an agent.',
