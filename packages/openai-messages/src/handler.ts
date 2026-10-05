@@ -1,10 +1,15 @@
 import {
   type AiConfigRep,
+  type CanonicalTurn,
   type ContentCaptureOptions,
+  composeHistory,
   config,
+  contentToText,
   createHandler,
   createRunUsage,
   endSpanOnce,
+  imageBlockToUrl,
+  isContentBlocks,
   type LDContext,
   type Message,
   type ProviderHandler,
@@ -117,16 +122,44 @@ type FunctionTool = {
 const buildTools = (
   configTools: Record<string, Tool>,
   toolHandlers: Record<string, (...args: unknown[]) => unknown>,
-): FunctionTool[] =>
-  Object.entries(configTools)
-    .filter(([name]) => typeof toolHandlers[name] === 'function')
-    .map(([name, toolConfig]) => ({
-      type: 'function',
-      name,
-      description: toolConfig.description ?? '',
-      parameters: toolConfig.parameters,
-      strict: false,
-    }));
+): { tools: FunctionTool[]; executableTools: Map<string, (...args: unknown[]) => unknown> } => {
+  const executableTools = new Map<string, (...args: unknown[]) => unknown>();
+  const tools = Object.entries(configTools).flatMap<FunctionTool>(([name, toolConfig]) => {
+    if (!Object.hasOwn(toolHandlers, name)) return [];
+    const handler = toolHandlers[name];
+    if (typeof handler !== 'function') return [];
+    executableTools.set(name, handler);
+    return [
+      {
+        type: 'function',
+        name,
+        description: toolConfig.description ?? '',
+        parameters: toolConfig.parameters,
+        strict: false,
+      },
+    ];
+  });
+  return { tools, executableTools };
+};
+
+function mapConversationTurn(turn: CanonicalTurn): OpenAI.Responses.ResponseInputItem {
+  if (turn.role === 'assistant') {
+    return { role: 'assistant', content: contentToText(turn.content) };
+  }
+
+  if (!isContentBlocks(turn.content)) {
+    return { role: 'user', content: turn.content };
+  }
+
+  return {
+    role: 'user',
+    content: turn.content.map((block) =>
+      block.type === 'text'
+        ? { type: 'input_text' as const, text: block.text }
+        : { type: 'input_image' as const, image_url: imageBlockToUrl(block), detail: 'auto' as const },
+    ),
+  };
+}
 
 function buildInputMessages(
   config: AiConfigRep,
@@ -139,13 +172,15 @@ function buildInputMessages(
       role: m.role as 'system' | 'user' | 'assistant',
       content: parseTemplate(m.content, variables),
     }));
-    if (history) {
-      for (const msg of history) {
-        const role = msg.role as 'user' | 'assistant';
-        if (role === 'user' || role === 'assistant') {
-          mapped.push({ role, content: msg.content });
-        }
-      }
+    if (history && history.length > 0) {
+      const systemMessages = mapped.filter((message) => message.role === 'system');
+      const configMessages = mapped
+        .filter(
+          (message): message is { role: 'user' | 'assistant'; content: string } =>
+            message.role === 'user' || message.role === 'assistant',
+        )
+        .map(({ role, content }) => ({ role, content }));
+      return [...systemMessages, ...composeHistory({ configMessages, history, userInput }).map(mapConversationTurn)];
     }
     const lastMsg = mapped[mapped.length - 1];
     if (lastMsg?.role !== 'user') {
@@ -154,15 +189,32 @@ function buildInputMessages(
     return mapped;
   }
   const instructions = config.instructions ? parseTemplate(config.instructions, variables) : '';
+  if (history && history.length > 0) {
+    return [
+      ...(instructions ? [{ role: 'system' as const, content: instructions }] : []),
+      ...composeHistory({ history, userInput }).map(mapConversationTurn),
+    ];
+  }
   return [
     ...(instructions ? [{ role: 'system' as const, content: instructions }] : []),
-    ...(history
-      ? history
-          .filter((msg) => msg.role === 'user' || msg.role === 'assistant')
-          .map((msg) => ({ role: msg.role as 'user' | 'assistant', content: msg.content }))
-      : []),
     { role: 'user' as const, content: userInput },
   ];
+}
+
+/**
+ * A turn's content as span parts. An `input_image` part carries a full base64 data URL on the
+ * wire, so it is noted as `[image]` rather than stringified into the span — the payload can run to
+ * megabytes, and the agent handlers already record images this compactly.
+ */
+function inputContentParts(content: unknown): SpanMessagePart[] {
+  if (typeof content === 'string') return [{ type: 'text', content }];
+  if (!Array.isArray(content)) return [{ type: 'text', content: JSON.stringify(content) }];
+  return content.map((part): SpanMessagePart => {
+    const block = part as Record<string, unknown>;
+    if (block.type === 'input_image') return { type: 'text', content: '[image]' };
+    if (typeof block.text === 'string') return { type: 'text', content: block.text };
+    return { type: 'text', content: JSON.stringify(part) };
+  });
 }
 
 /**
@@ -213,7 +265,7 @@ function splitInputMessages(items: ReadonlyArray<unknown>): {
     }
     messages.push({
       role: typeof raw.role === 'string' ? raw.role : 'user',
-      parts: [{ type: 'text', content: typeof raw.content === 'string' ? raw.content : JSON.stringify(raw.content) }],
+      parts: inputContentParts(raw.content),
     });
   }
 
@@ -348,7 +400,9 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
         };
 
         try {
-          const tools = config.tools ? buildTools(config.tools, toolHandlers) : [];
+          const { tools, executableTools } = config.tools
+            ? buildTools(config.tools, toolHandlers)
+            : { tools: [], executableTools: new Map() };
           const inputMessages = buildInputMessages(config, userInput, variables, history);
           const toolDefinitions = toToolDefinitions(tools);
 
@@ -386,7 +440,7 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
                 setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.arguments });
                 try {
                   const args = JSON.parse(tc.arguments) as Record<string, unknown>;
-                  const handler = toolHandlers[tc.name];
+                  const handler = executableTools.get(tc.name);
                   if (!handler) throw new Error(`No handler registered for tool "${tc.name}"`);
                   const result = await handler(args);
                   setToolCallContentAttributes(toolSpan, captureContent, { result });
@@ -455,7 +509,9 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
       let lastResponseModel = config.model.name;
 
       try {
-        const tools = config.tools ? buildTools(config.tools, toolHandlers) : [];
+        const { tools, executableTools } = config.tools
+          ? buildTools(config.tools, toolHandlers)
+          : { tools: [], executableTools: new Map() };
         const inputMessages = buildInputMessages(config, userInput, variables, history);
         const toolDefinitions = toToolDefinitions(tools);
         const rootInput = splitInputMessages(inputMessages);
@@ -530,7 +586,7 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
               setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.arguments });
               try {
                 const args = JSON.parse(tc.arguments) as Record<string, unknown>;
-                const handler = toolHandlers[tc.name];
+                const handler = executableTools.get(tc.name);
                 if (!handler) throw new Error(`No handler registered for tool "${tc.name}"`);
                 const result = await handler(args);
                 setToolCallContentAttributes(toolSpan, captureContent, { result });
@@ -573,6 +629,7 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
         endSpanOnce(span, endedSpans, true);
       }
     },
+    captureContent,
   );
 }
 

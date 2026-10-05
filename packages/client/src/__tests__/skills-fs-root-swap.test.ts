@@ -2,40 +2,23 @@
  * `writeSkills` — the swap one level up: the managed *root* replaced by a
  * symlink, not `<root>/<key>`.
  *
- * The defect these were written against: `resolveRoot`
- * validated the root once and returned a path, and nothing held it open. Each
- * write and each prune then opened `<root>/<key>` *by path* with
- * `O_NOFOLLOW | O_DIRECTORY` and pinned that. `O_NOFOLLOW` guards only the final
- * component, so the root and every ancestor were re-resolved on every such open,
- * and a root swapped for a symlink after validation redirected the open into the
- * attacker's directory. `assertUnswapped` did not notice, because it compared the
- * handle against an `lstat` of the *same swapped path*. Only the manifest write
- * pinned the root, and by then the skill file was already outside it. The
- * precondition is write permission on the root's *parent* — in the documented
- * layout (`<app>/.claude/skills`) that is `.claude`, which the agent identity
- * typically owns.
+ * `O_NOFOLLOW` guards only the final path component, so opening `<root>/<key>`
+ * by path would re-resolve the root on every open, and a root swapped for a
+ * symlink after validation would redirect the write into the attacker's
+ * directory. The precondition is write permission on the root's *parent* — in
+ * the documented layout (`<app>/.claude/skills`) that is `.claude`, which the
+ * agent identity typically owns.
  *
- * The fix pins the root to a descriptor for the whole reconcile and addresses
- * every child as `/proc/self/fd/<fd>/<name>`, which the kernel resolves against
- * the pinned inode rather than against the name. That exists on Linux only, so
- * this file is gated on `SUPPORTS_PROC_FD`: it runs on CI and is skipped on macOS
- * development machines, where the per-component `lstat` floor applies and the
- * mitigation is the README's privilege-separation checklist — now including the
- * root's ancestors.
+ * `writeSkills` pins the root to a descriptor for the whole reconcile and
+ * addresses every child as `/proc/self/fd/<fd>/<name>`, which the kernel
+ * resolves against the pinned inode. That exists on Linux only, so this file is
+ * gated on `SUPPORTS_PROC_FD`; elsewhere the per-component `lstat` floor applies
+ * and the mitigation is the README's privilege-separation checklist.
  *
- * Every test states the contract rather than the mechanism: nothing lands outside
- * the root, no outside file is overwritten, no outside file is removed — **and**,
- * for the three races where the swap lands after the containment check, that the
- * operation went through in the root that was pinned. That second half is not
- * decoration. The negative assertions alone are all satisfied by an
- * implementation that refuses every write once anything has been swapped, which
- * is precisely the regression the Linux fast path could introduce, so guarding
- * them on `report.ok` would invert the test.
- *
- * The trigger matches both the path-based and descriptor-based spellings of the
- * child path (see the hook below), so these same bodies fail against an unpinned
- * root and pass against a pinned one — which is the only thing that makes them
- * evidence.
+ * Every test asserts the contract: nothing lands outside the root, no outside
+ * file is overwritten or removed — **and**, where the swap lands after the
+ * containment check, that the operation went through in the pinned root (so an
+ * implementation that refuses every write after a swap does not pass).
  *
  * In its own file because the swap has to land *before* the per-skill directory
  * is opened, which means intercepting `mkdir` and `open` from `node:fs/promises`
@@ -67,14 +50,9 @@ const NEVER_FIRED = 'the race never fired; the test proves nothing';
 // the open *after* the last containment check is the one that counts.
 //
 // The trigger matches on the operation's **final component plus the shape of its
-// parent**, not on one exact string. That is deliberate and it is what makes
-// these tests worth anything: the fixed code addresses `<root>/<key>` as
+// parent**, not on one exact string: the SDK addresses `<root>/<key>` as
 // `/proc/self/fd/<fd>/<key>`, so a trigger pinned to `path.join(root, key)`
-// would stop matching the moment the fix landed — the swap would never fire, the
-// contract would never be tested, and the suite would go green for the wrong
-// reason. Matching both spellings means one test body runs against either
-// implementation, which is the only way the red-to-green transition means
-// anything.
+// would never fire and the suite would pass vacuously.
 
 const race = vi.hoisted(() => ({
   /** Which operation the swap rides on, or `null` when disarmed. */
@@ -83,7 +61,7 @@ const race = vi.hoisted(() => ({
   mode: 'child' as 'child' | 'root',
   /** For `'child'`: the final component the operation must target. */
   name: '',
-  /** The realpath'd managed root — the name a child carries before the fix. */
+  /** The realpath'd managed root — the parent a path-addressed child carries. */
   root: '',
   nth: 1,
   seen: 0,
@@ -101,7 +79,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     if (race.mode === 'root') return target === race.root;
     if (path.basename(target) !== race.name) return false;
     // A child of the managed root, named either through the root's own path
-    // (unfixed) or through a held descriptor (fixed).
+    // or through a held descriptor.
     const parent = path.dirname(target);
     return parent === race.root || parent.startsWith(`${PROC}/`);
   }
@@ -232,14 +210,10 @@ describe.skipIf(!SUPPORTS_PROC_FD)('writeSkills root swap races', () => {
 
     if (!race.fired) throw new Error(NEVER_FIRED);
     expect(await readdir(outside)).toEqual([]);
-    // Unconditionally, and that is the point: guarding this on `report.ok` would
-    // hand a pass to an implementation that refuses every write once anything
-    // has been swapped — which is exactly the regression the fast path could
-    // introduce, and which "the outside directory is empty" cannot distinguish
-    // from a write that landed correctly. The swap fires at the `mkdir`, after
-    // `unsafePathReason` has already run, so the containment check is not what
-    // is under test here: the descriptor addressing is, and it must deliver the
-    // file into the root that was validated.
+    // Unconditionally: guarding this on `report.ok` would pass an
+    // implementation that refuses every write after a swap. The swap fires
+    // after `unsafePathReason` has run, so what is under test is the descriptor
+    // addressing, which must deliver the file into the validated root.
     expect(report.ok).toBe(true);
     expect(await readFile(path.join(movedTo(), 'a', SKILL_MD), 'utf-8')).toBe(SKILL_BODY);
   });
@@ -298,30 +272,16 @@ describe.skipIf(!SUPPORTS_PROC_FD)('writeSkills root swap races', () => {
    * The manifest read, which is not itself a destructive step but decides every
    * destructive step.
    *
-   * It runs after the root is pinned and is addressed through the descriptor, so
-   * the property holds by construction — which is exactly why it is worth pinning
-   * rather than assuming. An implementation that read the manifest by path before
-   * pinning, or that re-derived `<root>/<name>` afterwards, passes every other
-   * case in this file: the writes and the unlinks would still be
-   * descriptor-addressed and would still land in the real root. Only the
-   * *decisions* would come from the attacker's directory, and `rewriteManifest`
-   * would then commit those decisions back over the real manifest — destroying
-   * the ownership record that protects the customer's files on every later run.
+   * An implementation that read the manifest by path would pass every other case
+   * in this file, but `rewriteManifest` would commit the attacker's entries over
+   * the real manifest, destroying the ownership record for every later run.
    *
-   * **What these do not assert, and why.** Not that the run succeeds. A swapped
-   * root is also caught by `unsafePathReason`'s containment check — `realpath` of
-   * the descriptor-addressed skill directory lands under the moved-aside root,
-   * whose parent is no longer the validated root — so both runs below refuse at
-   * that layer, which is the correct fail-closed outcome and is defense in depth
-   * working as documented. Asserting "the write happened" would therefore be
-   * asserting the wrong thing, and would fail against a *correct* implementation.
-   *
-   * The observable that isolates the manifest read is **whose entries the run
-   * acted on**: the attacker's manifest names a key the real root has never heard
-   * of, so if theirs were read, that key would appear in the report (prune walks
-   * manifest entries) and in the rewritten manifest. Both assertions come in a
-   * pair — the real key present, the attacker's key absent — because either alone
-   * would pass against an implementation that read neither.
+   * These do not assert that the run succeeds: `unsafePathReason`'s containment
+   * check also catches the swapped root, so both runs refuse (fail-closed).
+   * Instead they assert **whose entries the run acted on** — the real key
+   * present and the attacker's key absent, in the report and the rewritten
+   * manifest; either alone would pass against an implementation that read
+   * neither.
    */
   /** The attacker's own manifest, naming a key the real root never managed. */
   async function plantForeignManifest(outside: string): Promise<void> {

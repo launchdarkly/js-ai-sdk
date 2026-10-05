@@ -1,8 +1,37 @@
 # LaunchDarkly AI SDK
 
-- [Repository Layout](#repository-layout)
+---
+
+Your prompts, models, tools, and agent workflows live in LaunchDarkly instead of in your code. Call the SDK and it resolves the right configuration for the user in front of you, routes the call to whichever provider that configuration names, runs the tool loop, and records cost, latency, and quality on the way back.
+
+```ts
+import { openaiMessages } from '@launchdarkly/ai-openai-messages';
+
+const result = await openaiMessages(
+  'What is feature flagging?',
+  { kind: 'user', key: 'user-123' },
+  { key: 'my-ai-config-flag' },
+);
+
+console.log(result.response);
+```
+
+That call is the whole integration. Everything it does is configured in LaunchDarkly, not in your source.
+
+## What you get
+
+- Change prompts, models, and parameters in production without redeploying
+- Serve different configurations to different users, with the same targeting you already use for feature flags
+- Roll a change out gradually, watch live metrics, and revert automatically when one crosses a threshold
+- Run agents and multi-step graphs, where each step can use a different provider
+- Score output quality with judges, including scoring that stays off the request path
+- See cost, latency, token usage, errors, and full conversations with no instrumentation code
+- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, Vercel AI SDK, or your own handler
+
+- [What you get](#what-you-get)
 - [How It Works](#how-it-works)
-- [Package Structure](#package-structure)
+- [Packages](#packages)
+- [Module format support](#module-format-support)
 - [Quick Start](#quick-start)
   - [1. Install](#1-install)
   - [2. Configure environment](#2-configure-environment)
@@ -20,39 +49,7 @@
 - [Telemetry](#telemetry)
 - [Development](#development)
   - [Running the examples](#running-the-examples)
-
----
-
-A Node.js monorepo for integrating LaunchDarkly AgentControl with multiple AI providers. LaunchDarkly manages which model, provider, prompt, and tools are used at runtime via feature flags — your code just calls the right handler.
-
-## Repository Layout
-
-```
-js-ai-sdk/
-├── main.ts              # Entry point — brokers to an example based on CLI args
-├── examples/            # Runnable examples (not part of any published package)
-│   ├── agent.ts         # config() with the global registry
-│   ├── graph.ts         # graph() multi-agent workflow
-│   ├── native-graph.ts  # toClaudeAgents + resolveGraph native runner
-│   ├── openai-only.ts   # config() with an OpenAI-only registry
-│   ├── register.ts      # Global registry setup (handlers + tools)
-│   ├── tools.ts         # Tool implementations (getPreferences, webSearch, etc.)
-│   └── utils.ts         # Shared helpers (newContext, writeOutput)
-├── examples/            # Sample data files (e.g. user_preferences.json)
-├── packages/
-│   ├── client/          # @launchdarkly/ai-server       — core client (Tier 0)
-│   ├── ai-node/         # @launchdarkly/ai-node         — Node.js convenience wrapper (bundles node-server-sdk)
-│   ├── claude-agents/   # @launchdarkly/ai-claude-agents
-│   ├── claude-messages/ # @launchdarkly/ai-claude-messages
-│   ├── openai-agents/   # @launchdarkly/ai-openai-agents
-│   ├── openai-messages/ # @launchdarkly/ai-openai-messages
-│   ├── langchain-agents/   # @launchdarkly/ai-langchain-agents
-│   └── langchain-messages/ # @launchdarkly/ai-langchain-messages
-├── .env.example         # Template — copy to .env and fill in your values
-└── agents.md            # Architecture reference for AI agents and contributors
-```
-
-The `examples/` directory is a **sample implementation** showing how a consumer application wires the packages together. These files are not published and are not part of any package.
+  - [Repository layout](#repository-layout)
 
 ## How It Works
 
@@ -61,9 +58,9 @@ The `examples/` directory is a **sample implementation** showing how a consumer 
 3. The SDK routes to the correct provider handler, executes the call, and emits telemetry.
 4. You can change providers, models, or prompts in LaunchDarkly without deploying code.
 
-## Package Structure
+## Packages
 
-This monorepo follows a three-tier architecture. Dependencies only flow downward.
+Packages are layered so that dependencies only flow downward.
 
 ```
 Tier 2 — Consumer Application  (main.ts, your app)
@@ -82,7 +79,7 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-node](packages/ai-node/README.md)`            | Node.js convenience wrapper — re-exports `@launchdarkly/ai-server` with `@launchdarkly/node-server-sdk` bundled as a hard dependency. Install this instead of `ai-server` for standard Node.js apps. |
 
 
-### Handler Packages
+### Pick your providers
 
 
 | Package                                                                        | Provider  | Mode       | Description                                           |
@@ -93,7 +90,23 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-claude-agents](packages/claude-agents/README.md)`           | Anthropic | `agent`    | Claude Agent SDK — agentic loop with MCP tool support |
 | `[@launchdarkly/ai-langchain-messages](packages/langchain-messages/README.md)` | `*` (any) | `messages` | Any `BaseChatModel` via LangChain `bindTools` loop    |
 | `[@launchdarkly/ai-langchain-agents](packages/langchain-agents/README.md)`     | `*` (any) | `agent`    | LangGraph `createReactAgent` — managed ReAct loop     |
+| `[@launchdarkly/ai-vercel-messages](packages/vercel-messages/README.md)`       | `*` (any) | `messages` | AI SDK 7 `generateText` / `streamText` / `experimental_evaluate` via AI Gateway |
+| `[@launchdarkly/ai-vercel-agents](packages/vercel-agents/README.md)`           | `*` (any) | `agent`    | AI SDK 7 `ToolLoopAgent` and native graph runner      |
 
+
+## Module format support
+
+Every package publishes both formats. The `"exports"` map declares an `import` condition (`dist/index.js`, ESM) and a `require` condition (`dist/index.cjs`, CommonJS). Each condition has its own declaration file.
+
+| How you load the SDK                                                | Supported | Notes                                                                     |
+| ------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------- |
+| `import { config } from '@launchdarkly/ai-node'`                    | Yes       | Verified in CI on Node 22 and Node 24                                     |
+| `require('@launchdarkly/ai-node')`                                  | Yes       | Verified in CI on Node 22 and Node 24                                     |
+| `await import('@launchdarkly/ai-node')` from unbundled CommonJS     | Yes       | Node resolves the package at runtime                                      |
+| `await import(…)` from a Webpack CommonJS bundle, packages external | Yes       | Verified in CI on Node 22 and Node 24                                     |
+| `await import(…)` from a Webpack CommonJS bundle, packages inlined  | Yes       | Verified in CI on Node 22 and Node 24                                     |
+
+Optional dependencies stay behind a runtime `import()` in both formats. This covers `@launchdarkly/node-server-sdk`, the OpenTelemetry packages, and the LangChain provider packages. So you install them only when you need them.
 
 ## Quick Start
 
@@ -168,6 +181,9 @@ console.log(result.response);
 | `claudeAgents`      | `@launchdarkly/ai-claude-agents`      | `@anthropic-ai/claude-agent-sdk` | Claude Agent SDK (MCP)       |
 | `langchainMessages` | `@launchdarkly/ai-langchain-messages` | `@langchain/core`                | LangChain `bindTools` loop   |
 | `langchainAgents`   | `@launchdarkly/ai-langchain-agents`   | `@langchain/langgraph`           | LangGraph `createReactAgent` |
+| `vercelMessages`    | `@launchdarkly/ai-vercel-messages`    | `ai`                             | `generateText` / `streamText` / `experimental_evaluate` |
+| `vercelEvaluate`    | `@launchdarkly/ai-vercel-messages`    | `ai`                             | `experimental_evaluate`      |
+| `vercelAgents`      | `@launchdarkly/ai-vercel-agents`      | `ai`                             | `ToolLoopAgent`              |
 
 
 ---
@@ -255,28 +271,36 @@ Because each node runs through the same path as `config()`, every node emits its
 | `options.graphJudge`   | `string`                                | No       | Optional judge config key evaluated against the final output |
 
 
-Returns `{ invoke(input: string | undefined, context: LDContext, variables?: Record<string, any>): Promise<ProviderGraphResponse> }`.
+Returns `{ invoke(...): Promise<ProviderGraphResponse>, stream(...): AsyncGenerator<GraphStreamEvent> }`.
 
 ```ts
 import 'dotenv/config';
 import { graph, shutdown } from '@launchdarkly/ai-server';
 import { createClaudeAgentsHandler } from '@launchdarkly/ai-claude-agents';
 
-const result = await graph('support-graph', {
+const g = graph('support-graph', {
   handlers: [createClaudeAgentsHandler()],
-}).invoke('I was double charged', { kind: 'user', key: 'user-123' }, { account_tier: 'pro' });
+});
+
+const result = await g.invoke('I was double charged', { kind: 'user', key: 'user-123' }, { account_tier: 'pro' });
 
 console.log(result.response); // final output
 console.log(result.usage);    // aggregate { input, output, total }
 
+for await (const event of g.stream('I was double charged', { kind: 'user', key: 'user-123' })) {
+  if (event.type === 'chunk') process.stdout.write(event.text);
+}
+
 await shutdown();
 ```
+
+`stream()` uses the same model-driven router and graph telemetry as `invoke()`, and yields `GraphStreamEvent` values (`node_start`, `chunk`+`nodeKey`, `node_done`, `handoff`, final `done`) so callers can render per-node UI.
 
 Provider packages also export single-provider conveniences (`claudeGraph`, `openaiGraph`, `langchainGraph`) that pre-bind their handler. For mixed-provider graphs, use the base `graph()` and pass multiple handlers.
 
 ---
 
-#### 3e. `resolveGraph(key, options)`
+#### 3d. `resolveGraph(key, options)`
 
 For framework packages that need to walk the topology and build their own execution structure (e.g. constructing a LangGraph or OpenAI Agents graph), use `resolveGraph` instead of `graph`. It returns a `GraphDefinition` without executing anything.
 
@@ -305,7 +329,7 @@ if (def.enabled) {
 
 ---
 
-#### 3f. Framework-native graph runners
+#### 3e. Framework-native graph runners
 
 Each handler package ships a native runner that converts `resolveGraph` output into the provider's own multi-agent orchestration primitives. Native runners **bypass the SDK's model-driven router** and let the provider's SDK manage handoffs, tool loops, and conversation state.
 
@@ -575,8 +599,14 @@ yarn start [example] [flag-key] [user-input]
 | ------------------- | ------------------------- | ----------------------------------------------------------------------------------------------- |
 | `agent` *(default)* | `yarn start agent`        | `config()` routed via the global registry — switches providers without code changes |
 | `graph`             | `yarn start graph`        | `graph()` multi-agent workflow driven by a LaunchDarkly agent graph flag                        |
+| `graph-history`     | `yarn start graph-history` | `graph().invoke()` with multimodal `history` forwarded to the root node                        |
 | `native-graph`      | `yarn start native-graph` | `toClaudeAgents` + `resolveGraph` — native Claude Agent SDK runner                              |
+| `native-graph-vercel` | `yarn start native-graph-vercel` | `toVercelAgents` + `resolveGraph` — native Vercel AI SDK graph runner                       |
 | `openai-only`       | `yarn start openai-only`  | `config()` with a custom `Registry` restricted to OpenAI handlers                   |
+| `vercel-agents`     | `yarn start vercel-agents` | Vercel AI SDK `ToolLoopAgent` handler via AI Gateway                              |
+| `vercel-messages`   | `yarn start vercel-messages` | Vercel AI SDK messages handler via AI Gateway                                    |
+| `vercel-direct`     | `yarn start vercel-direct` | Vercel messages handler with an injected `@ai-sdk/openai` model (no Gateway)    |
+| `vercel-evaluate`   | `yarn start vercel-evaluate` | Vercel generation followed by typed `experimental_evaluate`                     |
 
 
 **Examples:**
@@ -595,3 +625,32 @@ yarn start openai-only my-flag-key "What is feature flagging?"
 Output from each run is written as a timestamped JSON file to the `output/` directory.
 
 Each package has its own `tsconfig.json` that references `packages/client` for type resolution. See `[agents.md](agents.md)` for the full architecture reference.
+
+### Repository layout
+
+```
+js-ai-sdk/
+├── main.ts              # Entry point — brokers to an example based on CLI args
+├── examples/            # Runnable examples (not part of any published package)
+│   ├── agent.ts         # config() with the global registry
+│   ├── graph.ts         # graph() multi-agent workflow
+│   ├── native-graph.ts  # toClaudeAgents + resolveGraph native runner
+│   ├── openai-only.ts   # config() with an OpenAI-only registry
+│   ├── register.ts      # Global registry setup (handlers + tools)
+│   ├── tools.ts         # Tool implementations (getPreferences, webSearch, etc.)
+│   └── utils.ts         # Shared helpers (newContext, writeOutput)
+├── examples/            # Sample data files (e.g. user_preferences.json)
+├── packages/
+│   ├── client/          # @launchdarkly/ai-server       — core client (Tier 0)
+│   ├── ai-node/         # @launchdarkly/ai-node         — Node.js convenience wrapper (bundles node-server-sdk)
+│   ├── claude-agents/   # @launchdarkly/ai-claude-agents
+│   ├── claude-messages/ # @launchdarkly/ai-claude-messages
+│   ├── openai-agents/   # @launchdarkly/ai-openai-agents
+│   ├── openai-messages/ # @launchdarkly/ai-openai-messages
+│   ├── langchain-agents/   # @launchdarkly/ai-langchain-agents
+│   └── langchain-messages/ # @launchdarkly/ai-langchain-messages
+├── .env.example         # Template — copy to .env and fill in your values
+└── agents.md            # Architecture reference for AI agents and contributors
+```
+
+The `examples/` directory is a **sample implementation** showing how a consumer application wires the packages together. These files are not published and are not part of any package.

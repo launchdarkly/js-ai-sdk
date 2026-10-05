@@ -4,6 +4,8 @@ import {
   type GraphDefinition,
   type GraphNode,
   getClient,
+  type Message,
+  makeNodeTrackData,
   NATIVE_TOOL_KEY,
   NativeTool,
   type ProviderGraphResponse,
@@ -12,7 +14,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
-import { buildPrompt, buildToolMCP, partitionTools } from './handler.js';
+import { buildPrompt, buildQueryPrompt, buildToolMCP, partitionTools } from './handler.js';
 
 const TOOL_MCP_NAME = 'tool-mcp';
 const SUBAGENT_MCP_NAME = 'subagents';
@@ -22,16 +24,6 @@ const SUBAGENT_TOOL_PREFIX = `mcp__${SUBAGENT_MCP_NAME}__`;
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 const sanitizeName = (key: string) => key.replace(/[^a-z0-9_-]/gi, '_');
-
-const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: string): TrackData => ({
-  runId,
-  configKey: node.key,
-  variationKey: node.meta.variationKey ?? '',
-  version: node.meta.version ?? 1,
-  modelName: node.config.model.name,
-  providerName: node.config.provider.name,
-  graphKey,
-});
 
 const buildNativeHooks = (nativeToolMap: Map<string, ToolHandlerFn>) => {
   if (nativeToolMap.size === 0) return undefined;
@@ -62,7 +54,7 @@ const wrapNativeTools = (
       if (fn instanceof NativeTool) {
         const stub = () => {
           if (ldContext) {
-            getClient().track('$ld:ai:tool_call', ldContext, { ...trackData, toolName: name }, 1);
+            getClient().track('$ld:ai:tool_call', ldContext, { ...trackData, toolKey: name }, 1);
           }
         };
         (stub as unknown as Record<symbol, unknown>)[NATIVE_TOOL_KEY] = fn;
@@ -81,10 +73,14 @@ const runQuery = async (
   graphKey: string,
   runId: string,
   childSubAgentTools: ReturnType<typeof tool>[],
+  // Root-only: prior conversation turns, streamed to `query()` as multimodal-native
+  // input. Sub-agents are reached through tool calls and never receive `history`.
+  history?: Message[],
 ): Promise<{ output: string; usage: { input: number; output: number; total: number } }> => {
   const trackData = makeNodeTrackData(node, graphKey, runId);
   const wrappedHandlers = wrapNativeTools(toolHandlers, ldContext, trackData);
   const { prompt, systemPrompt } = buildPrompt(node.config, input, variables);
+  const queryPrompt = buildQueryPrompt(node.config, input, variables, history, prompt);
 
   const { nativeToolMap, userConfigTools, nativeToolNames } = partitionTools(node.config.tools, wrappedHandlers);
 
@@ -112,7 +108,7 @@ const runQuery = async (
   let rawUsage: Record<string, unknown> = {};
 
   for await (const message of query({
-    prompt,
+    prompt: queryPrompt,
     options: {
       model: node.config.model.name,
       tools: nativeToolNames.length > 0 ? nativeToolNames : [],
@@ -166,8 +162,14 @@ export const toClaudeAgents = (
     /** LaunchDarkly context used for tracking events. Required for LD telemetry. */
     context?: LDContext;
   },
-): { invoke: (input?: string, variables?: Record<string, unknown>) => Promise<ProviderGraphResponse> } => {
-  const invoke = async (input = '', variables: Record<string, unknown> = {}): Promise<ProviderGraphResponse> => {
+): {
+  invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
+} => {
+  const invoke = async (
+    input = '',
+    variables: Record<string, unknown> = {},
+    history?: Message[],
+  ): Promise<ProviderGraphResponse> => {
     const def = await defPromise;
     if (!def.enabled) {
       throw new Error(`Agent graph "${def.key}" is disabled`);
@@ -179,8 +181,8 @@ export const toClaudeAgents = (
     const ldContext = opts?.context;
     const rawHandlers = opts?.toolHandlers ?? {};
 
-    return trace.getTracer('@launchdarkly/ai-claude-agents').startActiveSpan('ld.ai.graph', async (span) => {
-      span.setAttribute('ld.ai.graph.key', def.key);
+    return trace.getTracer('@launchdarkly/ai-claude-agents').startActiveSpan('launchdarkly.graph', async (span) => {
+      span.setAttribute('launchdarkly.graph.key', def.key);
       const startTime = Date.now();
       const runId = crypto.randomUUID();
 
@@ -193,11 +195,25 @@ export const toClaudeAgents = (
         node: GraphNode,
         nodeInput: string,
         childSubAgentTools: ReturnType<typeof tool>[],
+        // Root-only: applied to the entry node via the Anthropic-native streamed path (or
+        // forwarded to `runNode` for a non-Anthropic root). Sub-agent calls omit it, so
+        // downstream nodes never receive the original history array.
+        nodeHistory?: Message[],
       ): Promise<{ output: string; usage: { input: number; output: number; total: number } }> => {
         if (isAnthropicProvider(node)) {
-          return runQuery(node, nodeInput, variables, rawHandlers, ldContext, def.key, runId, childSubAgentTools);
+          return runQuery(
+            node,
+            nodeInput,
+            variables,
+            rawHandlers,
+            ldContext,
+            def.key,
+            runId,
+            childSubAgentTools,
+            nodeHistory,
+          );
         }
-        const res = await def.runNode(node, nodeInput, { toolHandlers: rawHandlers, variables });
+        const res = await def.runNode(node, nodeInput, { toolHandlers: rawHandlers, variables, history: nodeHistory });
         const outputStr = typeof res.response === 'string' ? res.response : JSON.stringify(res.response);
         return {
           output: outputStr,
@@ -229,7 +245,14 @@ export const toClaudeAgents = (
               getClient().track('$ld:ai:graph:handoff_success', ldContext, trackData, 1);
             }
 
-            path.push(node.key);
+            if (!path.includes(node.key)) {
+              const index = path.length;
+              path.push(node.key);
+              if (ldContext) {
+                const nodeTrackData = makeNodeTrackData(node, def.key, runId);
+                getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: node.key, index }, 1);
+              }
+            }
             const nodeStartTime = Date.now();
 
             const { output, usage } = await runForNode(node, subInput, childSubAgentTools);
@@ -261,14 +284,21 @@ export const toClaudeAgents = (
       // Run the root with its direct children available as sub-agent tools
       const rootChildSubAgentTools = root.edges.map((e) => subAgentToolCtx[e.targetKey]).filter(Boolean);
 
-      path.push(root.key);
+      if (!path.includes(root.key)) {
+        const index = path.length;
+        path.push(root.key);
+        if (ldContext) {
+          const nodeTrackData = makeNodeTrackData(root, def.key, runId);
+          getClient().track('$ld:ai:graph:node', ldContext, { ...nodeTrackData, nodeKey: root.key, index }, 1);
+        }
+      }
       const rootStartTime = Date.now();
 
       let finalOutput = '';
       let rootUsage = { input: 0, output: 0, total: 0 };
 
       try {
-        const result = await runForNode(root, input, rootChildSubAgentTools);
+        const result = await runForNode(root, input, rootChildSubAgentTools, history);
         finalOutput = result.output;
         rootUsage = result.usage;
         span.setStatus({ code: SpanStatusCode.OK });
@@ -299,7 +329,7 @@ export const toClaudeAgents = (
 
       const graphDuration = Date.now() - startTime;
 
-      span.setAttribute('ld.ai.graph.path', path.join('->'));
+      span.setAttribute('launchdarkly.graph.path', path.join('->'));
       span.setAttribute('gen_ai.usage.input_tokens', totalUsage.input);
       span.setAttribute('gen_ai.usage.output_tokens', totalUsage.output);
       span.setAttribute('gen_ai.usage.total_tokens', totalUsage.total);
@@ -308,7 +338,6 @@ export const toClaudeAgents = (
         const rootTrackData = makeNodeTrackData(root, def.key, runId);
         getClient().track('$ld:ai:graph:duration:total', ldContext, rootTrackData, graphDuration);
         getClient().track('$ld:ai:graph:total_tokens', ldContext, rootTrackData, totalUsage.total);
-        getClient().track('$ld:ai:graph:path', ldContext, rootTrackData, path.length);
         getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
       }
 

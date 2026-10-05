@@ -78,13 +78,15 @@ neither?
   → prompt = userInput, no systemPrompt
 
 history provided?
-  → Appends a "Conversation History:" block to systemPrompt
-  → Format: "user: <content>\nassistant: <content>" per turn
+  → `buildQueryPrompt` takes over: composed turns are streamed to query()
+  → systemPrompt is untouched; history is never flattened into it
 ```
 
-Note: the `messages` path collapses conversation history into a single flat string — roles are not individually structured. This is a limitation of the agent SDK's `query()` interface, which takes one prompt string. The `history` parameter is also formatted as a text block appended to the system prompt, since the agent SDK accepts a single prompt string rather than structured message arrays.
+Note: the `messages` path collapses configured conversation messages into a single flat string — roles are not individually structured. This is a limitation of the agent SDK's `query()` interface when it is handed one prompt string.
 
-Because of that, `invoke_agent` reports the opening turn as **one** `user` message holding the flattened text, not one message per configured role. That is what the model was actually sent; splitting the roles back out on the span would describe a request that never happened. Sending them as real turns would mean switching to `query()`'s streaming-input mode, which changes what the model receives and is a separate decision from telemetry.
+Because of that, a no-history run reports the opening turn as **one** `user` message holding the flattened text, not one message per configured role. That is what the model was actually sent; splitting the roles back out on the span would describe a request that never happened.
+
+Runtime `history` instead uses `query()`'s streaming-input mode, so multimodal turns reach the model natively rather than as text, and the span records those turns one for one. The envelope `type` has to agree with the message role: the CLI accepts an `assistant` envelope as a replayed turn, and requires role `user` on every other envelope type — an assistant turn sent as `type: 'user'` is rejected with `Expected message role 'user', got 'assistant'`. TypeScript's `query()` declares only `AsyncIterable<SDKUserMessage>`, so the assistant envelope is cast past that type; Python declares the same parameter as an unconstrained dict stream, and both SDKs stream the identical shapes.
 
 ### 2. Tool Wiring (`buildToolMCP`)
 
@@ -199,7 +201,7 @@ Root-span attributes:
 - `gen_ai.operation.name` = `'invoke_agent'`
 - `gen_ai.system` / `gen_ai.provider.name` = `'anthropic'`
 - `gen_ai.request.model` / `gen_ai.response.model` = `config.model.name`
-- `gen_ai.conversation.id` = the `session_id` from the `init` message
+- `gen_ai.conversation.id` = a caller-supplied id from `withConversationId`, or the `session_id` from the `init` message when the caller supplied none. Write-if-absent: the caller id wins. An app that opens a fresh CLI session per turn and re-feeds history must pass its own conversation id, or each turn becomes its own conversation.
 - run-cumulative usage from the result message: `gen_ai.usage.input_tokens`
   (uncached + cache-read + cache-creation), `output_tokens`, `total_tokens`,
   `cache_read.input_tokens`, `cache_creation.input_tokens`
@@ -217,7 +219,7 @@ Root-span attributes:
   the field; nothing is derived in the meantime, because inferring `tool_use` from
   the presence of a `tool_use` content block would put a value on the span that the
   provider never returned.
-- `gen_ai.conversation.id` = the message's `session_id`
+- `gen_ai.conversation.id` = same write-if-absent rule as the root: caller-supplied id, else this message's `session_id`
 - that call's own usage — not the run's, which would multiply the reported cost by
   the number of turns
 

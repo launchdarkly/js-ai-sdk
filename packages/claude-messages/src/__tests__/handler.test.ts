@@ -401,6 +401,39 @@ describe('createClaudeMessagesHandler', () => {
     await expect(handler(config as any, 'q', {})).rejects.toThrow(/unknownTool/);
   });
 
+  it('rejects a registered tool that is excluded from the active config', async () => {
+    const safe = vi.fn();
+    const dangerous = vi.fn();
+    mockMessagesCreate.mockResolvedValueOnce(mockToolUseResponse('dangerous', {}));
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(createClaudeMessagesHandler()(config as any, 'q', { safe, dangerous })).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+  });
+
+  it('rejects a returned tool when the active config has no tools', async () => {
+    const dangerous = vi.fn();
+    mockMessagesCreate.mockResolvedValueOnce(mockToolUseResponse('dangerous', {}));
+
+    await expect(createClaudeMessagesHandler()(baseConfig as any, 'q', { dangerous })).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(mockMessagesCreate).toHaveBeenCalledOnce();
+  });
+
+  it('rejects inherited callable names during invoke', async () => {
+    mockMessagesCreate.mockResolvedValueOnce(mockToolUseResponse('constructor', {}));
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(createClaudeMessagesHandler()(config as any, 'q', {})).rejects.toThrow(/constructor/);
+    expect(mockMessagesCreate.mock.calls[0][0].tools ?? []).toHaveLength(0);
+  });
+
   // ── 1.5 Telemetry ───────────────────────────────────────────────────────────
 
   it('uses invoke_agent as the root span name', async () => {
@@ -889,6 +922,63 @@ describe('createClaudeMessagesHandler', () => {
     expect(toolFn).toHaveBeenCalledWith({ q: 'hello' });
   });
 
+  it('rejects inherited callable names during streaming', async () => {
+    mockMessagesStream.mockReturnValue(
+      makeStreamMock([], {
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'constructor', input: {} }],
+      }),
+    );
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(collectStream(createClaudeMessagesHandler().stream?.(config as any, 'q', {}, {}))).rejects.toThrow(
+      /constructor/,
+    );
+    expect(mockMessagesStream.mock.calls[0][0].tools ?? []).toHaveLength(0);
+  });
+
+  it('rejects an excluded registered tool during streaming', async () => {
+    const dangerous = vi.fn();
+    mockMessagesStream.mockReturnValue(
+      makeStreamMock([], {
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'dangerous', input: {} }],
+      }),
+    );
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(
+      collectStream(createClaudeMessagesHandler().stream?.(config as any, 'q', { safe: vi.fn(), dangerous }, {})),
+    ).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(mockMessagesStream).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a returned tool during streaming when the active config has no tools', async () => {
+    const dangerous = vi.fn();
+    mockMessagesStream.mockReturnValue(
+      makeStreamMock([], {
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'dangerous', input: {} }],
+      }),
+    );
+
+    await expect(
+      collectStream(createClaudeMessagesHandler().stream?.(baseConfig as any, 'q', { dangerous }, {})),
+    ).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(mockMessagesStream).toHaveBeenCalledOnce();
+  });
+
   it('sets gen_ai span attributes and puts content on attributes when enabled', async () => {
     const streamMock = makeStreamMock([{ type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } }], {
       usage: { input_tokens: 2, output_tokens: 3 },
@@ -1054,6 +1144,50 @@ describe('createClaudeMessagesHandler', () => {
     expect(allContent).not.toContain('Should be filtered');
     expect(allContent).toContain('Hello');
     expect(allContent).toContain('Hi there');
+  });
+
+  it('multimodal image history content blocks are preserved on the wire', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const handler = createClaudeMessagesHandler();
+    const imageHistory = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+          { type: 'text' as const, text: 'What is in this image?' },
+        ],
+      },
+    ];
+    await handler(baseConfig as any, '', {}, {}, imageHistory);
+    const call = mockMessagesCreate.mock.calls[0][0];
+    const serialized = JSON.stringify(call.messages);
+    expect(serialized).toContain('"type":"image"');
+    expect(serialized).toContain('abc123');
+    expect(call.messages.filter((m: { role: string }) => m.role === 'user')).toHaveLength(1);
+  });
+
+  it('merges image-only history with userInput into one user turn (no consecutive users)', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const handler = createClaudeMessagesHandler();
+    const imageHistory = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+        ],
+      },
+    ];
+    await handler(baseConfig as any, 'What colour is this?', {}, {}, imageHistory);
+    const call = mockMessagesCreate.mock.calls[0][0];
+    const roles = call.messages.map((m: { role: string }) => m.role);
+    // Anthropic requires alternating roles — the image turn and the question must not
+    // arrive as two consecutive user messages.
+    expect(roles.some((r: string, i: number) => r === 'user' && roles[i + 1] === 'user')).toBe(false);
+    const last = call.messages[call.messages.length - 1];
+    expect(last.role).toBe('user');
+    const serialized = JSON.stringify(last.content);
+    expect(serialized).toContain('"type":"image"');
+    expect(serialized).toContain('What colour is this?');
   });
 
   // ── §1.9 streaming ignores outputFormat ─────────────────────────────────────

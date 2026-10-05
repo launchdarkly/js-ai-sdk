@@ -145,9 +145,9 @@ describe('langchain-messages span tree against a real tracer', () => {
     expect(attrs['gen_ai.usage.input_tokens']).toBe(20); // two turns of 10
     expect(attrs['gen_ai.usage.output_tokens']).toBe(10);
     expect(attrs['gen_ai.usage.total_tokens']).toBe(30);
-    // `gen_ai.provider.name` names who served the model, and its semconv enum has no `langchain`
-    // member — LangChain is the framework. The legacy `gen_ai.system` keeps the shipped value.
-    expect(attrs['gen_ai.provider.name']).toBe('openai');
+    // `gen_ai.provider.name` is the configured provider, lower-cased. The legacy `gen_ai.system`
+    // keeps the shipped framework value.
+    expect(attrs['gen_ai.provider.name']).toBe('langchain');
     expect(attrs['gen_ai.system']).toBe('langchain');
   });
 
@@ -263,5 +263,31 @@ describe('langchain-messages span tree against a real tracer', () => {
     await expect(createLangChainHandler(llm)(baseConfig as never, 'q')).rejects.toThrow('model down');
 
     expect(root()?.attributes['gen_ai.usage.input_tokens']).toBeUndefined();
+  });
+
+  it('puts context identity on the invoke_agent root and on no child span', async () => {
+    const llm = makeLLM([toolCallResponse(), textResponse('Final')]);
+
+    await createLangChainHandler(llm)(
+      toolConfig as never,
+      'q',
+      { myTool: vi.fn().mockReturnValue('r') },
+      {
+        __ld: { configKey: 'cfg', variationKey: 'var', runId: 'run-1' },
+        ldContext: { kind: 'user', key: 'user-123' },
+      },
+    );
+
+    const featureFlag = root()?.events.find((event) => event.name === 'feature_flag');
+    expect(root()?.attributes['context.contextKeys.user']).toBe('user-123');
+    expect(featureFlag?.attributes?.['feature_flag.context.id']).toBe('user-123');
+    expect(featureFlag?.attributes?.['feature_flag.contextKeys']).toBe('{"user":"user-123"}');
+
+    expect(named('chat').length).toBeGreaterThan(0);
+    expect(named('execute_tool ').length).toBeGreaterThan(0);
+    for (const child of spans().filter((span) => span.name !== 'invoke_agent')) {
+      expect(child.attributes['context.contextKeys.user']).toBeUndefined();
+      expect(child.events.find((event) => event.name === 'feature_flag')).toBeUndefined();
+    }
   });
 });

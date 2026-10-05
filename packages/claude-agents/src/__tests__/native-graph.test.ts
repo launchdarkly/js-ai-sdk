@@ -167,6 +167,11 @@ describe('toClaudeAgents', () => {
       expect.objectContaining({ configKey: 'leaf' }),
       1,
     );
+    const leafNodes = mockTrack.mock.calls.filter(
+      (c: unknown[]) => c[0] === '$ld:ai:graph:node' && (c[2] as { nodeKey?: string }).nodeKey === 'leaf',
+    );
+    expect(leafNodes).toHaveLength(1);
+    expect(leafNodes[0][3]).toBe(1);
   });
 
   // T8: invocation_success tracking
@@ -181,6 +186,18 @@ describe('toClaudeAgents', () => {
       { kind: 'user', key: 'user-1' },
       expect.any(Object),
       1,
+    );
+    expect(mockTrack).toHaveBeenCalledWith(
+      '$ld:ai:graph:node',
+      { kind: 'user', key: 'user-1' },
+      expect.objectContaining({ nodeKey: 'root', index: 0 }),
+      1,
+    );
+    expect(mockTrack).not.toHaveBeenCalledWith(
+      '$ld:ai:graph:path',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
     );
   });
 
@@ -221,6 +238,34 @@ describe('toClaudeAgents', () => {
     expect(result.response).toBe('root answer');
   });
 
+  it('forwards history to the root query prompt as native Anthropic image blocks', async () => {
+    const def = makeGraphDef();
+    const history = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+        ],
+      },
+    ];
+    await toClaudeAgents(Promise.resolve(def)).invoke('describe', {}, history);
+    const { prompt } = mockQuery.mock.calls[0][0];
+    expect(typeof prompt === 'string').toBe(false);
+    const chunks: unknown[] = [];
+    for await (const chunk of prompt as AsyncIterable<unknown>) {
+      chunks.push(chunk);
+    }
+    const serialized = JSON.stringify(chunks);
+    expect(serialized).toContain('"type":"image"');
+    expect(serialized).toContain('abc123');
+  });
+
+  it('runs the root with a plain string prompt when history is omitted', async () => {
+    const def = makeGraphDef();
+    await toClaudeAgents(Promise.resolve(def)).invoke('hello');
+    expect(mockQuery.mock.calls[0][0].prompt).toBe('hello');
+  });
+
   it('emits tool-call tracking when PreToolUse invokes a NativeTool stub', async () => {
     const def = makeGraphDef();
     const webSearch = new NativeTool(Symbol('ws'), 'WebSearch');
@@ -243,7 +288,7 @@ describe('toClaudeAgents', () => {
     expect(mockTrack).toHaveBeenCalledWith(
       '$ld:ai:tool_call',
       { kind: 'user', key: 'user-1' },
-      expect.objectContaining({ toolName: 'web-search' }),
+      expect.objectContaining({ toolKey: 'web-search' }),
       1,
     );
   });

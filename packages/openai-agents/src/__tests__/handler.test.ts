@@ -530,8 +530,8 @@ describe('createOpenAIAgentHandler', () => {
   it('yields chunk events from raw model text delta events', async () => {
     const streamedResult = {
       [Symbol.asyncIterator]: async function* () {
-        yield { type: 'raw_model_stream_event', data: { type: 'response.output_text.delta', delta: 'Hello' } };
-        yield { type: 'raw_model_stream_event', data: { type: 'response.output_text.delta', delta: ' world' } };
+        yield { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: 'Hello' } };
+        yield { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: ' world' } };
         yield { type: 'run_item_stream_event', item: {} };
       },
       state: { usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 } },
@@ -547,7 +547,7 @@ describe('createOpenAIAgentHandler', () => {
   it('yields a done event with correct usage', async () => {
     const streamedResult = {
       [Symbol.asyncIterator]: async function* () {
-        yield { type: 'raw_model_stream_event', data: { type: 'response.output_text.delta', delta: 'hi' } };
+        yield { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: 'hi' } };
       },
       state: { usage: { inputTokens: 4, outputTokens: 6, totalTokens: 10 } },
       finalOutput: 'hi',
@@ -595,27 +595,46 @@ describe('createOpenAIAgentHandler', () => {
     expect(mockSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
   });
 
-  // ── History ──────────────────────────────────────────────────────────────────
+  // ── History (§1.11 — structured Runner input, not system-prompt text) ────────
 
   const sampleHistory = [
     { role: 'user' as const, content: 'What is feature flagging?' },
     { role: 'assistant' as const, content: 'Feature flagging is a technique...' },
   ];
 
-  it('history is appended to system prompt / instructions', async () => {
+  const imageHistory = [
+    {
+      role: 'user' as const,
+      content: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+      ],
+    },
+  ];
+
+  it('history is structured Runner input, not stuffed into instructions', async () => {
     mockRun.mockResolvedValue(mockRunResult());
     await createOpenAIAgentHandler()(baseConfig as any, 'q', {}, {}, sampleHistory);
     const instructions = mockAgentConstructor.mock.calls[0][0].instructions;
     expect(instructions).toContain('You are helpful.');
-    expect(instructions).toContain('Conversation History:');
+    expect(instructions).not.toContain('Conversation History:');
+    const input = mockRun.mock.calls[0][1];
+    expect(Array.isArray(input)).toBe(true);
+    expect(input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: expect.anything() }),
+        expect.objectContaining({ role: 'assistant', content: expect.anything() }),
+      ]),
+    );
   });
 
-  it('history format is correct', async () => {
+  it('history turns appear before userInput in Runner input', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await createOpenAIAgentHandler()(baseConfig as any, 'q', {}, {}, sampleHistory);
-    const instructions = mockAgentConstructor.mock.calls[0][0].instructions;
-    expect(instructions).toContain('user: What is feature flagging?');
-    expect(instructions).toContain('assistant: Feature flagging is a technique...');
+    await createOpenAIAgentHandler()(baseConfig as any, 'follow up', {}, {}, sampleHistory);
+    const input = mockRun.mock.calls[0][1] as Array<{ role: string; content: unknown }>;
+    expect(input.at(-1)).toMatchObject({ role: 'user' });
+    const textOf = (c: unknown) => (typeof c === 'string' ? c : JSON.stringify(c));
+    expect(textOf(input[0].content)).toContain('What is feature flagging?');
+    expect(textOf(input.at(-1)!.content)).toContain('follow up');
   });
 
   it('empty history is treated like no history', async () => {
@@ -624,16 +643,42 @@ describe('createOpenAIAgentHandler', () => {
     const instructions = mockAgentConstructor.mock.calls[0][0].instructions;
     expect(instructions).not.toContain('Conversation History:');
     expect(instructions).toBe('You are helpful.');
+    expect(mockRun.mock.calls[0][1]).toBe('q');
   });
 
-  it('history without prior system prompt', async () => {
+  it('system-role history messages are filtered from Runner input', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    const config = { model: { name: 'gpt-4o' }, provider: { name: 'OpenAI' } };
-    await createOpenAIAgentHandler()(config as any, 'q', {}, {}, sampleHistory);
-    const instructions = mockAgentConstructor.mock.calls[0][0].instructions;
-    expect(instructions).toContain('Conversation History:');
-    expect(instructions).toContain('user: What is feature flagging?');
-    expect(instructions).toContain('assistant: Feature flagging is a technique...');
+    const withSystem = [{ role: 'system' as const, content: 'secret system' }, ...sampleHistory];
+    await createOpenAIAgentHandler()(baseConfig as any, 'q', {}, {}, withSystem);
+    const input = mockRun.mock.calls[0][1] as Array<{ role: string; content: unknown }>;
+    expect(input.every((m) => m.role !== 'system')).toBe(true);
+    expect(JSON.stringify(input)).not.toContain('secret system');
+  });
+
+  it('multimodal image history maps to input_image on Runner input', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    await createOpenAIAgentHandler()(baseConfig as any, 'describe', {}, {}, imageHistory);
+    const input = mockRun.mock.calls[0][1] as Array<{ role: string; content: unknown }>;
+    const serialized = JSON.stringify(input);
+    expect(serialized).toContain('input_image');
+    expect(serialized).toContain('data:image/png;base64,abc123');
+    expect(mockAgentConstructor.mock.calls[0][0].instructions).not.toContain('Conversation History:');
+  });
+
+  it('empty userInput with history ending in user does not append empty turn', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const fullTurn = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'xyz' } },
+          { type: 'text' as const, text: 'Analyze this diagram' },
+        ],
+      },
+    ];
+    await createOpenAIAgentHandler()(baseConfig as any, '', {}, {}, fullTurn);
+    const input = mockRun.mock.calls[0][1] as Array<{ role: string; content: unknown }>;
+    expect(input.filter((m) => m.role === 'user')).toHaveLength(1);
   });
 });
 
