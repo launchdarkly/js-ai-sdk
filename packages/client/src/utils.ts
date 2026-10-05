@@ -540,18 +540,11 @@ export function parseJSONWithPossibleFences<T>(rawText: string): T | null {
 /**
  * Returns `parameters` unchanged when it is a usable object, `{}` otherwise.
  *
- * The four framework handlers (`claude-agents`, `openai-agents`, `langchain-messages`,
- * `langchain-agents`) spread the *entire* `model.parameters` bag straight into their underlying
- * framework call rather than picking an allowlist — their frameworks already ignore keys they do
- * not recognize, so narrowing here would only drop settings that work today for no safety benefit.
- * This is the defensive guard those call sites used to repeat inline: `model.parameters` is
- * optional on `AiConfigRep`, and a config's own `model` field is technically reachable as
- * `unknown` at these call sites, so both must be checked before spreading.
- *
- * The two handlers that wrap a raw provider client (`claude-messages`, `openai-messages`) do NOT
- * use this: an unrecognized key reaches those providers' wire APIs verbatim and is rejected with a
- * 400, so they use `pickForwardedModelParameters` against an explicit, compiler-checked allowlist
- * instead.
+ * `model.parameters` is optional on `AiConfigRep`, and a config's own `model` field is technically
+ * reachable as `unknown` at handler call sites, so both must be checked before the bag is read.
+ * This only guards the shape: every handler then narrows the result to its own allowlist with
+ * `pickForwardedModelParameters`, because `model.parameters` comes from the AI Config and must
+ * never be able to set credentials, endpoints, headers or host-process settings.
  */
 export function normalizeModelParameters(parameters: unknown): Record<string, unknown> {
   return parameters && typeof parameters === 'object' ? (parameters as Record<string, unknown>) : {};
@@ -561,21 +554,12 @@ export function normalizeModelParameters(parameters: unknown): Record<string, un
  * Picks the subset of `parameters` whose keys appear in `keys`, unchanged otherwise: a config that
  * sets nothing in `keys` produces `{}`, so the provider call sees exactly what it always has.
  *
- * For handlers whose provider request type is **closed** — an unknown field is a wire-level 400
- * from the provider, not a harmless extra — rather than open-ended. Those handlers
- * (`claude-messages`, `openai-messages`) each keep their own `FORWARDED_*_KEYS` allowlist next to
- * the request shape it maps onto, checked at compile time against the SDK's own base request type
- * so the list cannot silently drift; this helper only owns the picking loop.
- *
- * The Vercel AI SDK handlers (`vercel-messages`, `vercel-agents`) use it too, for a different
- * reason: the AI SDK reads a fixed set of camelCase call settings and drops anything else without
- * an error, so their allowlist is the list of settings that can take effect at all, checked at
- * compile time against the AI SDK's own call-settings types.
- *
- * The four framework handlers are the opposite case — their frameworks take an open-ended options
- * bag and already ignore keys they do not recognize, so narrowing it to a key list would silently
- * drop settings that work today. They use `normalizeModelParameters` instead, which forwards the
- * whole object.
+ * Every handler forwards `model.parameters` through this, against an explicit per-handler
+ * allowlist kept next to the call it maps onto (checked at compile time against the provider or
+ * framework SDK's own option types where the SDK exports them). Unknown keys are dropped. The rule
+ * for those lists: model and run settings only. Credentials, base URLs and other endpoint or
+ * connection settings, timeouts and retries, request header, body and query overrides, remote
+ * tool servers, and host-process settings are never on one, in any spelling.
  */
 export function pickForwardedModelParameters<K extends string>(
   parameters: Record<string, unknown> | undefined,
@@ -610,14 +594,14 @@ function camelizeKey(key: string): string | undefined {
 
 /**
  * Converts the TOP-LEVEL keys of a `model.parameters` bag from snake_case (the LaunchDarkly UI's
- * convention, and the wire name every provider SDK expects) to camelCase, for the four handlers
- * whose underlying framework — as opposed to a raw provider client — only reads camelCase option
- * names: `max_turns` becomes `maxTurns`, `top_p` becomes `topP`. Every camelCase key generated
- * this way, so no lookup table to keep in sync with new provider parameters.
+ * convention, and the wire name every provider SDK expects) to camelCase, for the handlers whose
+ * underlying framework, as opposed to a raw provider client, only reads camelCase option names:
+ * `max_turns` becomes `maxTurns`, `top_p` becomes `topP`. Callers narrow the result to their
+ * allowlist afterwards, so camelizing never makes a key forwardable by itself.
  *
  * Only top-level keys convert. A nested value such as `thinking: { budget_tokens: 1024 }` is
- * copied through untouched, because these frameworks hand that inner object to the provider API
- * raw, snake_case and all.
+ * copied through untouched; a handler whose SDK reads a nested camelCase shape rebuilds that value
+ * itself.
  *
  * When a bag sets both spellings of one key (`max_turns` and `maxTurns`), the snake_case one
  * wins — it is the convention the UI writes, so it is treated as authoritative — deterministically
