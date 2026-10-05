@@ -1390,7 +1390,8 @@ export class FetchRequester implements Requester {
  */
 export function backoffDelayMs(attempt: number, baseMs: number, maximumMs: number, jitter = 0.5): number {
   // Retries are unbounded, so the attempt number is too. Clamped so the power
-  // stays finite (`0 * Infinity` is `NaN`); 2^30 of any base passes any cap.
+  // stays finite; 2^30 of any base passes any cap. The constructor refuses a
+  // non-positive base, so a zero delay never comes out of here.
   const exponent = Math.min(Math.max(0, attempt - 1), 30);
   const ceiling = Math.min(maximumMs, baseMs * 2 ** exponent);
   return ceiling * (1 - jitter * Math.random());

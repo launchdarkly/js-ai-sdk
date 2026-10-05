@@ -2660,8 +2660,9 @@ describe('failure handling', () => {
   });
 
   it('keeps backoff finite at any attempt number', () => {
-    // Retries are unbounded, so the attempt number is too; `2 ** 9999` is
-    // `Infinity`, and `0 * Infinity` is `NaN`.
+    // Retries are unbounded, so the attempt number is too, and `2 ** 9999` is
+    // `Infinity`. A zero base, where that would become `NaN`, is refused by the
+    // constructor (see 'rejects a non-positive or non-finite value').
     for (const jitter of [0, 0.5, 1]) {
       const delay = backoffDelayMs(10_000, 1000, 30_000, jitter);
       expect(Number.isFinite(delay)).toBe(true);
@@ -2669,7 +2670,6 @@ describe('failure handling', () => {
       expect(delay).toBeGreaterThanOrEqual(0);
     }
     expect(backoffDelayMs(10_000, 1000, 30_000, 0)).toBe(30_000);
-    expect(backoffDelayMs(10_000, 0, 30_000)).toBe(0);
   });
 
   it('never lets jitter exceed the cap', () => {
