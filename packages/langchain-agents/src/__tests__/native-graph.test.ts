@@ -98,6 +98,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 });
 
 import { toLangGraph } from '../native-graph.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -179,8 +180,7 @@ describe('toLangGraph', () => {
   });
 
   // ChatOpenAI only reads camelCase, so the graph's default model factory camelizes the
-  // snake_case bag the UI writes — the exact conversion the casing fix adds, so this assertion
-  // changed from `max_tokens: 512` (the old, buggy pass-through) to `maxTokens: 512`.
+  // snake_case bag the UI writes, then narrows it to ChatOpenAI's allowlist.
   it('spreads model.parameters into the default ChatOpenAI constructor, camelized', async () => {
     const root = makeNode('root', '', []);
     root.config.model.parameters = { temperature: 0.2, max_tokens: 512 };
@@ -197,6 +197,17 @@ describe('toLangGraph', () => {
     MockChatOpenAI.mockClear();
     await toLangGraph(Promise.resolve(def)).invoke('hi');
     expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
+  });
+
+  it('never passes credentials or connection settings to the default ChatOpenAI constructor', async () => {
+    const root = makeNode('root', '', []);
+    root.config.model.parameters = { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 };
+    const def = makeGraphDef([root], {}, 'root');
+    MockChatOpenAI.mockClear();
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+    const args = MockChatOpenAI.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(args).toEqual({ temperature: 0.3, model: 'gpt-4o' });
+    expectNoNeverForwardedValue(args);
   });
 
   it('wires the root node from START', async () => {
