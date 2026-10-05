@@ -795,6 +795,10 @@ export class ProtocolReader {
     // Checked even with no pending set (a `none` intent), so a foreign payload's
     // selector never becomes the resume point.
     const foreign = this.isForeignPayload(payloadId);
+    // Nothing is applied without a pending set — a `none` intent no object
+    // followed, or an intent code this SDK does not recognise — and a foreign
+    // payload's contents are declined below.
+    const applied = !foreign && this.pending !== null;
     if (foreign) {
       this.warnForeignPayload(payloadId);
       this.diagnostics.payloadsIgnored += 1;
@@ -821,12 +825,19 @@ export class ProtocolReader {
     const { changes } = this;
     this.changes = [];
     this.diagnostics.payloadsTransferred += 1;
+    if (!applied) {
+      // Nothing applied, so nothing to report — and in particular not a commit,
+      // because a commit publishes the first payload, and `isInitialized()` (what
+      // `writeSkills('*')` authorizes a prune on) must not go true over a store
+      // that received nothing. Not up to date either: only the `none` intent says
+      // that, on its own event. The selector is withheld too — it names a payload
+      // never applied.
+      return { changes: [], basis: null };
+    }
     return {
       committed: true,
       changes,
-      // A declined payload must not move the resume point, or skill updates
-      // could silently stop arriving.
-      basis: foreign || typeof state !== 'string' || state === '' ? null : state,
+      basis: typeof state !== 'string' || state === '' ? null : state,
     };
   }
 
@@ -1886,16 +1897,26 @@ export class FDv2SkillStore implements SkillStore {
     const etag = this.etagBasis === basis ? this.etag : null;
     const result = await this.requester.poll(basis, etag, signal);
     if (result.notModified) {
-      // A 304 counts as a first payload: the etag belongs to a body this store
-      // applied in full.
-      this.markFirstPayload();
+      // A 304 confirms the payload this store holds; it cannot establish one.
+      // `isInitialized()` stays false until something commits, so a store that
+      // has received nothing never authorizes a prune of the files on disk. `run`
+      // counts the poll as a healthy answer.
       return;
     }
+    let completed = false;
     for (const [name, data] of result.events) {
-      this.dispatch(this.apply(name, data));
+      const outcome = this.apply(name, data);
+      completed = completed || outcome.committed === true || outcome.healthy === true;
+      this.dispatch(outcome);
     }
-    // Adopted only after the whole body applied, so a body that broke off
-    // partway cannot earn a later 304.
+    if (!completed) {
+      // An etag describes the body it came with, so it is adopted only when that
+      // body is also what the store now holds: a commit, or a `none` intent. A
+      // transfer this SDK could not apply is neither, and keeping its etag would
+      // let the next 304 confirm content never applied. Any etag already held
+      // stays valid, so it is left alone, not cleared.
+      return;
+    }
     this.etag = result.etag;
     this.etagBasis = basis;
   }
