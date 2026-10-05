@@ -193,9 +193,20 @@ async function initBaseClient(options: InitBaseClientOptions = {}): Promise<LDCl
     ...(eventsUri !== undefined && { eventsUri }),
   });
 
-  // biome-ignore lint/suspicious/noExplicitAny: waitForInitialization is a concrete SDK method not in LDClientInterface
-  await (client as any).waitForInitialization({ timeout: 10 });
-  await waitForTelemetry();
+  try {
+    // biome-ignore lint/suspicious/noExplicitAny: waitForInitialization is a concrete SDK method not in LDClientInterface
+    await (client as any).waitForInitialization({ timeout: 10 });
+    await waitForTelemetry();
+  } catch (err) {
+    // We built this client, so close it: a rejected init is retried rather than
+    // cached, and each attempt would otherwise leave a streaming connection open.
+    try {
+      await client.close();
+    } catch {
+      // The init failure is the error worth reporting.
+    }
+    throw err;
+  }
 
   return client;
 }
@@ -229,10 +240,15 @@ function isLDClient(value: unknown): value is LDClientInterface {
  * returns the existing client, so a client that was lazily auto-initialized, or
  * initialized without a store, can be given one afterwards with
  * `initClient({ skillStore: store })`. A nullish `skillStore` never clears a
- * configured store; `shutdown()` does that. The store is installed only once
- * initialization has succeeded: a call that rejects leaves no global state
- * behind, so a failed init cannot leave the skill accessors working against a
- * store the application believes was never installed.
+ * configured store; `shutdown()` does that. Without a store, the Agent Skills
+ * accessors throw.
+ *
+ * The store is installed only once initialization has succeeded, so await
+ * `initClient` before calling the skill accessors. A call that rejects installs
+ * no store and caches neither a client nor the failure: a later call retries
+ * initialization (once `LD_SDK_KEY` is available, say) rather than replaying
+ * the same rejection, so a failed init cannot leave the skill accessors working
+ * against a store the application believes was never installed.
  *
  * Both overloads return the client instance for further customization.
  */
@@ -289,7 +305,17 @@ async function resolveClient(
   if (!singleton.initPromise) {
     singleton.initPromise = initBaseClient(optionsOrClient);
   }
-  singleton.client = await singleton.initPromise;
+  const pending = singleton.initPromise;
+  try {
+    singleton.client = await pending;
+  } catch (err) {
+    // A rejection is not cached, so a later call retries — with a key that is
+    // now set, say — instead of replaying this failure for the life of the
+    // process. Concurrent waiters on the same attempt all land here; clear it
+    // only if nothing (a BYOC call, `shutdown()`) has replaced it meanwhile.
+    if (singleton.initPromise === pending) singleton.initPromise = null;
+    throw err;
+  }
   flushAiSdkInfo(singleton.client);
   return singleton.client;
 }
@@ -302,14 +328,16 @@ export function getClient(): LDClientInterface {
 
 export async function shutdown(): Promise<void> {
   const singleton = getSingleton();
-  // Before the early return: a store can be configured without a client.
+  // Before the early return: a store can be configured without a client, and
+  // an init promise can be set without one, so shutdown() always leaves the
+  // next initClient() starting from scratch.
   _clearState();
+  singleton.initPromise = null;
   if (!singleton.client) return;
   // Null the singleton before teardown so that any failure mid-flight still
   // leaves the process in a state where a second shutdown() call is a no-op.
   const client = singleton.client;
   singleton.client = null;
-  singleton.initPromise = null;
   resetAiSdkInfo();
   await shutdownTelemetry();
   try {

@@ -278,6 +278,60 @@ describe('lifecycle', () => {
       expect(mockLdInit).toHaveBeenCalledOnce();
     });
 
+    it('retries after a failed init instead of replaying the rejection', async () => {
+      // A rejection must not be cached: an app whose first call ran before its
+      // key was available would otherwise fail for the life of the process.
+      const mockClient = makeMockClient();
+      mockLdInit.mockReturnValue(mockClient);
+
+      const { initClient, getClient } = await import('../lifecycle.js');
+      await expect(initClient()).rejects.toThrow(/LD_SDK_KEY/);
+
+      await expect(initClient({ sdkKey: 'late-key' })).resolves.toBe(mockClient);
+      expect(mockLdInit).toHaveBeenCalledOnce();
+      expect(mockLdInit).toHaveBeenCalledWith('late-key', expect.anything());
+      expect(getClient()).toBe(mockClient);
+    });
+
+    it('rejects every concurrent caller of a failed init, then retries', async () => {
+      const { initClient } = await import('../lifecycle.js');
+      const results = await Promise.allSettled([initClient(), initClient()]);
+      expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
+
+      mockLdInit.mockReturnValue(makeMockClient());
+      process.env.LD_SDK_KEY = 'test-key';
+      await initClient();
+      expect(mockLdInit).toHaveBeenCalledOnce();
+    });
+
+    it('closes the client it built when initialization fails, and retries with a new one', async () => {
+      // Retrying a timed-out init would otherwise leak a streaming connection
+      // per attempt.
+      const failed = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      failed.waitForInitialization = vi.fn().mockRejectedValue(new Error('timeout'));
+      const succeeded = makeMockClient();
+      mockLdInit.mockReturnValueOnce(failed).mockReturnValueOnce(succeeded);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, getClient } = await import('../lifecycle.js');
+      await expect(initClient()).rejects.toThrow('timeout');
+      expect(failed.close).toHaveBeenCalledOnce();
+
+      await initClient();
+      expect(mockLdInit).toHaveBeenCalledTimes(2);
+      expect(getClient()).toBe(succeeded);
+    });
+
+    it('reports the init failure even when closing the failed client also throws', async () => {
+      const failed = { ...makeMockClient(), close: vi.fn().mockRejectedValue(new Error('close failed')) };
+      failed.waitForInitialization = vi.fn().mockRejectedValue(new Error('timeout'));
+      mockLdInit.mockReturnValue(failed);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient } = await import('../lifecycle.js');
+      await expect(initClient()).rejects.toThrow('timeout');
+    });
+
     it('flushes registered AI package information on the BYOC path', async () => {
       const client = makeMockClient();
       registerAiSdkPackage('@launchdarkly/ai-server', '0.1.1');
@@ -366,6 +420,44 @@ describe('lifecycle', () => {
       await initClient();
 
       expect(client.track).toHaveBeenCalledOnce();
+    });
+
+    it('allows initialization after a failed init followed by shutdown', async () => {
+      const mockClient = makeMockClient();
+      mockLdInit.mockReturnValue(mockClient);
+
+      const { initClient, shutdown, getClient } = await import('../lifecycle.js');
+      await expect(initClient()).rejects.toThrow(/LD_SDK_KEY/);
+      await shutdown();
+
+      await initClient({ sdkKey: 'test-key' });
+      expect(getClient()).toBe(mockClient);
+    });
+
+    it('clears an in-flight init even though there is no client yet', async () => {
+      // shutdown() returns early without a client; the init promise must be
+      // dropped before that, or the next initClient() would await the old one.
+      let resolveFirst: () => void = () => {};
+      const first = makeMockClient();
+      first.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      );
+      const second = makeMockClient();
+      mockLdInit.mockReturnValueOnce(first).mockReturnValueOnce(second);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      const inFlight = initClient();
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      await shutdown();
+
+      await expect(initClient()).resolves.toBe(second);
+      expect(mockLdInit).toHaveBeenCalledTimes(2);
+      resolveFirst();
+      await inFlight;
     });
 
     it('is a no-op (does not throw) when called without a prior initClient', async () => {
@@ -541,6 +633,26 @@ describe('lifecycle', () => {
 
       expect(result.enabled).toBe(true);
       expect(result.config).toBeNull();
+    });
+
+    it('recovers once LD_SDK_KEY becomes available after a failed lazy init', async () => {
+      // inspectConfig swallows the init error, so a cached rejection would make
+      // an app that called it too early serve disabled configs forever.
+      const mockClient = makeMockClient();
+      mockClient.variation = vi.fn().mockResolvedValue({
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'messages' },
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'You are helpful.',
+      });
+      mockLdInit.mockReturnValue(mockClient);
+
+      const { inspectConfig } = await import('../lifecycle.js');
+      const ctx = { kind: 'user' as const, key: 'user-1' };
+      expect((await inspectConfig('my-flag', ctx)).enabled).toBe(false);
+
+      process.env.LD_SDK_KEY = 'test-key';
+      expect((await inspectConfig('my-flag', ctx)).enabled).toBe(true);
     });
 
     it('returns enabled=false when the LD client throws', async () => {
