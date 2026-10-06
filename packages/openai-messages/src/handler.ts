@@ -14,6 +14,7 @@ import {
   type Message,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   type SpanUsage,
@@ -25,6 +26,7 @@ import {
   setUsageSpanAttributes,
   type Tool,
   type ToolDefinitionInput,
+  withinSdk,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
@@ -341,6 +343,11 @@ const toToolDefinitions = (tools: FunctionTool[]): ToolDefinitionInput[] =>
   tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
 
 export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+  reportUsage('openai-messages.createOpenAIHandler');
+  return withinSdk(() => createOpenAIHandlerInternal({ captureContent }));
+}
+
+function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   const openai = new OpenAI();
 
   const MAX_STEPS = 10;
@@ -650,9 +657,13 @@ export const openaiMessages = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createOpenAIHandler({ captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
+) => {
+  reportUsage('openai-messages.openaiMessages');
+  return withinSdk(() =>
+    config({ ...options, key: configKey, handler: createOpenAIHandlerInternal({ captureContent }) }).invoke(
+      userInput,
+      context,
+      variables,
+    ),
   );
+};

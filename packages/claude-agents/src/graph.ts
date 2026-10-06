@@ -1,4 +1,4 @@
-import { type GraphOptions, graph } from '@launchdarkly/ai-server';
+import { type GraphOptions, graph, reportUsage, withinSdk } from '@launchdarkly/ai-server';
 import { createClaudeAgentsHandler } from './handler.js';
 
 /**
@@ -6,5 +6,7 @@ import { createClaudeAgentsHandler } from './handler.js';
  * `graph(key, { ...options, handlers: [createClaudeAgentsHandler()] })`.
  * Use the base `graph()` directly for multi-provider graphs.
  */
-export const claudeGraph = (key: string, options: Omit<GraphOptions, 'handlers'>) =>
-  graph(key, { ...options, handlers: [createClaudeAgentsHandler()] });
+export const claudeGraph = (key: string, options: Omit<GraphOptions, 'handlers'>) => {
+  reportUsage('claude-agents.claudeGraph');
+  return withinSdk(() => graph(key, { ...options, handlers: [createClaudeAgentsHandler()] }));
+};

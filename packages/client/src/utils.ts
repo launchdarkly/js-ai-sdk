@@ -1,4 +1,5 @@
 import type { Span } from '@opentelemetry/api';
+import { reportUsage } from './sdk-usage.js';
 import type { AiConfigRep, HandlerStreamEvent, Message, ProviderHandler, TokenUsage, TrackData } from './types.js';
 
 /**
@@ -45,6 +46,7 @@ export function createHandler(
   streamHandler?: StreamHandlerInput,
   captureContent?: boolean,
 ): ProviderHandler {
+  reportUsage('client.createHandler');
   const ph = handler as ProviderHandler;
   ph.providesFor = providesFor;
   if (streamHandler) ph.stream = streamHandler;

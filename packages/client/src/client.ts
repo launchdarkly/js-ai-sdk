@@ -2,6 +2,7 @@ import { bindConversationId } from './conversation.js';
 import { buildJudgeTasks, runJudges } from './judges.js';
 import { extractVariation } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
+import { reportUsage, withinSdk } from './sdk-usage.js';
 import { type ExecuteStreamDoneEvent, executeAndStream, executeAndTrack } from './tracking.js';
 import type {
   AiConfigRep,
@@ -61,6 +62,16 @@ export const config = ({ key, handler, toolHandlers, registry, skipJudges = fals
   };
 
   async function invoke<T = string>(
+    userInput: string | undefined,
+    context: LDContext,
+    variables?: Record<string, unknown>,
+    history?: Message[],
+  ): Promise<ProviderResponse<T>> {
+    reportUsage('client.config.invoke');
+    return withinSdk(() => invokeBody<T>(userInput, context, variables, history));
+  }
+
+  async function invokeBody<T = string>(
     userInput: string | undefined,
     context: LDContext,
     variables?: Record<string, unknown>,
@@ -139,6 +150,7 @@ export const config = ({ key, handler, toolHandlers, registry, skipJudges = fals
     variables?: Record<string, unknown>,
     history?: Message[],
   ): AsyncGenerator<StreamEvent> {
+    reportUsage('client.config.stream');
     return bindConversationId(streamEvents(userInput, context, variables, history));
   }
 

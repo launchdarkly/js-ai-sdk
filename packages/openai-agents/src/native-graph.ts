@@ -1,4 +1,3 @@
-import type { LDContext } from '@launchdarkly/ai-server';
 import {
   composeHistory,
   contentToText,
@@ -6,12 +5,14 @@ import {
   type GraphNode,
   getClient,
   imageBlockToUrl,
+  type LDContext,
   type Message,
   type MessageContent,
   makeNodeTrackData,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
+  reportUsage,
   type ToolHandlerFn,
 } from '@launchdarkly/ai-server';
 import { Agent, handoff, Runner, tool } from '@openai/agents';
@@ -108,6 +109,7 @@ export const toOpenAIAgents = (
 ): {
   invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 } => {
+  reportUsage('openai-agents.toOpenAIAgents');
   const invoke = async (
     input = '',
     variables: Record<string, unknown> = {},

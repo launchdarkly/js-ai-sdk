@@ -19,6 +19,7 @@ import {
   type Message,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
@@ -29,6 +30,7 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  withinSdk,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { createAgent } from 'langchain';
@@ -376,6 +378,14 @@ const toToolDefinitions = (configTools: Record<string, Tool> | undefined): ToolD
 /** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
 export function createLangChainAgentsHandler(
   llm?: LangChainModelSource,
+  options: ContentCaptureOptions = {},
+): ProviderHandler {
+  reportUsage('langchain-agents.createLangChainAgentsHandler');
+  return withinSdk(() => createLangChainAgentsHandlerInternal(llm, options));
+}
+
+function createLangChainAgentsHandlerInternal(
+  llm?: LangChainModelSource,
   { captureContent = false }: ContentCaptureOptions = {},
 ): ProviderHandler {
   return createHandler(
@@ -564,9 +574,13 @@ export const langchainAgents = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createLangChainAgentsHandler(undefined, { captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
+) => {
+  reportUsage('langchain-agents.langchainAgents');
+  return withinSdk(() =>
+    config({
+      ...options,
+      key: configKey,
+      handler: createLangChainAgentsHandlerInternal(undefined, { captureContent }),
+    }).invoke(userInput, context, variables),
   );
+};

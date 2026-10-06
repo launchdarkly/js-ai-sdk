@@ -21,6 +21,7 @@ import {
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
@@ -31,6 +32,7 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  withinSdk,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 
@@ -321,6 +323,14 @@ const assistantOutput = (content: unknown, toolCalls: ReadonlyArray<unknown> | u
 
 /** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
 export function createLangChainHandler(
+  llm?: LangChainModelSource,
+  options: ContentCaptureOptions = {},
+): ProviderHandler {
+  reportUsage('langchain-messages.createLangChainHandler');
+  return withinSdk(() => createLangChainHandlerInternal(llm, options));
+}
+
+function createLangChainHandlerInternal(
   llm?: LangChainModelSource,
   { captureContent = false }: ContentCaptureOptions = {},
 ): ProviderHandler {
@@ -740,9 +750,13 @@ export const langchainMessages = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createLangChainHandler(undefined, { captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
+) => {
+  reportUsage('langchain-messages.langchainMessages');
+  return withinSdk(() =>
+    config({
+      ...options,
+      key: configKey,
+      handler: createLangChainHandlerInternal(undefined, { captureContent }),
+    }).invoke(userInput, context, variables),
   );
+};

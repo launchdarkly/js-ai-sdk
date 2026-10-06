@@ -1,14 +1,15 @@
 import { createSdkMcpServer, type HookInput, query, tool } from '@anthropic-ai/claude-agent-sdk';
-import type { LDContext } from '@launchdarkly/ai-server';
 import {
   type GraphDefinition,
   type GraphNode,
   getClient,
+  type LDContext,
   type Message,
   makeNodeTrackData,
   NATIVE_TOOL_KEY,
   NativeTool,
   type ProviderGraphResponse,
+  reportUsage,
   type ToolHandlerFn,
   type TrackData,
 } from '@launchdarkly/ai-server';
@@ -165,6 +166,7 @@ export const toClaudeAgents = (
 ): {
   invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 } => {
+  reportUsage('claude-agents.toClaudeAgents');
   const invoke = async (
     input = '',
     variables: Record<string, unknown> = {},

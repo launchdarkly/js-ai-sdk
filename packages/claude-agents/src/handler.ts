@@ -17,6 +17,7 @@ import {
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   setConversationIdIfAbsent,
@@ -31,6 +32,7 @@ import {
   type ToolDefinitionInput,
   type ToolHandlerFn,
   toSemconvFinishReason,
+  withinSdk,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
@@ -910,6 +912,11 @@ function buildQueryOptions(
 }
 
 export function createClaudeAgentsHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+  reportUsage('claude-agents.createClaudeAgentsHandler');
+  return withinSdk(() => createClaudeAgentsHandlerInternal({ captureContent }));
+}
+
+function createClaudeAgentsHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   return createHandler(
     ['Anthropic', 'agent'],
     async (
@@ -1211,9 +1218,13 @@ export const claudeAgents = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createClaudeAgentsHandler({ captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
+) => {
+  reportUsage('claude-agents.claudeAgents');
+  return withinSdk(() =>
+    config({ ...options, key: configKey, handler: createClaudeAgentsHandlerInternal({ captureContent }) }).invoke(
+      userInput,
+      context,
+      variables,
+    ),
   );
+};

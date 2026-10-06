@@ -15,6 +15,7 @@ import {
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   setInputContentAttributes,
@@ -26,6 +27,7 @@ import {
   type Tool,
   type ToolDefinitionInput,
   toSemconvFinishReason,
+  withinSdk,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 
@@ -341,6 +343,11 @@ const buildMessages = (
 const MAX_STEPS = 10;
 
 export function createClaudeMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+  reportUsage('claude-messages.createClaudeMessagesHandler');
+  return withinSdk(() => createClaudeMessagesHandlerInternal({ captureContent }));
+}
+
+function createClaudeMessagesHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   const anthropic = new Anthropic();
 
   async function runToolLoop(
@@ -651,9 +658,13 @@ export const claudeMessages = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createClaudeMessagesHandler({ captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
+) => {
+  reportUsage('claude-messages.claudeMessages');
+  return withinSdk(() =>
+    config({ ...options, key: configKey, handler: createClaudeMessagesHandlerInternal({ captureContent }) }).invoke(
+      userInput,
+      context,
+      variables,
+    ),
   );
+};

@@ -4,6 +4,7 @@ import { bindConversationId, bindSpanContext } from './conversation.js';
 import { runJudges } from './judges.js';
 import { extractVariation, getClient, initClient } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
+import { reportUsage } from './sdk-usage.js';
 import { executeAndStream, modelStampsFromMeta } from './tracking.js';
 import type { LDContext, Message, ToolHandlerFn } from './types.js';
 import {
@@ -592,6 +593,7 @@ const buildGraph = async (
  * `.enabled`; callers should branch on it before traversing.
  */
 export const resolveGraph = async (key: string, options: GraphArgs): Promise<GraphDefinition> => {
+  reportUsage('client.resolveGraph');
   const resolvedOptions: GraphOptions = {
     ...options,
     handlers: resolveHandlers(options.registry, options.handlers),
@@ -647,6 +649,7 @@ export const graph = (
     variables?: Record<string, unknown>,
     history?: Message[],
   ): Promise<ProviderGraphResponse> => {
+    reportUsage('client.graph.invoke');
     const resolvedOptions: GraphOptions = {
       ...options,
       handlers: resolveHandlers(options.registry, options.handlers),
@@ -664,9 +667,12 @@ export const graph = (
       throw new Error(`Agent graph "${key}" is disabled`);
     }
 
-    // Same walk as stream(). Events are discarded; the done payload is the blocking result.
+    // Same walk as stream(), through the internal generator. Calling the public
+    // stream() would also report client.graph.stream.
     let done: Extract<GraphStreamEvent, { type: 'done' }> | undefined;
-    for await (const event of stream(input, context, variables, history)) {
+    for await (const event of bindConversationId(
+      streamEvents(input, context, variables, history, otelContext.active()),
+    )) {
       if (event.type === 'done') done = event;
     }
     if (!done) {
@@ -688,6 +694,7 @@ export const graph = (
     variables?: Record<string, unknown>,
     history?: Message[],
   ): AsyncGenerator<GraphStreamEvent> {
+    reportUsage('client.graph.stream');
     // The OTel parent is captured here for the same reason the conversation id is: the generator
     // body does not run until the first `next()`, by which point the caller's span scope may have
     // exited, leaving `launchdarkly.graph` a disconnected root in its own trace.

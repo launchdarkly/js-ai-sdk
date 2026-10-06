@@ -5,6 +5,7 @@ import {
   inspectConfig,
   type LDContext,
   makeRunTrackData,
+  reportUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -12,6 +13,7 @@ import {
   setUsageSpanAttributes,
   type TrackData,
   textMessage,
+  withinSdk,
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { type Experimental_EvaluationModel, type Experimental_EvaluationQuestion, experimental_evaluate } from 'ai';
@@ -92,6 +94,16 @@ async function resolveConfig(
 }
 
 export async function vercelEvaluate<const QUESTIONS extends Record<string, Experimental_EvaluationQuestion>>(
+  configKey: string,
+  state: EvaluateRequest['state'],
+  context: LDContext,
+  options: VercelEvaluateOptions<QUESTIONS>,
+): Promise<VercelEvaluateResult<QUESTIONS>> {
+  reportUsage('vercel-messages.vercelEvaluate');
+  return withinSdk(() => vercelEvaluateInternal(configKey, state, context, options));
+}
+
+async function vercelEvaluateInternal<const QUESTIONS extends Record<string, Experimental_EvaluationQuestion>>(
   configKey: string,
   state: EvaluateRequest['state'],
   context: LDContext,

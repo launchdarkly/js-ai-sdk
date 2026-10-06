@@ -1,4 +1,4 @@
-import { type GraphOptions, graph } from '@launchdarkly/ai-server';
+import { type GraphOptions, graph, reportUsage, withinSdk } from '@launchdarkly/ai-server';
 import { createOpenAIAgentHandler } from './handler.js';
 
 /**
@@ -6,5 +6,7 @@ import { createOpenAIAgentHandler } from './handler.js';
  * `graph(key, { ...options, handlers: [createOpenAIAgentHandler()] })`.
  * Use the base `graph()` directly for multi-provider graphs.
  */
-export const openaiGraph = (key: string, options: Omit<GraphOptions, 'handlers'>) =>
-  graph(key, { ...options, handlers: [createOpenAIAgentHandler()] });
+export const openaiGraph = (key: string, options: Omit<GraphOptions, 'handlers'>) => {
+  reportUsage('openai-agents.openaiGraph');
+  return withinSdk(() => graph(key, { ...options, handlers: [createOpenAIAgentHandler()] }));
+};

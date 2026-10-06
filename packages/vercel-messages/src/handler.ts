@@ -12,6 +12,7 @@ import {
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -22,6 +23,7 @@ import {
   type ToolDefinitionInput,
   type ToolHandlerFn,
   textMessage,
+  withinSdk,
 } from '@launchdarkly/ai-server';
 import { context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import {
@@ -274,6 +276,11 @@ function resultUsage(result: { usage?: unknown; steps?: Array<{ usage?: unknown 
 }
 
 export function createVercelMessagesHandler(options: VercelMessagesOptions = {}): ProviderHandler {
+  reportUsage('vercel-messages.createVercelMessagesHandler');
+  return withinSdk(() => createVercelMessagesHandlerInternal(options));
+}
+
+function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}): ProviderHandler {
   const { captureContent = false } = options;
   return createHandler(
     ['*', 'messages'],
@@ -407,9 +414,13 @@ export const vercelMessages = (
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     VercelMessagesOptions & { variables?: Record<string, unknown> } = {},
-) =>
-  config({
-    ...options,
-    key: configKey,
-    handler: createVercelMessagesHandler({ captureContent, model, modelFactory }),
-  }).invoke(userInput, context, variables);
+) => {
+  reportUsage('vercel-messages.vercelMessages');
+  return withinSdk(() =>
+    config({
+      ...options,
+      key: configKey,
+      handler: createVercelMessagesHandlerInternal({ captureContent, model, modelFactory }),
+    }).invoke(userInput, context, variables),
+  );
+};

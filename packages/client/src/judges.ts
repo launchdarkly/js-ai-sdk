@@ -1,5 +1,6 @@
 import { withJudgeEvaluation } from './conversation.js';
 import { extractVariation, getClient } from './lifecycle.js';
+import { reportUsage } from './sdk-usage.js';
 import { executeAndTrack } from './tracking.js';
 import type {
   AiConfigRep,
@@ -227,6 +228,7 @@ export const buildJudgeTasks = async ({
   llmResponse: string;
   baseTrackData: TrackData;
 }): Promise<JudgeTask[]> => {
+  reportUsage('client.buildJudgeTasks');
   const judges = config.judgeConfiguration?.judges ?? [];
   const hasActiveJudge = judges.some((j: { samplingRate: number }) => j.samplingRate > 0);
   if (judges.length === 0 || !hasActiveJudge) return [];
@@ -297,6 +299,7 @@ export const buildJudgeTasks = async ({
  * parsed as `{ score, reasoning }`.
  */
 export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Promise<JudgeRunResult | null> => {
+  reportUsage('client.runJudge');
   const {
     judgeConfig,
     judgeMeta,

@@ -15,6 +15,7 @@ import {
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   type SpanUsage,
@@ -27,6 +28,7 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  withinSdk,
 } from '@launchdarkly/ai-server';
 import type {
   Model,
@@ -570,6 +572,11 @@ function promptToSpanMessages(prompt: string | OpenAIInputItem[]): SpanMessage[]
 }
 
 export function createOpenAIAgentHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+  reportUsage('openai-agents.createOpenAIAgentHandler');
+  return withinSdk(() => createOpenAIAgentHandlerInternal({ captureContent }));
+}
+
+function createOpenAIAgentHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   return createHandler(
     ['OpenAI', 'agent'],
     async (
@@ -754,9 +761,13 @@ export const openaiAgents = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createOpenAIAgentHandler({ captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
+) => {
+  reportUsage('openai-agents.openaiAgents');
+  return withinSdk(() =>
+    config({ ...options, key: configKey, handler: createOpenAIAgentHandlerInternal({ captureContent }) }).invoke(
+      userInput,
+      context,
+      variables,
+    ),
   );
+};
