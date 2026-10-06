@@ -59,10 +59,11 @@ const LD_OTEL_PEER_DEPS = [
  * If any are missing, telemetry is silently disabled and a console.warn is emitted
  * with the npm install command to enable it.
  *
- * Resolves `true` only when this call built a provider, so a failed init knows
- * whether there is one of its own to tear down.
+ * Resolves to the provider this call built, or `null` when it built none, so a
+ * failed init can tell whether the current provider is its own to tear down.
  */
-async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): Promise<boolean> {
+// biome-ignore lint/suspicious/noExplicitAny: OTel tracer provider loaded via dynamic import with no static type
+async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): Promise<any | null> {
   // biome-ignore lint/suspicious/noExplicitAny: optional OTel peer deps loaded via dynamic import with no static types
   let NodeTracerProvider: any,
     // biome-ignore lint/suspicious/noExplicitAny: optional OTel peer deps loaded via dynamic import with no static types
@@ -97,7 +98,7 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
         'packages are not installed. To enable, run:\n' +
         `  npm install ${LD_OTEL_PEER_DEPS}`,
     );
-    return false;
+    return null;
   }
 
   // One provider at a time. A second would be refused the global registration,
@@ -107,7 +108,7 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
   // failed init has already torn its own down.
   // Checked after the imports, since nothing between here and the assignment
   // below awaits.
-  if (tracerProvider) return false;
+  if (tracerProvider) return null;
 
   const baseEndpoint = options.otlpEndpoint ?? env('OTEL_EXPORTER_OTLP_ENDPOINT') ?? LD_DEFAULT_OTLP_ENDPOINT;
 
@@ -155,7 +156,7 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
 
   tracerProvider = provider;
   ownedOtelGlobals = owned;
-  return true;
+  return provider;
 }
 
 /**
@@ -234,15 +235,17 @@ async function initBaseClient(options: InitBaseClientOptions = {}): Promise<LDCl
     throw new Error('LD_SDK_KEY is not set');
   }
 
-  const builtTelemetry = await setupTelemetry(options, sdkKey);
+  const builtProvider = await setupTelemetry(options, sdkKey);
   try {
     return await startBaseClient(sdkKey, options);
   } catch (err) {
     // A rejected init is retried rather than cached, and the retry may bring
     // different options (another sdkKey is another highlight.project_id), so
     // drop the provider this attempt built instead of leaving the retry to reuse
-    // it. Unless a BYOC call has adopted it for its own client meanwhile.
-    if (builtTelemetry && !getSingleton().client) {
+    // it. Only if it is still the current one: `shutdown()` may have torn it
+    // down already and a newer attempt built its own. And not if a BYOC call
+    // has adopted it for its own client meanwhile.
+    if (builtProvider && tracerProvider === builtProvider && !getSingleton().client) {
       try {
         await shutdownTelemetry();
       } catch {
@@ -337,6 +340,10 @@ function isLDClient(value: unknown): value is LDClientInterface {
  * the same rejection, so a failed init cannot leave the skill accessors working
  * against a store the application believes was never installed.
  *
+ * A call still in flight when `shutdown()` runs, or when a pre-initialized
+ * client is passed meanwhile, is abandoned: it closes the client it built and
+ * rejects, rather than replacing whatever client came after it.
+ *
  * Both overloads return the client instance for further customization.
  */
 export async function initClient(
@@ -395,12 +402,10 @@ async function resolveClient(
     return optionsOrClient;
   }
 
-  if (!singleton.initPromise) {
-    singleton.initPromise = initBaseClient(optionsOrClient);
-  }
-  const pending = singleton.initPromise;
+  const pending = singleton.initPromise ?? startInit(singleton, optionsOrClient);
+  let client: LDClientInterface;
   try {
-    singleton.client = await pending;
+    client = await pending;
   } catch (err) {
     // A rejection is not cached, so a later call retries — with a key that is
     // now set, say — instead of replaying this failure for the life of the
@@ -409,8 +414,38 @@ async function resolveClient(
     if (singleton.initPromise === pending) singleton.initPromise = null;
     throw err;
   }
-  flushAiSdkInfo(singleton.client);
-  return singleton.client;
+  flushAiSdkInfo(client);
+  return client;
+}
+
+/**
+ * Starts an options-path init attempt and records it as the in-flight one.
+ *
+ * The attempt adopts its client itself, once, rather than each waiter doing so:
+ * the check that it is still the current attempt and the assignment then run in
+ * the same synchronous step, with no await between them for `shutdown()` to
+ * land in.
+ */
+function startInit(singleton: Singleton, options?: InitBaseClientOptions): Promise<LDClientInterface> {
+  const attempt: Promise<LDClientInterface> = initBaseClient(options).then(async (client) => {
+    if (singleton.initPromise !== attempt) {
+      // `shutdown()` or a BYOC call replaced this attempt while it was in
+      // flight. Adopting its client would clobber whatever came after and leak
+      // that client's connection, so close this one instead. Its telemetry is
+      // not ours to tear down here: `shutdown()` already did, or the BYOC call
+      // reused the provider.
+      try {
+        await client.close();
+      } catch {
+        // The abandonment is the error worth reporting.
+      }
+      throw new Error('[LaunchDarkly] initClient was abandoned: shutdown() or another initClient() replaced it.');
+    }
+    singleton.client = client;
+    return client;
+  });
+  singleton.initPromise = attempt;
+  return attempt;
 }
 
 export function getClient(): LDClientInterface {
@@ -421,18 +456,21 @@ export function getClient(): LDClientInterface {
 
 export async function shutdown(): Promise<void> {
   const singleton = getSingleton();
-  // Before the early return: a store can be configured without a client, and
-  // an init promise can be set without one, so shutdown() always leaves the
-  // next initClient() starting from scratch.
+  // A store can be configured without a client, and an init can be in flight
+  // without one, so shutdown() always leaves the next initClient() starting
+  // from scratch. Dropping the init promise abandons that attempt: it closes
+  // its own client when it finishes (see `startInit`).
   _clearState();
   singleton.initPromise = null;
-  if (!singleton.client) return;
   // Null the singleton before teardown so that any failure mid-flight still
   // leaves the process in a state where a second shutdown() call is a no-op.
   const client = singleton.client;
   singleton.client = null;
-  resetAiSdkInfo();
+  if (client) resetAiSdkInfo();
+  // With or without a client: an in-flight init has already built its
+  // provider, and the next init would otherwise reuse it with the old options.
   await shutdownTelemetry();
+  if (!client) return;
   try {
     await client.flush();
   } finally {
