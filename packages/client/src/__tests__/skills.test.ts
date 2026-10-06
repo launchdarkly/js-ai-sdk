@@ -825,23 +825,12 @@ describe('store configuration', () => {
       await initClient({ skillStore: store } as unknown as Parameters<typeof initClient>[0]);
 
       await expect(getSkill('a')).rejects.toThrow(/skill store/i);
-      // ...and says so, rather than leaving the caller to find out from getSkill.
-      expect(warn).toHaveBeenCalledTimes(2);
-      for (const [message] of warn.mock.calls) {
-        expect(message).toMatch(/skillStore/);
-        expect(message).toMatch(/setSkillStore/);
-        expect(message).toMatch(/@launchdarkly\/ai-server\/experimental/);
-      }
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
-  it('an initClient call without the removed option does not warn', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      await initClient(makeMockLdClient(), {});
-      expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/skillStore/));
+      // ...and reports the ignored key generically, without core naming the
+      // experimental feature or its setter.
+      expect(warn.mock.calls).toEqual([
+        ['[LaunchDarkly] Ignoring unrecognized initClient option(s): skillStore'],
+        ['[LaunchDarkly] Ignoring unrecognized initClient option(s): skillStore'],
+      ]);
     } finally {
       warn.mockRestore();
     }

@@ -211,17 +211,32 @@ function isLDClient(value: unknown): value is LDClientInterface {
 }
 
 /**
- * Warns about an options-bag key `initClient` no longer reads. A JavaScript
- * caller (or one that cast past the type) would otherwise get no error until a
- * later accessor reports that nothing was configured.
+ * Every `InitBaseClientOptions` key `initClient` reads. Typed against the
+ * options type, so adding an option without listing it here fails to compile.
  */
-function warnOnRemovedOptions(options: unknown): void {
-  if (typeof options === 'object' && options !== null && 'skillStore' in options) {
+const INIT_CLIENT_OPTIONS: Record<keyof InitBaseClientOptions, true> = {
+  sdkKey: true,
+  baseUri: true,
+  streamUri: true,
+  eventsUri: true,
+  serviceName: true,
+  environment: true,
+  otlpEndpoint: true,
+};
+
+/**
+ * Warns about any options-bag key `initClient` does not read. A JavaScript
+ * caller (or one that cast past the type) would otherwise have a misspelt or
+ * retired option dropped silently.
+ */
+function warnOnUnknownOptions(options: unknown): void {
+  if (typeof options !== 'object' || options === null) return;
+  const unknown = Object.keys(options)
+    .filter((key) => !Object.hasOwn(INIT_CLIENT_OPTIONS, key))
+    .sort();
+  if (unknown.length > 0) {
     // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; an ignored option must be visible
-    console.warn(
-      '[LaunchDarkly] initClient() ignores the `skillStore` option. Call setSkillStore(store) from ' +
-        '@launchdarkly/ai-server/experimental instead.',
-    );
+    console.warn(`[LaunchDarkly] Ignoring unrecognized initClient option(s): ${unknown.join(', ')}`);
   }
 }
 
@@ -253,7 +268,7 @@ export async function initClient(
 ): Promise<LDClientInterface> {
   const singleton = getSingleton();
 
-  warnOnRemovedOptions(isLDClient(optionsOrClient) ? clientOptions : optionsOrClient);
+  warnOnUnknownOptions(isLDClient(optionsOrClient) ? clientOptions : optionsOrClient);
 
   if (isLDClient(optionsOrClient)) {
     // Pre-initialized client path (edge / custom runtimes).

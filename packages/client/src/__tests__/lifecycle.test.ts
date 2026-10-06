@@ -266,6 +266,41 @@ describe('lifecycle', () => {
       );
     });
 
+    it('warns about an unrecognized option on both overloads', async () => {
+      // A misspelt or retired option would otherwise be dropped silently.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const { initClient } = await import('../lifecycle.js');
+        await initClient(makeMockClient(), { serviceName: 'svc', sdkkey: 'sdk-x' } as never);
+        await initClient({ zeta: 1, alpha: 2 } as never);
+        expect(warn.mock.calls).toEqual([
+          ['[LaunchDarkly] Ignoring unrecognized initClient option(s): sdkkey'],
+          ['[LaunchDarkly] Ignoring unrecognized initClient option(s): alpha, zeta'],
+        ]);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not warn about documented options', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const { initClient } = await import('../lifecycle.js');
+        await initClient(makeMockClient(), {
+          sdkKey: 'sdk-x',
+          baseUri: 'https://base.example',
+          streamUri: 'https://stream.example',
+          eventsUri: 'https://events.example',
+          serviceName: 'svc',
+          environment: 'test',
+          otlpEndpoint: 'https://otlp.example',
+        });
+        expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/unrecognized initClient option/));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it('is idempotent — calls init only once when called twice', async () => {
       const mockClient = makeMockClient();
       mockLdInit.mockReturnValue(mockClient);
