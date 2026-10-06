@@ -57,14 +57,30 @@ export function _clearState(): void {
  * nullish argument is ignored and never clears the configured store — use
  * `shutdown()` for that.
  *
+ * Replacing a store does not close the previous one; close it yourself if it
+ * holds a connection. A running `watchSkills` keeps listening to the store it
+ * started with, so close the watcher and start a new one to follow the
+ * replacement.
+ *
  * ```ts
  * import { FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server/experimental';
  *
  * setSkillStore(new FDv2SkillStore(process.env.LD_SDK_KEY!).start());
  * ```
+ *
+ * @throws TypeError if `store` is not nullish and has no `getObject` and
+ * `allObjects` methods.
  */
 export function setSkillStore(store: SkillStore | null | undefined): void {
-  if (store != null) _setStore(store);
+  if (store == null) return;
+  const missing = (['getObject', 'allObjects'] as const).filter(
+    (name) => typeof (store as unknown as Record<string, unknown>)[name] !== 'function',
+  );
+  if (missing.length > 0) {
+    const kind = typeof store === 'object' ? (store.constructor?.name ?? 'Object') : typeof store;
+    throw new TypeError(`setSkillStore needs a SkillStore; ${kind} has no ${missing.join(' or ')} method.`);
+  }
+  _setStore(store);
 }
 
 /**

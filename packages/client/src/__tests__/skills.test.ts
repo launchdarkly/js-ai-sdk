@@ -327,9 +327,72 @@ const EXPERIMENTAL_SKILLS_TYPES = [
   'WriteSkillsOptions',
 ];
 
+/**
+ * Every runtime value the package root exports. A snapshot, so a new root
+ * export (a `frontmatter` reader, a leaked Skills name) fails here rather than
+ * depending on someone reading the API report diff. Update it deliberately,
+ * in the change that adds or removes a root export.
+ */
+const ROOT_VALUES = [
+  'ConversationIdSpanProcessor',
+  'GraphTopologySchema',
+  'NATIVE_TOOL_KEY',
+  'NativeTool',
+  'Registry',
+  'addCachedTokensToInput',
+  'anyMultimodal',
+  'buildJudgeTasks',
+  'collapseMessagesToInstructions',
+  'compose',
+  'composeHistory',
+  'config',
+  'contentToText',
+  'createHandler',
+  'createRunUsage',
+  'endSpanOnce',
+  'getClient',
+  'globalRegistry',
+  'graph',
+  'hasMultimodalContent',
+  'imageBlockToUrl',
+  'initClient',
+  'inspectConfig',
+  'isContentBlocks',
+  'langChainContentText',
+  'langChainFinishReasons',
+  'langChainSpanMessages',
+  'langChainSpanUsage',
+  'makeNodeTrackData',
+  'makeRunTrackData',
+  'omitModelStamps',
+  'parseJSONWithPossibleFences',
+  'parseTemplate',
+  'registerAiSdkPackage',
+  'resolveGraph',
+  'runJudge',
+  'setConversationIdIfAbsent',
+  'setInputContentAttributes',
+  'setLdSpanAttributes',
+  'setModelIdentityAttributes',
+  'setOutputContentAttributes',
+  'setToolCallContentAttributes',
+  'setToolDefinitionAttributes',
+  'setUsageSpanAttributes',
+  'shutdown',
+  'shutdownTelemetry',
+  'textMessage',
+  'toSemconvFinishReason',
+  'waitForTelemetry',
+  'withConversationId',
+];
+
 describe('package exports', () => {
   it('the experimental entry point exports exactly the documented skills values', () => {
     expect(Object.keys(experimental).sort()).toEqual([...EXPERIMENTAL_SKILLS_VALUES].sort());
+  });
+
+  it('the package root exports exactly the snapshotted values', () => {
+    expect(Object.keys(packageIndex).sort()).toEqual([...ROOT_VALUES].sort());
   });
 
   it('no skills value is exported from the package root', () => {
@@ -408,9 +471,10 @@ describe('package exports', () => {
   });
 
   it('the ReconcileActionKind union admits exactly the five action strings', () => {
-    // Assert the closed set by exhaustiveness over the union.
-    // Adding a sixth member makes `exhaustive` fail to compile; removing one
-    // leaves an entry in the record with no corresponding union member.
+    // The record is exhaustive over the union, but `yarn typecheck` covers only
+    // `src/*.ts`, so nothing compiles this file: the guard against a sixth
+    // member is `api:check`, which diffs the union in the experimental API
+    // report. This test pins the runtime spelling of the five strings.
     const exhaustive: Record<experimental.ReconcileActionKind, true> = {
       written: true,
       updated: true,
@@ -820,7 +884,7 @@ describe('store configuration', () => {
     store.put(rawSkill({ key: 'a' }));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      await initClient(makeMockLdClient(), { skillStore: store } as unknown as Parameters<typeof initClient>[1]);
+      await initClient(makeMockLdClient(), { skillStore: store } as never);
       // The options overload returns early once the client exists, but still warns.
       await initClient({ skillStore: store } as unknown as Parameters<typeof initClient>[0]);
 
@@ -928,6 +992,24 @@ describe('store configuration', () => {
 
     setSkillStore(null);
     setSkillStore(undefined);
+
+    expect(await getSkill('a')).not.toBeNull();
+  });
+
+  it.each([
+    ['a string', 'x'],
+    ['an empty object', {}],
+    ['a number', 0],
+    ['an object with only getObject', { getObject: () => null }],
+  ])('rejects %s, leaving the configured store alone', async (_label, notAStore) => {
+    // A value without the store methods fails where it is passed, not as a
+    // store_unavailable on the first accessor call (matches Python).
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a' }));
+    setSkillStore(store);
+
+    expect(() => setSkillStore(notAStore as never)).toThrow(TypeError);
+    expect(() => setSkillStore(notAStore as never)).toThrow(/SkillStore/);
 
     expect(await getSkill('a')).not.toBeNull();
   });

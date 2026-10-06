@@ -324,7 +324,7 @@ const report = await writeSkills('*', '.claude/skills', {
 
 | Export | Description |
 |---|---|
-| `setSkillStore(store)` | Set the `SkillStore` the accessors, `writeSkills`, and `watchSkills` read from. Applies on every call; a nullish argument never clears the configured store, and `shutdown()` does. Not an `initClient` option. |
+| `setSkillStore(store)` | Set the `SkillStore` the accessors, `writeSkills`, and `watchSkills` read from. Applies on every call; a nullish argument never clears the configured store, and `shutdown()` does. Throws `TypeError` for anything else without `getObject` and `allObjects` methods. Replacing a store does not close the old one, and a running watcher keeps the store it started with. Not an `initClient` option. |
 | `skillRefs(config)` | Project a config's `skills` array into typed `SkillReference[]`. Pure — no client, no store, no telemetry. `[]` when absent. |
 | `getSkill(key, { version? })` | One verified skill. Omit `version` for the newest available. Resolves to `null` when the skill is unavailable; throws only when no store is configured. |
 | `getSkillResult(key, { version? })` | The same retrieval, reporting **why**: resolves to `{ skill, reason, detail }`, where `reason` is `ok` / `absent` / `integrity_failure` / `store_unavailable` / `wrong_version`. Throws only when no store is configured. See [fail closed on tampering](#fail-closed-on-tampering-getskillresult). |

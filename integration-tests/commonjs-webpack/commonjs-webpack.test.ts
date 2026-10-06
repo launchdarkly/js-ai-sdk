@@ -1,7 +1,18 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { bundle, createConsumer, invoke, packedFiles, repoRoot, runEntrypoint } from './harness.js';
+import {
+  bundle,
+  consumerDir,
+  createConsumer,
+  invoke,
+  packedFiles,
+  RESOLUTION_MODES,
+  type ResolutionMode,
+  repoRoot,
+  runEntrypoint,
+  typecheck,
+} from './harness.js';
 
 const SETUP_TIMEOUT_MS = 15 * 60 * 1000;
 const CASE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -110,6 +121,31 @@ describe('CommonJS consumer bundled with Webpack + webpack-node-externals', () =
       expect(result.stderr).toBe('');
       expect(result.status).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual(RESOLVED_SYMBOLS);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  // `node10` ignores `exports`, so the experimental subpath's types resolve only through
+  // `typesVersions`; without it the import fails with TS2307.
+  it.each(Object.keys(RESOLUTION_MODES) as ResolutionMode[])(
+    'type-checks root and experimental imports under moduleResolution %s',
+    (mode) => {
+      const result = typecheck(mode);
+
+      expect(result.stderr).toBe('');
+      expect(result.status, result.stdout).toBe(0);
+      // A module tsc cannot resolve in the consumer is looked up again in every ancestor
+      // `node_modules`, and the consumer sits inside this repo, so a failed lookup would land on
+      // the workspace copy and pass. Every file loaded from the repo must be the consumer's own.
+      const loaded = result.stdout.split('\n').filter((file) => file.startsWith(repoRoot));
+      expect(loaded.filter((file) => !file.startsWith(`${consumerDir}/`))).toEqual([]);
+      for (const pkg of ['ai-server', 'ai-node']) {
+        const experimental = join(consumerDir, 'node_modules', '@launchdarkly', pkg, 'dist', 'experimental.d.');
+        expect(
+          loaded.some((file) => file.startsWith(experimental)),
+          pkg,
+        ).toBe(true);
+      }
     },
     CASE_TIMEOUT_MS,
   );
