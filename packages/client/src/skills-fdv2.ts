@@ -1643,8 +1643,9 @@ export class FDv2SkillStore implements SkillStore {
    * has skills; see `diagnostics`.
    *
    * Resolves `false` on timeout, or immediately if delivery has ended (`close`,
-   * or a failure that will not be retried; `failed` tells them apart). Rejects
-   * for a negative or non-finite `timeoutMs`.
+   * or a failure that will not be retried; `failed` tells them apart). A store
+   * that gave up waits again once `start()` runs delivery again; only `close` is
+   * final. Rejects for a negative or non-finite `timeoutMs`.
    */
   waitForSkills(timeoutMs = 10_000): Promise<boolean> {
     if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs < 0) {
