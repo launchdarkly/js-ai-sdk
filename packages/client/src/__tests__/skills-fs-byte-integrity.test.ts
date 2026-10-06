@@ -284,10 +284,10 @@ describe('the adoption comparison hashes the delivered rule', () => {
    * neither may be replaced by a call to `hash` and the two only ever change
    * together, and only if the service's rule changed.
    *
-   * `é` as an escape rather than the character itself, so a tool that
+   * `\u00e9` as an escape rather than the character itself, so a tool that
    * re-normalized this source file could not quietly change the input.
    */
-  const HAZARD_CONTENT = '# héllo\r\n\ntrailing no newline';
+  const HAZARD_CONTENT = '# h\u00e9llo\r\n\ntrailing no newline';
   const HAZARD_DIGEST = '2b7c050d94135e5e947263053ebde1c988c2bb90bcc037e8f3d1a2d340b9a558';
 
   /** The post-crash state adoption exists for: a managed path, no manifest. */
