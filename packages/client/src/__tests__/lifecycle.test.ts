@@ -807,6 +807,30 @@ describe('lifecycle', () => {
       expect(mockTracerProviderShutdown).toHaveBeenCalledOnce();
     });
 
+    it('builds no provider for an init that shutdown abandons during telemetry setup', async () => {
+      // No await before shutdown(): setupTelemetry is still awaiting its
+      // imports, so there is no provider yet for shutdown to tear down. One
+      // built afterwards would outlive the attempt and be reused by the next
+      // init, with the abandoned attempt's sdkKey as highlight.project_id.
+      const first = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      mockLdInit.mockReturnValueOnce(first).mockReturnValueOnce(makeMockClient());
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      const abandoned = initClient({ sdkKey: 'first-key' });
+      await shutdown();
+      await expect(abandoned).rejects.toThrow(/abandoned/);
+      expect(tracerProviders).toHaveLength(0);
+      expect(otel.held).toEqual({ trace: null, context: null, propagation: null });
+
+      await initClient({ sdkKey: 'second-key' });
+      expect(tracerProviders).toHaveLength(1);
+      expect(otel.held.trace).toBe(tracerProviders[0]);
+      expect(mockResourceFromAttributes).toHaveBeenCalledOnce();
+      expect(mockResourceFromAttributes).toHaveBeenCalledWith(
+        expect.objectContaining({ 'highlight.project_id': 'second-key' }),
+      );
+    });
+
     it('does not let an abandoned init that then fails tear down the newer provider', async () => {
       // The newer attempt is still in flight, so there is no client yet to
       // say the current provider is spoken for: only its identity does.

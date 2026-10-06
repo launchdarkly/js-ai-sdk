@@ -43,6 +43,13 @@ const NO_OTEL_GLOBALS: OtelGlobals = { trace: false, context: false, propagation
  */
 let ownedOtelGlobals: OtelGlobals = NO_OTEL_GLOBALS;
 
+/**
+ * Counts `shutdownTelemetry` calls, so a `setupTelemetry` that was still
+ * awaiting its imports when one ran can tell, and build nothing. At that point
+ * there was no provider to tear down, so the teardown could not stop it.
+ */
+let telemetryTeardowns = 0;
+
 const LD_OTEL_PEER_DEPS = [
   '@opentelemetry/sdk-trace-node',
   '@opentelemetry/sdk-trace-base',
@@ -64,6 +71,7 @@ const LD_OTEL_PEER_DEPS = [
  */
 // biome-ignore lint/suspicious/noExplicitAny: OTel tracer provider loaded via dynamic import with no static type
 async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): Promise<any | null> {
+  const teardownsAtStart = telemetryTeardowns;
   // biome-ignore lint/suspicious/noExplicitAny: optional OTel peer deps loaded via dynamic import with no static types
   let NodeTracerProvider: any,
     // biome-ignore lint/suspicious/noExplicitAny: optional OTel peer deps loaded via dynamic import with no static types
@@ -109,6 +117,12 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
   // Checked after the imports, since nothing between here and the assignment
   // below awaits.
   if (tracerProvider) return null;
+
+  // A teardown ran while the imports were pending: `shutdown()` abandoned the
+  // init this setup belongs to, or the application stopped telemetry itself.
+  // Either way, a provider built now would outlive it, and the next init would
+  // reuse it with this attempt's options (its sdkKey as highlight.project_id).
+  if (telemetryTeardowns !== teardownsAtStart) return null;
 
   const baseEndpoint = options.otlpEndpoint ?? env('OTEL_EXPORTER_OTLP_ENDPOINT') ?? LD_DEFAULT_OTLP_ENDPOINT;
 
@@ -188,6 +202,8 @@ export async function waitForTelemetry(timeoutMs = 5000): Promise<void> {
  * Must be called before process.exit() to ensure all pending spans are exported.
  */
 export async function shutdownTelemetry(): Promise<void> {
+  // Counted even with no provider yet: see `telemetryTeardowns`.
+  telemetryTeardowns++;
   const provider = tracerProvider;
   const owned = ownedOtelGlobals;
   tracerProvider = null;
