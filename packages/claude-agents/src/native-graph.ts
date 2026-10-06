@@ -16,6 +16,7 @@ import {
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
 import { buildPrompt, buildQueryPrompt, buildToolMCP, partitionTools } from './handler.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TOOL_MCP_NAME = 'tool-mcp';
 const SUBAGENT_MCP_NAME = 'subagents';
@@ -166,7 +167,7 @@ export const toClaudeAgents = (
 ): {
   invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 } => {
-  reportUsage('claude-agents.toClaudeAgents');
+  reportUsage('claude-agents.toClaudeAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   const invoke = async (
     input = '',
     variables: Record<string, unknown> = {},

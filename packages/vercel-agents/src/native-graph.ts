@@ -17,6 +17,7 @@ import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { jsonSchema, type LanguageModel, type ModelMessage, stepCountIs, ToolLoopAgent, type ToolSet, tool } from 'ai';
 import type { VercelAgentsOptions } from './handler.js';
 import { gatewayModelId } from './model-id.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-vercel-agents';
 const MAX_STEPS = 10;
@@ -122,7 +123,7 @@ export const toVercelAgents = (
 ): {
   invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 } => {
-  reportUsage('vercel-agents.toVercelAgents');
+  reportUsage('vercel-agents.toVercelAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return {
     invoke: async (input = '', variables = {}, history) => {
       const def = await definition;

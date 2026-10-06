@@ -35,6 +35,7 @@ import {
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { createAgent } from 'langchain';
 import { toLangChainMessages } from './messages.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-langchain-agents';
 
@@ -380,7 +381,7 @@ export function createLangChainAgentsHandler(
   llm?: LangChainModelSource,
   options: ContentCaptureOptions = {},
 ): ProviderHandler {
-  reportUsage('langchain-agents.createLangChainAgentsHandler');
+  reportUsage('langchain-agents.createLangChainAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createLangChainAgentsHandlerInternal(llm, options);
 }
 
@@ -576,7 +577,7 @@ export const langchainAgents = (
       variables?: Record<string, unknown>;
     } = {},
 ) => {
-  reportUsage('langchain-agents.langchainAgents');
+  reportUsage('langchain-agents.langchainAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return configInternal({
     ...options,
     key: configKey,

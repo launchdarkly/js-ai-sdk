@@ -30,6 +30,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-openai-messages';
 
@@ -343,7 +344,7 @@ const toToolDefinitions = (tools: FunctionTool[]): ToolDefinitionInput[] =>
   tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
 
 export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  reportUsage('openai-messages.createOpenAIHandler');
+  reportUsage('openai-messages.createOpenAIHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createOpenAIHandlerInternal({ captureContent });
 }
 
@@ -658,7 +659,7 @@ export const openaiMessages = (
       variables?: Record<string, unknown>;
     } = {},
 ) => {
-  reportUsage('openai-messages.openaiMessages');
+  reportUsage('openai-messages.openaiMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return configInternal({
     ...options,
     key: configKey,

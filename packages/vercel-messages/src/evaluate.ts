@@ -17,6 +17,7 @@ import {
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { type Experimental_EvaluationModel, type Experimental_EvaluationQuestion, experimental_evaluate } from 'ai';
 import { gatewayModelId } from './model-id.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-vercel-messages';
 
@@ -98,7 +99,7 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
   context: LDContext,
   options: VercelEvaluateOptions<QUESTIONS>,
 ): Promise<VercelEvaluateResult<QUESTIONS>> {
-  reportUsage('vercel-messages.vercelEvaluate');
+  reportUsage('vercel-messages.vercelEvaluate', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   assertQuestions(options.questions);
   const { config, meta } = await resolveConfig(configKey, context);
   const captureContent = options.captureContent ?? false;

@@ -13,6 +13,7 @@ import { graph, resolveGraph } from '../graph.js';
 import { buildJudgeTasks, runJudge } from '../judges.js';
 import { initClient, inspectConfig, shutdown } from '../lifecycle.js';
 import { SDK_INFO_CONTEXT } from '../sdk-info.js';
+import { reportUsage } from '../sdk-usage.js';
 import type {
   HandlerStreamEvent,
   JudgeTask,
@@ -62,6 +63,8 @@ function nonUsageCalls(client: FakeClient): unknown[][] {
 function expectNoUsageFields(calls: unknown[][]): void {
   for (const call of calls) {
     expect(call[2]).not.toHaveProperty('helper');
+    expect(call[2]).not.toHaveProperty('helperPackageName');
+    expect(call[2]).not.toHaveProperty('helperPackageVersion');
     expect(call[2]).not.toHaveProperty('aiSdkName');
     expect(call[2]).not.toHaveProperty('aiSdkVersion');
     expect(call[2]).not.toHaveProperty('aiSdkLanguage');
@@ -105,6 +108,8 @@ function expectUsage(client: FakeClient, helper: string): void {
     aiSdkVersion: LD_AI_PACKAGE_VERSION,
     aiSdkLanguage: 'javascript',
     helper,
+    helperPackageName: LD_AI_PACKAGE_NAME,
+    helperPackageVersion: LD_AI_PACKAGE_VERSION,
   });
   expect(calls[0]?.[3]).toBe(1);
 }
@@ -210,6 +215,23 @@ describe('§3.27 helper usage', () => {
     expectUsage(client, 'client.buildJudgeTasks');
   });
 
+  it("keeps a held helper's own package name and version until the client exists", async () => {
+    await shutdown();
+    reportUsage('openai-messages.openaiMessages', '@launchdarkly/ai-openai-messages', '9.8.7');
+    client = fakeClient();
+    await initClient(client);
+    const calls = usageCalls(client, 'openai-messages.openaiMessages');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[2]).toEqual({
+      aiSdkName: LD_AI_PACKAGE_NAME,
+      aiSdkVersion: LD_AI_PACKAGE_VERSION,
+      aiSdkLanguage: 'javascript',
+      helper: 'openai-messages.openaiMessages',
+      helperPackageName: '@launchdarkly/ai-openai-messages',
+      helperPackageVersion: '9.8.7',
+    });
+  });
+
   it('sends a pre-init helper on the fresh-init (SDK key) path', async () => {
     await shutdown();
     await buildJudgeTasks(judgeArgs());
@@ -274,6 +296,8 @@ describe('§3.27 helper usage', () => {
     );
     for (const call of others) {
       expect(call[2]).not.toHaveProperty('helper');
+      expect(call[2]).not.toHaveProperty('helperPackageName');
+      expect(call[2]).not.toHaveProperty('helperPackageVersion');
       expect(call[2]).not.toHaveProperty('aiSdkName');
       expect(call[2]).not.toHaveProperty('aiSdkVersion');
       expect(call[2]).not.toHaveProperty('aiSdkLanguage');

@@ -21,6 +21,7 @@ import {
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
 import { toLangChainMessages } from './messages.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -125,7 +126,7 @@ export const toLangGraph = (
 ): {
   invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 } => {
-  reportUsage('langchain-agents.toLangGraph');
+  reportUsage('langchain-agents.toLangGraph', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   type ContentBlock = { type: string; text?: string };
 
   const invoke = async (

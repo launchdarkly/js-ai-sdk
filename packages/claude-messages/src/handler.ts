@@ -30,6 +30,7 @@ import {
   toSemconvFinishReason,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-claude-messages';
 
@@ -343,7 +344,7 @@ const buildMessages = (
 const MAX_STEPS = 10;
 
 export function createClaudeMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  reportUsage('claude-messages.createClaudeMessagesHandler');
+  reportUsage('claude-messages.createClaudeMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createClaudeMessagesHandlerInternal({ captureContent });
 }
 
@@ -659,7 +660,7 @@ export const claudeMessages = (
       variables?: Record<string, unknown>;
     } = {},
 ) => {
-  reportUsage('claude-messages.claudeMessages');
+  reportUsage('claude-messages.claudeMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return configInternal({
     ...options,
     key: configKey,

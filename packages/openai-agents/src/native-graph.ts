@@ -17,6 +17,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { Agent, handoff, Runner, tool } from '@openai/agents';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -109,7 +110,7 @@ export const toOpenAIAgents = (
 ): {
   invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 } => {
-  reportUsage('openai-agents.toOpenAIAgents');
+  reportUsage('openai-agents.toOpenAIAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   const invoke = async (
     input = '',
     variables: Record<string, unknown> = {},

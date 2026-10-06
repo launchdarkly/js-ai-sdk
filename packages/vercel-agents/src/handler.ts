@@ -37,6 +37,7 @@ import {
   tool,
 } from 'ai';
 import { gatewayModelId } from './model-id.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-vercel-agents';
 const MAX_STEPS = 10;
@@ -285,7 +286,7 @@ async function buildAgent(
 }
 
 export function createVercelAgentsHandler(options: VercelAgentsOptions = {}): ProviderHandler {
-  reportUsage('vercel-agents.createVercelAgentsHandler');
+  reportUsage('vercel-agents.createVercelAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createVercelAgentsHandlerInternal(options);
 }
 
@@ -417,7 +418,7 @@ export const vercelAgents = (
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     VercelAgentsOptions & { variables?: Record<string, unknown> } = {},
 ) => {
-  reportUsage('vercel-agents.vercelAgents');
+  reportUsage('vercel-agents.vercelAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return configInternal({
     ...options,
     key: configKey,

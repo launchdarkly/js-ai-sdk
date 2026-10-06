@@ -38,6 +38,7 @@ import {
   tool,
 } from 'ai';
 import { gatewayModelId } from './model-id.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-vercel-messages';
 const MAX_STEPS = 10;
@@ -276,7 +277,7 @@ function resultUsage(result: { usage?: unknown; steps?: Array<{ usage?: unknown 
 }
 
 export function createVercelMessagesHandler(options: VercelMessagesOptions = {}): ProviderHandler {
-  reportUsage('vercel-messages.createVercelMessagesHandler');
+  reportUsage('vercel-messages.createVercelMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createVercelMessagesHandlerInternal(options);
 }
 
@@ -415,7 +416,7 @@ export const vercelMessages = (
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     VercelMessagesOptions & { variables?: Record<string, unknown> } = {},
 ) => {
-  reportUsage('vercel-messages.vercelMessages');
+  reportUsage('vercel-messages.vercelMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return configInternal({
     ...options,
     key: configKey,

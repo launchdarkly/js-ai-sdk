@@ -35,6 +35,7 @@ import {
   type ToolHandlerFn,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-langchain-messages';
 
@@ -326,7 +327,7 @@ export function createLangChainHandler(
   llm?: LangChainModelSource,
   options: ContentCaptureOptions = {},
 ): ProviderHandler {
-  reportUsage('langchain-messages.createLangChainHandler');
+  reportUsage('langchain-messages.createLangChainHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createLangChainHandlerInternal(llm, options);
 }
 
@@ -751,7 +752,7 @@ export const langchainMessages = (
       variables?: Record<string, unknown>;
     } = {},
 ) => {
-  reportUsage('langchain-messages.langchainMessages');
+  reportUsage('langchain-messages.langchainMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return configInternal({
     ...options,
     key: configKey,

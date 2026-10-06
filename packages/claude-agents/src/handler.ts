@@ -36,6 +36,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TOOL_MCP_NAME = 'tool-mcp';
 const MCP_TOOL_PREFIX = `mcp__${TOOL_MCP_NAME}__`;
@@ -912,7 +913,7 @@ function buildQueryOptions(
 }
 
 export function createClaudeAgentsHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  reportUsage('claude-agents.createClaudeAgentsHandler');
+  reportUsage('claude-agents.createClaudeAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createClaudeAgentsHandlerInternal({ captureContent });
 }
 
@@ -1222,7 +1223,7 @@ export const claudeAgents = (
       variables?: Record<string, unknown>;
     } = {},
 ) => {
-  reportUsage('claude-agents.claudeAgents');
+  reportUsage('claude-agents.claudeAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return configInternal({
     ...options,
     key: configKey,
