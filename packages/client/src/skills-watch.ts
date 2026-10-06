@@ -204,9 +204,7 @@ export async function watchSkills(
 ): Promise<{ report: ReconcileReport; watcher: SkillWatcher }> {
   const store = getStore();
   if (store === null) {
-    throw new Error(
-      'watchSkills needs a configured skill store. Configure one with initClient({ skillStore: store }).',
-    );
+    throw new Error('watchSkills needs a configured skill store. Configure one with setSkillStore(store).');
   }
   if (typeof store.addListener !== 'function') {
     throw new Error(

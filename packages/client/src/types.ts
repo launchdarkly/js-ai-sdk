@@ -153,10 +153,11 @@ export type AiConfigRep = {
    */
   outputFormat?: Record<string, unknown>;
   /**
-   * Optional version-pinned references to Agent Skills attached to this
-   * variation. Project them into typed values with `skillRefs(config)`.
+   * Optional version-pinned skill references attached to this variation,
+   * validated by `parseAiConfig`. Typed structurally: Agent Skills is
+   * experimental, so this core type does not name its types.
    */
-  skills?: SkillReference[];
+  skills?: ReadonlyArray<{ readonly key: string; readonly version: number }>;
 };
 
 type ParseResult<T> = { success: true; data: T } | { success: false; error: { message: string } };
@@ -886,14 +887,6 @@ export type InitBaseClientOptions = {
   serviceName?: string;
   environment?: string;
   otlpEndpoint?: string;
-  /**
-   * The store the Agent Skills accessors read from. Without one, they throw.
-   *
-   * Unlike other options, applied on **every** `initClient` call, so you can add
-   * a store after initialization. A nullish value never clears the current store
-   * (use `shutdown()`).
-   */
-  skillStore?: SkillStore;
 };
 
 /** Instantiation args for {@link routedModel}. */

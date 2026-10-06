@@ -1484,12 +1484,12 @@ export type FDv2SkillStoreOptions = {
  * A `SkillStore` fed by LaunchDarkly's SDK-facing FDv2 delivery channel.
  *
  * Constructed with the environment's server-side SDK key, started explicitly,
- * and passed to `initClient`:
+ * and passed to `setSkillStore`:
  *
  * ```ts
  * const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
  * await store.waitForSkills(10_000);
- * await initClient({ skillStore: store });
+ * setSkillStore(store);
  *
  * const skill = await getSkill('pdf-extraction');
  * // ...

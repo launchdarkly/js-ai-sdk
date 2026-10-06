@@ -252,8 +252,7 @@ describe('lifecycle', () => {
 
     it('passes the BYOC overload options through to telemetry setup', async () => {
       // The second argument is the same options bag as the other overload, so
-      // `otlpEndpoint` must reach the exporter rather than being dropped on the
-      // floor while only `skillStore` is read off it.
+      // `otlpEndpoint` must reach the exporter rather than being dropped.
       const byocClient = {
         variation: vi.fn(),
         track: vi.fn(),

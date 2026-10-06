@@ -29,10 +29,10 @@ import { createSkillOutcome, createSkillReference, isValidSkillKey, isValidSkill
 // Injection points
 // ---------------------------------------------------------------------------
 //
-// Used by `initClient` and `shutdown` (and tests). The state itself lives in
+// Used by `setSkillStore` and `shutdown` (and tests). The state itself lives in
 // `skills-core.ts`, so there is exactly one store and one emitter.
 
-/** Installs the configured skill store. Called by `initClient`. */
+/** Installs the configured skill store. Called by `setSkillStore`. */
 export function _setStore(store: SkillStore): void {
   setStore(store);
 }
@@ -47,6 +47,24 @@ export function _setEmitterForTesting(emitter: {
 /** Clears the configured store and emitter. Called by `shutdown`. */
 export function _clearState(): void {
   clearState();
+}
+
+/**
+ * Sets the store the Agent Skills accessors read from. Without one, they throw.
+ *
+ * Applies on every call, including after `initClient`, so a lazily initialized
+ * client can be given a store later; a second call replaces the first store. A
+ * nullish argument is ignored and never clears the configured store — use
+ * `shutdown()` for that.
+ *
+ * ```ts
+ * import { FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server/experimental';
+ *
+ * setSkillStore(new FDv2SkillStore(process.env.LD_SDK_KEY!).start());
+ * ```
+ */
+export function setSkillStore(store: SkillStore | null | undefined): void {
+  if (store != null) _setStore(store);
 }
 
 /**

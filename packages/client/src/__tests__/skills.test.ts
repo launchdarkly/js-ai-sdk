@@ -7,6 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mock the optional OTel peer deps so the BYOC initClient path is inert ────
@@ -34,6 +35,10 @@ vi.mock('@opentelemetry/api', () => ({
 }));
 vi.mock('dotenv/config', () => ({}));
 
+const { mockLdInit } = vi.hoisted(() => ({ mockLdInit: vi.fn() }));
+vi.mock('@launchdarkly/node-server-sdk', () => ({ init: (...args: unknown[]) => mockLdInit(...args) }));
+
+import * as experimental from '../experimental.js';
 import * as packageIndex from '../index.js';
 import { initClient, shutdown } from '../lifecycle.js';
 import {
@@ -45,6 +50,7 @@ import {
   getSkillResult,
   getSkills,
   InMemorySkillStore,
+  setSkillStore,
   skillRefs,
 } from '../skills.js';
 import { allRawObjects, MAX_SKILL_CONTENT_BYTES, requireStore, SKILL_OBJECT_KIND } from '../skills-core.js';
@@ -154,6 +160,7 @@ function clearClientSingleton() {
 }
 
 beforeEach(() => {
+  mockLdInit.mockReset();
   _clearState();
   clearClientSingleton();
   delete process.env.LD_SDK_KEY;
@@ -271,19 +278,103 @@ describe('ReconcileReport ok and errors', () => {
 
 // ─── Package exports ───────────────────────────────────────────────────
 
+/**
+ * The experimental entry point's runtime exports for Agent Skills, exactly.
+ *
+ * An allowlist rather than a denylist: anything added to the entry point —
+ * including a reader over `Skill.content` that nobody thought to deny — fails
+ * the equality below until it is added here on purpose.
+ */
+const EXPERIMENTAL_SKILLS_VALUES = [
+  'DEFAULT_BASE_URI',
+  'DEFAULT_DEBOUNCE_MS',
+  'DEFAULT_STREAM_URI',
+  'FDv2SkillStore',
+  'InMemorySkillStore',
+  'MANIFEST_FILENAME',
+  'MANIFEST_VERSION',
+  'SKILL_FILENAME',
+  'SkillWatcher',
+  'allSkills',
+  'createSkill',
+  'createSkillOutcome',
+  'createSkillReference',
+  'getSkill',
+  'getSkillResult',
+  'getSkills',
+  'setSkillStore',
+  'skillRefs',
+  'watchSkills',
+  'writeSkills',
+];
+
+/** The experimental entry point's type-only exports for Agent Skills. */
+const EXPERIMENTAL_SKILLS_TYPES = [
+  'FDv2Mode',
+  'FDv2SkillStoreOptions',
+  'OnUnavailable',
+  'RawSkillObject',
+  'ReconcileAction',
+  'ReconcileActionKind',
+  'ReconcileReport',
+  'Skill',
+  'SkillOutcome',
+  'SkillOutcomeReason',
+  'SkillReference',
+  'SkillStore',
+  'StoreDiagnostics',
+  'WatchSkillsOptions',
+  'WriteSkillsOptions',
+];
+
 describe('package exports', () => {
-  it('exports the three fixed values from the package root with exact values', () => {
+  it('the experimental entry point exports exactly the documented skills values', () => {
+    expect(Object.keys(experimental).sort()).toEqual([...EXPERIMENTAL_SKILLS_VALUES].sort());
+  });
+
+  it('no skills value is exported from the package root', () => {
+    for (const name of EXPERIMENTAL_SKILLS_VALUES) {
+      expect(name in packageIndex, name).toBe(false);
+    }
+  });
+
+  it('no skills type is named by the package root API report', () => {
+    // Types leave nothing to enumerate at runtime, so the checked-in API
+    // Extractor report for the root is what pins their absence there. A core
+    // type that mentioned one (e.g. `AiConfigRep.skills: SkillReference[]`)
+    // would also show up here.
+    const report = readFileSync(new URL('../../etc/ai-server.api.md', import.meta.url), 'utf-8');
+    for (const name of EXPERIMENTAL_SKILLS_TYPES) {
+      expect(report, name).not.toMatch(new RegExp(`\\b${name}\\b`));
+    }
+    const experimentalReport = readFileSync(
+      new URL('../../etc/ai-server-experimental.api.md', import.meta.url),
+      'utf-8',
+    );
+    for (const name of [...EXPERIMENTAL_SKILLS_TYPES, ...EXPERIMENTAL_SKILLS_VALUES]) {
+      expect(experimentalReport, name).toMatch(new RegExp(`\\b${name}\\b`));
+    }
+  });
+
+  it('initClient options do not name the skill store', () => {
+    // Core never names experimental (§0.3): the store has its own setter.
+    const report = readFileSync(new URL('../../etc/ai-server.api.md', import.meta.url), 'utf-8');
+    expect(report).not.toMatch(/skillStore/);
+    expect(report).not.toMatch(/setSkillStore/);
+  });
+
+  it('exports the three fixed values from the experimental entry point with exact values', () => {
     // These three are API, not implementation detail: a caller needs
     // MANIFEST_FILENAME to gitignore the manifest, and all three describe an
     // on-disk layout this SDK defines and a caller may have to agree with.
-    expect(packageIndex.SKILL_FILENAME).toBe('SKILL.md');
-    expect(packageIndex.MANIFEST_FILENAME).toBe('.launchdarkly-skills.json');
-    expect(packageIndex.MANIFEST_VERSION).toBe(1);
+    expect(experimental.SKILL_FILENAME).toBe('SKILL.md');
+    expect(experimental.MANIFEST_FILENAME).toBe('.launchdarkly-skills.json');
+    expect(experimental.MANIFEST_VERSION).toBe(1);
   });
 
-  it('does not export the object kind or the content cap from the package root', () => {
+  it('does not export the object kind or the content cap from either entry point', () => {
     // The absence is itself the contract, so it gets an assertion — an
-    // accidental re-export from index.ts is caught here rather than shipping.
+    // accidental re-export is caught here rather than shipping.
     //
     // SKILL_OBJECT_KIND is an SDK-side seam string rather than the wire format:
     // it is what the accessors hand SkillStore.getObject, and an adapter is free
@@ -292,8 +383,10 @@ describe('package exports', () => {
     // above the platform's own limit precisely so that limit can move without
     // this constant following — a caller pre-flighting "will my skill fit?"
     // against it would be reading the backstop, not the real bound.
-    expect('SKILL_OBJECT_KIND' in packageIndex).toBe(false);
-    expect('MAX_SKILL_CONTENT_BYTES' in packageIndex).toBe(false);
+    for (const surface of [packageIndex, experimental]) {
+      expect('SKILL_OBJECT_KIND' in surface).toBe(false);
+      expect('MAX_SKILL_CONTENT_BYTES' in surface).toBe(false);
+    }
 
     // Still reachable through the implementation module, for the store
     // implementer who has to agree with them. Asserted here rather than left
@@ -302,22 +395,23 @@ describe('package exports', () => {
     expect(MAX_SKILL_CONTENT_BYTES).toBe(10 * 1024 * 1024);
   });
 
-  it('exports the skills functions and the in-memory store from the package root', () => {
-    expect(typeof packageIndex.skillRefs).toBe('function');
-    expect(typeof packageIndex.getSkill).toBe('function');
-    expect(typeof packageIndex.getSkills).toBe('function');
-    expect(typeof packageIndex.allSkills).toBe('function');
-    expect(typeof packageIndex.writeSkills).toBe('function');
-    expect(typeof packageIndex.createSkill).toBe('function');
-    expect(typeof packageIndex.createSkillReference).toBe('function');
-    expect(typeof packageIndex.InMemorySkillStore).toBe('function');
+  it('exports the skills functions and the in-memory store from the experimental entry point', () => {
+    expect(typeof experimental.skillRefs).toBe('function');
+    expect(typeof experimental.getSkill).toBe('function');
+    expect(typeof experimental.getSkills).toBe('function');
+    expect(typeof experimental.allSkills).toBe('function');
+    expect(typeof experimental.writeSkills).toBe('function');
+    expect(typeof experimental.createSkill).toBe('function');
+    expect(typeof experimental.createSkillReference).toBe('function');
+    expect(typeof experimental.InMemorySkillStore).toBe('function');
+    expect(typeof experimental.setSkillStore).toBe('function');
   });
 
   it('the ReconcileActionKind union admits exactly the five action strings', () => {
     // Assert the closed set by exhaustiveness over the union.
     // Adding a sixth member makes `exhaustive` fail to compile; removing one
     // leaves an entry in the record with no corresponding union member.
-    const exhaustive: Record<packageIndex.ReconcileActionKind, true> = {
+    const exhaustive: Record<experimental.ReconcileActionKind, true> = {
       written: true,
       updated: true,
       skipped_current: true,
@@ -328,24 +422,24 @@ describe('package exports', () => {
   });
 
   it('the OnUnavailable union admits exactly keep and raise', () => {
-    const exhaustive: Record<packageIndex.OnUnavailable, true> = { keep: true, raise: true };
+    const exhaustive: Record<experimental.OnUnavailable, true> = { keep: true, raise: true };
     expect(Object.keys(exhaustive).sort()).toEqual(['keep', 'raise']);
   });
 
-  it('exports the delivery transport, the watcher, and their defaults from the package root', () => {
-    // The transport and the watcher are root exports in both languages; the
-    // base-URI and debounce defaults are TypeScript-only root exports.
-    expect(typeof packageIndex.FDv2SkillStore).toBe('function');
-    expect(typeof packageIndex.watchSkills).toBe('function');
-    expect(typeof packageIndex.SkillWatcher).toBe('function');
-    expect(packageIndex.DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
-    expect(packageIndex.DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
-    expect(packageIndex.DEFAULT_DEBOUNCE_MS).toBe(500);
+  it('exports the delivery transport, the watcher, and their defaults from the experimental entry point', () => {
+    // The transport and the watcher are experimental exports in both languages;
+    // the base-URI and debounce defaults are TypeScript-only.
+    expect(typeof experimental.FDv2SkillStore).toBe('function');
+    expect(typeof experimental.watchSkills).toBe('function');
+    expect(typeof experimental.SkillWatcher).toBe('function');
+    expect(experimental.DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
+    expect(experimental.DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
+    expect(experimental.DEFAULT_DEBOUNCE_MS).toBe(500);
   });
 
-  it('exports getSkillResult and the outcome factory from the package root', () => {
-    expect(typeof packageIndex.getSkillResult).toBe('function');
-    expect(typeof packageIndex.createSkillOutcome).toBe('function');
+  it('exports getSkillResult and the outcome factory from the experimental entry point', () => {
+    expect(typeof experimental.getSkillResult).toBe('function');
+    expect(typeof experimental.createSkillOutcome).toBe('function');
   });
 
   it('the SkillOutcomeReason union admits exactly the five reason tokens', () => {
@@ -353,10 +447,10 @@ describe('package exports', () => {
     // publishes the same five for the same conditions. Adding a sixth here
     // should force a matching change in the other SDKs, not just a green test.
     //
-    // Named through the package index rather than through types.js: it is the
-    // *root* export that is fixed, and a union reachable only from the
-    // implementation module is not reachable by a supported import.
-    const exhaustive: Record<packageIndex.SkillOutcomeReason, true> = {
+    // Named through the experimental entry point rather than through types.js:
+    // it is the published export that is fixed, and a union reachable only from
+    // the implementation module is not reachable by a supported import.
+    const exhaustive: Record<experimental.SkillOutcomeReason, true> = {
       absent: true,
       integrity_failure: true,
       ok: true,
@@ -707,16 +801,26 @@ describe('InMemorySkillStore', () => {
   });
 });
 
-// ─── Store configuration on the lifecycle layer ────────────────────────
+// ─── Store configuration ───────────────────────────────────────────────
 
 describe('store configuration', () => {
-  it('is configured via initClient options', async () => {
+  it('is configured via setSkillStore', async () => {
     const store = new InMemorySkillStore();
     store.put(rawSkill({ key: 'a' }));
-    await initClient(makeMockLdClient(), { skillStore: store });
+    setSkillStore(store);
 
     const found = await getSkill('a');
     expect(found?.key).toBe('a');
+  });
+
+  it('is not configured by an initClient option', async () => {
+    // Core client options never name an experimental type (§0.3), so a
+    // `skillStore` smuggled into the options bag must not be read.
+    const store = new InMemorySkillStore();
+    store.put(rawSkill({ key: 'a' }));
+    await initClient(makeMockLdClient(), { skillStore: store } as unknown as Parameters<typeof initClient>[1]);
+
+    await expect(getSkill('a')).rejects.toThrow(/skill store/i);
   });
 
   it('getSkill raises actionably when no store is configured', async () => {
@@ -734,8 +838,10 @@ describe('store configuration', () => {
   it('the no-store message says what to configure', async () => {
     // Assert the message content, not just the raise: a bare "not implemented"
     // would otherwise satisfy the test.
-    await expect(getSkill('a')).rejects.toThrow(/skillStore/);
+    await expect(getSkill('a')).rejects.toThrow(/setSkillStore/);
+    await expect(getSkill('a')).rejects.toThrow(/@launchdarkly\/ai-server\/experimental/);
     await expect(getSkill('a')).rejects.toThrow(/InMemorySkillStore/);
+    await expect(getSkill('a')).rejects.not.toThrow(/initClient/);
   });
 
   it('the no-store message names the delivery store first', async () => {
@@ -754,7 +860,8 @@ describe('store configuration', () => {
   it('shutdown clears the store', async () => {
     const store = new InMemorySkillStore();
     store.put(rawSkill({ key: 'a' }));
-    await initClient(makeMockLdClient(), { skillStore: store });
+    await initClient(makeMockLdClient());
+    setSkillStore(store);
     expect(await getSkill('a')).not.toBeNull();
 
     await shutdown();
@@ -762,47 +869,82 @@ describe('store configuration', () => {
     await expect(getSkill('a')).rejects.toThrow(/skill store/i);
   });
 
-  it('applies skillStore on every initClient call, without replacing the client', async () => {
-    // skillStore is applied before the client-singleton
-    // idempotency check on purpose, so a client that was lazily auto-initialized
-    // or initialized without a store can be given one afterwards. Both halves
-    // are asserted on the same pair of calls; each is meaningless alone.
-    //
-    // The second call takes the *options* overload, which is where TypeScript's
-    // early return lives: `initClient(client)` deliberately replaces the
-    // singleton on this side, so a second BYOC call would not prove the store
-    // was applied before an early return.
+  it('shutdown clears a store configured without a client', async () => {
+    setSkillStore(new InMemorySkillStore());
+
+    await shutdown();
+
+    await expect(getSkill('a')).rejects.toThrow(/skill store/i);
+  });
+
+  it('applies on every call, after the client exists, without re-initializing it', async () => {
+    // The setter does not go through initClient, so a lazily initialized
+    // client can be given a store afterwards, and a second call replaces the
+    // first store. Both halves are asserted on the same calls; each is
+    // meaningless alone.
+    process.env.LD_SDK_KEY = 'sdk-test';
+    const sdkClient = makeMockLdClient();
+    mockLdInit.mockReturnValue({ ...sdkClient, waitForInitialization: vi.fn().mockResolvedValue(undefined) });
+
     const first = new InMemorySkillStore();
     first.put(rawSkill({ key: 'first' }));
     const second = new InMemorySkillStore();
     second.put(rawSkill({ key: 'second' }));
 
-    const firstClient = makeMockLdClient();
+    const client = await initClient();
+    setSkillStore(first);
+    expect(await getSkill('first')).not.toBeNull();
+    setSkillStore(second);
 
-    await initClient(firstClient, { skillStore: first });
-    await initClient({ skillStore: second });
-
-    // Half one: the client singleton is unchanged — the second call returned
-    // early without touching it, and never reached the Node SDK path (which
-    // would have thrown for a missing LD_SDK_KEY).
+    // Half one: the client singleton is unchanged and the SDK init ran once.
     const { getClient } = await import('../lifecycle.js');
-    expect(getClient()).toBe(firstClient);
+    expect(getClient()).toBe(client);
+    expect(mockLdInit).toHaveBeenCalledTimes(1);
 
     // Half two: the store was nevertheless swapped.
     expect(await getSkill('second')).not.toBeNull();
     expect(await getSkill('first')).toBeNull();
   });
 
-  it('an initClient call without a store leaves the configured one alone', async () => {
-    // Otherwise a bare initClient() from an unrelated code path — the lazy
-    // auto-init, say — would silently unconfigure skills.
+  it('a nullish argument leaves the configured store alone', async () => {
+    // Otherwise an unrelated code path passing an unset variable would silently
+    // unconfigure skills; only shutdown() clears the store.
     const store = new InMemorySkillStore();
     store.put(rawSkill({ key: 'a' }));
-    await initClient(makeMockLdClient(), { skillStore: store });
+    setSkillStore(store);
 
-    await initClient(makeMockLdClient());
+    setSkillStore(null);
+    setSkillStore(undefined);
 
     expect(await getSkill('a')).not.toBeNull();
+  });
+
+  it('a failure clearing skills state does not fail shutdown', async () => {
+    // Experimental code reached from core through an internal hook must not
+    // break the core call: the error is logged and shutdown carries on.
+    const client = makeMockLdClient();
+    await initClient(client);
+    const key = Symbol.for('@launchdarkly/ai-server:skills');
+    const g = globalThis as Record<symbol, unknown>;
+    const saved = g[key];
+    g[key] = {
+      get store() {
+        return null;
+      },
+      set store(_value: unknown) {
+        throw new Error('clear exploded');
+      },
+      emitter: null,
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(shutdown()).resolves.toBeUndefined();
+      expect(client.close).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Agent Skills'), expect.any(Error));
+    } finally {
+      warn.mockRestore();
+      g[key] = saved;
+    }
   });
 
   it('the test-state reset clears the store and the emitter', async () => {
@@ -1849,7 +1991,10 @@ describe('telemetry seam, accessor half', () => {
     const store = new InMemorySkillStore();
     store.put(rawSkill({ key: 'a' }));
     store.put(rawSkill({ key: 'bad', contentHash: '0'.repeat(64) }));
-    await initClient(mockClient, { skillStore: store });
+    await initClient(mockClient);
+    setSkillStore(store);
+    // initClient itself may report `$ld:ai:sdk:info`; only the accessors are under test.
+    mockClient.track.mockClear();
 
     await getSkill('a');
     await getSkill('bad');
@@ -2054,7 +2199,7 @@ describe('integrity-failure log record', () => {
     // closed sets in one place is what keeps a well-meaning "consistency" fix
     // from collapsing them into one spelling.
     const codes = cases.map(([code]) => code);
-    const outcomes: packageIndex.SkillOutcomeReason[] = [
+    const outcomes: experimental.SkillOutcomeReason[] = [
       'absent',
       'integrity_failure',
       'ok',
@@ -2065,7 +2210,7 @@ describe('integrity-failure log record', () => {
     expect(codes).toContain('version_mismatch');
     expect(codes).not.toContain('wrong_version');
     expect(outcomes).toContain('wrong_version');
-    expect(outcomes).not.toContain('version_mismatch' as packageIndex.SkillOutcomeReason);
+    expect(outcomes).not.toContain('version_mismatch' as experimental.SkillOutcomeReason);
     // Ten codes, five outcomes. The finer vocabulary grew; the public one did not.
     expect(codes).toHaveLength(10);
     expect(outcomes).toHaveLength(5);
@@ -2491,7 +2636,7 @@ describe('getSkillResult', () => {
    * different construction site in `resolveFromStore`, which is what makes the
    * mapping — not just the union — the thing under test.
    */
-  const cases: Array<[packageIndex.SkillOutcomeReason, () => SkillStore, () => Promise<unknown>]> = [
+  const cases: Array<[experimental.SkillOutcomeReason, () => SkillStore, () => Promise<unknown>]> = [
     ['ok', () => storeHolding(rawSkill({ key: 'a' })), () => getSkillResult('a')],
     ['absent', () => new InMemorySkillStore(), () => getSkillResult('a')],
     [
@@ -2702,7 +2847,7 @@ describe('getSkillResult', () => {
 
     expect(fromResult).toBeInstanceOf(Error);
     expect(fromResult.message).toBe(fromGetSkill.message);
-    expect(fromResult.message).toMatch(/skillStore/);
+    expect(fromResult.message).toMatch(/setSkillStore/);
   });
 
   // ── Telemetry and the log record are untouched ───────────────────────

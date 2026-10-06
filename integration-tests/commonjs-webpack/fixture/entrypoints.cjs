@@ -3,6 +3,7 @@
 // Loads every installed package root through `require` and reports what resolved.
 const aiNode = require('@launchdarkly/ai-node');
 const aiServer = require('@launchdarkly/ai-server');
+const aiServerExperimental = require('@launchdarkly/ai-server/experimental');
 const openaiMessages = require('@launchdarkly/ai-openai-messages');
 const langchainMessages = require('@launchdarkly/ai-langchain-messages');
 
@@ -13,6 +14,8 @@ process.stdout.write(
     aiNodeConfig: typeof aiNode.config,
     aiNodeInitClient: typeof aiNode.initClient,
     aiServerConfig: typeof aiServer.config,
+    aiServerExperimentalGetSkill: typeof aiServerExperimental.getSkill,
+    aiServerRootGetSkill: typeof aiServer.getSkill,
     openaiMessages: typeof openaiMessages.openaiMessages,
     langchainMessages: typeof langchainMessages.langchainMessages,
   }),

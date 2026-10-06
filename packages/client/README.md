@@ -233,7 +233,9 @@ if (!result.enabled) {
 
 ---
 
-### Agent Skills
+### Agent Skills (experimental)
+
+> **Experimental.** Agent Skills is published from the `@launchdarkly/ai-server/experimental` entry point and is not exported from the package root. Its names may change in a minor release; any change is listed under **Experimental** in the changelog. Import every name in this section from `@launchdarkly/ai-server/experimental`.
 
 Agent Skills are versioned `SKILL.md` documents managed in LaunchDarkly and attached to AI Config variations by reference. This package tells you which skills a config references, retrieves their content, and writes them to `<root>/<key>/SKILL.md`, where agent runtimes such as the Claude Agent SDK discover them.
 
@@ -246,11 +248,11 @@ import {
   getSkill,
   getSkillResult,
   getSkills,
-  initClient,
   InMemorySkillStore,
+  setSkillStore,
   skillRefs,
   writeSkills,
-} from '@launchdarkly/ai-server';
+} from '@launchdarkly/ai-server/experimental';
 
 // A store serves wire-shaped raw objects. `contentHash` is sha256, lowercase
 // hex, over the verbatim UTF-8 bytes of `content`. Content that does not hash
@@ -264,10 +266,10 @@ store.put({
   contentHash: createHash('sha256').update(Buffer.from(content, 'utf-8')).digest('hex'),
 });
 
-// Configure it as part of ordinary initialization...
-await initClient({ skillStore: store });
-// ...or alongside a pre-initialized client on an edge runtime:
-// await initClient(myEdgeClient, { skillStore: store });
+// Configure it. This is independent of initClient: it can run before or after
+// the client is initialized, on any runtime. A later call replaces the store;
+// a nullish argument is ignored. shutdown() clears it.
+setSkillStore(store);
 
 // Which skills does a resolved config reference? A pure projection — no I/O,
 // and it works before any client exists.
@@ -322,6 +324,7 @@ const report = await writeSkills('*', '.claude/skills', {
 
 | Export | Description |
 |---|---|
+| `setSkillStore(store)` | Set the `SkillStore` the accessors, `writeSkills`, and `watchSkills` read from. Applies on every call; a nullish argument never clears the configured store, and `shutdown()` does. Not an `initClient` option. |
 | `skillRefs(config)` | Project a config's `skills` array into typed `SkillReference[]`. Pure — no client, no store, no telemetry. `[]` when absent. |
 | `getSkill(key, { version? })` | One verified skill. Omit `version` for the newest available. Resolves to `null` when the skill is unavailable; throws only when no store is configured. |
 | `getSkillResult(key, { version? })` | The same retrieval, reporting **why**: resolves to `{ skill, reason, detail }`, where `reason` is `ok` / `absent` / `integrity_failure` / `store_unavailable` / `wrong_version`. Throws only when no store is configured. See [fail closed on tampering](#fail-closed-on-tampering-getskillresult). |
@@ -373,14 +376,14 @@ On macOS and Windows, write permission on the managed root **and its ancestors**
 `InMemorySkillStore` is for tests and bring-your-own-content. In production, skill content arrives through `FDv2SkillStore`, which uses LaunchDarkly's SDK-facing FDv2 delivery channel (the `GET /sdk/poll` and `GET /sdk/stream` endpoints the base SDK's FDv2 data source uses), authenticated with the environment's server-side SDK key.
 
 ```ts
-import { FDv2SkillStore, initClient, watchSkills } from '@launchdarkly/ai-server';
+import { FDv2SkillStore, setSkillStore, watchSkills } from '@launchdarkly/ai-server/experimental';
 
 const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
 if (!(await store.waitForSkills(10_000))) {
   // No payload arrived. Reconciling now would find an empty store; see below.
   console.warn(`skill delivery has not answered yet: ${store.failed ?? 'still waiting'}`);
 }
-await initClient({ skillStore: store });
+setSkillStore(store);
 
 // Materialize now, and re-materialize whenever delivery changes. The report is
 // the initial reconcile's; `onReconcile` sees the delivery-triggered ones.
@@ -499,7 +502,7 @@ These ten tokens are the whole vocabulary. The Python SDK emits the same ten for
 The log record is for operators; `getSkillResult` is for your application. It runs the same retrieval and verification as `getSkill`, but reports which of five outcomes happened instead of collapsing them all to `null`.
 
 ```ts
-import { getSkillResult } from '@launchdarkly/ai-server';
+import { getSkillResult } from '@launchdarkly/ai-server/experimental';
 
 const outcome = await getSkillResult('pdf-extraction', { version: 2 });
 

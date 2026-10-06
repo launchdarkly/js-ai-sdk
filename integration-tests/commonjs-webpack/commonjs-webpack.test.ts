@@ -38,6 +38,9 @@ const RESOLVED_SYMBOLS = {
   aiNodeConfig: 'function',
   aiNodeInitClient: 'function',
   aiServerConfig: 'function',
+  // The experimental subpath resolves, and its names stay off the root.
+  aiServerExperimentalGetSkill: 'function',
+  aiServerRootGetSkill: 'undefined',
   openaiMessages: 'function',
   langchainMessages: 'function',
 };
@@ -129,6 +132,17 @@ describe('CommonJS consumer bundled with Webpack + webpack-node-externals', () =
       expect.arrayContaining(['dist/index.js', 'dist/index.cjs', 'dist/index.d.ts', 'dist/index.d.cts']),
     );
   });
+
+  it('packs the experimental entry point in both runtime and declaration formats for client', () => {
+    expect(packedFiles.get('client')).toEqual(
+      expect.arrayContaining([
+        'dist/experimental.js',
+        'dist/experimental.cjs',
+        'dist/experimental.d.ts',
+        'dist/experimental.d.cts',
+      ]),
+    );
+  });
 });
 
 describe('package manifests', () => {
@@ -142,5 +156,14 @@ describe('package manifests', () => {
     expect(manifest.main).toBe('dist/index.cjs');
     expect(manifest.module).toBe('dist/index.js');
     expect(manifest.types).toBe('dist/index.d.ts');
+  });
+
+  it('client declares the experimental subpath with both conditions', () => {
+    const manifest = JSON.parse(readFileSync(join(repoRoot, 'packages', 'client', 'package.json'), 'utf8'));
+
+    expect(manifest.exports['./experimental']).toEqual({
+      import: { types: './dist/experimental.d.ts', default: './dist/experimental.js' },
+      require: { types: './dist/experimental.d.cts', default: './dist/experimental.cjs' },
+    });
   });
 });
