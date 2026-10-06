@@ -7,8 +7,9 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
-  createHandler,
+  type config,
+  configInternal,
+  createHandlerInternal,
   createRunUsage,
   endSpanOnce,
   type LDContext,
@@ -30,7 +31,6 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
-  withinSdk,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { createAgent } from 'langchain';
@@ -381,14 +381,15 @@ export function createLangChainAgentsHandler(
   options: ContentCaptureOptions = {},
 ): ProviderHandler {
   reportUsage('langchain-agents.createLangChainAgentsHandler');
-  return withinSdk(() => createLangChainAgentsHandlerInternal(llm, options));
+  return createLangChainAgentsHandlerInternal(llm, options);
 }
 
-function createLangChainAgentsHandlerInternal(
+/** `createLangChainAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createLangChainAgentsHandlerInternal(
   llm?: LangChainModelSource,
   { captureContent = false }: ContentCaptureOptions = {},
 ): ProviderHandler {
-  return createHandler(
+  return createHandlerInternal(
     ['*', 'agent'],
     async (
       config: AiConfigRep,
@@ -576,11 +577,9 @@ export const langchainAgents = (
     } = {},
 ) => {
   reportUsage('langchain-agents.langchainAgents');
-  return withinSdk(() =>
-    config({
-      ...options,
-      key: configKey,
-      handler: createLangChainAgentsHandlerInternal(undefined, { captureContent }),
-    }).invoke(userInput, context, variables),
-  );
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createLangChainAgentsHandlerInternal(undefined, { captureContent }),
+  }).invoke(userInput, context, variables);
 };

@@ -6,9 +6,10 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
+  type config,
+  configInternal,
   contentToText,
-  createHandler,
+  createHandlerInternal,
   endSpanOnce,
   type LDContext,
   type Message,
@@ -32,7 +33,6 @@ import {
   type ToolDefinitionInput,
   type ToolHandlerFn,
   toSemconvFinishReason,
-  withinSdk,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
@@ -913,11 +913,14 @@ function buildQueryOptions(
 
 export function createClaudeAgentsHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('claude-agents.createClaudeAgentsHandler');
-  return withinSdk(() => createClaudeAgentsHandlerInternal({ captureContent }));
+  return createClaudeAgentsHandlerInternal({ captureContent });
 }
 
-function createClaudeAgentsHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  return createHandler(
+/** `createClaudeAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createClaudeAgentsHandlerInternal({
+  captureContent = false,
+}: ContentCaptureOptions = {}): ProviderHandler {
+  return createHandlerInternal(
     ['Anthropic', 'agent'],
     async (
       config: AiConfigRep,
@@ -1220,11 +1223,9 @@ export const claudeAgents = (
     } = {},
 ) => {
   reportUsage('claude-agents.claudeAgents');
-  return withinSdk(() =>
-    config({ ...options, key: configKey, handler: createClaudeAgentsHandlerInternal({ captureContent }) }).invoke(
-      userInput,
-      context,
-      variables,
-    ),
-  );
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createClaudeAgentsHandlerInternal({ captureContent }),
+  }).invoke(userInput, context, variables);
 };

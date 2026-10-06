@@ -2,7 +2,7 @@ import {
   type AiConfigRep,
   type ContentCaptureOptions,
   getClient,
-  inspectConfig,
+  inspectConfigInternal,
   type LDContext,
   makeRunTrackData,
   reportUsage,
@@ -13,7 +13,6 @@ import {
   setUsageSpanAttributes,
   type TrackData,
   textMessage,
-  withinSdk,
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { type Experimental_EvaluationModel, type Experimental_EvaluationQuestion, experimental_evaluate } from 'ai';
@@ -21,7 +20,7 @@ import { gatewayModelId } from './model-id.js';
 
 const TRACER_NAME = '@launchdarkly/ai-vercel-messages';
 
-type InspectedMeta = Awaited<ReturnType<typeof inspectConfig>>['meta'];
+type InspectedMeta = Awaited<ReturnType<typeof inspectConfigInternal>>['meta'];
 type EvaluateRequest = Parameters<typeof experimental_evaluate>[0];
 
 export interface VercelEvaluateOptions<
@@ -83,7 +82,7 @@ async function resolveConfig(
   configKey: string,
   context: LDContext,
 ): Promise<{ config: AiConfigRep; meta: InspectedMeta }> {
-  const inspected = await inspectConfig(configKey, context);
+  const inspected = await inspectConfigInternal(configKey, context);
   if (!inspected.enabled) {
     throw new Error(`Variation ${configKey} is not enabled`);
   }
@@ -100,15 +99,6 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
   options: VercelEvaluateOptions<QUESTIONS>,
 ): Promise<VercelEvaluateResult<QUESTIONS>> {
   reportUsage('vercel-messages.vercelEvaluate');
-  return withinSdk(() => vercelEvaluateInternal(configKey, state, context, options));
-}
-
-async function vercelEvaluateInternal<const QUESTIONS extends Record<string, Experimental_EvaluationQuestion>>(
-  configKey: string,
-  state: EvaluateRequest['state'],
-  context: LDContext,
-  options: VercelEvaluateOptions<QUESTIONS>,
-): Promise<VercelEvaluateResult<QUESTIONS>> {
   assertQuestions(options.questions);
   const { config, meta } = await resolveConfig(configKey, context);
   const captureContent = options.captureContent ?? false;

@@ -32,6 +32,16 @@ async function settle(value: Promise<unknown>): Promise<void> {
   }
 }
 
+async function drainSettled(stream: AsyncGenerator<unknown>): Promise<void> {
+  try {
+    for await (const _event of stream) {
+      // Iterating runs the graph walk; a failure after the report still leaves the event.
+    }
+  } catch {
+    // The graph is disabled in this fixture, so iteration throws.
+  }
+}
+
 describe('§3.27 langchain-agents helper usage', () => {
   let client: FakeClient;
 
@@ -62,12 +72,19 @@ describe('§3.27 langchain-agents helper usage', () => {
         return Promise.resolve();
       },
     ],
+    // The returned caller's methods run later; they must not add client.graph.* events.
+    ['langchain-agents.langchainGraph', () => settle(langchainGraph('k', {}).invoke('q', ctx))],
+    ['langchain-agents.langchainGraph', () => drainSettled(langchainGraph('k', {}).stream('q', ctx))],
     [
       'langchain-agents.toLangGraph',
       () => {
         toLangGraph(Promise.resolve({} as never));
         return Promise.resolve();
       },
+    ],
+    [
+      'langchain-agents.toLangGraph',
+      () => settle(toLangGraph(Promise.resolve({ key: 'k', enabled: false } as never)).invoke('q')),
     ],
   ] as Array<[string, () => Promise<void>]>)('%s sends one $ld:ai:sdk:usage event', async (helper, call) => {
     try {

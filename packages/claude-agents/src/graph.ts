@@ -1,5 +1,5 @@
-import { type GraphOptions, graph, reportUsage, withinSdk } from '@launchdarkly/ai-server';
-import { createClaudeAgentsHandler } from './handler.js';
+import { type GraphOptions, graphInternal, reportUsage } from '@launchdarkly/ai-server';
+import { createClaudeAgentsHandlerInternal } from './handler.js';
 
 /**
  * Runs an agent graph with the Claude agent handler pre-bound. Equivalent to
@@ -8,5 +8,5 @@ import { createClaudeAgentsHandler } from './handler.js';
  */
 export const claudeGraph = (key: string, options: Omit<GraphOptions, 'handlers'>) => {
   reportUsage('claude-agents.claudeGraph');
-  return withinSdk(() => graph(key, { ...options, handlers: [createClaudeAgentsHandler()] }));
+  return graphInternal(key, { ...options, handlers: [createClaudeAgentsHandlerInternal()] });
 };

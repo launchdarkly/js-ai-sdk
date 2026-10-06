@@ -24,7 +24,7 @@ const serverMocks = vi.hoisted(() => ({
 
 vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
-  return { ...actual, config: serverMocks.config };
+  return { ...actual, configInternal: serverMocks.config };
 });
 
 const spanMocks = vi.hoisted(() => {

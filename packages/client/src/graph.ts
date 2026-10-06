@@ -602,20 +602,7 @@ export const resolveGraph = async (key: string, options: GraphArgs): Promise<Gra
   return (await buildGraph(key, options.context, resolvedOptions)).def;
 };
 
-/**
- * Creates an agent graph caller bound to a graph flag key. Uses a model-driven
- * router: starts at the root and lets the model choose which outgoing edge to
- * follow at each step, threading each node's output into the next. Stops when
- * the model produces a terminal answer, a leaf is reached, a node is revisited
- * (cycle guard), or the step cap is hit.
- *
- * For framework packages that need to walk the topology and build their own
- * execution structure, use `resolveGraph` instead.
- */
-export const graph = (
-  key: string,
-  options: GraphOptions,
-): {
+type GraphCaller = {
   invoke: (
     input: string | undefined,
     context: LDContext,
@@ -628,7 +615,42 @@ export const graph = (
     variables?: Record<string, unknown>,
     history?: Message[],
   ) => AsyncGenerator<GraphStreamEvent>;
-} => {
+};
+
+/**
+ * Creates an agent graph caller bound to a graph flag key. Uses a model-driven
+ * router: starts at the root and lets the model choose which outgoing edge to
+ * follow at each step, threading each node's output into the next. Stops when
+ * the model produces a terminal answer, a leaf is reached, a node is revisited
+ * (cycle guard), or the step cap is hit.
+ *
+ * For framework packages that need to walk the topology and build their own
+ * execution structure, use `resolveGraph` instead.
+ */
+export const graph = (key: string, options: GraphOptions): GraphCaller => {
+  const inner = graphInternal(key, options);
+  return {
+    invoke: async (input, context, variables, history) => {
+      reportUsage('client.graph.invoke');
+      return inner.invoke(input, context, variables, history);
+    },
+    // Reports at call time, before any iteration; the internal stream binds the conversation id.
+    stream: (input, context, variables, history) => {
+      reportUsage('client.graph.stream');
+      return inner.stream(input, context, variables, history);
+    },
+  };
+};
+
+/**
+ * {@link graph} without the `$ld:ai:sdk:usage` report: the returned `invoke`
+ * and `stream` do not report. Package graph wrappers call this so a wrapper
+ * call reports only the wrapper's own helper.
+ *
+ * @internal Exported for the LaunchDarkly handler packages; applications should
+ * call {@link graph}.
+ */
+export const graphInternal = (key: string, options: GraphOptions): GraphCaller => {
   // Resolution is cached per context reference so multiple invoke()/stream()
   // invocations with the same context do not re-evaluate all node configurations from LD.
   type BuiltGraph = Awaited<ReturnType<typeof buildGraph>>;
@@ -649,7 +671,6 @@ export const graph = (
     variables?: Record<string, unknown>,
     history?: Message[],
   ): Promise<ProviderGraphResponse> => {
-    reportUsage('client.graph.invoke');
     const resolvedOptions: GraphOptions = {
       ...options,
       handlers: resolveHandlers(options.registry, options.handlers),
@@ -667,12 +688,9 @@ export const graph = (
       throw new Error(`Agent graph "${key}" is disabled`);
     }
 
-    // Same walk as stream(), through the internal generator. Calling the public
-    // stream() would also report client.graph.stream.
+    // Same walk as stream(). Events are discarded; the done payload is the blocking result.
     let done: Extract<GraphStreamEvent, { type: 'done' }> | undefined;
-    for await (const event of bindConversationId(
-      streamEvents(input, context, variables, history, otelContext.active()),
-    )) {
+    for await (const event of stream(input, context, variables, history)) {
       if (event.type === 'done') done = event;
     }
     if (!done) {
@@ -694,7 +712,6 @@ export const graph = (
     variables?: Record<string, unknown>,
     history?: Message[],
   ): AsyncGenerator<GraphStreamEvent> {
-    reportUsage('client.graph.stream');
     // The OTel parent is captured here for the same reason the conversation id is: the generator
     // body does not run until the first `next()`, by which point the caller's span scope may have
     // exited, leaving `launchdarkly.graph` a disconnected root in its own trace.

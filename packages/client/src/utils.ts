@@ -47,6 +47,22 @@ export function createHandler(
   captureContent?: boolean,
 ): ProviderHandler {
   reportUsage('client.createHandler');
+  return createHandlerInternal(providesFor, handler, streamHandler, captureContent);
+}
+
+/**
+ * {@link createHandler} without the `$ld:ai:sdk:usage` report. Package
+ * factories call this so a factory call reports only the factory's own helper.
+ *
+ * @internal Exported for the LaunchDarkly handler packages; applications should
+ * call {@link createHandler}.
+ */
+export function createHandlerInternal(
+  providesFor: [string, 'agent' | 'messages'],
+  handler: HandlerInput,
+  streamHandler?: StreamHandlerInput,
+  captureContent?: boolean,
+): ProviderHandler {
   const ph = handler as ProviderHandler;
   ph.providesFor = providesFor;
   if (streamHandler) ph.stream = streamHandler;

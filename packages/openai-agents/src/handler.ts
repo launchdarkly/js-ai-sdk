@@ -4,9 +4,10 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
+  type config,
+  configInternal,
   contentToText,
-  createHandler,
+  createHandlerInternal,
   endSpanOnce,
   imageBlockToUrl,
   type LDContext,
@@ -28,7 +29,6 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
-  withinSdk,
 } from '@launchdarkly/ai-server';
 import type {
   Model,
@@ -573,11 +573,14 @@ function promptToSpanMessages(prompt: string | OpenAIInputItem[]): SpanMessage[]
 
 export function createOpenAIAgentHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('openai-agents.createOpenAIAgentHandler');
-  return withinSdk(() => createOpenAIAgentHandlerInternal({ captureContent }));
+  return createOpenAIAgentHandlerInternal({ captureContent });
 }
 
-function createOpenAIAgentHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  return createHandler(
+/** `createOpenAIAgentHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createOpenAIAgentHandlerInternal({
+  captureContent = false,
+}: ContentCaptureOptions = {}): ProviderHandler {
+  return createHandlerInternal(
     ['OpenAI', 'agent'],
     async (
       config: AiConfigRep,
@@ -763,11 +766,9 @@ export const openaiAgents = (
     } = {},
 ) => {
   reportUsage('openai-agents.openaiAgents');
-  return withinSdk(() =>
-    config({ ...options, key: configKey, handler: createOpenAIAgentHandlerInternal({ captureContent }) }).invoke(
-      userInput,
-      context,
-      variables,
-    ),
-  );
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createOpenAIAgentHandlerInternal({ captureContent }),
+  }).invoke(userInput, context, variables);
 };

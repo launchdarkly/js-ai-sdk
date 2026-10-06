@@ -201,6 +201,15 @@ export const runJudges = async ({
   return judgeResults;
 };
 
+type BuildJudgeTasksArgs = {
+  config: AiConfigRep;
+  userContext: LDContext;
+  handler: ProviderHandler;
+  handlers?: ProviderHandler[];
+  llmResponse: string;
+  baseTrackData: TrackData;
+};
+
 /**
  * Resolves all judges configured on `config.judgeConfiguration` into
  * serialisable {@link JudgeTask} objects without executing any AI calls.
@@ -213,22 +222,25 @@ export const runJudges = async ({
  *   causes them to be skipped are excluded from the array.
  * - Returns an empty array when no active judges are configured.
  */
-export const buildJudgeTasks = async ({
+export const buildJudgeTasks = async (args: BuildJudgeTasksArgs): Promise<JudgeTask[]> => {
+  reportUsage('client.buildJudgeTasks');
+  return buildJudgeTasksInternal(args);
+};
+
+/**
+ * {@link buildJudgeTasks} without the `$ld:ai:sdk:usage` report. `config().invoke`
+ * with `skipJudges` calls this.
+ *
+ * @internal
+ */
+export const buildJudgeTasksInternal = async ({
   config,
   userContext,
   handler,
   handlers,
   llmResponse,
   baseTrackData,
-}: {
-  config: AiConfigRep;
-  userContext: LDContext;
-  handler: ProviderHandler;
-  handlers?: ProviderHandler[];
-  llmResponse: string;
-  baseTrackData: TrackData;
-}): Promise<JudgeTask[]> => {
-  reportUsage('client.buildJudgeTasks');
+}: BuildJudgeTasksArgs): Promise<JudgeTask[]> => {
   const judges = config.judgeConfiguration?.judges ?? [];
   const hasActiveJudge = judges.some((j: { samplingRate: number }) => j.samplingRate > 0);
   if (judges.length === 0 || !hasActiveJudge) return [];

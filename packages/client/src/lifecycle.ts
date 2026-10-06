@@ -312,6 +312,17 @@ export type InspectConfigResult = {
  */
 export async function inspectConfig(key: string, context: LDContext): Promise<InspectConfigResult> {
   reportUsage('client.inspectConfig');
+  return inspectConfigInternal(key, context);
+}
+
+/**
+ * {@link inspectConfig} without the `$ld:ai:sdk:usage` report. `vercelEvaluate`
+ * calls this so it reports only its own helper.
+ *
+ * @internal Exported for the LaunchDarkly handler packages; applications should
+ * call {@link inspectConfig}.
+ */
+export async function inspectConfigInternal(key: string, context: LDContext): Promise<InspectConfigResult> {
   try {
     await initClient();
     const variation = await getClient().variation(key, context, { enabled: false });

@@ -94,8 +94,8 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
     ...actual,
-    config: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
-    graph: mockGraph,
+    configInternal: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
+    graphInternal: mockGraph,
   };
 });
 
@@ -500,7 +500,7 @@ describe('createOpenAIAgentHandler', () => {
 
   it('openaiAgents calls config() with the correct handler and passes userInput + context', async () => {
     const { openaiAgents } = await import('../handler.js');
-    const { config } = await import('@launchdarkly/ai-server');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
     const mockInvoke = vi.fn().mockResolvedValue({ response: 'ok', usage: {} });
     (config as any).mockReturnValue({ invoke: mockInvoke });
     const ctx = { kind: 'user' as const, key: 'u' };

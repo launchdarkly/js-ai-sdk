@@ -3,9 +3,10 @@ import {
   type CanonicalTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
+  type config,
+  configInternal,
   contentToText,
-  createHandler,
+  createHandlerInternal,
   createRunUsage,
   endSpanOnce,
   imageBlockToUrl,
@@ -26,7 +27,6 @@ import {
   setUsageSpanAttributes,
   type Tool,
   type ToolDefinitionInput,
-  withinSdk,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
@@ -344,7 +344,7 @@ const toToolDefinitions = (tools: FunctionTool[]): ToolDefinitionInput[] =>
 
 export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('openai-messages.createOpenAIHandler');
-  return withinSdk(() => createOpenAIHandlerInternal({ captureContent }));
+  return createOpenAIHandlerInternal({ captureContent });
 }
 
 function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
@@ -352,7 +352,7 @@ function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureO
 
   const MAX_STEPS = 10;
 
-  return createHandler(
+  return createHandlerInternal(
     ['OpenAI', 'messages'],
     async (
       config: AiConfigRep,
@@ -659,11 +659,9 @@ export const openaiMessages = (
     } = {},
 ) => {
   reportUsage('openai-messages.openaiMessages');
-  return withinSdk(() =>
-    config({ ...options, key: configKey, handler: createOpenAIHandlerInternal({ captureContent }) }).invoke(
-      userInput,
-      context,
-      variables,
-    ),
-  );
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createOpenAIHandlerInternal({ captureContent }),
+  }).invoke(userInput, context, variables);
 };

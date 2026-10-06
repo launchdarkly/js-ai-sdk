@@ -1,5 +1,5 @@
-import { type GraphOptions, graph, reportUsage, withinSdk } from '@launchdarkly/ai-server';
-import { createOpenAIAgentHandler } from './handler.js';
+import { type GraphOptions, graphInternal, reportUsage } from '@launchdarkly/ai-server';
+import { createOpenAIAgentHandlerInternal } from './handler.js';
 
 /**
  * Runs an agent graph with the OpenAI agent handler pre-bound. Equivalent to
@@ -8,5 +8,5 @@ import { createOpenAIAgentHandler } from './handler.js';
  */
 export const openaiGraph = (key: string, options: Omit<GraphOptions, 'handlers'>) => {
   reportUsage('openai-agents.openaiGraph');
-  return withinSdk(() => graph(key, { ...options, handlers: [createOpenAIAgentHandler()] }));
+  return graphInternal(key, { ...options, handlers: [createOpenAIAgentHandlerInternal()] });
 };

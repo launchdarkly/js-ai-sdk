@@ -5,8 +5,9 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
-  createHandler,
+  type config,
+  configInternal,
+  createHandlerInternal,
   endSpanOnce,
   isContentBlocks,
   type LDContext,
@@ -27,7 +28,6 @@ import {
   type Tool,
   type ToolDefinitionInput,
   toSemconvFinishReason,
-  withinSdk,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 
@@ -344,7 +344,7 @@ const MAX_STEPS = 10;
 
 export function createClaudeMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('claude-messages.createClaudeMessagesHandler');
-  return withinSdk(() => createClaudeMessagesHandlerInternal({ captureContent }));
+  return createClaudeMessagesHandlerInternal({ captureContent });
 }
 
 function createClaudeMessagesHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
@@ -447,7 +447,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
     return { output, usage };
   }
 
-  return createHandler(
+  return createHandlerInternal(
     ['Anthropic', 'messages'],
     async (
       config: AiConfigRep,
@@ -660,11 +660,9 @@ export const claudeMessages = (
     } = {},
 ) => {
   reportUsage('claude-messages.claudeMessages');
-  return withinSdk(() =>
-    config({ ...options, key: configKey, handler: createClaudeMessagesHandlerInternal({ captureContent }) }).invoke(
-      userInput,
-      context,
-      variables,
-    ),
-  );
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createClaudeMessagesHandlerInternal({ captureContent }),
+  }).invoke(userInput, context, variables);
 };

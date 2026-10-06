@@ -5,8 +5,9 @@ import {
   type CanonicalTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
-  createHandler,
+  type config,
+  configInternal,
+  createHandlerInternal,
   createRunUsage,
   endSpanOnce,
   imageBlockToUrl,
@@ -32,7 +33,6 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
-  withinSdk,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 
@@ -327,7 +327,7 @@ export function createLangChainHandler(
   options: ContentCaptureOptions = {},
 ): ProviderHandler {
   reportUsage('langchain-messages.createLangChainHandler');
-  return withinSdk(() => createLangChainHandlerInternal(llm, options));
+  return createLangChainHandlerInternal(llm, options);
 }
 
 function createLangChainHandlerInternal(
@@ -336,7 +336,7 @@ function createLangChainHandlerInternal(
 ): ProviderHandler {
   const MAX_STEPS = 10;
 
-  return createHandler(
+  return createHandlerInternal(
     ['*', 'messages'],
     async (
       config: AiConfigRep,
@@ -752,11 +752,9 @@ export const langchainMessages = (
     } = {},
 ) => {
   reportUsage('langchain-messages.langchainMessages');
-  return withinSdk(() =>
-    config({
-      ...options,
-      key: configKey,
-      handler: createLangChainHandlerInternal(undefined, { captureContent }),
-    }).invoke(userInput, context, variables),
-  );
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createLangChainHandlerInternal(undefined, { captureContent }),
+  }).invoke(userInput, context, variables);
 };

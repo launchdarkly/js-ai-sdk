@@ -4,8 +4,9 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
-  createHandler,
+  type config,
+  configInternal,
+  createHandlerInternal,
   type LDContext,
   type Message,
   type MessageContent,
@@ -23,7 +24,6 @@ import {
   type ToolDefinitionInput,
   type ToolHandlerFn,
   textMessage,
-  withinSdk,
 } from '@launchdarkly/ai-server';
 import { context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import {
@@ -286,12 +286,13 @@ async function buildAgent(
 
 export function createVercelAgentsHandler(options: VercelAgentsOptions = {}): ProviderHandler {
   reportUsage('vercel-agents.createVercelAgentsHandler');
-  return withinSdk(() => createVercelAgentsHandlerInternal(options));
+  return createVercelAgentsHandlerInternal(options);
 }
 
-function createVercelAgentsHandlerInternal(options: VercelAgentsOptions = {}): ProviderHandler {
+/** `createVercelAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createVercelAgentsHandlerInternal(options: VercelAgentsOptions = {}): ProviderHandler {
   const { captureContent = false } = options;
-  return createHandler(
+  return createHandlerInternal(
     ['*', 'agent'],
     async (configRep, userInput = '', toolHandlers = {}, variables = {}, history) =>
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (rootSpan) => {
@@ -417,11 +418,9 @@ export const vercelAgents = (
     VercelAgentsOptions & { variables?: Record<string, unknown> } = {},
 ) => {
   reportUsage('vercel-agents.vercelAgents');
-  return withinSdk(() =>
-    config({
-      ...options,
-      key: configKey,
-      handler: createVercelAgentsHandlerInternal({ captureContent, model, modelFactory }),
-    }).invoke(userInput, context, variables),
-  );
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createVercelAgentsHandlerInternal({ captureContent, model, modelFactory }),
+  }).invoke(userInput, context, variables);
 };
