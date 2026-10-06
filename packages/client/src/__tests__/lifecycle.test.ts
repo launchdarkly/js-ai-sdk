@@ -401,6 +401,76 @@ describe('lifecycle', () => {
       // Second call must be a no-op (not throw "client not initialized").
       await expect(shutdown()).resolves.toBeUndefined();
     });
+
+    describe('shutdown hooks', () => {
+      const hooksKey = Symbol.for('@launchdarkly/ai-server:shutdown-hooks');
+      const hooks = () => (globalThis as any)[hooksKey] as Map<string, () => void> | undefined;
+
+      afterEach(() => {
+        hooks()?.delete('test: throws');
+        hooks()?.delete('test: records');
+      });
+
+      it('runs every registered hook, even before a client exists', async () => {
+        const { registerShutdownHook } = await import('../shutdown-hooks.js');
+        const hook = vi.fn();
+        registerShutdownHook('test: records', hook);
+
+        const { shutdown } = await import('../lifecycle.js');
+        await shutdown();
+
+        expect(hook).toHaveBeenCalledOnce();
+      });
+
+      it('a throwing hook is logged and fails neither the other hooks nor client teardown', async () => {
+        // Experimental code reached from core through a hook must not break
+        // the core call.
+        const { registerShutdownHook } = await import('../shutdown-hooks.js');
+        registerShutdownHook('test: throws', () => {
+          throw new Error('clear exploded');
+        });
+        const after = vi.fn();
+        registerShutdownHook('test: records', after);
+        mockLdInit.mockReturnValue(makeMockClient());
+        process.env.LD_SDK_KEY = 'test-key';
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+        try {
+          const { initClient, shutdown } = await import('../lifecycle.js');
+          await initClient();
+          await expect(shutdown()).resolves.toBeUndefined();
+
+          expect(after).toHaveBeenCalledOnce();
+          expect(mockClose).toHaveBeenCalledOnce();
+          expect(warn).toHaveBeenCalledWith(expect.stringContaining('test: throws'), expect.any(Error));
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('re-registering a name replaces the hook rather than adding one', async () => {
+        const { registerShutdownHook } = await import('../shutdown-hooks.js');
+        const first = vi.fn();
+        const second = vi.fn();
+        registerShutdownHook('test: records', first);
+        registerShutdownHook('test: records', second);
+
+        const { shutdown } = await import('../lifecycle.js');
+        await shutdown();
+
+        expect(first).not.toHaveBeenCalled();
+        expect(second).toHaveBeenCalledOnce();
+      });
+
+      it('loading the package root registers no Agent Skills hook', async () => {
+        // The root entry point must not import experimental code. Agent Skills
+        // registers its hook when its core module loads, so the hook's absence
+        // after loading the root shows the root never loaded that module.
+        await import('../index.js');
+
+        expect([...(hooks()?.keys() ?? [])].filter((name) => !name.startsWith('test: '))).toEqual([]);
+      });
+    });
   });
 
   describe('when OTel SDK packages are not installed', () => {

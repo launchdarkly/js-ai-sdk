@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { trace } from '@opentelemetry/api';
 import { ConversationIdSpanProcessor } from './conversation.js';
 import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
-import { _clearState } from './skills.js';
+import { runShutdownHooks } from './shutdown-hooks.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
 import { parseAiConfig } from './types.js';
 
@@ -211,6 +211,21 @@ function isLDClient(value: unknown): value is LDClientInterface {
 }
 
 /**
+ * Warns about an options-bag key `initClient` no longer reads. A JavaScript
+ * caller (or one that cast past the type) would otherwise get no error until a
+ * later accessor reports that nothing was configured.
+ */
+function warnOnRemovedOptions(options: unknown): void {
+  if (typeof options === 'object' && options !== null && 'skillStore' in options) {
+    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; an ignored option must be visible
+    console.warn(
+      '[LaunchDarkly] initClient() ignores the `skillStore` option. Call setSkillStore(store) from ' +
+        '@launchdarkly/ai-server/experimental instead.',
+    );
+  }
+}
+
+/**
  * Initializes the LaunchDarkly client.
  *
  * **Overload 1 — options bag (default Node.js path):**
@@ -237,6 +252,8 @@ export async function initClient(
   clientOptions?: InitBaseClientOptions,
 ): Promise<LDClientInterface> {
   const singleton = getSingleton();
+
+  warnOnRemovedOptions(isLDClient(optionsOrClient) ? clientOptions : optionsOrClient);
 
   if (isLDClient(optionsOrClient)) {
     // Pre-initialized client path (edge / custom runtimes).
@@ -268,23 +285,11 @@ export function getClient(): LDClientInterface {
   return client;
 }
 
-/**
- * Clears experimental feature state (Agent Skills). Experimental code must not
- * break a core call, so a failure here is logged and `shutdown()` carries on.
- */
-function clearExperimentalState(): void {
-  try {
-    _clearState();
-  } catch (err) {
-    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a failed cleanup must be visible
-    console.warn('[LaunchDarkly] Clearing experimental Agent Skills state failed during shutdown; continuing.', err);
-  }
-}
-
 export async function shutdown(): Promise<void> {
   const singleton = getSingleton();
-  // Before the early return: a store can be configured without a client.
-  clearExperimentalState();
+  // Before the early return: experimental state (e.g. an Agent Skills store)
+  // can exist without a client.
+  runShutdownHooks();
   if (!singleton.client) return;
   // Null the singleton before teardown so that any failure mid-flight still
   // leaves the process in a state where a second shutdown() call is a no-op.

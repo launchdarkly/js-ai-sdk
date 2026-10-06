@@ -53,7 +53,7 @@ import {
   setSkillStore,
   skillRefs,
 } from '../skills.js';
-import { allRawObjects, MAX_SKILL_CONTENT_BYTES, requireStore, SKILL_OBJECT_KIND } from '../skills-core.js';
+import { allRawObjects, clearState, MAX_SKILL_CONTENT_BYTES, requireStore, SKILL_OBJECT_KIND } from '../skills-core.js';
 import type { RawSkillObject, Skill, SkillStore } from '../types.js';
 import {
   createReconcileAction,
@@ -818,9 +818,33 @@ describe('store configuration', () => {
     // `skillStore` smuggled into the options bag must not be read.
     const store = new InMemorySkillStore();
     store.put(rawSkill({ key: 'a' }));
-    await initClient(makeMockLdClient(), { skillStore: store } as unknown as Parameters<typeof initClient>[1]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await initClient(makeMockLdClient(), { skillStore: store } as unknown as Parameters<typeof initClient>[1]);
+      // The options overload returns early once the client exists, but still warns.
+      await initClient({ skillStore: store } as unknown as Parameters<typeof initClient>[0]);
 
-    await expect(getSkill('a')).rejects.toThrow(/skill store/i);
+      await expect(getSkill('a')).rejects.toThrow(/skill store/i);
+      // ...and says so, rather than leaving the caller to find out from getSkill.
+      expect(warn).toHaveBeenCalledTimes(2);
+      for (const [message] of warn.mock.calls) {
+        expect(message).toMatch(/skillStore/);
+        expect(message).toMatch(/setSkillStore/);
+        expect(message).toMatch(/@launchdarkly\/ai-server\/experimental/);
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('an initClient call without the removed option does not warn', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await initClient(makeMockLdClient(), {});
+      expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/skillStore/));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('getSkill raises actionably when no store is configured', async () => {
@@ -919,32 +943,12 @@ describe('store configuration', () => {
     expect(await getSkill('a')).not.toBeNull();
   });
 
-  it('a failure clearing skills state does not fail shutdown', async () => {
-    // Experimental code reached from core through an internal hook must not
-    // break the core call: the error is logged and shutdown carries on.
-    const client = makeMockLdClient();
-    await initClient(client);
-    const key = Symbol.for('@launchdarkly/ai-server:skills');
-    const g = globalThis as Record<symbol, unknown>;
-    const saved = g[key];
-    g[key] = {
-      get store() {
-        return null;
-      },
-      set store(_value: unknown) {
-        throw new Error('clear exploded');
-      },
-      emitter: null,
-    };
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      await expect(shutdown()).resolves.toBeUndefined();
-      expect(client.close).toHaveBeenCalledTimes(1);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Agent Skills'), expect.any(Error));
-    } finally {
-      warn.mockRestore();
-      g[key] = saved;
-    }
+  it('registers its state cleanup as a shutdown hook', () => {
+    // Core's shutdown() reaches this state only through the hook registry
+    // (lifecycle.test.ts covers the registry's isolation of a throwing hook).
+    const hooks = (globalThis as Record<symbol, unknown>)[Symbol.for('@launchdarkly/ai-server:shutdown-hooks')];
+    expect(hooks).toBeInstanceOf(Map);
+    expect((hooks as Map<string, unknown>).get('experimental Agent Skills')).toBe(clearState);
   });
 
   it('the test-state reset clears the store and the emitter', async () => {

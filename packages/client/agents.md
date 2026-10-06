@@ -30,6 +30,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/types.ts` | All shared TypeScript types — including owned `LDContext`, `LDClientInterface`, `LDClientInterface` — plus the Agent Skills value types, their freezing factories, and `parseAiConfig`'s validators |
 | `src/utils.ts` | `parseTemplate`, `parseJSONWithPossibleFences`, `createHandler` |
 | `src/registry.ts` | `Registry`, `globalRegistry`, `compose` |
+| `src/shutdown-hooks.ts` | The cleanup hooks `shutdown()` runs — how core clears experimental state without importing it |
 | `src/skills-core.ts` | Agent Skills internals shared by the two layers above it: the store and telemetry seams, module state, integrity verification, store resolution |
 | `src/skills.ts` | `skillRefs`, the content accessors, `InMemorySkillStore`, and the documented test-injection hooks |
 | `src/skills-fdv2.ts` | Agent Skills delivery transport — the FDv2 protocol, the wire-key/`version` translation, the held object set, and `FDv2SkillStore`. Sits **below** the store seam; imports `skills-core` only, and nothing imports it |
@@ -241,8 +242,8 @@ export {
 ## Experimental Exports (`src/experimental.ts`)
 
 Published as `@launchdarkly/ai-server/experimental` (a subpath in `package.json` `exports`, built
-alongside the root by `tsup.config.ts`). Names here may change in a minor release, with a changelog
-entry under **Experimental**, and are **absent from the package root**. Generated from
+alongside the root by `tsup.config.ts`). Names here may change in a minor release and are **absent
+from the package root**. `@launchdarkly/ai-node/experimental` re-exports this entry point. Generated from
 `src/experimental.ts` the same way as the block above.
 
 ```ts
@@ -283,14 +284,19 @@ The stage rules (shared spec §0.3), which every change here must keep:
   `SkillReference[]`, and the store is set with `setSkillStore`, not an `initClient` option.
   Experimental code may import core freely.
 - **Core reaches experimental only through an internal hook**, and a failure there is caught and
-  logged, never thrown into the core call. Today the one hook is `shutdown()` → `skills._clearState`.
+  logged, never thrown into the core call. Core never imports an experimental module: an experimental
+  module registers its cleanup with `registerShutdownHook` (`src/shutdown-hooks.ts`) when it loads,
+  and `shutdown()` runs whatever is registered. Today the one hook is Agent Skills', registered by
+  `skills-core.ts`. A test asserts that loading the root registers no Agent Skills hook.
 - **Both entry points are in the API report.** `etc/ai-server.api.md` (root) and
-  `etc/ai-server-experimental.api.md` are checked in; CI runs `yarn api:check`. After an intended
-  surface change run `yarn api:update` in this package and commit both reports.
+  `etc/ai-server-experimental.api.md` are checked in; CI runs
+  `yarn workspace @launchdarkly/ai-server api:check`. After an intended surface change run
+  `yarn workspace @launchdarkly/ai-server api:update` (or `yarn api:update` from this directory) and
+  commit both reports.
 - **Promotion to core** adds root exports and keeps these as `/** @deprecated use the root export */`
   re-exports until the next major.
 
-When adding a new export, add it here. Handler packages must never import from sub-paths (e.g. `@launchdarkly/ai-server/dist/client`).
+When adding a new export, add it here. Handler packages must never deep-import build paths (e.g. `@launchdarkly/ai-server/dist/client`). The only sub-path anyone may import is the published `@launchdarkly/ai-server/experimental`, and a handler package does so only for an experimental feature it integrates with; everything else comes from the package root.
 
 `MAX_SKILL_CONTENT_BYTES` and `SKILL_OBJECT_KIND` are deliberately **not** exported; both stay internal to `skills-core.ts`, and an absence assertion enforces it. Do not re-export either from `index.ts` or `experimental.ts`:
 
@@ -463,7 +469,7 @@ When `enabled` is `false`, `config` is always `null`. When `enabled` is `true` b
 - **Lazy initialization.** Importing the package does not initialize the LD client. The first API call that needs LaunchDarkly (`extractVariation`, graph resolution, etc.) calls `initClient()` internally, provided `LD_SDK_KEY` is set.
 - **Explicit initialization — Node SDK path.** `initClient(options?)` dynamically imports `@launchdarkly/node-server-sdk` at runtime (optional peer dep). If the package is not installed it throws with a clear message.
 - **Explicit initialization — BYOC path.** `initClient(client, options?)` accepts any pre-initialized object that satisfies `LDClientInterface` — this is the path for Vercel, Cloudflare, or other edge runtimes whose SDK has different init semantics. No `@launchdarkly/node-server-sdk` is required. The optional second argument is the same options bag as the other overload, passed whole to telemetry setup (`otlpEndpoint`, `serviceName` and `environment` mean the same thing).
-- **Options are ignored once the client singleton exists.** The skill store is not an option: `setSkillStore(store)` (experimental entry point) sets it independently of `initClient`, on every call, so a client that initialized lazily can be given one later. A nullish argument never clears a configured store; only `shutdown()` does, and it clears skills state unconditionally, before its own early return, because that state can exist without a client. A throw from that clearing is logged and does not fail `shutdown()`.
+- **Options are ignored once the client singleton exists.** The skill store is not an option: `setSkillStore(store)` (experimental entry point) sets it independently of `initClient`, on every call, so a client that initialized lazily can be given one later. A nullish argument never clears a configured store; only `shutdown()` does, and it clears skills state unconditionally, before its own early return, because that state can exist without a client. A throw from that clearing is logged and does not fail `shutdown()`. A `skillStore` key passed to `initClient` is ignored with a warning that names `setSkillStore`.
 - **Return value.** `initClient()` returns `Promise<LDClientInterface>`. Callers that don't need the instance may discard the return value — this is a non-breaking change from the previous `Promise<void>` signature.
 - `getClient()` throws if `initClient()` has not resolved — any code that calls `getClient()` directly must ensure initialization has occurred.
 - `shutdown()` must be called before process exit. It flushes OTel spans, flushes LD events, and closes the LD client. `client.close()` runs even when `flush()` throws.
@@ -584,7 +590,7 @@ Two decisions here look like unfinished work and are not. Do not reverse either 
 
 1. Implement the function/type in the appropriate `src/*.ts` file.
 2. Add a named export to `src/index.ts` — or to `src/experimental.ts` if the feature is experimental.
-3. Rebuild: `yarn build` from this directory, then `yarn api:update` and commit the changed `etc/*.api.md` report.
+3. Rebuild: `yarn build` from this directory, then `yarn api:update` (from this directory) and commit the changed `etc/*.api.md` report.
 4. All handler packages pick up the change automatically via the local `file:../client` dependency.
 
 ## Invariants to Preserve

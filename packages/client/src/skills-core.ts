@@ -11,6 +11,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { registerShutdownHook } from './shutdown-hooks.js';
 import type { RawSkillObject, Skill, SkillOutcomeReason, SkillReference, SkillStore } from './types.js';
 import { createSkill, isValidSkillKey, isValidSkillVersion } from './types.js';
 
@@ -127,12 +128,19 @@ export function setEmitter(emitter: TelemetryEmitter): void {
   state().emitter = emitter;
 }
 
-/** Drops both the store and the emitter. Reached through `skills._clearState`. */
+/**
+ * Drops both the store and the emitter. Reached through `skills._clearState`,
+ * and run by `shutdown()` through the hook registered below.
+ */
 export function clearState(): void {
   const current = state();
   current.store = null;
   current.emitter = null;
 }
+
+// Registered on load, so core's `shutdown()` clears this state without
+// importing any Agent Skills module.
+registerShutdownHook('experimental Agent Skills', clearState);
 
 /** The configured store, or `null`. The only reader of the slot. */
 export function getStore(): SkillStore | null {

@@ -37,6 +37,8 @@ const OPTIONAL_DEPS: Record<string, string[]> = {
 const RESOLVED_SYMBOLS = {
   aiNodeConfig: 'function',
   aiNodeInitClient: 'function',
+  aiNodeExperimentalGetSkill: 'function',
+  aiNodeRootGetSkill: 'undefined',
   aiServerConfig: 'function',
   // The experimental subpath resolves, and its names stay off the root.
   aiServerExperimentalGetSkill: 'function',
@@ -133,8 +135,11 @@ describe('CommonJS consumer bundled with Webpack + webpack-node-externals', () =
     );
   });
 
-  it('packs the experimental entry point in both runtime and declaration formats for client', () => {
-    expect(packedFiles.get('client')).toEqual(
+  it.each([
+    'client',
+    'ai-node',
+  ])('packs the experimental entry point in both runtime and declaration formats for %s', (workspace) => {
+    expect(packedFiles.get(workspace)).toEqual(
       expect.arrayContaining([
         'dist/experimental.js',
         'dist/experimental.cjs',
@@ -158,8 +163,8 @@ describe('package manifests', () => {
     expect(manifest.types).toBe('dist/index.d.ts');
   });
 
-  it('client declares the experimental subpath with both conditions', () => {
-    const manifest = JSON.parse(readFileSync(join(repoRoot, 'packages', 'client', 'package.json'), 'utf8'));
+  it.each(['client', 'ai-node'])('%s declares the experimental subpath with both conditions', (pkg) => {
+    const manifest = JSON.parse(readFileSync(join(repoRoot, 'packages', pkg, 'package.json'), 'utf8'));
 
     expect(manifest.exports['./experimental']).toEqual({
       import: { types: './dist/experimental.d.ts', default: './dist/experimental.js' },

@@ -235,7 +235,7 @@ if (!result.enabled) {
 
 ### Agent Skills (experimental)
 
-> **Experimental.** Agent Skills is published from the `@launchdarkly/ai-server/experimental` entry point and is not exported from the package root. Its names may change in a minor release; any change is listed under **Experimental** in the changelog. Import every name in this section from `@launchdarkly/ai-server/experimental`.
+> **Experimental.** Agent Skills is published from the `@launchdarkly/ai-server/experimental` entry point and is not exported from the package root. Its names may change in a minor release, so pin the version you test against and read the changelog before upgrading. Import every name in this section from `@launchdarkly/ai-server/experimental` (or `@launchdarkly/ai-node/experimental` if you install `@launchdarkly/ai-node`).
 
 Agent Skills are versioned `SKILL.md` documents managed in LaunchDarkly and attached to AI Config variations by reference. This package tells you which skills a config references, retrieves their content, and writes them to `<root>/<key>/SKILL.md`, where agent runtimes such as the Claude Agent SDK discover them.
 
