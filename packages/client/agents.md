@@ -74,7 +74,7 @@ The `3` after the delimiter is what a `{key, version}` reference pins; it become
 
 **HTTP 422 is fatal.** Delivery answers 422 when a connection's declared kinds exclude every payload assigned to it, and chose a non-400 4xx because LD SDKs treat those as terminal. `classifyStatus` returns a `FatalTransportError` and the normal give-up path runs: `failed` and `lastError` are set, `waitForSkills` resolves `false` at once, and `connectionFailures` is left untouched (it counts consecutive *recoverable* failures, and a fatal never retries).
 
-**Polling and streaming have different default hosts.** `GET /sdk/poll` uses `DEFAULT_BASE_URI` (`sdk.launchdarkly.com`) and `GET /sdk/stream` uses `DEFAULT_STREAM_URI` (`stream.launchdarkly.com`), as in the base server-side SDK. The fake endpoint serves both from one origin, so tests cannot catch a stream request sent to the polling host. A lone `baseUri` applies to both, since a relay or private instance usually serves both from one host; `streamUri` overrides the stream origin on its own.
+**Polling and streaming have different default hosts.** `GET /sdk/poll` uses `SKILLS_DEFAULT_BASE_URI` (`sdk.launchdarkly.com`) and `GET /sdk/stream` uses `SKILLS_DEFAULT_STREAM_URI` (`stream.launchdarkly.com`), as in the base server-side SDK. The fake endpoint serves both from one origin, so tests cannot catch a stream request sent to the polling host. A lone `baseUri` applies to both, since a relay or private instance usually serves both from one host; `streamUri` overrides the stream origin on its own.
 
 **Changes commit at `payload-transferred`, not as objects arrive.** A payload version is the unit of consistency. A half-applied full transfer would publish a state the server never described and briefly empty the store, which with pruning on deletes skill files. An interrupted transfer keeps last known good. Listeners fire once per changed object, all at `payload-transferred` — which is why `watchSkills` debounces.
 
@@ -257,11 +257,11 @@ export {
   skillRefs,
 } from './skills.js';
 export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills-fdv2.js';
-export { DEFAULT_BASE_URI, DEFAULT_STREAM_URI, FDv2SkillStore } from './skills-fdv2.js';
+export { FDv2SkillStore, SKILLS_DEFAULT_BASE_URI, SKILLS_DEFAULT_STREAM_URI } from './skills-fdv2.js';
 export type { WriteSkillsOptions } from './skills-fs.js';
 export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
 export type { WatchSkillsOptions } from './skills-watch.js';
-export { DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
+export { SKILLS_DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
 export type {
   OnUnavailable,
   RawSkillObject,

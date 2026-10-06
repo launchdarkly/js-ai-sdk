@@ -30,15 +30,6 @@ export function createSkillReference(init: {
     version: number;
 }): SkillReference;
 
-// @public
-export const DEFAULT_BASE_URI = "https://sdk.launchdarkly.com";
-
-// @public
-export const DEFAULT_DEBOUNCE_MS = 500;
-
-// @public
-export const DEFAULT_STREAM_URI = "https://stream.launchdarkly.com";
-
 // @public (undocumented)
 export type FDv2Mode = 'stream' | 'poll';
 
@@ -170,6 +161,15 @@ export type SkillReference = {
 //
 // @public
 export function skillRefs(config: AiConfigRep | null | undefined): SkillReference[];
+
+// @public
+export const SKILLS_DEFAULT_BASE_URI = "https://sdk.launchdarkly.com";
+
+// @public
+export const SKILLS_DEFAULT_DEBOUNCE_MS = 500;
+
+// @public
+export const SKILLS_DEFAULT_STREAM_URI = "https://stream.launchdarkly.com";
 
 // @public
 export type SkillStore = {

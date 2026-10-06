@@ -19,13 +19,13 @@ import type { ReconcileReport, Skill, SkillReference, SkillStore } from './types
  * Default debounce, in milliseconds: how long to wait after a change before
  * reconciling, so a payload of many skills triggers one reconcile, not one each.
  */
-export const DEFAULT_DEBOUNCE_MS = 500;
+export const SKILLS_DEFAULT_DEBOUNCE_MS = 500;
 
 /** Options for {@link watchSkills}: every {@link WriteSkillsOptions} field, plus these. */
 export type WatchSkillsOptions = WriteSkillsOptions & {
   /**
    * Milliseconds to wait after a change before reconciling. Must be a
-   * non-negative finite number. Default {@link DEFAULT_DEBOUNCE_MS}.
+   * non-negative finite number. Default {@link SKILLS_DEFAULT_DEBOUNCE_MS}.
    */
   debounceMs?: number;
   /**
@@ -215,7 +215,7 @@ export async function watchSkills(
   }
 
   // A bare `< 0` check misses `NaN`, which `setTimeout` treats as ~0 (no debouncing).
-  const { debounceMs = DEFAULT_DEBOUNCE_MS, onReconcile, ...writeOptions } = options;
+  const { debounceMs = SKILLS_DEFAULT_DEBOUNCE_MS, onReconcile, ...writeOptions } = options;
   if (typeof debounceMs !== 'number' || !Number.isFinite(debounceMs) || debounceMs < 0) {
     // `String`, because `JSON.stringify(NaN)` is `null`.
     const shown = typeof debounceMs === 'number' ? String(debounceMs) : JSON.stringify(debounceMs);

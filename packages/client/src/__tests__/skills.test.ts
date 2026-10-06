@@ -286,13 +286,13 @@ describe('ReconcileReport ok and errors', () => {
  * the equality below until it is added here on purpose.
  */
 const EXPERIMENTAL_SKILLS_VALUES = [
-  'DEFAULT_BASE_URI',
-  'DEFAULT_DEBOUNCE_MS',
-  'DEFAULT_STREAM_URI',
   'FDv2SkillStore',
   'InMemorySkillStore',
   'MANIFEST_FILENAME',
   'MANIFEST_VERSION',
+  'SKILLS_DEFAULT_BASE_URI',
+  'SKILLS_DEFAULT_DEBOUNCE_MS',
+  'SKILLS_DEFAULT_STREAM_URI',
   'SKILL_FILENAME',
   'SkillWatcher',
   'allSkills',
@@ -496,9 +496,9 @@ describe('package exports', () => {
     expect(typeof experimental.FDv2SkillStore).toBe('function');
     expect(typeof experimental.watchSkills).toBe('function');
     expect(typeof experimental.SkillWatcher).toBe('function');
-    expect(experimental.DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
-    expect(experimental.DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
-    expect(experimental.DEFAULT_DEBOUNCE_MS).toBe(500);
+    expect(experimental.SKILLS_DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
+    expect(experimental.SKILLS_DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
+    expect(experimental.SKILLS_DEFAULT_DEBOUNCE_MS).toBe(500);
   });
 
   it('exports getSkillResult and the outcome factory from the experimental entry point', () => {

@@ -49,13 +49,13 @@ export const FDV2_KEY_DELIMITER = ':';
  * Where `GET /sdk/poll` is served. Override for Federal, private, or relay
  * deployments.
  */
-export const DEFAULT_BASE_URI = 'https://sdk.launchdarkly.com';
+export const SKILLS_DEFAULT_BASE_URI = 'https://sdk.launchdarkly.com';
 
 /**
  * Where `GET /sdk/stream` is served. LaunchDarkly streams from a different host
  * than it polls from; a `baseUri` given without a `streamUri` is used for both.
  */
-export const DEFAULT_STREAM_URI = 'https://stream.launchdarkly.com';
+export const SKILLS_DEFAULT_STREAM_URI = 'https://stream.launchdarkly.com';
 
 export const POLL_PATH = '/sdk/poll';
 export const STREAM_PATH = '/sdk/stream';
@@ -1444,7 +1444,7 @@ export type FDv2SkillStoreOptions = {
    */
   readonly mode?: FDv2Mode;
   /**
-   * Origin for `GET /sdk/poll` (default {@link DEFAULT_BASE_URI}). Given without
+   * Origin for `GET /sdk/poll` (default {@link SKILLS_DEFAULT_BASE_URI}). Given without
    * `streamUri`, it is used for streaming too (relays and private instances).
    *
    * Must be `https://`; `http://` is accepted only for `localhost`, `127.0.0.1`
@@ -1452,7 +1452,7 @@ export type FDv2SkillStoreOptions = {
    */
   readonly baseUri?: string;
   /**
-   * Origin for `GET /sdk/stream` (default {@link DEFAULT_STREAM_URI}, or
+   * Origin for `GET /sdk/stream` (default {@link SKILLS_DEFAULT_STREAM_URI}, or
    * `baseUri` when that is given). Same `https://` rule as `baseUri`.
    */
   readonly streamUri?: string;
@@ -1580,10 +1580,10 @@ export class FDv2SkillStore implements SkillStore {
         `initialBackoffMs (${this.initialBackoffMs}) must not exceed maxBackoffMs (${this.maxBackoffMs})`,
       );
     }
-    const baseUri = requireHttpsUri(options.baseUri ?? DEFAULT_BASE_URI);
+    const baseUri = requireHttpsUri(options.baseUri ?? SKILLS_DEFAULT_BASE_URI);
     // A lone `baseUri` serves both endpoints.
     const streamUri = requireHttpsUri(
-      options.streamUri ?? (options.baseUri === undefined ? DEFAULT_STREAM_URI : baseUri),
+      options.streamUri ?? (options.baseUri === undefined ? SKILLS_DEFAULT_STREAM_URI : baseUri),
       'streamUri',
     );
     this.requester = options.requester ?? new FetchRequester(key, baseUri, readTimeoutMs, streamUri);
