@@ -768,10 +768,9 @@ describe('store configuration', () => {
   });
 
   it('applies skillStore on every initClient call, without replacing the client', async () => {
-    // skillStore is applied on every successful call, including the
-    // client-singleton idempotent early return, on purpose, so a client that was
-    // lazily auto-initialized or initialized without a store can be given one
-    // afterwards. Both halves
+    // skillStore is applied before the client-singleton
+    // idempotency check on purpose, so a client that was lazily auto-initialized
+    // or initialized without a store can be given one afterwards. Both halves
     // are asserted on the same pair of calls; each is meaningless alone.
     //
     // The second call takes the *options* overload, so it cannot reach the
@@ -796,19 +795,6 @@ describe('store configuration', () => {
     // Half two: the store was nevertheless swapped.
     expect(await getSkill('second')).not.toBeNull();
     expect(await getSkill('first')).toBeNull();
-  });
-
-  it('a failed initClient leaves no store configured', async () => {
-    // A rejecting initClient must not leave global state behind. Installing the
-    // store before the SDK-key check would leave the accessors working against
-    // a store the application believes was never installed, masking a failed
-    // initialization.
-    const store = new InMemorySkillStore();
-    store.put(rawSkill({ key: 'a' }));
-
-    await expect(initClient({ skillStore: store })).rejects.toThrow(/LD_SDK_KEY/);
-
-    await expect(getSkill('a')).rejects.toThrow(/skill store/i);
   });
 
   it('an initClient call without a store leaves the configured one alone', async () => {

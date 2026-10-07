@@ -335,26 +335,20 @@ function isLDClient(value: unknown): value is LDClientInterface {
  * `@launchdarkly/vercel-server-sdk`) to bypass the Node SDK entirely. The
  * optional second argument is the same options bag as the first overload.
  *
- * Idempotent for the client singleton: a second call returns the existing
- * client and every other option is ignored — with one deliberate exception.
- * **`skillStore` is applied on every successful call**, including one that
- * returns the existing client, so a client that was lazily auto-initialized, or
- * initialized without a store, can be given one afterwards with
- * `initClient({ skillStore: store })`. A nullish `skillStore` never clears a
- * configured store; `shutdown()` does that. Without a store, the Agent Skills
- * accessors throw.
+ * Idempotent: later calls return the existing client and ignore every option
+ * **except** `skillStore`, which is applied on every call, so you can add a store
+ * after initialization with `initClient({ skillStore: store })`. A nullish store
+ * never clears the current one (use `shutdown()`). Without a store, the Agent
+ * Skills accessors throw.
  *
  * That idempotency covers overload 2 too: once a client is set, passing a
  * *different* pre-initialized client does not swap it, and the second call's
  * telemetry options are ignored rather than re-running telemetry setup. Call
  * `shutdown()` first to hand the SDK a new client.
  *
- * The store is installed only once initialization has succeeded, so await
- * `initClient` before calling the skill accessors. A call that rejects installs
- * no store and caches neither a client nor the failure: a later call retries
- * initialization (once `LD_SDK_KEY` is available, say) rather than replaying
- * the same rejection, so a failed init cannot leave the skill accessors working
- * against a store the application believes was never installed.
+ * A call that rejects caches neither a client nor the failure: a later call
+ * retries initialization (once `LD_SDK_KEY` is available, say) rather than
+ * replaying the same rejection.
  *
  * A call still in flight when `shutdown()` runs, or when a pre-initialized
  * client is passed meanwhile, is abandoned: it closes the client it built and
@@ -371,30 +365,11 @@ export async function initClient(
   optionsOrClient?: InitBaseClientOptions | LDClientInterface,
   clientOptions?: InitBaseClientOptions,
 ): Promise<LDClientInterface> {
-  const client = await resolveClient(optionsOrClient, clientOptions);
+  const singleton = getSingleton();
 
-  // The single success point: every path that rejects throws before here, so
-  // "installed only on success" is one statement rather than a copy per exit.
-  // Applied on every successful call, including the idempotent early return:
-  // it is what lets a client that was lazily auto-initialized, or initialized
-  // without a store, be given one afterwards. A nullish store never clears a
-  // configured one — `shutdown()` is for that.
+  // Applied on every call, before the idempotency check.
   const skillStore = (isLDClient(optionsOrClient) ? clientOptions : optionsOrClient)?.skillStore;
   if (skillStore != null) _setStore(skillStore);
-  return client;
-}
-
-/**
- * Returns the singleton client, initializing it on first call.
- *
- * Split from `initClient` so that function has exactly one success point to
- * hang the `skillStore` carve-out on.
- */
-async function resolveClient(
-  optionsOrClient?: InitBaseClientOptions | LDClientInterface,
-  clientOptions?: InitBaseClientOptions,
-): Promise<LDClientInterface> {
-  const singleton = getSingleton();
 
   // Ahead of *both* init paths, so "a second call returns the existing client
   // and every other option is ignored" holds for BYOC as well, as it does in
