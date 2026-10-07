@@ -17,6 +17,7 @@ import {
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
 import { buildPrompt, buildQueryPrompt, buildToolMCP, partitionTools } from './handler.js';
+import { buildModelParameterQueryOptions } from './model-parameters.js';
 
 const TOOL_MCP_NAME = 'tool-mcp';
 const SUBAGENT_MCP_NAME = 'subagents';
@@ -112,6 +113,9 @@ const runQuery = async (
   for await (const message of query({
     prompt: queryPrompt,
     options: {
+      // The node's allowlisted model.parameters (maxTurns, thinking, effort, ...), spread first so
+      // every handler-owned option below wins.
+      ...buildModelParameterQueryOptions(node.config.model.parameters),
       model: node.config.model.name,
       tools: nativeToolNames.length > 0 ? nativeToolNames : [],
       allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,

@@ -18,6 +18,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { Agent, handoff, Runner, tool } from '@openai/agents';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
+import { buildMaxTurns, buildModelSettings } from './model-parameters.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -155,9 +156,11 @@ export const toOpenAIAgents = (
           const agentName = sanitizeName(node.key);
           agentNameToKey.set(agentName, node.key);
 
+          const modelSettings = buildModelSettings(node.config.model.parameters);
           const agent = new Agent({
             name: agentName,
             model: node.config.model.name,
+            ...(modelSettings ? { modelSettings } : {}),
             ...(instructions ? { instructions } : {}),
             ...(tools.length > 0 ? { tools } : {}),
             ...(childHandoffs.length > 0 ? { handoffs: childHandoffs } : {}),
@@ -219,8 +222,16 @@ export const toOpenAIAgents = (
         // handoffs and receive their context from the Runner, not from `history`.
         const rootInput = history && history.length > 0 ? toRunnerInput(history, input) : input;
 
+        // One Runner.run drives the whole graph through handoffs, so the turn cap is the root
+        // node's `max_turns`, as in the Python SDK.
+        const maxTurns = buildMaxTurns(root.config.model.parameters);
+
         // biome-ignore lint/suspicious/noExplicitAny: Runner.run accepts string | AgentInputItem[]; our item shape is structurally compatible
-        const result = await runner.run(rootAgent, rootInput as any);
+        const runInput = rootInput as any;
+        const result =
+          maxTurns !== undefined
+            ? await runner.run(rootAgent, runInput, { maxTurns })
+            : await runner.run(rootAgent, runInput);
 
         const finalOutput = String(result.finalOutput ?? '');
         const usage = result.state.usage;

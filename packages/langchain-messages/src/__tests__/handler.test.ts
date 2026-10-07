@@ -74,6 +74,7 @@ import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatBedrockConverse } from '@langchain/aws';
 import { ChatOpenAI } from '@langchain/openai';
 import { createLangChainHandler } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1403,7 +1404,10 @@ describe('model source', () => {
     expect(result.output).toBe('from-instance');
   });
 
-  it('spreads model.parameters into the default OpenAI constructor', async () => {
+  // @langchain/openai's ChatOpenAI constructor only reads camelCase (`maxTokens`), so the
+  // snake_case bag the UI writes is camelized, then narrowed to ChatOpenAI's allowlist: `tools`
+  // is not a constructor field, so it is dropped.
+  it('passes allowlisted model.parameters to the default OpenAI constructor, camelized, and drops the rest', async () => {
     vi.mocked(ChatOpenAI).mockImplementation(function MockChatOpenAI() {
       return makeMockLLM('default-openai') as any;
     });
@@ -1414,10 +1418,40 @@ describe('model source', () => {
     await createLangChainHandler()(cfg as any, 'q');
     expect(ChatOpenAI).toHaveBeenCalledWith({
       temperature: 0.2,
-      max_tokens: 512,
-      tools: ['openai-tool'],
+      maxTokens: 512,
       model: 'gpt-4o',
     });
+  });
+
+  it('camelCase model.parameters keys still pass through unchanged into the default constructor', async () => {
+    vi.mocked(ChatOpenAI).mockImplementation(function MockChatOpenAI() {
+      return makeMockLLM('default-openai') as any;
+    });
+    const cfg = {
+      ...baseConfig,
+      model: { name: 'gpt-4o', parameters: { temperature: 0.2, maxTokens: 512 } },
+    };
+    await createLangChainHandler()(cfg as any, 'q');
+    expect(ChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
+  });
+
+  it.each([
+    ['OpenAI', 'gpt-4o', () => ChatOpenAI],
+    ['Anthropic', 'claude-sonnet-4-5', () => ChatAnthropic],
+    ['Bedrock', 'anthropic.claude-sonnet-4-5', () => ChatBedrockConverse],
+  ] as const)('never passes credentials or connection settings to the default %s constructor', async (provider, name, ctor) => {
+    vi.mocked(ctor()).mockImplementation(function MockChatModel() {
+      return makeMockLLM('default') as any;
+    } as any);
+    const cfg = {
+      ...baseConfig,
+      provider: { name: provider },
+      model: { name, parameters: { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 } },
+    };
+    await createLangChainHandler()(cfg as any, 'q');
+    const args = vi.mocked(ctor()).mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(args.temperature).toBe(0.3);
+    expectNoNeverForwardedValue(args);
   });
 
   it('spreads model.parameters into the default Anthropic constructor', async () => {
