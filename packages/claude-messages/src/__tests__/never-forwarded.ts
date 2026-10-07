@@ -11,7 +11,8 @@ export const NEVER_FORWARDED = 'NEVER_FORWARDED';
  * Keys that must never reach a provider, framework or host-process option from
  * `model.parameters`, in both the snake_case the LaunchDarkly UI writes and the camelCase the
  * frameworks read: credentials, endpoints and connection settings, request injection, remote
- * tools, and Claude Agents host-process settings.
+ * tools, and Claude Agents host-process settings, plus the keys this package's handler does not
+ * forward under the cross-SDK allowlists (ai-sdks-monorepo TESTING.md §1.12).
  */
 export const NEVER_FORWARDED_KEYS = [
   // credentials
@@ -131,6 +132,10 @@ export const NEVER_FORWARDED_KEYS = [
   'abortController',
   'spawn_claude_code_process',
   'spawnClaudeCodeProcess',
+  // not on the cross-SDK Claude Messages list: data location, server-side state, attribution
+  'inference_geo',
+  'container',
+  'metadata',
 ] as const;
 
 /** A `model.parameters` bag that sets every key in `NEVER_FORWARDED_KEYS` to `NEVER_FORWARDED`. */

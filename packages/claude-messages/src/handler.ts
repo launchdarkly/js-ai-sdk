@@ -342,28 +342,28 @@ const buildMessages = (
 };
 
 /**
- * `MessageCreateParamsBase` keys this handler forwards verbatim from `config.model.parameters`
- * (after the `effort` rename below is folded into `output_config`), beyond `max_tokens`, which is
- * handled separately because it carries a default.
+ * `MessageCreateParamsBase` keys this handler forwards from `config.model.parameters` (after the
+ * `effort` rename below is folded into `output_config`), beyond `max_tokens`, which is handled
+ * separately because it carries a default of 1024.
  *
- * The rule for this list: exclude a key only if setting it would BREAK the handler; forward
- * everything else the API accepts, even settings with no obvious generation effect — those are
- * forwarded because a config that sets one still gets a working call.
+ * This is the Claude Messages list in the cross-SDK spec (ai-sdks-monorepo TESTING.md §1.12), the
+ * same list the Python SDK forwards: settings that shape what the model generates, and nothing
+ * else. Adding a key after 1.0 breaks nobody, and removing one does, so a key that does not
+ * clearly shape generation stays off.
  *
  * Handler-owned (this handler sets these itself, from the config and the call shape, so a
  * `model.parameters` value must not be able to override what it already decided): `model`,
  * `messages`, `system`, `tools`, `max_tokens`.
  *
- * Excluded (would break the handler): `stream` — this handler selects streaming by choosing
- * between `messages.create()` and `messages.stream()`, not by setting a field on the request
- * body, so a config value here would fight the method actually invoked rather than configure
- * anything.
+ * Not forwarded:
+ * - `stream`: this handler selects streaming by choosing between `messages.create()` and
+ *   `messages.stream()`, so a config value here would fight the method actually invoked.
+ * - `inference_geo`: decides where data is processed.
+ * - `container`: server-side state.
+ * - `metadata`: identity and attribution, not a generation setting.
  */
 const FORWARDED_MODEL_PARAMETER_KEYS = [
   'cache_control',
-  'container',
-  'inference_geo',
-  'metadata',
   'output_config',
   'service_tier',
   'stop_sequences',
@@ -375,7 +375,7 @@ const FORWARDED_MODEL_PARAMETER_KEYS = [
 ] as const;
 
 type AnthropicHandlerOwnedKeys = 'max_tokens' | 'messages' | 'model' | 'system' | 'tools';
-type AnthropicExcludedKeys = 'stream';
+type AnthropicExcludedKeys = 'container' | 'inference_geo' | 'metadata' | 'stream';
 // If a key of MessageCreateParamsBase is added to the SDK and not classified above as forwarded,
 // handler-owned, or excluded, this type resolves to something other than `never` and the
 // assignment below fails to compile, naming the unclassified key.
@@ -388,21 +388,45 @@ const _anthropicModelParameterKeysExhaustive: Record<AnthropicUndecidedModelPara
   never
 >;
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** An object with a string `type`, the shape `thinking`, `tool_choice` and `cache_control` share. */
+function isTypedObject(value: unknown): boolean {
+  return isPlainObject(value) && typeof value.type === 'string';
+}
+
+/**
+ * Nested values the Messages API reads as objects. A value of the wrong shape (not an object, or
+ * missing the `type` the API requires) is dropped rather than sent, since the API would reject it.
+ */
+const NESTED_SHAPE_CHECKS: Record<string, (value: unknown) => boolean> = {
+  cache_control: isTypedObject,
+  output_config: isPlainObject,
+  thinking: isTypedObject,
+  tool_choice: isTypedObject,
+};
+
 /**
  * Picks the subset of `config.model.parameters` that maps onto `MessageCreateParamsBase`, after
- * moving a top-level `effort` — the shape the LaunchDarkly UI writes — into `output_config.effort`,
+ * moving a top-level `effort` (the shape the LaunchDarkly UI writes) into `output_config.effort`,
  * the shape the Messages API actually accepts. An `output_config.effort` already present in the
  * config wins over the renamed value, since it is what the customer set explicitly for that field.
- * A config that sets nothing here produces `{}`, so the provider call sees exactly what it always
- * has.
+ * Malformed nested values are dropped (see `NESTED_SHAPE_CHECKS`). A config that sets nothing here
+ * produces `{}`, so the provider call sees exactly what it always has.
  */
 function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
   const normalized = normalizeModelParameters(parameters);
   const { effort, output_config, ...rest } = normalized;
   const mergedOutputConfig =
-    effort !== undefined ? { effort, ...(output_config as Record<string, unknown> | undefined) } : output_config;
+    effort !== undefined ? { effort, ...(isPlainObject(output_config) ? output_config : undefined) } : output_config;
   const withEffortMoved = mergedOutputConfig !== undefined ? { ...rest, output_config: mergedOutputConfig } : rest;
-  return pickForwardedModelParameters(withEffortMoved, FORWARDED_MODEL_PARAMETER_KEYS);
+  const picked = pickForwardedModelParameters(withEffortMoved, FORWARDED_MODEL_PARAMETER_KEYS);
+  for (const [key, isWellFormed] of Object.entries(NESTED_SHAPE_CHECKS)) {
+    if (picked[key] !== undefined && !isWellFormed(picked[key])) delete picked[key];
+  }
+  return picked;
 }
 
 const MAX_STEPS = 10;
