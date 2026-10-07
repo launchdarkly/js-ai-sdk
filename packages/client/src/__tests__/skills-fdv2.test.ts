@@ -87,7 +87,12 @@ const hash = (content: string): string => createHash('sha256').update(content, '
 
 // ─── Wire builders — one place that knows the shape ──────────────────────────
 
-type WireEvent = { event: string; data?: unknown };
+/**
+ * One event on the wire. `raw`, when given, is sent as the `data:` field
+ * verbatim instead of `data` serialized, so a test can send data that is not
+ * JSON.
+ */
+type WireEvent = { event: string; data?: unknown; raw?: string };
 
 /**
  * The wire `key` of one skill object: `<key>:<version>`.
@@ -277,7 +282,7 @@ class FakeFDv2Endpoint {
     const payloadEvents = this.streams.shift() ?? [];
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
     const body = payloadEvents
-      .map((event) => `event: ${event.event}\ndata: ${JSON.stringify(event.data ?? null)}\n\n`)
+      .map((event) => `event: ${event.event}\ndata: ${event.raw ?? JSON.stringify(event.data ?? null)}\n\n`)
       .join('');
     if (this.dropStreams) {
       // Kills the socket once the events have been flushed, rather than ending
@@ -1641,6 +1646,25 @@ describe('SSE framing', () => {
     expect(await framed('event: heart-beat\n\n')).toEqual([['heart-beat', null]]);
   });
 
+  it('fails recoverably on an event whose data is not JSON, rather than skipping it', async () => {
+    // Skipping it let the `payload-transferred` after it commit the transfer
+    // without it, and advance the basis past it. A dropped `delete-object` then
+    // left a revoked skill served for as long as the store ran. Failing ends the
+    // connection, so the transfer is abandoned and the reconnect resumes from
+    // the last committed basis. The base SDK's reader does the same.
+    const seen: Array<[string, unknown]> = [];
+    const failure = (async () => {
+      for await (const event of iterSse(
+        sseBody('event: heart-beat\ndata: {"n":1}\n\nevent: delete-object\ndata: {"key":"pdf-extr\n\n'),
+      )) {
+        seen.push(event);
+      }
+    })();
+    await expect(failure).rejects.toBeInstanceOf(RecoverableTransportError);
+    await expect(failure).rejects.toThrow(/'delete-object' event whose data was not JSON/);
+    expect(seen).toEqual([['heart-beat', { n: 1 }]]);
+  });
+
   /**
    * Feeds `iterSse` the same text in reads of a fixed size, so a test can say
    * which quantity the bound is being pushed past. `sseBody` hands the whole
@@ -1776,6 +1800,53 @@ describe('streaming against the endpoint', () => {
         () => store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction') === null && store.diagnostics.objectsRevoked === 1,
       ),
     ).toBe(true);
+  });
+
+  it('abandons a transfer carrying an event whose data is not JSON, and resumes from the last commit', async () => {
+    // Before, the corrupt `delete-object` was skipped and the transfer committed
+    // without it: `c` landed, `a` stayed, and the reconnect asked for changes
+    // since `basis-2`, so the revocation of `a` was never sent again.
+    endpoint.holdStreamOpen = true;
+    const deleteA = JSON.stringify(deleteSkill('a', { objectVersion: 1 }));
+    endpoint.queueStream([
+      ...fullPayload(
+        [
+          ['put-object', putSkill('a', { objectVersion: 1 })],
+          ['put-object', putSkill('b', { objectVersion: 1 })],
+        ],
+        'basis-1',
+      ),
+      ...events(['server-intent', serverIntent('xfer-changes')], ['put-object', putSkill('c', { objectVersion: 1 })]),
+      { event: 'delete-object', raw: deleteA.slice(0, -4) },
+      ...events(['payload-transferred', transferred('basis-2')]),
+    ]);
+    // The clean retransmission the reconnect is answered with.
+    endpoint.queueStream(
+      events(
+        ['server-intent', serverIntent('xfer-changes')],
+        ['put-object', putSkill('c', { objectVersion: 1 })],
+        ['delete-object', deleteSkill('a', { objectVersion: 1 })],
+        ['payload-transferred', transferred('basis-2')],
+      ),
+    );
+    const store = streamStore();
+    const notified: string[] = [];
+    store.addListener(SKILL_OBJECT_KIND, (raw) => {
+      notified.push(`${String(raw.key)}:${String(raw.version)}${raw.content === undefined ? ' revoked' : ''}`);
+    });
+    store.start();
+    expect(
+      await waitUntil(() => endpoint.requests.length >= 2 && store.getObject(SKILL_OBJECT_KIND, 'a') === null),
+    ).toBe(true);
+    // The reconnect carried the basis of the last commit, not the abandoned one.
+    expect(endpoint.requests.map((r) => r.query.basis)).toEqual([undefined, 'basis-1']);
+    // Nothing from the corrupt transfer was committed: `c` reached listeners
+    // once, from the retransmission, not once from each.
+    expect(notified).toEqual(['a:1', 'b:1', 'c:1', 'a:1 revoked']);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'b')).not.toBeNull();
+    expect(store.getObject(SKILL_OBJECT_KIND, 'c')).not.toBeNull();
+    expect(store.failed).toBeNull();
+    expect(logged(warnSpy)).toMatch(/'delete-object' event whose data was not JSON/);
   });
 
   it('reconnects with the basis it reached', async () => {

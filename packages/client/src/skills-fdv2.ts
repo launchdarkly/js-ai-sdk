@@ -1181,7 +1181,8 @@ const OVERSIZED_ADVICE =
  *
  * Minimal: `event:`/`data:` fields, multi-line `data` joined with newlines,
  * blank line dispatches, `:` comments skipped. An event over
- * {@link MAX_RESPONSE_CHARS} throws a fatal error. Only read failures are
+ * {@link MAX_RESPONSE_CHARS} throws a fatal error. An event whose data is not
+ * JSON throws a recoverable one, ending the connection. Only read failures are
  * wrapped; errors thrown by the consumer pass through unchanged.
  */
 export async function* iterSse(
@@ -1201,7 +1202,11 @@ export async function* iterSse(
   const tailOverBound = (): boolean => buffer.length + dataChars > MAX_RESPONSE_CHARS;
 
   // Clears the buffered fields at every block end. A block with no `event:`
-  // field is dropped.
+  // field is dropped. Data that is not JSON ends the connection rather than
+  // being skipped: the `payload-transferred` after it would otherwise commit
+  // the transfer without it and advance the basis past it, so a lost
+  // `delete-object` would never be sent again. The reconnect resumes from the
+  // last committed basis, as the base SDK's `PayloadStreamReader` does.
   const dispatch = (): [string, unknown] | null => {
     const eventName = name;
     const payload = dataLines.join('\n');
@@ -1213,8 +1218,9 @@ export async function* iterSse(
     try {
       return [eventName, JSON.parse(payload)];
     } catch {
-      warn(`Discarding FDv2 '${eventName}' event whose data was not JSON`);
-      return null;
+      throw new RecoverableTransportError(
+        `the FDv2 stream sent a '${eventName}' event whose data was not JSON; the payload in flight was abandoned`,
+      );
     }
   };
 
