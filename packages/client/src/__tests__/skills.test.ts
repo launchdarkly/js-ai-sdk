@@ -576,9 +576,31 @@ describe('skillRefs', () => {
     ]);
   });
 
-  it('returns an empty list for a null or undefined config', () => {
-    expect(skillRefs(null)).toEqual([]);
-    expect(skillRefs(undefined)).toEqual([]);
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['a string', 'doc-agent'],
+    ['a number', 3],
+    ['a boolean', false],
+    ['an array', [{ key: 'pdf-extraction', version: 1 }]],
+  ])('throws for a config that is not an object: %s', (_label, config) => {
+    // `inspectConfig` answers `config: null` on any failure. Read as "no
+    // skills", `writeSkills(skillRefs(info.config), root)` would prune every
+    // skill it manages during an outage, under its default `prune: true`.
+    expect(() => skillRefs(config as never)).toThrow(TypeError);
+    expect(() => skillRefs(config as never)).toThrow(/resolved AI Config/);
+  });
+
+  it('throws for the config a failed inspectConfig returns, so writeSkills never sees an empty list', async () => {
+    const mockClient = makeMockLdClient();
+    mockClient.variation.mockRejectedValue(new Error('LaunchDarkly unreachable'));
+    await initClient(mockClient);
+
+    const { inspectConfig } = await import('../lifecycle.js');
+    const result = await inspectConfig('doc-agent', { kind: 'user', key: 'u1' });
+
+    expect(result.config).toBeNull();
+    expect(() => skillRefs(result.config)).toThrow(TypeError);
   });
 
   it.each([
