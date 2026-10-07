@@ -8,20 +8,34 @@ const mockFlush = vi.fn().mockResolvedValue(undefined);
 const mockClose = vi.fn().mockResolvedValue(undefined);
 const mockWaitForInitialization = vi.fn().mockResolvedValue(undefined);
 const mockLdInit = vi.fn();
+const ldSdk = vi.hoisted(() => ({ installed: true }));
 
 vi.mock('@launchdarkly/node-server-sdk', () => ({
-  init: (...args: any[]) => mockLdInit(...args),
+  // A getter, so a test can make the package look uninstalled to this module
+  // instance: `initBaseClient` destructures `init` inside its import try/catch.
+  get init() {
+    if (!ldSdk.installed) throw new Error('Cannot find module @launchdarkly/node-server-sdk');
+    return (...args: any[]) => mockLdInit(...args);
+  },
 }));
 
 const mockTracerProviderShutdown = vi.fn().mockResolvedValue(undefined);
-const mockTracerProviderRegister = vi.fn();
+const tracerProviders: object[] = [];
 
-vi.mock('@opentelemetry/sdk-trace-node', () => ({
-  NodeTracerProvider: class {
-    register = mockTracerProviderRegister;
-    shutdown = mockTracerProviderShutdown;
-  },
-}));
+// A function declaration, so the tests that make the package look uninstalled
+// can restore this mock afterwards; `vi.doUnmock` would hand every later test
+// the real provider.
+function mockNodeTracerProviderModule() {
+  return {
+    NodeTracerProvider: class {
+      shutdown = mockTracerProviderShutdown;
+      constructor() {
+        tracerProviders.push(this);
+      }
+    },
+  };
+}
+vi.mock('@opentelemetry/sdk-trace-node', mockNodeTracerProviderModule);
 
 vi.mock('@opentelemetry/sdk-trace-base', () => ({
   BatchSpanProcessor: class {},
@@ -46,9 +60,11 @@ vi.mock('@opentelemetry/otlp-exporter-base', () => ({
 }));
 
 const mockContextManagerEnable = vi.fn();
+const mockContextManagerDisable = vi.fn();
 vi.mock('@opentelemetry/context-async-hooks', () => ({
   AsyncLocalStorageContextManager: class {
     enable = mockContextManagerEnable;
+    disable = mockContextManagerDisable;
   },
 }));
 
@@ -58,13 +74,37 @@ vi.mock('@opentelemetry/core', () => ({
   W3CTraceContextPropagator: class {},
 }));
 
+// OTel's process globals, modelled as the real API behaves: each registration is
+// refused while something holds that global, until `disable()` releases it.
+const otel = vi.hoisted(() => {
+  const held: Record<'trace' | 'context' | 'propagation', unknown> = { trace: null, context: null, propagation: null };
+  const api = (name: keyof typeof held) => ({
+    set: vi.fn((value: unknown) => {
+      if (held[name] != null) return false;
+      held[name] = value;
+      return true;
+    }),
+    disable: vi.fn(() => {
+      held[name] = null;
+    }),
+  });
+  return { held, trace: api('trace'), context: api('context'), propagation: api('propagation') };
+});
+
 vi.mock('@opentelemetry/api', () => ({
   createContextKey: (name: string) => Symbol(name),
   trace: {
     getTracerProvider: vi.fn().mockReturnValue({ _delegate: {} }),
+    setGlobalTracerProvider: otel.trace.set,
+    disable: otel.trace.disable,
+  },
+  context: {
+    setGlobalContextManager: otel.context.set,
+    disable: otel.context.disable,
   },
   propagation: {
-    setGlobalPropagator: vi.fn(),
+    setGlobalPropagator: otel.propagation.set,
+    disable: otel.propagation.disable,
   },
 }));
 
@@ -95,9 +135,16 @@ describe('lifecycle', () => {
     resetAiSdkInfo({ clearKnown: true });
     vi.clearAllMocks();
     delete process.env.LD_SDK_KEY;
+    otel.held.trace = otel.held.context = otel.held.propagation = null;
+    tracerProviders.length = 0;
+    ldSdk.installed = true;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // `clearSingleton` bypasses `shutdown()`, so drop the module's provider too:
+    // a later test's setup would otherwise reuse it rather than build its own.
+    const { shutdownTelemetry } = await import('../lifecycle.js');
+    await shutdownTelemetry();
     clearSingleton();
     delete process.env.LD_SDK_KEY;
   });
@@ -212,30 +259,36 @@ describe('lifecycle', () => {
       expect(mockOTLPTraceExporter).toHaveBeenCalledWith(expect.objectContaining({ compression: 'gzip' }));
     });
 
-    it('registers AsyncLocalStorageContextManager via tracerProvider.register', async () => {
-      const mockClient = makeMockClient();
-      mockLdInit.mockReturnValue(mockClient);
+    it('registers the tracer provider as the global one', async () => {
+      mockLdInit.mockReturnValue(makeMockClient());
       process.env.LD_SDK_KEY = 'sdk-test-key';
 
       const { initClient } = await import('../lifecycle.js');
       await initClient();
 
-      expect(mockTracerProviderRegister).toHaveBeenCalledWith(
-        expect.objectContaining({ contextManager: expect.objectContaining({ enable: expect.any(Function) }) }),
-      );
+      expect(tracerProviders).toHaveLength(1);
+      expect(otel.held.trace).toBe(tracerProviders[0]);
     });
 
-    it('registers W3C propagators via tracerProvider.register', async () => {
-      const mockClient = makeMockClient();
-      mockLdInit.mockReturnValue(mockClient);
+    it('registers an enabled AsyncLocalStorageContextManager', async () => {
+      mockLdInit.mockReturnValue(makeMockClient());
       process.env.LD_SDK_KEY = 'sdk-test-key';
 
       const { initClient } = await import('../lifecycle.js');
       await initClient();
 
-      expect(mockTracerProviderRegister).toHaveBeenCalledWith(
-        expect.objectContaining({ propagator: expect.any(Object) }),
-      );
+      expect(otel.context.set).toHaveBeenCalledWith(expect.objectContaining({ enable: mockContextManagerEnable }));
+      expect(mockContextManagerEnable).toHaveBeenCalledOnce();
+    });
+
+    it('registers W3C propagators', async () => {
+      mockLdInit.mockReturnValue(makeMockClient());
+      process.env.LD_SDK_KEY = 'sdk-test-key';
+
+      const { initClient } = await import('../lifecycle.js');
+      await initClient();
+
+      expect(otel.propagation.set).toHaveBeenCalledWith(expect.any(Object));
     });
 
     it('sets up telemetry when a pre-initialized client is passed (BYOC path)', async () => {
@@ -247,7 +300,7 @@ describe('lifecycle', () => {
       };
       const { initClient } = await import('../lifecycle.js');
       await initClient(byocClient);
-      expect(mockTracerProviderRegister).toHaveBeenCalled();
+      expect(otel.held.trace).toBe(tracerProviders[0]);
     });
 
     it('passes the BYOC overload options through to telemetry setup', async () => {
@@ -310,6 +363,109 @@ describe('lifecycle', () => {
       await initClient();
       await initClient();
       expect(mockLdInit).toHaveBeenCalledOnce();
+    });
+
+    it('retries after a failed init instead of replaying the rejection', async () => {
+      // A rejection must not be cached: an app whose first call ran before its
+      // key was available would otherwise fail for the life of the process.
+      const mockClient = makeMockClient();
+      mockLdInit.mockReturnValue(mockClient);
+
+      const { initClient, getClient } = await import('../lifecycle.js');
+      await expect(initClient()).rejects.toThrow(/LD_SDK_KEY/);
+
+      await expect(initClient({ sdkKey: 'late-key' })).resolves.toBe(mockClient);
+      expect(mockLdInit).toHaveBeenCalledOnce();
+      expect(mockLdInit).toHaveBeenCalledWith('late-key', expect.anything());
+      expect(getClient()).toBe(mockClient);
+    });
+
+    it('rejects every concurrent caller of a failed init, then retries', async () => {
+      const { initClient } = await import('../lifecycle.js');
+      const results = await Promise.allSettled([initClient(), initClient()]);
+      expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
+
+      mockLdInit.mockReturnValue(makeMockClient());
+      process.env.LD_SDK_KEY = 'test-key';
+      await initClient();
+      expect(mockLdInit).toHaveBeenCalledOnce();
+    });
+
+    it('closes the client it built when initialization fails, and retries with a new one', async () => {
+      // Retrying a timed-out init would otherwise leak a streaming connection
+      // per attempt.
+      const failed = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      failed.waitForInitialization = vi.fn().mockRejectedValue(new Error('timeout'));
+      const succeeded = makeMockClient();
+      mockLdInit.mockReturnValueOnce(failed).mockReturnValueOnce(succeeded);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, getClient } = await import('../lifecycle.js');
+      await expect(initClient()).rejects.toThrow('timeout');
+      expect(failed.close).toHaveBeenCalledOnce();
+
+      await initClient();
+      expect(mockLdInit).toHaveBeenCalledTimes(2);
+      expect(getClient()).toBe(succeeded);
+    });
+
+    it('reports the init failure even when closing the failed client also throws', async () => {
+      const failed = { ...makeMockClient(), close: vi.fn().mockRejectedValue(new Error('close failed')) };
+      failed.waitForInitialization = vi.fn().mockRejectedValue(new Error('timeout'));
+      mockLdInit.mockReturnValue(failed);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient } = await import('../lifecycle.js');
+      await expect(initClient()).rejects.toThrow('timeout');
+    });
+
+    it('does not re-run telemetry setup on a repeat BYOC call', async () => {
+      // The repeat call's options cannot take effect: OTel's globals are
+      // already held. Both the early return and setupTelemetry's one-provider
+      // guard keep the first call's configuration.
+      const { initClient } = await import('../lifecycle.js');
+      const byocClient = makeMockClient();
+      await initClient(byocClient, { serviceName: 'first', otlpEndpoint: 'https://first.test' });
+      await initClient(byocClient, { serviceName: 'second', otlpEndpoint: 'https://second.test' });
+      await initClient(byocClient);
+
+      expect(mockOTLPTraceExporter).toHaveBeenCalledOnce();
+      expect(mockOTLPTraceExporter).toHaveBeenCalledWith(
+        expect.objectContaining({ url: 'https://first.test/v1/traces' }),
+      );
+      expect(mockResourceFromAttributes).toHaveBeenCalledOnce();
+      expect(mockResourceFromAttributes).toHaveBeenCalledWith(expect.objectContaining({ 'service.name': 'first' }));
+    });
+
+    it('returns the first client on a repeat BYOC call rather than swapping it', async () => {
+      const { initClient, getClient } = await import('../lifecycle.js');
+      const first = makeMockClient();
+      const second = makeMockClient();
+      expect(await initClient(first)).toBe(first);
+      expect(await initClient(second)).toBe(first);
+      expect(getClient()).toBe(first);
+    });
+
+    it('swaps in a new BYOC client after shutdown', async () => {
+      const { initClient, getClient, shutdown } = await import('../lifecycle.js');
+      const first = makeMockClient();
+      const second = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      await initClient(first);
+      await shutdown();
+      expect(await initClient(second)).toBe(second);
+      expect(getClient()).toBe(second);
+    });
+
+    it('flushes registered AI package information on a repeat BYOC call', async () => {
+      const client = makeMockClient();
+      const { initClient } = await import('../lifecycle.js');
+      await initClient(client);
+      client.track.mockClear();
+      registerAiSdkPackage('@launchdarkly/ai-openai-agents', '0.1.1');
+      await initClient(client);
+
+      expect(client.track).toHaveBeenCalledOnce();
+      expect(client.track.mock.calls[0][2].aiSdkName).toBe('@launchdarkly/ai-openai-agents');
     });
 
     it('flushes registered AI package information on the BYOC path', async () => {
@@ -400,6 +556,103 @@ describe('lifecycle', () => {
       await initClient();
 
       expect(client.track).toHaveBeenCalledOnce();
+    });
+
+    it('allows initialization after a failed init followed by shutdown', async () => {
+      const mockClient = makeMockClient();
+      mockLdInit.mockReturnValue(mockClient);
+
+      const { initClient, shutdown, getClient } = await import('../lifecycle.js');
+      await expect(initClient()).rejects.toThrow(/LD_SDK_KEY/);
+      await shutdown();
+
+      await initClient({ sdkKey: 'test-key' });
+      expect(getClient()).toBe(mockClient);
+    });
+
+    it('clears an in-flight init even though there is no client yet', async () => {
+      // shutdown() returns early without a client; the init promise must be
+      // dropped before that, or the next initClient() would await the old one.
+      let resolveFirst: () => void = () => {};
+      const first = makeMockClient();
+      first.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      );
+      const second = makeMockClient();
+      mockLdInit.mockReturnValueOnce(first).mockReturnValueOnce(second);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      const inFlight = initClient();
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      await shutdown();
+
+      await expect(initClient()).resolves.toBe(second);
+      expect(mockLdInit).toHaveBeenCalledTimes(2);
+      resolveFirst();
+      await expect(inFlight).rejects.toThrow(/abandoned/);
+    });
+
+    it('does not let an abandoned init replace the client that came after it', async () => {
+      // shutdown() drops an in-flight attempt so the next call starts fresh,
+      // but the attempt keeps running. When it finishes it must not overwrite
+      // the newer client — leaking that one's connection — and must close its
+      // own instead.
+      let resolveFirst: () => void = () => {};
+      const first = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      first.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      );
+      const second = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      mockLdInit.mockReturnValueOnce(first).mockReturnValueOnce(second);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, shutdown, getClient } = await import('../lifecycle.js');
+      const inFlight = initClient();
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      await shutdown();
+      await initClient();
+
+      resolveFirst();
+      await expect(inFlight).rejects.toThrow(/abandoned/);
+      expect(getClient()).toBe(second);
+      expect(first.close).toHaveBeenCalledOnce();
+      expect(second.close).not.toHaveBeenCalled();
+    });
+
+    it('abandons an in-flight init when a pre-initialized client is passed meanwhile', async () => {
+      let resolveFirst: () => void = () => {};
+      const first = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      first.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      );
+      mockLdInit.mockReturnValueOnce(first);
+      process.env.LD_SDK_KEY = 'test-key';
+      const byocClient = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+
+      const { initClient, getClient } = await import('../lifecycle.js');
+      const inFlight = initClient();
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      await initClient(byocClient);
+
+      resolveFirst();
+      await expect(inFlight).rejects.toThrow(/abandoned/);
+      expect(getClient()).toBe(byocClient);
+      expect(first.close).toHaveBeenCalledOnce();
+      expect(byocClient.close).not.toHaveBeenCalled();
+      // The BYOC call reused the in-flight attempt's provider, so it stays.
+      expect(tracerProviders).toHaveLength(1);
+      expect(mockTracerProviderShutdown).not.toHaveBeenCalled();
+      expect(otel.held.trace).toBe(tracerProviders[0]);
     });
 
     it('is a no-op (does not throw) when called without a prior initClient', async () => {
@@ -508,6 +761,236 @@ describe('lifecycle', () => {
     });
   });
 
+  describe('OTel global registration', () => {
+    it('registers a fresh provider after an init/shutdown/init cycle', async () => {
+      // Each OTel global is one-shot: unless shutdown releases it, the second
+      // provider's registration is refused and every span goes to the first,
+      // which has already been shut down.
+      mockLdInit.mockReturnValue(makeMockClient());
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      await initClient();
+      await shutdown();
+      expect(otel.trace.disable).toHaveBeenCalledOnce();
+      expect(otel.context.disable).toHaveBeenCalledOnce();
+      expect(otel.propagation.disable).toHaveBeenCalledOnce();
+
+      await initClient();
+      expect(tracerProviders).toHaveLength(2);
+      expect(otel.held.trace).toBe(tracerProviders[1]);
+      expect(otel.trace.set).toHaveLastReturnedWith(true);
+    });
+
+    it('leaves globals another library registered first in place on shutdown', async () => {
+      const host = { name: 'host provider' };
+      otel.held.trace = host;
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockLdInit.mockReturnValue(makeMockClient());
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      await initClient();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('already registered'));
+      warnSpy.mockRestore();
+
+      await shutdown();
+      // Ours is still shut down — it holds an exporter and a batch timer — but
+      // the global it never took stays with the host.
+      expect(mockTracerProviderShutdown).toHaveBeenCalledOnce();
+      expect(otel.trace.disable).not.toHaveBeenCalled();
+      expect(otel.held.trace).toBe(host);
+      // The globals that were free are ours, and are released.
+      expect(otel.context.disable).toHaveBeenCalledOnce();
+      expect(otel.propagation.disable).toHaveBeenCalledOnce();
+    });
+
+    it('releases only the globals it took, one API at a time', async () => {
+      const hostContextManager = { name: 'host context manager' };
+      otel.held.context = hostContextManager;
+      mockLdInit.mockReturnValue(makeMockClient());
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      await initClient();
+      // Our refused context manager is not left enabled alongside theirs.
+      expect(mockContextManagerDisable).toHaveBeenCalledOnce();
+
+      await shutdown();
+      expect(otel.context.disable).not.toHaveBeenCalled();
+      expect(otel.held.context).toBe(hostContextManager);
+      expect(otel.trace.disable).toHaveBeenCalledOnce();
+      expect(otel.propagation.disable).toHaveBeenCalledOnce();
+    });
+
+    it('builds one provider across repeat BYOC calls', async () => {
+      // A second provider would be refused registration yet replace the handle
+      // shutdown flushes, so the live provider would leak and never flush.
+      const byocClient = makeMockClient();
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      await initClient(byocClient);
+      await initClient(byocClient);
+      expect(tracerProviders).toHaveLength(1);
+
+      await shutdown();
+      expect(mockTracerProviderShutdown.mock.contexts).toEqual([tracerProviders[0]]);
+      expect(otel.held.trace).toBeNull();
+    });
+
+    it('tears down the provider of an init that times out after telemetry setup, then retries', async () => {
+      const failed = makeMockClient();
+      failed.waitForInitialization = vi.fn().mockRejectedValue(new Error('timeout'));
+      mockLdInit.mockReturnValueOnce(failed).mockReturnValueOnce(makeMockClient());
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      await expect(initClient()).rejects.toThrow('timeout');
+      expect(mockTracerProviderShutdown.mock.contexts).toEqual([tracerProviders[0]]);
+      expect(otel.held).toEqual({ trace: null, context: null, propagation: null });
+
+      await initClient();
+      expect(tracerProviders).toHaveLength(2);
+      expect(otel.held.trace).toBe(tracerProviders[1]);
+
+      // Nothing leaked: shutdown reaches the retry's provider, so each built
+      // provider is shut down exactly once.
+      await shutdown();
+      expect(mockTracerProviderShutdown.mock.contexts).toEqual(tracerProviders);
+    });
+
+    it('tears down the provider of an init that fails for want of node-server-sdk, then retries', async () => {
+      ldSdk.installed = false;
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, getClient } = await import('../lifecycle.js');
+      await expect(initClient()).rejects.toThrow(/node-server-sdk is not installed/);
+      expect(mockTracerProviderShutdown.mock.contexts).toEqual([tracerProviders[0]]);
+      expect(otel.held.trace).toBeNull();
+
+      ldSdk.installed = true;
+      const client = makeMockClient();
+      mockLdInit.mockReturnValue(client);
+      await initClient();
+      expect(getClient()).toBe(client);
+      expect(tracerProviders).toHaveLength(2);
+      expect(otel.held.trace).toBe(tracerProviders[1]);
+    });
+
+    it('tears down the provider of an init in flight at shutdown, so the next init builds its own', async () => {
+      // shutdown() used to return early without a client, leaving the in-flight
+      // attempt's provider registered for the next init to reuse — with the
+      // abandoned attempt's sdkKey as highlight.project_id.
+      let resolveFirst: () => void = () => {};
+      const first = makeMockClient();
+      first.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      );
+      mockLdInit.mockReturnValueOnce(first).mockReturnValueOnce(makeMockClient());
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      const inFlight = initClient({ sdkKey: 'first-key' });
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      await shutdown();
+      expect(mockTracerProviderShutdown.mock.contexts).toEqual([tracerProviders[0]]);
+      expect(otel.held).toEqual({ trace: null, context: null, propagation: null });
+
+      await initClient({ sdkKey: 'second-key' });
+      expect(tracerProviders).toHaveLength(2);
+      expect(otel.held.trace).toBe(tracerProviders[1]);
+      expect(mockResourceFromAttributes).toHaveBeenLastCalledWith(
+        expect.objectContaining({ 'highlight.project_id': 'second-key' }),
+      );
+
+      resolveFirst();
+      await expect(inFlight).rejects.toThrow(/abandoned/);
+      // Abandoning it leaves the newer provider alone.
+      expect(otel.held.trace).toBe(tracerProviders[1]);
+      expect(mockTracerProviderShutdown).toHaveBeenCalledOnce();
+    });
+
+    it('builds no provider for an init that shutdown abandons during telemetry setup', async () => {
+      // No await before shutdown(): setupTelemetry is still awaiting its
+      // imports, so there is no provider yet for shutdown to tear down. One
+      // built afterwards would outlive the attempt and be reused by the next
+      // init, with the abandoned attempt's sdkKey as highlight.project_id.
+      const first = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      mockLdInit.mockReturnValueOnce(first).mockReturnValueOnce(makeMockClient());
+
+      const { initClient, shutdown } = await import('../lifecycle.js');
+      const abandoned = initClient({ sdkKey: 'first-key' });
+      await shutdown();
+      await expect(abandoned).rejects.toThrow(/abandoned/);
+      expect(tracerProviders).toHaveLength(0);
+      expect(otel.held).toEqual({ trace: null, context: null, propagation: null });
+
+      await initClient({ sdkKey: 'second-key' });
+      expect(tracerProviders).toHaveLength(1);
+      expect(otel.held.trace).toBe(tracerProviders[0]);
+      expect(mockResourceFromAttributes).toHaveBeenCalledOnce();
+      expect(mockResourceFromAttributes).toHaveBeenCalledWith(
+        expect.objectContaining({ 'highlight.project_id': 'second-key' }),
+      );
+    });
+
+    it('does not let an abandoned init that then fails tear down the newer provider', async () => {
+      // The newer attempt is still in flight, so there is no client yet to
+      // say the current provider is spoken for: only its identity does.
+      let rejectFirst: (err: Error) => void = () => {};
+      const first = makeMockClient();
+      first.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((_, reject) => {
+            rejectFirst = reject;
+          }),
+      );
+      let resolveSecond: () => void = () => {};
+      const second = makeMockClient();
+      second.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveSecond = resolve;
+          }),
+      );
+      mockLdInit.mockReturnValueOnce(first).mockReturnValueOnce(second);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { initClient, shutdown, getClient } = await import('../lifecycle.js');
+      const abandoned = initClient();
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      await shutdown();
+      const current = initClient();
+      await vi.waitFor(() => expect(second.waitForInitialization).toHaveBeenCalled());
+
+      rejectFirst(new Error('timeout'));
+      await expect(abandoned).rejects.toThrow('timeout');
+      expect(otel.held.trace).toBe(tracerProviders[1]);
+      expect(mockTracerProviderShutdown.mock.contexts).toEqual([tracerProviders[0]]);
+
+      resolveSecond();
+      await expect(current).resolves.toBe(second);
+      expect(getClient()).toBe(second);
+    });
+
+    it('builds the retry its own provider, with the options the retry passed', async () => {
+      // Reusing the failed attempt's provider would stamp its spans with the
+      // failed attempt's sdkKey as highlight.project_id.
+      const failed = makeMockClient();
+      failed.waitForInitialization = vi.fn().mockRejectedValue(new Error('timeout'));
+      mockLdInit.mockReturnValueOnce(failed).mockReturnValueOnce(makeMockClient());
+
+      const { initClient } = await import('../lifecycle.js');
+      await expect(initClient({ sdkKey: 'first-key' })).rejects.toThrow('timeout');
+      await initClient({ sdkKey: 'second-key' });
+
+      expect(mockResourceFromAttributes).toHaveBeenLastCalledWith(
+        expect.objectContaining({ 'highlight.project_id': 'second-key' }),
+      );
+    });
+  });
+
   describe('when OTel SDK packages are not installed', () => {
     it('emits a console.warn and still resolves when an OTel peer dep cannot be imported', async () => {
       vi.resetModules();
@@ -525,7 +1008,7 @@ describe('lifecycle', () => {
 
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('npm install'));
       warnSpy.mockRestore();
-      vi.doUnmock('@opentelemetry/sdk-trace-node');
+      vi.doMock('@opentelemetry/sdk-trace-node', mockNodeTracerProviderModule);
     });
 
     it('getClient returns the LD client even when telemetry setup was skipped', async () => {
@@ -544,7 +1027,7 @@ describe('lifecycle', () => {
       expect(getClient()).toBe(mockClient);
 
       vi.restoreAllMocks();
-      vi.doUnmock('@opentelemetry/sdk-trace-node');
+      vi.doMock('@opentelemetry/sdk-trace-node', mockNodeTracerProviderModule);
     });
 
     it('shutdown does not throw for telemetry when setup was skipped', async () => {
@@ -564,7 +1047,7 @@ describe('lifecycle', () => {
       expect(mockTracerProviderShutdown).not.toHaveBeenCalled();
 
       vi.restoreAllMocks();
-      vi.doUnmock('@opentelemetry/sdk-trace-node');
+      vi.doMock('@opentelemetry/sdk-trace-node', mockNodeTracerProviderModule);
     });
   });
 
@@ -669,6 +1152,26 @@ describe('lifecycle', () => {
 
       expect(result.enabled).toBe(true);
       expect(result.config).toBeNull();
+    });
+
+    it('recovers once LD_SDK_KEY becomes available after a failed lazy init', async () => {
+      // inspectConfig swallows the init error, so a cached rejection would make
+      // an app that called it too early serve disabled configs forever.
+      const mockClient = makeMockClient();
+      mockClient.variation = vi.fn().mockResolvedValue({
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'messages' },
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'You are helpful.',
+      });
+      mockLdInit.mockReturnValue(mockClient);
+
+      const { inspectConfig } = await import('../lifecycle.js');
+      const ctx = { kind: 'user' as const, key: 'user-1' };
+      expect((await inspectConfig('my-flag', ctx)).enabled).toBe(false);
+
+      process.env.LD_SDK_KEY = 'test-key';
+      expect((await inspectConfig('my-flag', ctx)).enabled).toBe(true);
     });
 
     it('returns enabled=false when the LD client throws', async () => {

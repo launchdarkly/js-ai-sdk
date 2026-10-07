@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { trace } from '@opentelemetry/api';
+import { context, propagation, trace } from '@opentelemetry/api';
 import { ConversationIdSpanProcessor } from './conversation.js';
 import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
 import { runShutdownHooks } from './shutdown-hooks.js';
@@ -22,6 +22,34 @@ function env(name: string): string | undefined {
 // biome-ignore lint/suspicious/noExplicitAny: OTel tracer provider loaded via dynamic import with no static type
 let tracerProvider: any | null = null;
 
+interface OtelGlobals {
+  trace: boolean;
+  context: boolean;
+  propagation: boolean;
+}
+
+const NO_OTEL_GLOBALS: OtelGlobals = { trace: false, context: false, propagation: false };
+
+/**
+ * Which of OTel's process-global registrations `setupTelemetry` actually took.
+ *
+ * Each global is one-shot: a second registration is refused, with an
+ * "Attempted duplicate registration of API" diag error, until the first is
+ * disabled. So `shutdownTelemetry` must release them, or an init/shutdown/init
+ * cycle routes every later span to the provider it just shut down. But it may
+ * release only these: having built a provider does not mean we own the global,
+ * since another library may have registered first, and disabling theirs would
+ * tear down the host application's tracing.
+ */
+let ownedOtelGlobals: OtelGlobals = NO_OTEL_GLOBALS;
+
+/**
+ * Counts `shutdownTelemetry` calls, so a `setupTelemetry` that was still
+ * awaiting its imports when one ran can tell, and build nothing. At that point
+ * there was no provider to tear down, so the teardown could not stop it.
+ */
+let telemetryTeardowns = 0;
+
 const LD_OTEL_PEER_DEPS = [
   '@opentelemetry/sdk-trace-node',
   '@opentelemetry/sdk-trace-base',
@@ -37,8 +65,13 @@ const LD_OTEL_PEER_DEPS = [
  * The OTel SDK packages are optional peer dependencies loaded via dynamic import.
  * If any are missing, telemetry is silently disabled and a console.warn is emitted
  * with the npm install command to enable it.
+ *
+ * Resolves to the provider this call built, or `null` when it built none, so a
+ * failed init can tell whether the current provider is its own to tear down.
  */
-async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): Promise<void> {
+// biome-ignore lint/suspicious/noExplicitAny: OTel tracer provider loaded via dynamic import with no static type
+async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): Promise<any | null> {
+  const teardownsAtStart = telemetryTeardowns;
   // biome-ignore lint/suspicious/noExplicitAny: optional OTel peer deps loaded via dynamic import with no static types
   let NodeTracerProvider: any,
     // biome-ignore lint/suspicious/noExplicitAny: optional OTel peer deps loaded via dynamic import with no static types
@@ -73,8 +106,23 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
         'packages are not installed. To enable, run:\n' +
         `  npm install ${LD_OTEL_PEER_DEPS}`,
     );
-    return;
+    return null;
   }
+
+  // One provider at a time. A second would be refused the global registration,
+  // so it would receive no spans while replacing the handle `shutdownTelemetry`
+  // flushes, leaking the live one. A BYOC call made while an options-path init
+  // is still in flight reuses that attempt's provider, as OTel itself would; a
+  // failed init has already torn its own down.
+  // Checked after the imports, since nothing between here and the assignment
+  // below awaits.
+  if (tracerProvider) return null;
+
+  // A teardown ran while the imports were pending: `shutdown()` abandoned the
+  // init this setup belongs to, or the application stopped telemetry itself.
+  // Either way, a provider built now would outlive it, and the next init would
+  // reuse it with this attempt's options (its sdkKey as highlight.project_id).
+  if (telemetryTeardowns !== teardownsAtStart) return null;
 
   const baseEndpoint = options.otlpEndpoint ?? env('OTEL_EXPORTER_OTLP_ENDPOINT') ?? LD_DEFAULT_OTLP_ENDPOINT;
 
@@ -92,16 +140,37 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
       : {}),
   });
 
-  tracerProvider = new NodeTracerProvider({
+  const provider = new NodeTracerProvider({
     resource,
     spanProcessors: [new ConversationIdSpanProcessor(), new BatchSpanProcessor(exporter)],
   });
-  tracerProvider.register({
-    contextManager: new AsyncLocalStorageContextManager(),
-    propagator: new CompositePropagator({
-      propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()],
-    }),
-  });
+
+  // What `provider.register()` does, one global at a time, because each setter
+  // reports whether it took the global and `register()` discards that.
+  const contextManager = new AsyncLocalStorageContextManager();
+  contextManager.enable();
+  const owned: OtelGlobals = {
+    trace: trace.setGlobalTracerProvider(provider),
+    context: context.setGlobalContextManager(contextManager),
+    propagation: propagation.setGlobalPropagator(
+      new CompositePropagator({
+        propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()],
+      }),
+    ),
+  };
+  if (!owned.context) contextManager.disable();
+  if (!owned.trace) {
+    // biome-ignore lint/suspicious/noConsole: OTel's own refusal goes to its diag logger, which is unset by default
+    console.warn(
+      '[LaunchDarkly] An OpenTelemetry tracer provider was already registered by something ' +
+        "else in this process, so LaunchDarkly's telemetry options are not in effect; spans " +
+        'go wherever that provider sends them.',
+    );
+  }
+
+  tracerProvider = provider;
+  ownedOtelGlobals = owned;
+  return provider;
 }
 
 /**
@@ -128,13 +197,25 @@ export async function waitForTelemetry(timeoutMs = 5000): Promise<void> {
 }
 
 /**
- * Flushes and shuts down the OTel tracer provider.
+ * Flushes and shuts down the OTel tracer provider, then releases the OTel
+ * globals this SDK registered, so a later `initClient` can register its own.
  * Must be called before process.exit() to ensure all pending spans are exported.
  */
 export async function shutdownTelemetry(): Promise<void> {
-  if (tracerProvider) {
-    await tracerProvider.shutdown();
-    tracerProvider = null;
+  // Counted even with no provider yet: see `telemetryTeardowns`.
+  telemetryTeardowns++;
+  const provider = tracerProvider;
+  const owned = ownedOtelGlobals;
+  tracerProvider = null;
+  ownedOtelGlobals = NO_OTEL_GLOBALS;
+  if (!provider) return;
+  try {
+    await provider.shutdown();
+  } finally {
+    // See `ownedOtelGlobals`: only what our own registration took.
+    if (owned.trace) trace.disable();
+    if (owned.context) context.disable();
+    if (owned.propagation) propagation.disable();
   }
 }
 
@@ -170,8 +251,28 @@ async function initBaseClient(options: InitBaseClientOptions = {}): Promise<LDCl
     throw new Error('LD_SDK_KEY is not set');
   }
 
-  await setupTelemetry(options, sdkKey);
+  const builtProvider = await setupTelemetry(options, sdkKey);
+  try {
+    return await startBaseClient(sdkKey, options);
+  } catch (err) {
+    // A rejected init is retried rather than cached, and the retry may bring
+    // different options (another sdkKey is another highlight.project_id), so
+    // drop the provider this attempt built instead of leaving the retry to reuse
+    // it. Only if it is still the current one: `shutdown()` may have torn it
+    // down already and a newer attempt built its own. And not if a BYOC call
+    // has adopted it for its own client meanwhile.
+    if (builtProvider && tracerProvider === builtProvider && !getSingleton().client) {
+      try {
+        await shutdownTelemetry();
+      } catch {
+        // The init failure is the error worth reporting.
+      }
+    }
+    throw err;
+  }
+}
 
+async function startBaseClient(sdkKey: string, options: InitBaseClientOptions): Promise<LDClientInterface> {
   // biome-ignore lint/suspicious/noExplicitAny: @launchdarkly/node-server-sdk loaded via dynamic import
   let init: any;
   try {
@@ -193,9 +294,20 @@ async function initBaseClient(options: InitBaseClientOptions = {}): Promise<LDCl
     ...(eventsUri !== undefined && { eventsUri }),
   });
 
-  // biome-ignore lint/suspicious/noExplicitAny: waitForInitialization is a concrete SDK method not in LDClientInterface
-  await (client as any).waitForInitialization({ timeout: 10 });
-  await waitForTelemetry();
+  try {
+    // biome-ignore lint/suspicious/noExplicitAny: waitForInitialization is a concrete SDK method not in LDClientInterface
+    await (client as any).waitForInitialization({ timeout: 10 });
+    await waitForTelemetry();
+  } catch (err) {
+    // We built this client, so close it: a rejected init is retried rather than
+    // cached, and each attempt would otherwise leave a streaming connection open.
+    try {
+      await client.close();
+    } catch {
+      // The init failure is the error worth reporting.
+    }
+    throw err;
+  }
 
   return client;
 }
@@ -255,6 +367,19 @@ function warnOnUnknownOptions(options: unknown): void {
  *
  * Idempotent: later calls return the existing client and ignore their options.
  *
+ * That idempotency covers overload 2 too: once a client is set, passing a
+ * *different* pre-initialized client does not swap it, and the second call's
+ * telemetry options are ignored rather than re-running telemetry setup. Call
+ * `shutdown()` first to hand the SDK a new client.
+ *
+ * A call that rejects caches neither a client nor the failure: a later call
+ * retries initialization (once `LD_SDK_KEY` is available, say) rather than
+ * replaying the same rejection.
+ *
+ * A call still in flight when `shutdown()` runs, or when a pre-initialized
+ * client is passed meanwhile, is abandoned: it closes the client it built and
+ * rejects, rather than replacing whatever client came after it.
+ *
  * Both overloads return the client instance for further customization.
  */
 export async function initClient(
@@ -270,6 +395,16 @@ export async function initClient(
 
   warnOnUnknownOptions(isLDClient(optionsOrClient) ? clientOptions : optionsOrClient);
 
+  // Ahead of *both* init paths, so "a second call returns the existing client
+  // and every other option is ignored" holds for BYOC as well, as it does in
+  // the Python SDK's `_resolve_client`. Below the BYOC branch, a repeat
+  // `initClient(client)` re-ran telemetry setup with the new options, which
+  // could not take effect, and swapped the stored client.
+  if (singleton.client) {
+    flushAiSdkInfo(singleton.client);
+    return singleton.client;
+  }
+
   if (isLDClient(optionsOrClient)) {
     // Pre-initialized client path (edge / custom runtimes).
     // Still run telemetry setup (with the caller's options) so OTel traces work
@@ -282,16 +417,50 @@ export async function initClient(
     return optionsOrClient;
   }
 
-  if (singleton.client) {
-    flushAiSdkInfo(singleton.client);
-    return singleton.client;
+  const pending = singleton.initPromise ?? startInit(singleton, optionsOrClient);
+  let client: LDClientInterface;
+  try {
+    client = await pending;
+  } catch (err) {
+    // A rejection is not cached, so a later call retries — with a key that is
+    // now set, say — instead of replaying this failure for the life of the
+    // process. Concurrent waiters on the same attempt all land here; clear it
+    // only if nothing (a BYOC call, `shutdown()`) has replaced it meanwhile.
+    if (singleton.initPromise === pending) singleton.initPromise = null;
+    throw err;
   }
-  if (!singleton.initPromise) {
-    singleton.initPromise = initBaseClient(optionsOrClient);
-  }
-  singleton.client = await singleton.initPromise;
-  flushAiSdkInfo(singleton.client);
-  return singleton.client;
+  flushAiSdkInfo(client);
+  return client;
+}
+
+/**
+ * Starts an options-path init attempt and records it as the in-flight one.
+ *
+ * The attempt adopts its client itself, once, rather than each waiter doing so:
+ * the check that it is still the current attempt and the assignment then run in
+ * the same synchronous step, with no await between them for `shutdown()` to
+ * land in.
+ */
+function startInit(singleton: Singleton, options?: InitBaseClientOptions): Promise<LDClientInterface> {
+  const attempt: Promise<LDClientInterface> = initBaseClient(options).then(async (client) => {
+    if (singleton.initPromise !== attempt) {
+      // `shutdown()` or a BYOC call replaced this attempt while it was in
+      // flight. Adopting its client would clobber whatever came after and leak
+      // that client's connection, so close this one instead. Its telemetry is
+      // not ours to tear down here: `shutdown()` already did, or the BYOC call
+      // reused the provider.
+      try {
+        await client.close();
+      } catch {
+        // The abandonment is the error worth reporting.
+      }
+      throw new Error('[LaunchDarkly] initClient was abandoned: shutdown() or another initClient() replaced it.');
+    }
+    singleton.client = client;
+    return client;
+  });
+  singleton.initPromise = attempt;
+  return attempt;
 }
 
 export function getClient(): LDClientInterface {
@@ -302,17 +471,21 @@ export function getClient(): LDClientInterface {
 
 export async function shutdown(): Promise<void> {
   const singleton = getSingleton();
-  // Before the early return: experimental state (e.g. an Agent Skills store)
-  // can exist without a client.
+  // Experimental state (e.g. an Agent Skills store) can exist without a client,
+  // and an init can be in flight without one, so shutdown() always leaves the
+  // next initClient() starting from scratch. Dropping the init promise abandons
+  // that attempt: it closes its own client when it finishes (see `startInit`).
   runShutdownHooks();
-  if (!singleton.client) return;
+  singleton.initPromise = null;
   // Null the singleton before teardown so that any failure mid-flight still
   // leaves the process in a state where a second shutdown() call is a no-op.
   const client = singleton.client;
   singleton.client = null;
-  singleton.initPromise = null;
-  resetAiSdkInfo();
+  if (client) resetAiSdkInfo();
+  // With or without a client: an in-flight init has already built its
+  // provider, and the next init would otherwise reuse it with the old options.
   await shutdownTelemetry();
+  if (!client) return;
   try {
     await client.flush();
   } finally {
