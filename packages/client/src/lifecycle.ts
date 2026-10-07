@@ -111,8 +111,9 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
 
   // One provider at a time. A second would be refused the global registration,
   // so it would receive no spans while replacing the handle `shutdownTelemetry`
-  // flushes, leaking the live one. A repeat BYOC call reuses the existing
-  // provider, as OTel itself would; a failed init has already torn its own down.
+  // flushes, leaking the live one. A BYOC call made while an options-path init
+  // is still in flight reuses that attempt's provider, as OTel itself would; a
+  // failed init has already torn its own down.
   // Checked after the imports, since nothing between here and the assignment
   // below awaits.
   if (tracerProvider) return null;
@@ -366,6 +367,11 @@ function warnOnUnknownOptions(options: unknown): void {
  *
  * Idempotent: later calls return the existing client and ignore their options.
  *
+ * That idempotency covers overload 2 too: once a client is set, passing a
+ * *different* pre-initialized client does not swap it, and the second call's
+ * telemetry options are ignored rather than re-running telemetry setup. Call
+ * `shutdown()` first to hand the SDK a new client.
+ *
  * A call that rejects caches neither a client nor the failure: a later call
  * retries initialization (once `LD_SDK_KEY` is available, say) rather than
  * replaying the same rejection.
@@ -389,6 +395,16 @@ export async function initClient(
 
   warnOnUnknownOptions(isLDClient(optionsOrClient) ? clientOptions : optionsOrClient);
 
+  // Ahead of *both* init paths, so "a second call returns the existing client
+  // and every other option is ignored" holds for BYOC as well, as it does in
+  // the Python SDK's `_resolve_client`. Below the BYOC branch, a repeat
+  // `initClient(client)` re-ran telemetry setup with the new options, which
+  // could not take effect, and swapped the stored client.
+  if (singleton.client) {
+    flushAiSdkInfo(singleton.client);
+    return singleton.client;
+  }
+
   if (isLDClient(optionsOrClient)) {
     // Pre-initialized client path (edge / custom runtimes).
     // Still run telemetry setup (with the caller's options) so OTel traces work
@@ -401,10 +417,6 @@ export async function initClient(
     return optionsOrClient;
   }
 
-  if (singleton.client) {
-    flushAiSdkInfo(singleton.client);
-    return singleton.client;
-  }
   const pending = singleton.initPromise ?? startInit(singleton, optionsOrClient);
   let client: LDClientInterface;
   try {
