@@ -57,6 +57,7 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
 });
 
 import { vercelEvaluate } from '../evaluate.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 const questions = {
   refunded: { type: 'boolean' as const, instructions: 'Was a refund issued?' },
@@ -164,6 +165,34 @@ describe('vercelEvaluate', () => {
         headers: { 'x-test': '1' },
         providerOptions: { openai: { reasoningEffort: 'high' } },
       }),
+    );
+  });
+
+  it('does not forward model.parameters to experimental_evaluate', async () => {
+    // experimental_evaluate takes no generation settings, and the request settings it does take
+    // (headers, maxRetries, providerOptions) are never read from a config: call-level headers
+    // replace the provider's Authorization header, and the Gateway reads credentials and routing
+    // from providerOptions.
+    serverMocks.inspectConfig.mockResolvedValue({
+      enabled: true,
+      config: {
+        ...config,
+        model: { ...config.model, parameters: { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.2, max_tokens: 10 } },
+      },
+      meta,
+    });
+    await vercelEvaluate('flag', 'state', context, { questions });
+    const request = aiMocks.experimental_evaluate.mock.calls[0][0];
+    expectNoNeverForwardedValue(request);
+    for (const key of ['temperature', 'max_tokens', 'maxOutputTokens']) {
+      expect(request).not.toHaveProperty(key);
+    }
+  });
+
+  it('passes options given to vercelEvaluate through', async () => {
+    await vercelEvaluate('flag', 'state', context, { questions, maxRetries: 0, headers: { 'x-caller': '1' } });
+    expect(aiMocks.experimental_evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({ maxRetries: 0, headers: { 'x-caller': '1' } }),
     );
   });
 

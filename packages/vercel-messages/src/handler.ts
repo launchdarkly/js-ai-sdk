@@ -38,25 +38,11 @@ import {
   tool,
 } from 'ai';
 import { gatewayModelId } from './model-id.js';
+import { buildModelParameterOptions } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-vercel-messages';
 const MAX_STEPS = 10;
-
-const OWNED_PARAMETER_NAMES = new Set([
-  'model',
-  'messages',
-  'prompt',
-  'system',
-  'tools',
-  'stream',
-  'output',
-  'outputformat',
-  'stopwhen',
-  'maxsteps',
-  'apikey',
-  'baseurl',
-]);
 
 export type VercelModelSource = LanguageModel | ((config: AiConfigRep) => LanguageModel | Promise<LanguageModel>);
 
@@ -89,15 +75,6 @@ function returnedUsage(usage: Usage): Record<string, number> {
 
 function servingProvider(config: AiConfigRep): string {
   return (config.provider?.name || 'unknown').toLowerCase();
-}
-
-function modelSettings(config: AiConfigRep): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(config.model.parameters ?? {}).filter(([key]) => {
-      const normalized = key.replaceAll('_', '').replaceAll('-', '').toLowerCase();
-      return !OWNED_PARAMETER_NAMES.has(normalized);
-    }),
-  );
 }
 
 async function resolveModel(config: AiConfigRep, options: VercelMessagesOptions): Promise<LanguageModel | string> {
@@ -308,7 +285,7 @@ function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}
           });
           const output = requestOutput(configRep.outputFormat);
           const result = await generateText({
-            ...modelSettings(configRep),
+            ...buildModelParameterOptions(configRep.model.parameters),
             model: await resolveModel(configRep, options),
             messages,
             ...(system ? { system } : {}),
@@ -357,7 +334,7 @@ function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}
         });
         chatSpan = startChatSpan(configRep, rootSpan);
         const result = streamText({
-          ...modelSettings(configRep),
+          ...buildModelParameterOptions(configRep.model.parameters),
           model: await resolveModel(configRep, options),
           messages,
           ...(system ? { system } : {}),

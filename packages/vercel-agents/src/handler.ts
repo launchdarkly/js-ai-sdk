@@ -37,25 +37,11 @@ import {
   tool,
 } from 'ai';
 import { gatewayModelId } from './model-id.js';
+import { buildModelParameterOptions } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-vercel-agents';
 const MAX_STEPS = 10;
-const OWNED_PARAMETER_NAMES = new Set([
-  'model',
-  'messages',
-  'prompt',
-  'system',
-  'instructions',
-  'tools',
-  'stream',
-  'output',
-  'outputformat',
-  'stopwhen',
-  'maxsteps',
-  'apikey',
-  'baseurl',
-]);
 
 export interface VercelAgentsOptions extends ContentCaptureOptions {
   model?: LanguageModel;
@@ -113,15 +99,6 @@ function normalizeOutputSchema(schema: Record<string, unknown>): Record<string, 
 
 function servingProvider(config: AiConfigRep): string {
   return (config.provider?.name || 'unknown').toLowerCase();
-}
-
-function modelSettings(config: AiConfigRep): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(config.model.parameters ?? {}).filter(([key]) => {
-      const normalized = key.replaceAll('_', '').replaceAll('-', '').toLowerCase();
-      return !OWNED_PARAMETER_NAMES.has(normalized);
-    }),
-  );
 }
 
 async function resolveModel(config: AiConfigRep, options: VercelAgentsOptions): Promise<LanguageModel | string> {
@@ -275,7 +252,7 @@ async function buildAgent(
       ? Output.object({ schema: jsonSchema(normalizeOutputSchema(config.outputFormat)) })
       : undefined;
   const agent = new ToolLoopAgent({
-    ...modelSettings(config),
+    ...buildModelParameterOptions(config.model.parameters),
     model: await resolveModel(config, options),
     ...(system ? { instructions: system } : {}),
     ...(Object.keys(tools).length > 0 ? { tools } : {}),

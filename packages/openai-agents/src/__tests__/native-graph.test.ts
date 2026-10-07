@@ -65,6 +65,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 });
 
 import { toOpenAIAgents } from '../native-graph.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -132,6 +133,38 @@ describe('toOpenAIAgents', () => {
   it('throws when root is null', async () => {
     const def = { ...makeTwoNodeGraph(), root: null };
     await expect(toOpenAIAgents(Promise.resolve(def as any)).invoke('hi')).rejects.toThrow(/root/i);
+  });
+
+  // ── model.parameters forwarding ───────────────────────────────────────────
+
+  it("passes each node's allowlisted model.parameters as that node's modelSettings, and the root's maxTurns to run()", async () => {
+    const def = makeTwoNodeGraph();
+    (def.root.config.model as any).parameters = { temperature: 0.2, max_turns: 7, top_p: 0.5 };
+    (def.getNode('leaf-agent')!.config.model as any).parameters = { max_tokens: 64, max_turns: 2 };
+    await toOpenAIAgents(Promise.resolve(def as any)).invoke('hi');
+    const byName = Object.fromEntries(mockAgentConstructor.mock.calls.map(([args]) => [args.name, args]));
+    expect(byName['root-agent'].modelSettings).toEqual({ temperature: 0.2, topP: 0.5 });
+    expect(byName['leaf-agent'].modelSettings).toEqual({ maxTokens: 64 });
+    // One run drives the whole graph, so only the root's turn cap applies, as in the Python SDK.
+    expect(mockRunnerRun.mock.calls[0][2]).toEqual({ maxTurns: 7 });
+  });
+
+  it('sets no modelSettings and no run options when no node has model.parameters', async () => {
+    await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
+    for (const [args] of mockAgentConstructor.mock.calls) {
+      expect(args).not.toHaveProperty('modelSettings');
+    }
+    expect(mockRunnerRun.mock.calls[0][2]).toBeUndefined();
+  });
+
+  it('never forwards request overrides, credentials or retry policy from any node', async () => {
+    const def = makeTwoNodeGraph();
+    (def.root.config.model as any).parameters = NEVER_FORWARDED_PARAMETERS;
+    (def.getNode('leaf-agent')!.config.model as any).parameters = NEVER_FORWARDED_PARAMETERS;
+    await toOpenAIAgents(Promise.resolve(def as any)).invoke('hi');
+    for (const [args] of mockAgentConstructor.mock.calls) {
+      expectNoNeverForwardedValue(args);
+    }
   });
 
   // ── Topology translation ──────────────────────────────────────────────────

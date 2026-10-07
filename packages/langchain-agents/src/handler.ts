@@ -35,6 +35,7 @@ import {
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { createAgent } from 'langchain';
 import { toLangChainMessages } from './messages.js';
+import { type LangChainModelClass, modelConstructorParameters } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-langchain-agents';
@@ -262,12 +263,16 @@ export function buildSpanCallbacks(
 
 export type LangChainModelSource = BaseChatModel | ((config: AiConfigRep) => BaseChatModel | Promise<BaseChatModel>);
 
-function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record<string, unknown> {
-  const parameters = {
-    ...(config.model?.parameters && typeof config.model.parameters === 'object' ? config.model.parameters : {}),
+function modelConstructorArgs(
+  config: AiConfigRep,
+  fallbackName: string,
+  modelClass: LangChainModelClass,
+): Record<string, unknown> {
+  // Name from the config always wins; `model` is never on a forwarded-keys list anyway.
+  return {
+    ...modelConstructorParameters(config.model?.parameters, modelClass),
+    model: resolvedModelName(config, fallbackName),
   };
-  if ((config.provider?.name ?? '').toLowerCase() === 'bedrock') delete parameters.tools;
-  return { ...parameters, model: resolvedModelName(config, fallbackName) };
 }
 
 async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSource): Promise<BaseChatModel> {
@@ -277,8 +282,8 @@ async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSourc
   const provider = (invocation.provider?.name ?? '').toLowerCase();
   if (provider === 'anthropic') {
     const { ChatAnthropic } = await import('@langchain/anthropic');
-    // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
-    return new ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022') as any);
+    // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
+    return new ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022', 'anthropic') as any);
   }
   if (provider === 'bedrock') {
     // biome-ignore lint/suspicious/noExplicitAny: @langchain/aws loaded via dynamic import with no static types
@@ -288,11 +293,11 @@ async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSourc
     } catch {
       throw new Error('Using Bedrock models requires @langchain/aws. Install it with: npm install @langchain/aws');
     }
-    // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
-    return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '') as any);
+    // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
+    return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '', 'bedrock') as any);
   }
-  // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
-  return new ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o') as any);
+  // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
+  return new ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o', 'openai') as any);
 }
 
 const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record<string, ToolHandlerFn>) =>

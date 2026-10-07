@@ -21,6 +21,7 @@ import {
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
 import { toLangChainMessages } from './messages.js';
+import { modelConstructorParameters } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -147,9 +148,7 @@ export const toLangGraph = (
       opts?.modelFactory ??
       ((node) =>
         new ChatOpenAI({
-          ...(node.config.model.parameters && typeof node.config.model.parameters === 'object'
-            ? node.config.model.parameters
-            : {}),
+          ...modelConstructorParameters(node.config.model.parameters, 'openai'),
           model: node.config.model.name,
         }));
     const ldContext = opts?.context;

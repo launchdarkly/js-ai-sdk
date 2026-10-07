@@ -41,6 +41,7 @@ import type {
 } from '@openai/agents';
 import { Agent, Runner, tool } from '@openai/agents';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
+import { buildMaxTurns, buildModelSettings } from './model-parameters.js';
 import { buildOutputType } from './utils.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
@@ -216,6 +217,26 @@ function failSpan(span: Span, error: unknown, endedSpans?: Set<Span>): void {
 }
 
 /**
+ * The object an Agents tool call denotes, given the JSON string the SDK carries.
+ *
+ * `function_call.arguments` and `details.toolCall.arguments` arrive as an opaque JSON string, while
+ * every other handler puts a parsed object on a `tool_call` part. Passing the string through left the
+ * content carriers encoding it a second time, so a reader saw `"arguments": "{\\"q\\":1}"` where an
+ * Anthropic span said `"arguments": {"q": 1}`.
+ *
+ * A string that is not JSON is returned unchanged rather than dropped: a truncated stream is worth
+ * reporting verbatim, and reporting nothing would lose what the model asked for.
+ */
+function toolArguments(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * Converts one Agents-SDK item into canonical span message parts.
  *
  * The SDK's `AgentInputItem` / output item unions overlap with the Responses API shapes but are not
@@ -229,7 +250,7 @@ function itemParts(item: Record<string, unknown>): SpanMessagePart[] {
         type: 'tool_call',
         id: typeof item.callId === 'string' ? item.callId : undefined,
         name: String(item.name ?? ''),
-        arguments: item.arguments,
+        arguments: toolArguments(item.arguments),
       },
     ];
   }
@@ -415,7 +436,7 @@ function attachToolSpanHooks(
   // biome-ignore lint/suspicious/noExplicitAny: Agents SDK tool hook argument types are not exported
   agent.on('agent_tool_start', (_context: unknown, tool: any, details: any) => {
     const span = startToolSpan(tool?.name ?? 'tool', callId(details), parentContext);
-    setToolCallContentAttributes(span, captureContent, { arguments: details?.toolCall?.arguments });
+    setToolCallContentAttributes(span, captureContent, { arguments: toolArguments(details?.toolCall?.arguments) });
     toolSpans.set(callId(details), span);
   });
   // biome-ignore lint/suspicious/noExplicitAny: Agents SDK tool hook argument types are not exported
@@ -539,6 +560,7 @@ function buildAgentAndPrompt(
   const tools = config.tools ? buildAgentTools(config.tools, toolHandlers) : [];
 
   const outputType = includeOutputType ? buildOutputType(config.outputFormat) : undefined;
+  const modelSettings = buildModelSettings(config.model.parameters);
 
   const agent = new Agent({
     name: 'assistant',
@@ -546,6 +568,7 @@ function buildAgentAndPrompt(
     ...(instructions ? { instructions } : {}),
     ...(tools.length > 0 ? { tools } : {}),
     ...(outputType ? { outputType } : {}),
+    ...(modelSettings ? { modelSettings } : {}),
   });
 
   return { agent, prompt, instructions };
@@ -617,8 +640,9 @@ export function createOpenAIAgentHandlerInternal({
           modelProvider: new SpanningModelProvider(defaultModelProvider(), config, parentContext, captureContent),
         });
         try {
+          const maxTurns = buildMaxTurns(config.model.parameters);
           // biome-ignore lint/suspicious/noExplicitAny: Runner.run accepts string | AgentInputItem[]; our item shape is structurally compatible
-          const result = await runner.run(agent, prompt as any);
+          const result = await runner.run(agent, prompt as any, maxTurns !== undefined ? { maxTurns } : undefined);
           const finalOutput = result.finalOutput ?? '';
           const { inputTokens, outputTokens } = result.state.usage;
 
@@ -684,8 +708,10 @@ export function createOpenAIAgentHandlerInternal({
         modelProvider: new SpanningModelProvider(defaultModelProvider(), config, parentContext, captureContent),
       });
       try {
+        const maxTurns = buildMaxTurns(config.model.parameters);
+        const runOptions = { stream: true, signal: abortRun.signal, ...(maxTurns !== undefined ? { maxTurns } : {}) };
         // biome-ignore lint/suspicious/noExplicitAny: Agents SDK run() stream overload requires an any-cast option
-        const streamed = await runner.run(agent, prompt as any, { stream: true, signal: abortRun.signal } as any);
+        const streamed = await runner.run(agent, prompt as any, runOptions as any);
         // biome-ignore lint/suspicious/noExplicitAny: StreamedRunResult generics are irrelevant to this handler
         const streamedResult = streamed as StreamedRunResult<any, any>;
         let fullOutput = '';

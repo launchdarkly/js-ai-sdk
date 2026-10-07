@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import type { MessageCreateParamsBase } from '@anthropic-ai/sdk/resources/messages/messages';
 import {
   type AiConfigRep,
   addCachedTokensToInput,
@@ -14,8 +15,10 @@ import {
   type Message,
   type MessageContent,
   type NativeTool,
+  normalizeModelParameters,
   type ProviderHandler,
   parseTemplate,
+  pickForwardedModelParameters,
   reportUsage,
   type SpanMessage,
   type SpanMessagePart,
@@ -341,6 +344,70 @@ const buildMessages = (
   return { messages, system };
 };
 
+/**
+ * `MessageCreateParamsBase` keys this handler forwards verbatim from `config.model.parameters`
+ * (after the `effort` rename below is folded into `output_config`), beyond `max_tokens`, which is
+ * handled separately because it carries a default.
+ *
+ * The rule for this list: exclude a key only if setting it would BREAK the handler; forward
+ * everything else the API accepts, even settings with no obvious generation effect — those are
+ * forwarded because a config that sets one still gets a working call.
+ *
+ * Handler-owned (this handler sets these itself, from the config and the call shape, so a
+ * `model.parameters` value must not be able to override what it already decided): `model`,
+ * `messages`, `system`, `tools`, `max_tokens`.
+ *
+ * Excluded (would break the handler): `stream` — this handler selects streaming by choosing
+ * between `messages.create()` and `messages.stream()`, not by setting a field on the request
+ * body, so a config value here would fight the method actually invoked rather than configure
+ * anything.
+ */
+const FORWARDED_MODEL_PARAMETER_KEYS = [
+  'cache_control',
+  'container',
+  'inference_geo',
+  'metadata',
+  'output_config',
+  'service_tier',
+  'stop_sequences',
+  'temperature',
+  'thinking',
+  'tool_choice',
+  'top_k',
+  'top_p',
+] as const;
+
+type AnthropicHandlerOwnedKeys = 'max_tokens' | 'messages' | 'model' | 'system' | 'tools';
+type AnthropicExcludedKeys = 'stream';
+// If a key of MessageCreateParamsBase is added to the SDK and not classified above as forwarded,
+// handler-owned, or excluded, this type resolves to something other than `never` and the
+// assignment below fails to compile, naming the unclassified key.
+type AnthropicUndecidedModelParameterKeys = Exclude<
+  keyof MessageCreateParamsBase,
+  AnthropicHandlerOwnedKeys | AnthropicExcludedKeys | (typeof FORWARDED_MODEL_PARAMETER_KEYS)[number]
+>;
+const _anthropicModelParameterKeysExhaustive: Record<AnthropicUndecidedModelParameterKeys, never> = {} as Record<
+  never,
+  never
+>;
+
+/**
+ * Picks the subset of `config.model.parameters` that maps onto `MessageCreateParamsBase`, after
+ * moving a top-level `effort` — the shape the LaunchDarkly UI writes — into `output_config.effort`,
+ * the shape the Messages API actually accepts. An `output_config.effort` already present in the
+ * config wins over the renamed value, since it is what the customer set explicitly for that field.
+ * A config that sets nothing here produces `{}`, so the provider call sees exactly what it always
+ * has.
+ */
+function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
+  const normalized = normalizeModelParameters(parameters);
+  const { effort, output_config, ...rest } = normalized;
+  const mergedOutputConfig =
+    effort !== undefined ? { effort, ...(output_config as Record<string, unknown> | undefined) } : output_config;
+  const withEffortMoved = mergedOutputConfig !== undefined ? { ...rest, output_config: mergedOutputConfig } : rest;
+  return pickForwardedModelParameters(withEffortMoved, FORWARDED_MODEL_PARAMETER_KEYS);
+}
+
 const MAX_STEPS = 10;
 
 export function createClaudeMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
@@ -385,11 +452,12 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
       let response: Anthropic.Message;
       try {
         response = await anthropic.messages.create({
+          ...buildModelParameterOptions(config.model.parameters),
           model: config.model.name,
           max_tokens: maxTokens,
-          ...(system ? { system } : {}),
+          system,
           messages: conversation,
-          ...(tools.length > 0 ? { tools } : {}),
+          tools: tools.length > 0 ? tools : undefined,
         });
       } catch (err) {
         failSpan(modelSpan, err);
@@ -547,11 +615,12 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
           let finalMsg: Anthropic.Message;
           try {
             const stream = anthropic.messages.stream({
+              ...buildModelParameterOptions(config.model.parameters),
               model: config.model.name,
               max_tokens: maxTokens,
-              ...(system ? { system } : {}),
+              system,
               messages: conversation,
-              ...(tools.length > 0 ? { tools } : {}),
+              tools: tools.length > 0 ? tools : undefined,
             });
 
             // Yield text deltas for this turn

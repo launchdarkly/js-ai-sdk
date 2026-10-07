@@ -556,6 +556,97 @@ export function parseJSONWithPossibleFences<T>(rawText: string): T | null {
 }
 
 /**
+ * Returns `parameters` unchanged when it is a usable object, `{}` otherwise.
+ *
+ * `model.parameters` is optional on `AiConfigRep`, and a config's own `model` field is technically
+ * reachable as `unknown` at handler call sites, so both must be checked before the bag is read.
+ * This only guards the shape: every handler then narrows the result to its own allowlist with
+ * `pickForwardedModelParameters`, because `model.parameters` comes from the AI Config and must
+ * never be able to set credentials, endpoints, headers or host-process settings.
+ */
+export function normalizeModelParameters(parameters: unknown): Record<string, unknown> {
+  return parameters && typeof parameters === 'object' ? (parameters as Record<string, unknown>) : {};
+}
+
+/**
+ * Picks the subset of `parameters` whose keys appear in `keys`, unchanged otherwise: a config that
+ * sets nothing in `keys` produces `{}`, so the provider call sees exactly what it always has.
+ *
+ * Every handler forwards `model.parameters` through this, against an explicit per-handler
+ * allowlist kept next to the call it maps onto (checked at compile time against the provider or
+ * framework SDK's own option types where the SDK exports them). Unknown keys are dropped. The rule
+ * for those lists: model and run settings only. Credentials, base URLs and other endpoint or
+ * connection settings, timeouts and retries, request header, body and query overrides, remote
+ * tool servers, and host-process settings are never on one, in any spelling.
+ */
+export function pickForwardedModelParameters<K extends string>(
+  parameters: Record<string, unknown> | undefined,
+  keys: ReadonlyArray<K>,
+): Record<string, unknown> {
+  const picked: Record<string, unknown> = {};
+  if (!parameters) return picked;
+  for (const key of keys) {
+    if (parameters[key] !== undefined) picked[key] = parameters[key];
+  }
+  return picked;
+}
+
+/**
+ * Converts one snake_case key to camelCase, or returns `undefined` when the key should pass
+ * through unchanged: a key with no underscore (already camelCase, or a single word like
+ * `temperature`), or one with a leading, trailing, or doubled underscore, where guessing the
+ * intended split would be wrong more often than leaving it alone.
+ */
+function camelizeKey(key: string): string | undefined {
+  if (!key.includes('_')) return undefined;
+  const parts = key.split('_');
+  if (parts.some((part) => part.length === 0)) return undefined;
+  return (
+    parts[0] +
+    parts
+      .slice(1)
+      .map((part) => part[0].toUpperCase() + part.slice(1))
+      .join('')
+  );
+}
+
+/**
+ * Converts the TOP-LEVEL keys of a `model.parameters` bag from snake_case (the LaunchDarkly UI's
+ * convention, and the wire name every provider SDK expects) to camelCase, for the handlers whose
+ * underlying framework, as opposed to a raw provider client, only reads camelCase option names:
+ * `max_turns` becomes `maxTurns`, `top_p` becomes `topP`. Callers narrow the result to their
+ * allowlist afterwards, so camelizing never makes a key forwardable by itself.
+ *
+ * Only top-level keys convert. A nested value such as `thinking: { budget_tokens: 1024 }` is
+ * copied through untouched; a handler whose SDK reads a nested camelCase shape rebuilds that value
+ * itself.
+ *
+ * When a bag sets both spellings of one key (`max_turns` and `maxTurns`), the snake_case one
+ * wins — it is the convention the UI writes, so it is treated as authoritative — deterministically
+ * regardless of which key came first in the object.
+ *
+ * Returns a new object; never mutates the input.
+ */
+export function camelizeModelParameters(parameters: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  const converted: Array<[string, unknown]> = [];
+  for (const [key, value] of Object.entries(parameters)) {
+    const camelKey = camelizeKey(key);
+    if (camelKey === undefined) {
+      result[key] = value;
+    } else {
+      converted.push([camelKey, value]);
+    }
+  }
+  // Applied after every unconverted key, so a snake_case key always overwrites a colliding
+  // camelCase key regardless of iteration order.
+  for (const [camelKey, value] of converted) {
+    result[camelKey] = value;
+  }
+  return result;
+}
+
+/**
  * Returns a copy of `trackData` without `modelKey` / `modelVersion`. Used when
  * overlaying a judge's `trackData` on its parent's so a judge without a pinned
  * model config does not inherit the parent's model identity.
