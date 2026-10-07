@@ -30,13 +30,15 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/types.ts` | All shared TypeScript types — including owned `LDContext`, `LDClientInterface`, `LDClientInterface` — plus the Agent Skills value types, their freezing factories, and `parseAiConfig`'s validators |
 | `src/utils.ts` | `parseTemplate`, `parseJSONWithPossibleFences`, `createHandler` |
 | `src/registry.ts` | `Registry`, `globalRegistry`, `compose` |
+| `src/shutdown-hooks.ts` | The cleanup hooks `shutdown()` runs — how core clears experimental state without importing it |
 | `src/skills-core.ts` | Agent Skills internals shared by the two layers above it: the store and telemetry seams, module state, integrity verification, store resolution |
 | `src/skills.ts` | `skillRefs`, the content accessors, `InMemorySkillStore`, and the documented test-injection hooks |
 | `src/skills-fdv2.ts` | Agent Skills delivery transport — the FDv2 protocol, the wire-key/`version` translation, the held object set, and `FDv2SkillStore`. Sits **below** the store seam; imports `skills-core` only, and nothing imports it |
 | `src/skills-watch.ts` | Agent Skills eager re-reconcile — `watchSkills` / `SkillWatcher`, wiring the store's change listener to `writeSkills`. Sits **above** `skills-fs` and modifies none of it |
 | `src/skills-fs.ts` | `writeSkills` — the manifest format, on-disk filenames, and reconcile semantics |
 | `src/safe-fs.ts` | Symlink-refusing filesystem primitives. Knows nothing about skills; owns the single interceptable rename and unlink call sites |
-| `src/index.ts` | Public barrel — the only surface handler packages import from |
+| `src/index.ts` | Public barrel — the package root, and the only surface handler packages import from |
+| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Agent Skills is exported here and only here |
 
 The Agent Skills module dependencies run **one way only**:
 
@@ -72,7 +74,7 @@ The `3` after the delimiter is what a `{key, version}` reference pins; it become
 
 **HTTP 422 is fatal.** Delivery answers 422 when a connection's declared kinds exclude every payload assigned to it, and chose a non-400 4xx because LD SDKs treat those as terminal. `classifyStatus` returns a `FatalTransportError` and the normal give-up path runs: `failed` and `lastError` are set, `waitForSkills` resolves `false` at once, and `connectionFailures` is left untouched (it counts consecutive *recoverable* failures, and a fatal never retries).
 
-**Polling and streaming have different default hosts.** `GET /sdk/poll` uses `DEFAULT_BASE_URI` (`sdk.launchdarkly.com`) and `GET /sdk/stream` uses `DEFAULT_STREAM_URI` (`stream.launchdarkly.com`), as in the base server-side SDK. The fake endpoint serves both from one origin, so tests cannot catch a stream request sent to the polling host. A lone `baseUri` applies to both, since a relay or private instance usually serves both from one host; `streamUri` overrides the stream origin on its own.
+**Polling and streaming have different default hosts.** `GET /sdk/poll` uses `SKILLS_DEFAULT_BASE_URI` (`sdk.launchdarkly.com`) and `GET /sdk/stream` uses `SKILLS_DEFAULT_STREAM_URI` (`stream.launchdarkly.com`), as in the base server-side SDK. The fake endpoint serves both from one origin, so tests cannot catch a stream request sent to the polling host. A lone `baseUri` applies to both, since a relay or private instance usually serves both from one host; `streamUri` overrides the stream origin on its own.
 
 **Changes commit at `payload-transferred`, not as objects arrive.** A payload version is the unit of consistency. A half-applied full transfer would publish a state the server never described and briefly empty the store, which with pruning on deletes skill files. An interrupted transfer keeps last known good. Listeners fire once per changed object, all at `payload-transferred` — which is why `watchSkills` debounces.
 
@@ -175,13 +177,6 @@ export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';
 export { registerAiSdkPackage } from './sdk-info.js';
-export { allSkills, getSkill, getSkillResult, getSkills, InMemorySkillStore, skillRefs } from './skills.js';
-export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills-fdv2.js';
-export { DEFAULT_BASE_URI, DEFAULT_STREAM_URI, FDv2SkillStore } from './skills-fdv2.js';
-export type { WriteSkillsOptions } from './skills-fs.js';
-export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
-export type { WatchSkillsOptions } from './skills-watch.js';
-export { DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
 export { makeNodeTrackData, makeRunTrackData } from './tracking.js';
 export type {
   ConfigArgs,
@@ -206,23 +201,13 @@ export type {
   LDUser,
   Message,
   MessageContent,
-  OnUnavailable,
   ProviderGraphResponse,
   ProviderHandler,
   ProviderResponse,
   ProviderSetupFn,
-  RawSkillObject,
-  ReconcileAction,
-  ReconcileActionKind,
-  ReconcileReport,
   RegistryInput,
   RouteResult,
   RunNodeOptions,
-  Skill,
-  SkillOutcome,
-  SkillOutcomeReason,
-  SkillReference,
-  SkillStore,
   StreamEvent,
   TextContentBlock,
   TokenUsage,
@@ -233,9 +218,6 @@ export type {
   VariationMeta as LDVariationMeta,
 } from './types.js';
 export {
-  createSkill,
-  createSkillOutcome,
-  createSkillReference,
   GraphTopologySchema,
   NATIVE_TOOL_KEY,
   NativeTool,
@@ -257,9 +239,69 @@ export {
 } from './utils.js';
 ```
 
-When adding a new export, add it here. Handler packages must never import from sub-paths (e.g. `@launchdarkly/ai-server/dist/client`).
+## Experimental Exports (`src/experimental.ts`)
 
-`MAX_SKILL_CONTENT_BYTES` and `SKILL_OBJECT_KIND` are deliberately **not** exported; both stay internal to `skills-core.ts`, and an absence assertion enforces it. Do not re-export either from `index.ts`:
+Published as `@launchdarkly/ai-server/experimental` (a subpath in `package.json` `exports`, built
+alongside the root by `tsup.config.ts`). Names here may change in a minor release and are **absent
+from the package root**. `@launchdarkly/ai-node/experimental` re-exports this entry point. Generated from
+`src/experimental.ts` the same way as the block above.
+
+```ts
+export {
+  allSkills,
+  getSkill,
+  getSkillResult,
+  getSkills,
+  InMemorySkillStore,
+  setSkillStore,
+  skillRefs,
+} from './skills.js';
+export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills-fdv2.js';
+export { FDv2SkillStore, SKILLS_DEFAULT_BASE_URI, SKILLS_DEFAULT_STREAM_URI } from './skills-fdv2.js';
+export type { WriteSkillsOptions } from './skills-fs.js';
+export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
+export type { WatchSkillsOptions } from './skills-watch.js';
+export { SKILLS_DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
+export type {
+  OnUnavailable,
+  RawSkillObject,
+  ReconcileAction,
+  ReconcileActionKind,
+  ReconcileReport,
+  Skill,
+  SkillOutcome,
+  SkillOutcomeReason,
+  SkillReference,
+  SkillStore,
+} from './types.js';
+export { createSkill, createSkillOutcome, createSkillReference } from './types.js';
+```
+
+The stage rules (shared spec §0.3), which every change here must keep:
+
+- **Core never names experimental.** No root export, core type, function signature, or option may
+  mention an experimental name. `AiConfigRep.skills` is therefore typed `unknown` rather than as
+  `SkillReference[]`, and the store is set with `setSkillStore`, not an `initClient` option.
+- **An experimental field never fails a core call.** `parseAiConfig` passes `skills` through
+  unvalidated; `skillRefs` validates it and throws on a present but malformed field, rather than
+  returning a partial list that would authorize a prune.
+  Experimental code may import core freely.
+- **Core reaches experimental only through an internal hook**, and a failure there is caught and
+  logged, never thrown into the core call. Core never imports an experimental module: an experimental
+  module registers its cleanup with `registerShutdownHook` (`src/shutdown-hooks.ts`) when it loads,
+  and `shutdown()` runs whatever is registered. Today the one hook is Agent Skills', registered by
+  `skills-core.ts`. A test asserts that loading the root registers no Agent Skills hook.
+- **Both entry points are in the API report.** `etc/ai-server.api.md` (root) and
+  `etc/ai-server-experimental.api.md` are checked in; CI runs
+  `yarn workspace @launchdarkly/ai-server api:check`. After an intended surface change run
+  `yarn workspace @launchdarkly/ai-server api:update` (or `yarn api:update` from this directory) and
+  commit both reports.
+- **Promotion to core** adds root exports and keeps these as `/** @deprecated use the root export */`
+  re-exports until the next major.
+
+When adding a new export, add it here. Handler packages must never deep-import build paths (e.g. `@launchdarkly/ai-server/dist/client`). The only sub-path anyone may import is the published `@launchdarkly/ai-server/experimental`, and a handler package does so only for an experimental feature it integrates with; everything else comes from the package root.
+
+`MAX_SKILL_CONTENT_BYTES` and `SKILL_OBJECT_KIND` are deliberately **not** exported; both stay internal to `skills-core.ts`, and an absence assertion enforces it. Do not re-export either from `index.ts` or `experimental.ts`:
 
 - The size cap is a local bound on content the platform produces. Exporting it would semver-lock a number this SDK does not own; the `over_size_cap` reason string already reports the bound when it withholds content.
 - The kind is the SDK-side value handed to a `SkillStore`, not the wire contract, and publishing it would imply otherwise.
@@ -431,8 +473,8 @@ When `enabled` is `false`, `config` is always `null`. When `enabled` is `true` b
 
 - **Lazy initialization.** Importing the package does not initialize the LD client. The first API call that needs LaunchDarkly (`extractVariation`, graph resolution, etc.) calls `initClient()` internally, provided `LD_SDK_KEY` is set.
 - **Explicit initialization — Node SDK path.** `initClient(options?)` dynamically imports `@launchdarkly/node-server-sdk` at runtime (optional peer dep). If the package is not installed it throws with a clear message.
-- **Explicit initialization — BYOC path.** `initClient(client, options?)` accepts any pre-initialized object that satisfies `LDClientInterface` — this is the path for Vercel, Cloudflare, or other edge runtimes whose SDK has different init semantics. No `@launchdarkly/node-server-sdk` is required. The optional second argument is the same options bag as the other overload, passed whole to telemetry setup (`otlpEndpoint`, `serviceName` and `environment` mean the same thing), and is how a BYOC caller configures `skillStore`.
-- **`skillStore` is the one option applied on every call.** Every other option is ignored once the client singleton exists. `skillStore` is applied *before* the idempotency check, so a client that initialized lazily, or without a store, can be given one later. A nullish `skillStore` never clears a configured store; only `shutdown()` does, and it clears skills state unconditionally, before its own early return, because that state can exist without a client.
+- **Explicit initialization — BYOC path.** `initClient(client, options?)` accepts any pre-initialized object that satisfies `LDClientInterface` — this is the path for Vercel, Cloudflare, or other edge runtimes whose SDK has different init semantics. No `@launchdarkly/node-server-sdk` is required. The optional second argument is the same options bag as the other overload, passed whole to telemetry setup (`otlpEndpoint`, `serviceName` and `environment` mean the same thing).
+- **Options are ignored once the client singleton exists.** The skill store is not an option: `setSkillStore(store)` (experimental entry point) sets it independently of `initClient`, on every call, so a client that initialized lazily can be given one later. A nullish argument never clears a configured store; only `shutdown()` does, and it clears skills state unconditionally, before its own early return, because that state can exist without a client. A throw from that clearing is logged and does not fail `shutdown()`. Any options key `initClient` does not read, a `skillStore` key included, is ignored with a generic warning that names the key but not the feature or its setter.
 - **Return value.** `initClient()` returns `Promise<LDClientInterface>`. Callers that don't need the instance may discard the return value — this is a non-breaking change from the previous `Promise<void>` signature.
 - `getClient()` throws if `initClient()` has not resolved — any code that calls `getClient()` directly must ensure initialization has occurred.
 - `shutdown()` must be called before process exit. It flushes OTel spans, flushes LD events, and closes the LD client. `client.close()` runs even when `flush()` throws.
@@ -518,7 +560,7 @@ Three specifics a later contributor is most likely to widen:
 
 - **The 22 Windows reserved device names** — `con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9` — are rejected by `keyRejectionReason` on every platform.
   - No `process.platform === 'win32'` gate: a root written by a Linux container and read from a Windows host is an ordinary deployment, and with no Windows CI runner a platform branch would be untested.
-  - Not in `isValidSkillKey` or `SKILL_KEY_PATTERN` either. `parseAiConfig` fails closed on a bad `skills` entry, so a grammar rejection would invalidate the *whole* AI Config for a customer who never touches Windows. `skillRefs` would also drop the reference (with a warning), shortening what it hands `writeSkills` so prune deletes the skill's on-disk copy — "fails to write on Windows" becomes "deleted on Linux". The 255-byte path-component bound lives in this layer for the same reason.
+  - Not in `isValidSkillKey` or `SKILL_KEY_PATTERN` either. `skillRefs` fails closed on a bad `skills` entry, so a grammar rejection would reject *every* skill reference for a customer who never touches Windows. A grammar that dropped the entry instead would shorten what `skillRefs` hands `writeSkills`, so prune deletes the skill's on-disk copy — "fails to write on Windows" becomes "deleted on Linux". The 255-byte path-component bound lives in this layer for the same reason.
   - The set is exact: `com0` and `lpt0` are not reserved, and no case folding or suffix stripping is needed because the key grammar admits no uppercase, no `.`, and no `$`.
 - **Adoption narrows the clobber refusal; it is not a hole in it.** A file at a managed path with no manifest entry is adopted (recorded, reported `skipped_current`) only when its on-disk sha256 equals the resolved content hash. That lets a reconcile killed between the content writes and the final manifest write heal instead of wedging. Adopt on anything weaker than an exact hash match and the guarantee is gone. `skipped_current` is reused because a new `ReconcileActionKind` member would break every consumer with an exhaustive `switch`.
 - **`readRegularFile` is what makes that read safe**, and every part is load-bearing:
@@ -552,8 +594,8 @@ Two decisions here look like unfinished work and are not. Do not reverse either 
 ## Adding a New Export
 
 1. Implement the function/type in the appropriate `src/*.ts` file.
-2. Add a named export to `src/index.ts`.
-3. Rebuild: `yarn build` from this directory.
+2. Add a named export to `src/index.ts` — or to `src/experimental.ts` if the feature is experimental.
+3. Rebuild: `yarn build` from this directory, then `yarn api:update` (from this directory) and commit the changed `etc/*.api.md` report.
 4. All handler packages pick up the change automatically via the local `file:../client` dependency.
 
 ## Invariants to Preserve

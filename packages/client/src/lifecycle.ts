@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { context, propagation, trace } from '@opentelemetry/api';
 import { ConversationIdSpanProcessor } from './conversation.js';
 import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
-import { _clearState, _setStore } from './skills.js';
+import { runShutdownHooks } from './shutdown-hooks.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
 import { parseAiConfig } from './types.js';
 
@@ -322,6 +322,36 @@ function isLDClient(value: unknown): value is LDClientInterface {
 }
 
 /**
+ * Every `InitBaseClientOptions` key `initClient` reads. Typed against the
+ * options type, so adding an option without listing it here fails to compile.
+ */
+const INIT_CLIENT_OPTIONS: Record<keyof InitBaseClientOptions, true> = {
+  sdkKey: true,
+  baseUri: true,
+  streamUri: true,
+  eventsUri: true,
+  serviceName: true,
+  environment: true,
+  otlpEndpoint: true,
+};
+
+/**
+ * Warns about any options-bag key `initClient` does not read. A JavaScript
+ * caller (or one that cast past the type) would otherwise have a misspelt or
+ * retired option dropped silently.
+ */
+function warnOnUnknownOptions(options: unknown): void {
+  if (typeof options !== 'object' || options === null) return;
+  const unknown = Object.keys(options)
+    .filter((key) => !Object.hasOwn(INIT_CLIENT_OPTIONS, key))
+    .sort();
+  if (unknown.length > 0) {
+    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; an ignored option must be visible
+    console.warn(`[LaunchDarkly] Ignoring unrecognized initClient option(s): ${unknown.join(', ')}`);
+  }
+}
+
+/**
  * Initializes the LaunchDarkly client.
  *
  * **Overload 1 — options bag (default Node.js path):**
@@ -334,11 +364,7 @@ function isLDClient(value: unknown): value is LDClientInterface {
  * `@launchdarkly/vercel-server-sdk`) to bypass the Node SDK entirely. The
  * optional second argument is the same options bag as the first overload.
  *
- * Idempotent: later calls return the existing client and ignore every option
- * **except** `skillStore`, which is applied on every call, so you can add a store
- * after initialization with `initClient({ skillStore: store })`. A nullish store
- * never clears the current one (use `shutdown()`). Without a store, the Agent
- * Skills accessors throw.
+ * Idempotent: later calls return the existing client and ignore their options.
  *
  * A call that rejects caches neither a client nor the failure: a later call
  * retries initialization (once `LD_SDK_KEY` is available, say) rather than
@@ -361,9 +387,7 @@ export async function initClient(
 ): Promise<LDClientInterface> {
   const singleton = getSingleton();
 
-  // Applied on every call, before the idempotency check.
-  const skillStore = (isLDClient(optionsOrClient) ? clientOptions : optionsOrClient)?.skillStore;
-  if (skillStore != null) _setStore(skillStore);
+  warnOnUnknownOptions(isLDClient(optionsOrClient) ? clientOptions : optionsOrClient);
 
   if (isLDClient(optionsOrClient)) {
     // Pre-initialized client path (edge / custom runtimes).
@@ -435,11 +459,11 @@ export function getClient(): LDClientInterface {
 
 export async function shutdown(): Promise<void> {
   const singleton = getSingleton();
-  // A store can be configured without a client, and an init can be in flight
-  // without one, so shutdown() always leaves the next initClient() starting
-  // from scratch. Dropping the init promise abandons that attempt: it closes
-  // its own client when it finishes (see `startInit`).
-  _clearState();
+  // Experimental state (e.g. an Agent Skills store) can exist without a client,
+  // and an init can be in flight without one, so shutdown() always leaves the
+  // next initClient() starting from scratch. Dropping the init promise abandons
+  // that attempt: it closes its own client when it finishes (see `startInit`).
+  runShutdownHooks();
   singleton.initPromise = null;
   // Null the singleton before teardown so that any failure mid-flight still
   // leaves the process in a state where a second shutdown() call is a no-op.

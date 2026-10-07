@@ -27,6 +27,13 @@
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "experimental": [
+        "dist/experimental.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "import": {
@@ -36,6 +43,16 @@
       "require": {
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
+      }
+    },
+    "./experimental": {
+      "import": {
+        "types": "./dist/experimental.d.ts",
+        "default": "./dist/experimental.js"
+      },
+      "require": {
+        "types": "./dist/experimental.d.cts",
+        "default": "./dist/experimental.cjs"
       }
     }
   },
@@ -48,7 +65,9 @@
     "build:watch": "tsup-node --watch",
     "clean": "rm -rf dist",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "api:check": "tsc --emitDeclarationOnly --declarationMap false --outDir temp/dts && api-extractor run --config api-extractor.json && api-extractor run --config api-extractor.experimental.json",
+    "api:update": "tsc --emitDeclarationOnly --declarationMap false --outDir temp/dts && api-extractor run --local --config api-extractor.json && api-extractor run --local --config api-extractor.experimental.json"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
@@ -92,6 +111,7 @@
   },
   "devDependencies": {
     "@launchdarkly/node-server-sdk": "^9.7.3",
+    "@microsoft/api-extractor": "^7.59.4",
     "@opentelemetry/context-async-hooks": "^2.8.0",
     "@opentelemetry/core": "^2.8.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.219.0",
