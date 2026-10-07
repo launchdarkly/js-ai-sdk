@@ -67,6 +67,41 @@ export const FORMATTING_INSTRUCTIONS = [
  */
 export const isFiniteScore = (score: unknown): score is number => typeof score === 'number' && Number.isFinite(score);
 
+export type TypesafeJudgeEntry = { key: string; score: number; eventKey: string; reason: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * A TypeSafe handler returns one Jev call as `{kind: "typesafe", results: [...]}`.
+ * Returns `undefined` for every other judge payload so `{score, reasoning}` stays unchanged.
+ */
+export function typesafeJudgeEntries(raw: unknown): TypesafeJudgeEntry[] | undefined {
+  const parsed = typeof raw === 'string' ? parseJSONWithPossibleFences<unknown>(raw) : raw;
+  if (!isRecord(parsed) || parsed.kind !== 'typesafe') return undefined;
+  if (!Array.isArray(parsed.results) || parsed.results.length === 0) {
+    throw new Error('TypeSafe judge output is missing results');
+  }
+  return parsed.results.map((item) => {
+    if (!isRecord(item) || typeof item.key !== 'string' || item.key === '') {
+      throw new Error('TypeSafe judge result is missing a key');
+    }
+    if (!isFiniteScore(item.score)) {
+      throw new Error(`TypeSafe judge result '${item.key}' is missing a finite score`);
+    }
+    if (typeof item.eventKey !== 'string' || item.eventKey === '') {
+      throw new Error(`TypeSafe judge result '${item.key}' is missing an eventKey`);
+    }
+    return {
+      key: item.key,
+      score: item.score,
+      eventKey: item.eventKey,
+      reason: typeof item.reason === 'string' ? item.reason : '',
+    };
+  });
+}
+
 export const runJudges = async ({
   config,
   userContext,
@@ -171,6 +206,29 @@ export const runJudges = async ({
       const judgeResponse = typeof rawJudgeResponse === 'string' ? rawJudgeResponse : JSON.stringify(rawJudgeResponse);
 
       try {
+        const typesafe = typesafeJudgeEntries(judgeResponse);
+        if (typesafe) {
+          // One Jev call. Every label is returned with that call's full usage,
+          // and each label is tracked under its own eventKey.
+          typesafe.forEach((entry) => {
+            const resultKey = `${judge.key}.${entry.key}`;
+            judgeResults[resultKey] = {
+              usage,
+              response: entry.reason,
+              score: entry.score,
+              eventKey: entry.eventKey,
+            };
+            recordEvaluation(entry.score, undefined, resultKey);
+            getClient().track(
+              entry.eventKey,
+              userContext,
+              { ...baseTrackData, judgeConfigKey: resultKey },
+              entry.score,
+            );
+          });
+          return;
+        }
+
         const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
         if (!parsed) {
           throw new Error('Invalid JSON');
@@ -346,6 +404,34 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
     });
 
     const judgeResponse = typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse);
+    let typesafe: TypesafeJudgeEntry[] | undefined;
+    try {
+      typesafe = typesafeJudgeEntries(judgeResponse);
+    } catch {
+      return null;
+    }
+    if (typesafe) {
+      const first = typesafe[0];
+      const firstKey = `${configKey}.${first.key}`;
+      const results: NonNullable<ProviderResponse['judgeResults']> = {};
+      const metrics: NonNullable<JudgeRunResult['metrics']> = [];
+      for (const entry of typesafe) {
+        const resultKey = `${configKey}.${entry.key}`;
+        results[resultKey] = { score: entry.score, response: entry.reason, usage, eventKey: entry.eventKey };
+        metrics.push({ eventKey: entry.eventKey, score: entry.score, judgeConfigKey: resultKey });
+        recordEvaluation(entry.score, undefined, resultKey);
+      }
+      return {
+        score: first.score,
+        response: first.reason,
+        usage,
+        eventKey: first.eventKey,
+        results,
+        metrics,
+        trackData: { ...omitModelStamps(parentTrackData), ...trackData, judgeConfigKey: firstKey },
+      };
+    }
+
     const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
     if (!parsed) return null;
 

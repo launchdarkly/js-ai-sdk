@@ -30,6 +30,25 @@ describe('parseAiConfig', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts a classifier judge with empty messages and no instructions', () => {
+    const result = parseAiConfig({
+      ...base,
+      messages: [],
+      model: { name: 'jev-latest', parameters: {} },
+      provider: { name: 'TypeSafe' },
+      classifiers: [
+        {
+          key: 'accuracy',
+          eventKey: '$ld:ai:judge:jev:accuracy',
+          instructions: 'How accurate?',
+          type: 'score',
+          criteria: ['Great', 'Ok', 'Bad'],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
   it('rejects a message with an invalid role', () => {
     const result = parseAiConfig({
       ...base,
