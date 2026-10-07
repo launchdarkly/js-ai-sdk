@@ -23,16 +23,22 @@ import {
   verifyRawSkill,
 } from './skills-core.js';
 import type { AiConfigRep, RawSkillObject, Skill, SkillOutcome, SkillReference, SkillStore } from './types.js';
-import { createSkillOutcome, createSkillReference, isValidSkillKey, isValidSkillVersion } from './types.js';
+import {
+  createSkillOutcome,
+  createSkillReference,
+  isValidSkillKey,
+  isValidSkillVersion,
+  SKILL_KEY_MAX_LENGTH,
+} from './types.js';
 
 // ---------------------------------------------------------------------------
 // Injection points
 // ---------------------------------------------------------------------------
 //
-// Used by `initClient` and `shutdown` (and tests). The state itself lives in
+// Used by `setSkillStore` and `shutdown` (and tests). The state itself lives in
 // `skills-core.ts`, so there is exactly one store and one emitter.
 
-/** Installs the configured skill store. Called by `initClient`. */
+/** Installs the configured skill store. Called by `setSkillStore`. */
 export function _setStore(store: SkillStore): void {
   setStore(store);
 }
@@ -47,6 +53,40 @@ export function _setEmitterForTesting(emitter: {
 /** Clears the configured store and emitter. Called by `shutdown`. */
 export function _clearState(): void {
   clearState();
+}
+
+/**
+ * Sets the store the Agent Skills accessors read from. Without one, they throw.
+ *
+ * Applies on every call, including after `initClient`, so a lazily initialized
+ * client can be given a store later; a second call replaces the first store. A
+ * nullish argument is ignored and never clears the configured store — use
+ * `shutdown()` for that.
+ *
+ * Replacing a store does not close the previous one; close it yourself if it
+ * holds a connection. A running `watchSkills` keeps listening to the store it
+ * started with, so close the watcher and start a new one to follow the
+ * replacement.
+ *
+ * ```ts
+ * import { FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server/experimental';
+ *
+ * setSkillStore(new FDv2SkillStore(process.env.LD_SDK_KEY!).start());
+ * ```
+ *
+ * @throws TypeError if `store` is not nullish and has no `getObject` and
+ * `allObjects` methods.
+ */
+export function setSkillStore(store: SkillStore | null | undefined): void {
+  if (store == null) return;
+  const missing = (['getObject', 'allObjects'] as const).filter(
+    (name) => typeof (store as unknown as Record<string, unknown>)[name] !== 'function',
+  );
+  if (missing.length > 0) {
+    const kind = typeof store === 'object' ? (store.constructor?.name ?? 'Object') : typeof store;
+    throw new TypeError(`setSkillStore needs a SkillStore; ${kind} has no ${missing.join(' or ')} method.`);
+  }
+  _setStore(store);
 }
 
 /**
@@ -179,46 +219,53 @@ export class InMemorySkillStore implements SkillStore {
 // ---------------------------------------------------------------------------
 
 /**
- * Warns that one `skills` entry was dropped. Never silent: `writeSkills` with
- * `prune: true` would delete a dropped skill's files.
+ * Why a present `skills` field is malformed, or `null` when it is valid. One
+ * malformed reference rejects the whole field, never a partial list.
  */
-function warnDropped(index: number, why: string): void {
-  // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a dropped skill reference must be visible
-  console.warn(`[LaunchDarkly] skills[${index}]${why}; it was dropped from the projection`);
+function skillsFieldRejectionReason(raw: unknown): string | null {
+  if (!Array.isArray(raw)) return 'skills must be an array of {key, version} objects';
+
+  for (const [index, entry] of raw.entries()) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return `skills[${index}] must be an object with key and version`;
+    }
+    const { key, version } = entry as { key?: unknown; version?: unknown };
+    if (!isValidSkillKey(key)) {
+      return `skills[${index}].key must be a string matching ^[a-z0-9][a-z0-9-]*$ of at most ${SKILL_KEY_MAX_LENGTH} characters`;
+    }
+    if (!isValidSkillVersion(version)) return `skills[${index}].version must be an integer >= 1`;
+  }
+  return null;
 }
 
 /**
  * Returns the skill references attached to a resolved AI Config.
  *
  * Pure: no network, store, or telemetry. Returns `[]` when the config has no
- * skills. Typical use: `await getSkills(skillRefs(config))`.
+ * `skills` field, or when `config` is not an object (for example `null` from a
+ * failed `inspectConfig`). Typical use: `await getSkills(skillRefs(config))`.
  *
- * Invalid entries (possible only in a hand-built object; `parseAiConfig` rejects
- * them) are dropped with a warning, because `writeSkills` with `prune: true`
- * would delete a dropped skill's files.
+ * `parseAiConfig` does not validate `skills`, so a malformed field does not
+ * fail core config calls. It is validated here instead, and rejected whole:
+ * `writeSkills` with `prune: true` would delete the files of any skill missing
+ * from the list, so a partial or empty list is never returned for a field that
+ * is present.
+ *
+ * @throws TypeError if `skills` is present but is not an array of
+ * `{ key, version }` objects with a valid key and an integer version >= 1,
+ * including `skills: null`.
  */
 export function skillRefs(config: AiConfigRep | null | undefined): SkillReference[] {
   if (typeof config !== 'object' || config === null) return [];
 
-  const raw = (config as { skills?: unknown }).skills;
-  if (!Array.isArray(raw)) return [];
+  const raw: unknown = config.skills;
+  if (raw === undefined) return [];
 
-  const refs: SkillReference[] = [];
-  for (const [index, entry] of raw.entries()) {
-    if (typeof entry !== 'object' || entry === null) {
-      warnDropped(index, ' is not a { key, version } object');
-      continue;
-    }
-    const { key, version } = entry as { key?: unknown; version?: unknown };
-    if (!isValidSkillKey(key)) {
-      warnDropped(index, '.key must be 1–256 characters matching /^[a-z0-9][a-z0-9-]*$/');
-    } else if (!isValidSkillVersion(version)) {
-      warnDropped(index, '.version must be an integer >= 1');
-    } else {
-      refs.push(createSkillReference({ key, version }));
-    }
-  }
-  return refs;
+  const rejection = skillsFieldRejectionReason(raw);
+  if (rejection !== null) throw new TypeError(`Invalid skills field in AI Config: ${rejection}`);
+  return (raw as Array<{ key: string; version: number }>).map(({ key, version }) =>
+    createSkillReference({ key, version }),
+  );
 }
 
 // ---------------------------------------------------------------------------

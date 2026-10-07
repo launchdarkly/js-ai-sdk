@@ -305,8 +305,7 @@ describe('lifecycle', () => {
 
     it('passes the BYOC overload options through to telemetry setup', async () => {
       // The second argument is the same options bag as the other overload, so
-      // `otlpEndpoint` must reach the exporter rather than being dropped on the
-      // floor while only `skillStore` is read off it.
+      // `otlpEndpoint` must reach the exporter rather than being dropped.
       const byocClient = {
         variation: vi.fn(),
         track: vi.fn(),
@@ -318,6 +317,41 @@ describe('lifecycle', () => {
       expect(mockOTLPTraceExporter).toHaveBeenCalledWith(
         expect.objectContaining({ url: 'https://otlp.example.test/v1/traces' }),
       );
+    });
+
+    it('warns about an unrecognized option on both overloads', async () => {
+      // A misspelt or retired option would otherwise be dropped silently.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const { initClient } = await import('../lifecycle.js');
+        await initClient(makeMockClient(), { serviceName: 'svc', sdkkey: 'sdk-x' } as never);
+        await initClient({ zeta: 1, alpha: 2 } as never);
+        expect(warn.mock.calls).toEqual([
+          ['[LaunchDarkly] Ignoring unrecognized initClient option(s): sdkkey'],
+          ['[LaunchDarkly] Ignoring unrecognized initClient option(s): alpha, zeta'],
+        ]);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not warn about documented options', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const { initClient } = await import('../lifecycle.js');
+        await initClient(makeMockClient(), {
+          sdkKey: 'sdk-x',
+          baseUri: 'https://base.example',
+          streamUri: 'https://stream.example',
+          eventsUri: 'https://events.example',
+          serviceName: 'svc',
+          environment: 'test',
+          otlpEndpoint: 'https://otlp.example',
+        });
+        expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/unrecognized initClient option/));
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('is idempotent — calls init only once when called twice', async () => {
@@ -655,6 +689,76 @@ describe('lifecycle', () => {
       // Second call must be a no-op (not throw "client not initialized").
       await expect(shutdown()).resolves.toBeUndefined();
     });
+
+    describe('shutdown hooks', () => {
+      const hooksKey = Symbol.for('@launchdarkly/ai-server:shutdown-hooks');
+      const hooks = () => (globalThis as any)[hooksKey] as Map<string, () => void> | undefined;
+
+      afterEach(() => {
+        hooks()?.delete('test: throws');
+        hooks()?.delete('test: records');
+      });
+
+      it('runs every registered hook, even before a client exists', async () => {
+        const { registerShutdownHook } = await import('../shutdown-hooks.js');
+        const hook = vi.fn();
+        registerShutdownHook('test: records', hook);
+
+        const { shutdown } = await import('../lifecycle.js');
+        await shutdown();
+
+        expect(hook).toHaveBeenCalledOnce();
+      });
+
+      it('a throwing hook is logged and fails neither the other hooks nor client teardown', async () => {
+        // Experimental code reached from core through a hook must not break
+        // the core call.
+        const { registerShutdownHook } = await import('../shutdown-hooks.js');
+        registerShutdownHook('test: throws', () => {
+          throw new Error('clear exploded');
+        });
+        const after = vi.fn();
+        registerShutdownHook('test: records', after);
+        mockLdInit.mockReturnValue(makeMockClient());
+        process.env.LD_SDK_KEY = 'test-key';
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+        try {
+          const { initClient, shutdown } = await import('../lifecycle.js');
+          await initClient();
+          await expect(shutdown()).resolves.toBeUndefined();
+
+          expect(after).toHaveBeenCalledOnce();
+          expect(mockClose).toHaveBeenCalledOnce();
+          expect(warn).toHaveBeenCalledWith(expect.stringContaining('test: throws'), expect.any(Error));
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('re-registering a name replaces the hook rather than adding one', async () => {
+        const { registerShutdownHook } = await import('../shutdown-hooks.js');
+        const first = vi.fn();
+        const second = vi.fn();
+        registerShutdownHook('test: records', first);
+        registerShutdownHook('test: records', second);
+
+        const { shutdown } = await import('../lifecycle.js');
+        await shutdown();
+
+        expect(first).not.toHaveBeenCalled();
+        expect(second).toHaveBeenCalledOnce();
+      });
+
+      it('loading the package root registers no Agent Skills hook', async () => {
+        // The root entry point must not import experimental code. Agent Skills
+        // registers its hook when its core module loads, so the hook's absence
+        // after loading the root shows the root never loaded that module.
+        await import('../index.js');
+
+        expect([...(hooks()?.keys() ?? [])].filter((name) => !name.startsWith('test: '))).toEqual([]);
+      });
+    });
   });
 
   describe('OTel global registration', () => {
@@ -966,6 +1070,30 @@ describe('lifecycle', () => {
       expect(result.enabled).toBe(true);
       expect(result.config?.model.name).toBe('gpt-4o');
       expect(result.meta?.variationKey).toBe('v1');
+    });
+
+    it('does not fail on a malformed skills field', async () => {
+      // Agent Skills is experimental, so its field cannot break a core call
+      // (TESTING.md §0.3). `skillRefs` rejects it instead.
+      const mockClient = makeMockClient();
+      mockClient.variation = vi.fn().mockResolvedValue({
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'messages' },
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'You are helpful.',
+        skills: [{ key: 'My_Skill', version: 0 }],
+      });
+      mockLdInit.mockReturnValue(mockClient);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { inspectConfig, extractVariation } = await import('../lifecycle.js');
+      const ctx = { kind: 'user' as const, key: 'user-1' };
+      const result = await inspectConfig('my-flag', ctx);
+      const extracted = await extractVariation('my-flag', ctx);
+
+      expect(result.enabled).toBe(true);
+      expect(result.config?.model.name).toBe('gpt-4o');
+      expect(extracted.config.model.name).toBe('gpt-4o');
     });
 
     it('preserves modelKey and modelVersion from _ldMeta on meta', async () => {

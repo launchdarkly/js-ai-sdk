@@ -39,10 +39,8 @@ import {
   BACKOFF_RESET_INTERVAL_MS,
   backoffDelayMs,
   classifyStatus,
-  DEFAULT_BASE_URI,
   DEFAULT_POLL_TIMEOUT_MS,
   DEFAULT_STREAM_READ_TIMEOUT_MS,
-  DEFAULT_STREAM_URI,
   decodePollBody,
   FatalTransportError,
   FDV2_KEY_DELIMITER,
@@ -58,6 +56,8 @@ import {
   RecoverableTransportError,
   type Requester,
   retryAfterMs,
+  SKILLS_DEFAULT_BASE_URI,
+  SKILLS_DEFAULT_STREAM_URI,
   SkillObjectSet,
   StaleRequestStateError,
   seamObjectFromPut,
@@ -71,6 +71,15 @@ import type { RawSkillObject, ReconcileReport } from '../types.js';
 const SDK_KEY = 'sdk-00000000-0000-4000-8000-000000000000';
 const SKILL_BODY = '---\nname: PDF Extraction\n---\nExtract text from PDFs.\n';
 
+/**
+ * Convenience for building fixtures whose `contentHash` is correct.
+ *
+ * Deliberately the same expression the implementation hashes with, which is
+ * what makes it useless as an oracle: a change to the hashing rule moves every
+ * fixture built here along with it, and nothing in this file would fail. The
+ * rule is pinned independently, against the digests LaunchDarkly's delivery
+ * service computes, in the `contentHash contract` suite in `skills.test.ts`.
+ */
 const hash = (content: string): string => createHash('sha256').update(content, 'utf8').digest('hex');
 
 // ─── Wire builders — one place that knows the shape ──────────────────────────
@@ -4120,11 +4129,11 @@ describe('endpoints', () => {
   }
 
   it('polls sdk.launchdarkly.com and streams from stream.launchdarkly.com by default', async () => {
-    expect(DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
-    expect(DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
+    expect(SKILLS_DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
+    expect(SKILLS_DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
     const requester = requesterOf(new FDv2SkillStore(SDK_KEY));
-    expect(requester.baseUri).toBe(DEFAULT_BASE_URI);
-    expect(requester.streamUri).toBe(DEFAULT_STREAM_URI);
+    expect(requester.baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
+    expect(requester.streamUri).toBe(SKILLS_DEFAULT_STREAM_URI);
     const { poll, stream } = await requestedUrls(requester);
     expect(poll).toBe('https://sdk.launchdarkly.com/sdk/poll?kinds=agent-skill');
     expect(stream).toBe('https://stream.launchdarkly.com/sdk/stream?kinds=agent-skill');
@@ -4148,7 +4157,7 @@ describe('endpoints', () => {
 
   it('keeps the default poll host when only streamUri is given', () => {
     const requester = requesterOf(new FDv2SkillStore(SDK_KEY, { streamUri: 'https://stream.example.com' }));
-    expect(requester.baseUri).toBe(DEFAULT_BASE_URI);
+    expect(requester.baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
     expect(requester.streamUri).toBe('https://stream.example.com');
   });
 
@@ -4516,7 +4525,7 @@ describe('transport contract', () => {
       expect(requesterOf(new FDv2SkillStore(SDK_KEY, { baseUri: 'https://sdk.example.com/' })).baseUri).toBe(
         'https://sdk.example.com',
       );
-      expect(requesterOf(new FDv2SkillStore(SDK_KEY)).baseUri).toBe(DEFAULT_BASE_URI);
+      expect(requesterOf(new FDv2SkillStore(SDK_KEY)).baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
     });
 
     it('refuses a plain http:// streamUri by name', () => {

@@ -57,6 +57,15 @@ const REMOVED_SIGNALS = ['AgentControl Skill SDK Reference Returned', 'AgentCont
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Convenience for building fixtures whose `contentHash` is correct.
+ *
+ * Deliberately the same expression the implementation hashes with, which is
+ * what makes it useless as an oracle: a change to the hashing rule moves every
+ * fixture built here along with it, and nothing in this file would fail. The
+ * rule is pinned independently, against the digests LaunchDarkly's delivery
+ * service computes, in the `contentHash contract` suite in `skills.test.ts`.
+ */
 function hash(content: string): string {
   return createHash('sha256').update(Buffer.from(content, 'utf-8')).digest('hex');
 }
@@ -1801,13 +1810,12 @@ describe('writeSkills Windows reserved device names', () => {
 
   it('a reserved name is still a valid key at the grammar level', () => {
     // This is the whole reason the check lives in the filesystem layer rather
-    // than in `isValidSkillKey`. `parseAiConfig` fails closed on a bad skills
-    // entry, so a grammar-level rejection would invalidate the *entire* AI
-    // Config — model, provider, instructions, tools — for a Linux or macOS
-    // customer, over a constraint that only exists on Windows. And `skillRefs`
-    // would silently drop the reference, which lets prune delete the skill's
-    // on-disk copy: "this fails to write on Windows" would become "this gets
-    // deleted on Linux".
+    // than in `isValidSkillKey`. `skillRefs` fails closed on a bad skills
+    // entry, so a grammar-level rejection would reject *every* skill reference
+    // for a Linux or macOS customer, over a constraint that only exists on
+    // Windows. A grammar that dropped the entry instead would let prune delete
+    // the skill's on-disk copy: "this fails to write on Windows" would become
+    // "this gets deleted on Linux".
     for (const key of WINDOWS_RESERVED_KEYS) expect(isValidSkillKey(key)).toBe(true);
 
     const parsed = parseAiConfig({
