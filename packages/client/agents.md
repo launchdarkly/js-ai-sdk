@@ -128,7 +128,7 @@ The Python SDK enforces the same pair with the same wording; change both or neit
 - A 400 on a request carrying neither is fatal at once; a retry would be byte-identical.
 - Do not make 400 unconditionally fatal: a stale selector would strand delivery for the process lifetime. 405, 406, 414 and 501 stay fatal.
 
-**`close` aborts the signal, not just a flag.** The delivery task is awaiting a stream read, so a flag it never checks would leave a healthy stream running until exit. The store's signal is the parent of every `ReadDeadline`, so one abort reaches a pending connect and a pending read alike; a closing store is not reported as a failure. Every backoff, deadline and `waitForSkills` timer is `unref`ed, so a background store never keeps `node` up.
+**`close` aborts the signal, not just a flag.** The delivery task is awaiting a stream read, so a flag it never checks would leave a healthy stream running until exit. The store's signal is the parent of every `ReadDeadline`, so one abort reaches a pending connect and a pending read alike; a closing store is not reported as a failure. Every backoff and deadline timer is `unref`ed, so a background store never keeps `node` up. The `waitForSkills` timer is the exception and stays referenced: during an outage nothing else holds the process, so an unreffed wait let `node` exit mid-`await` (exit 13 under ESM top-level await, exit 0 without running the next line in CommonJS). It is bounded by the timeout and cleared when the wait is released.
 
 **The store refuses two things loudly rather than degrading.**
 

@@ -1667,7 +1667,9 @@ export class FDv2SkillStore implements SkillStore {
         this.dropWaiter(waiter);
         resolve(this.firstPayload);
       }, timeoutMs);
-      (timer as unknown as { unref?: () => void }).unref?.();
+      // Deliberately not unreffed, unlike every other timer here. During an
+      // outage nothing else holds the process up, so an unreffed wait let `node`
+      // exit mid-`await`. Bounded by `timeoutMs`, and cleared on release.
       this.firstPayloadWaiters.push(waiter);
     });
   }

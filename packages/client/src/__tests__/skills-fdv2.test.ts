@@ -16,13 +16,16 @@
  *   are instead of as a server script.
  */
 
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createRequire } from 'node:module';
 import { createServer as createTcpServer, type Socket, type Server as TcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -3912,6 +3915,87 @@ describe('lifecycle', () => {
     // Every timed-out wait left behind is retained for the store's lifetime.
     expect(waiters).toHaveLength(0);
   });
+
+  /**
+   * Runs a standalone script against the store's source in a fresh `node`, and
+   * returns its exit code and stdout. The test runner keeps its own event loop
+   * alive, so whether a pending wait holds the process up is only observable in
+   * a process that has nothing else to do.
+   */
+  const runStandalone = async (
+    file: string,
+    source: string,
+  ): Promise<{ code: number | null; stdout: string; stderr: string }> => {
+    const root = await scratchRoot();
+    const script = path.join(root, file);
+    const storeUrl = pathToFileURL(fileURLToPath(new URL('../skills-fdv2.ts', import.meta.url))).href;
+    await writeFile(script, source.replaceAll('STORE_URL', JSON.stringify(storeUrl)));
+    const tsx = path.join(path.dirname(createRequire(import.meta.url).resolve('tsx/package.json')), 'dist/cli.mjs');
+    return new Promise((resolve) => {
+      execFile(process.execPath, [tsx, script], { timeout: 20_000 }, (failure, stdout, stderr) => {
+        const code = failure === null ? 0 : typeof failure.code === 'number' ? failure.code : null;
+        resolve({ code, stdout, stderr });
+      });
+    });
+  };
+
+  // A store whose delivery is failing recoverably holds nothing that keeps the
+  // process up: the backoff sleep is unreffed, and a refused connection leaves no
+  // socket open. Only the wait's own timer can.
+  const UNREACHABLE = `{ mode: 'poll', baseUri: 'http://127.0.0.1:1' }`;
+  const WAIT_MS = 800;
+
+  it.each([
+    [
+      'ESM top-level await',
+      'wait.mts',
+      `import { FDv2SkillStore } from STORE_URL;
+const store = new FDv2SkillStore('${SDK_KEY}', ${UNREACHABLE}).start();
+const started = Date.now();
+const ready = await store.waitForSkills(${WAIT_MS});
+console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));
+await store.close();`,
+    ],
+    [
+      'a CommonJS async function',
+      'wait.cts',
+      `(async () => {
+  const { FDv2SkillStore } = await import(STORE_URL);
+  const store = new FDv2SkillStore('${SDK_KEY}', ${UNREACHABLE}).start();
+  const started = Date.now();
+  const ready = await store.waitForSkills(${WAIT_MS});
+  console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));
+  await store.close();
+})();`,
+    ],
+    [
+      'a store that was never started',
+      'never-started.mts',
+      `import { FDv2SkillStore } from STORE_URL;
+const store = new FDv2SkillStore('${SDK_KEY}', ${UNREACHABLE});
+const started = Date.now();
+const ready = await store.waitForSkills(${WAIT_MS});
+console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));`,
+    ],
+  ])(
+    'keeps a standalone process alive until waitForSkills times out (%s)',
+    async (_label, file, source) => {
+      // An unreffed wait let `node` exit mid-await: ESM top-level await exited 13,
+      // and CommonJS exited 0 without running the line after the `await`.
+      const { code, stdout, stderr } = await runStandalone(file, source);
+      expect({ code, stderr: code === 0 ? '' : stderr }).toEqual({ code: 0, stderr: '' });
+      const line = stdout
+        .split('\n')
+        .find((l) => l.startsWith('{'))
+        ?.trim();
+      expect(line, `no result line in stdout: ${stdout}`).toBeDefined();
+      const result = JSON.parse(line ?? '{}') as { ready: boolean; elapsed: number };
+      expect(result.ready).toBe(false);
+      // Resolved by the timeout, not by anything else ending the wait early.
+      expect(result.elapsed).toBeGreaterThanOrEqual(WAIT_MS - 50);
+    },
+    30_000,
+  );
 
   it('resolves waitForSkills false at once for a wait started after close', async () => {
     // A connection that is open and has delivered nothing: the store is neither
