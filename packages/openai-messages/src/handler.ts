@@ -365,56 +365,64 @@ const toToolDefinitions = (tools: FunctionTool[]): ToolDefinitionInput[] =>
   tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
 
 /**
- * `ResponseCreateParamsBase` keys this handler forwards verbatim from `config.model.parameters`,
- * after the `max_tokens` / `max_completion_tokens` → `max_output_tokens` rename below — the
- * LaunchDarkly UI offers the Chat Completions parameter set, and the Responses API this handler
- * calls does not accept either of those two names.
+ * `ResponseCreateParamsBase` keys this handler forwards from `config.model.parameters`, after the
+ * `max_tokens` / `max_completion_tokens` → `max_output_tokens` rename below. The LaunchDarkly UI
+ * offers the Chat Completions parameter set, and the Responses API this handler calls accepts
+ * neither of those two names. `invoke` and `stream` forward the same keys.
  *
- * The rule for this list: exclude a key only if setting it would BREAK the handler (wrong or
- * missing result, or a request the handler cannot build); forward everything else the API
- * accepts, even settings with no obvious generation effect (`store`, `user`,
- * `safety_identifier`, `prompt_cache_key`, `prompt_cache_retention`, `include`,
- * `context_management`, ...) — those are forwarded, not excluded, because a config that sets one
- * still gets a working call.
+ * This is the OpenAI Messages list in the cross-SDK spec (ai-sdks-monorepo TESTING.md §1.12), the
+ * same list the Python SDK forwards: settings that shape what the model generates, and nothing
+ * else. Adding a key after 1.0 breaks nobody, and removing one does, so a key that does not
+ * clearly shape generation stays off. The spec also lists `max_tool_calls`, which
+ * `ResponseCreateParamsBase` in the installed `openai` package does not have, so it is not
+ * forwarded.
  *
  * Handler-owned (this handler sets these itself, from the config and the call shape, so a
  * `model.parameters` value must not be able to override what it already decided): `model`,
  * `input`, `tools`, `previous_response_id`, `text`.
  *
- * Excluded (would break the handler):
- * - `stream`, `stream_options` — the handler chooses streaming itself, by calling
- *   `responses.create()` vs `responses.stream()`; a config value here fights that choice rather
- *   than configuring anything.
- * - `background` — the call returns before the output exists, so the handler would get no result
- *   to return.
- * - `conversation`, `prompt` — supply server-side conversation state / a stored prompt template
- *   that conflicts with the `input` this handler already builds from `config.messages` /
- *   `config.instructions` and threads itself via `previous_response_id`.
+ * Not forwarded:
+ * - `stream`, `stream_options`: the handler chooses streaming itself, by calling
+ *   `responses.create()` vs `responses.stream()`.
+ * - `instructions`: prompt content. The handler puts the config's instructions into `input` as a
+ *   system message.
+ * - `background`: the call returns before the output exists, so the handler would get no result.
+ * - `conversation`, `prompt`: server-side conversation state and stored prompt templates, which
+ *   conflict with the `input` this handler builds and threads via `previous_response_id`.
+ * - `store`, `prompt_cache_retention`, `truncation`, `context_management`: data retention and
+ *   server-side state.
+ * - `include`, `moderation`: change what comes back, not what the model generates.
+ * - `metadata`, `user`, `safety_identifier`: identity and attribution.
  */
 const FORWARDED_MODEL_PARAMETER_KEYS = [
-  'context_management',
-  'include',
-  'instructions',
   'max_output_tokens',
-  'metadata',
-  'moderation',
   'parallel_tool_calls',
   'prompt_cache_key',
-  'prompt_cache_retention',
   'reasoning',
-  'safety_identifier',
   'service_tier',
-  'store',
   'temperature',
   'tool_choice',
   'top_logprobs',
   'top_p',
-  'truncation',
-  'user',
 ] as const;
 
 type OpenAIHandlerOwnedKeys = 'input' | 'model' | 'previous_response_id' | 'text' | 'tools';
-type OpenAIExcludedKeys = 'background' | 'conversation' | 'prompt' | 'stream' | 'stream_options';
+type OpenAIExcludedKeys =
+  | 'background'
+  | 'context_management'
+  | 'conversation'
+  | 'include'
+  | 'instructions'
+  | 'metadata'
+  | 'moderation'
+  | 'prompt'
+  | 'prompt_cache_retention'
+  | 'safety_identifier'
+  | 'store'
+  | 'stream'
+  | 'stream_options'
+  | 'truncation'
+  | 'user';
 // If a key of ResponseCreateParamsBase is added to the SDK and not classified above as forwarded,
 // handler-owned, or excluded, this type resolves to something other than `never` and the
 // assignment below fails to compile, naming the unclassified key.
@@ -427,13 +435,32 @@ const _openaiModelParameterKeysExhaustive: Record<OpenAIUndecidedModelParameterK
   never
 >;
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** `reasoning` rebuilt with only `effort` and `summary`, or `undefined` if it is not an object or sets neither. */
+function toReasoning(value: unknown): Record<string, unknown> | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const reasoning: Record<string, unknown> = {};
+  if (value.effort !== undefined) reasoning.effort = value.effort;
+  if (value.summary !== undefined) reasoning.summary = value.summary;
+  return Object.keys(reasoning).length > 0 ? reasoning : undefined;
+}
+
+/** `tool_choice` is a mode string (`auto`, `none`, `required`) or an object with a string `type`. */
+function isToolChoice(value: unknown): boolean {
+  return typeof value === 'string' || (isPlainObject(value) && typeof value.type === 'string');
+}
+
 /**
  * Picks the subset of `config.model.parameters` that maps onto `ResponseCreateParamsBase`, after
- * renaming the two Chat Completions token-limit spellings the LaunchDarkly UI offers —
- * `max_tokens` and `max_completion_tokens` — to the Responses API's own `max_output_tokens`.
+ * renaming the two Chat Completions token-limit spellings the LaunchDarkly UI offers
+ * (`max_tokens` and `max_completion_tokens`) to the Responses API's own `max_output_tokens`.
  * Precedence when a config sets more than one spelling: an explicit `max_output_tokens` wins, then
- * `max_completion_tokens`, then `max_tokens`. A config that sets nothing here produces `{}`, so the
- * provider call sees exactly what it always has.
+ * `max_completion_tokens`, then `max_tokens`. `reasoning` keeps only `effort` and `summary`, and a
+ * malformed `reasoning` or `tool_choice` is dropped rather than sent. A config that sets nothing
+ * here produces `{}`, so the provider call sees exactly what it always has.
  */
 function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
   const normalized = normalizeModelParameters(parameters);
@@ -441,7 +468,14 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
   const resolvedMaxOutputTokens = max_output_tokens ?? max_completion_tokens ?? max_tokens;
   const withRenamedMaxTokens =
     resolvedMaxOutputTokens !== undefined ? { ...rest, max_output_tokens: resolvedMaxOutputTokens } : rest;
-  return pickForwardedModelParameters(withRenamedMaxTokens, FORWARDED_MODEL_PARAMETER_KEYS);
+  const picked = pickForwardedModelParameters(withRenamedMaxTokens, FORWARDED_MODEL_PARAMETER_KEYS);
+  if (picked.reasoning !== undefined) {
+    const reasoning = toReasoning(picked.reasoning);
+    if (reasoning) picked.reasoning = reasoning;
+    else delete picked.reasoning;
+  }
+  if (picked.tool_choice !== undefined && !isToolChoice(picked.tool_choice)) delete picked.tool_choice;
+  return picked;
 }
 
 export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
