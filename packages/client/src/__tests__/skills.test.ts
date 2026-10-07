@@ -563,46 +563,67 @@ describe('skillRefs', () => {
     expect(skillRefs(undefined)).toEqual([]);
   });
 
-  it('drops a malformed entry and logs one warning per drop', async () => {
-    // The silence is what makes this load-bearing rather than cosmetic. The
-    // projection's output is what a caller hands `writeSkills`, and a shortened
-    // list is indistinguishable there from "that skill is no longer requested" —
-    // so with `prune: true` (the default) a silently dropped entry *deletes the
-    // skill's files*. One warning per drop, each naming the position, is what
-    // lets an operator find the offending entry.
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const refs = skillRefs({
-        ...base,
-        skills: [
-          { key: 'ok', version: 1 },
-          // Not an object at all.
-          'nope' as unknown as { key: string; version: number },
-          // An invalid key.
-          { key: 'Not/A/Key', version: 1 },
-          // An invalid version.
-          { key: 'also-ok', version: 0 },
-          { key: 'also-ok', version: 2 },
-        ],
-      });
+  it.each([
+    ['null', null],
+    ['a string', 'pdf-extraction'],
+    ['an object', { key: 'pdf-extraction', version: 1 }],
+    ['a number', 3],
+    ['a bare string entry', ['pdf-extraction']],
+    ['a null entry', [null]],
+    ['a nested array entry', [['pdf-extraction', 1]]],
+    ['an absent key', [{ version: 1 }]],
+    ['a numeric key', [{ key: 7, version: 1 }]],
+    ['a null key', [{ key: null, version: 1 }]],
+    ['an uppercase key', [{ key: 'Evil', version: 1 }]],
+    ['a leading-dash key', [{ key: '-skill', version: 1 }]],
+    ['a leading-dot key', [{ key: '.hidden', version: 1 }]],
+    ['a path-separator key', [{ key: 'a/b', version: 1 }]],
+    ['a backslash key', [{ key: 'a\\b', version: 1 }]],
+    ['a traversal key', [{ key: '../evil', version: 1 }]],
+    ['an empty key', [{ key: '', version: 1 }]],
+    ['a key with a space', [{ key: 'has space', version: 1 }]],
+    ['an underscore key', [{ key: 'has_underscore', version: 1 }]],
+    ['a key with a trailing newline', [{ key: 'pdf-extraction\n', version: 1 }]],
+    ['a 257-character key', [{ key: 'a'.repeat(257), version: 1 }]],
+    ['an absent version', [{ key: 'a' }]],
+    ['version 0', [{ key: 'a', version: 0 }]],
+    ['a negative version', [{ key: 'a', version: -1 }]],
+    ['a non-integer version', [{ key: 'a', version: 2.5 }]],
+    ['a string version', [{ key: 'a', version: '2' }]],
+    ['a boolean version', [{ key: 'a', version: true }]],
+    ['a null version', [{ key: 'a', version: null }]],
+    ['a NaN version', [{ key: 'a', version: Number.NaN }]],
+    ['an Infinity version', [{ key: 'a', version: Number.POSITIVE_INFINITY }]],
+  ])('throws for a malformed skills field: %s', (_label, skills) => {
+    // `parseAiConfig` passes `skills` through, so it is validated here.
+    // Returning `[]` or a shortened list instead would let `writeSkills` with
+    // `prune: true` (the default) delete skills the config still references.
+    // `skills: null` is included: read as "no skills" it would prune everything.
+    expect(() => skillRefs({ ...base, skills })).toThrow(TypeError);
+    expect(() => skillRefs({ ...base, skills })).toThrow(/skills/);
+  });
 
-      // The usable entries survive, in order.
-      expect(refs).toEqual([
-        { key: 'ok', version: 1 },
-        { key: 'also-ok', version: 2 },
-      ]);
+  it('rejects the whole field when one entry among several is invalid', () => {
+    const skills = [
+      { key: 'good-one', version: 1 },
+      { key: 'BAD', version: 1 },
+      { key: 'good-two', version: 2 },
+    ];
+    expect(() => skillRefs({ ...base, skills })).toThrow(/skills\[1\]\.key/);
+  });
 
-      const lines = spy.mock.calls.map(([line]) => String(line));
-      expect(lines).toHaveLength(3);
-      // Each names its own position, so three drops are three distinct reports
-      // rather than one summary an operator cannot act on.
-      expect(lines[0]).toContain('skills[1]');
-      expect(lines[1]).toContain('skills[2]');
-      expect(lines[2]).toContain('skills[3]');
-      for (const line of lines) expect(line).toContain('dropped from the projection');
-    } finally {
-      spy.mockRestore();
-    }
+  it('does not echo the rejected key in the error', () => {
+    expect(() => skillRefs({ ...base, skills: [{ key: 'Secret-Name', version: 1 }] })).toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining('Secret-Name') }),
+    );
+  });
+
+  it('accepts a key of exactly 256 characters and version 1', () => {
+    // The accepting side of the <= 256 bound. It is only observable at the pure
+    // layers: a key becomes one directory name and NAME_MAX is 255, so
+    // `writeSkills` can never reach it.
+    const key = 'a'.repeat(256);
+    expect(skillRefs({ ...base, skills: [{ key, version: 1 }] })).toEqual([{ key, version: 1 }]);
   });
 
   it('warns about nothing when every entry is usable', async () => {

@@ -589,6 +589,30 @@ describe('lifecycle', () => {
       expect(result.meta?.variationKey).toBe('v1');
     });
 
+    it('does not fail on a malformed skills field', async () => {
+      // Agent Skills is experimental, so its field cannot break a core call
+      // (TESTING.md §0.3). `skillRefs` rejects it instead.
+      const mockClient = makeMockClient();
+      mockClient.variation = vi.fn().mockResolvedValue({
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'messages' },
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'You are helpful.',
+        skills: [{ key: 'My_Skill', version: 0 }],
+      });
+      mockLdInit.mockReturnValue(mockClient);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { inspectConfig, extractVariation } = await import('../lifecycle.js');
+      const ctx = { kind: 'user' as const, key: 'user-1' };
+      const result = await inspectConfig('my-flag', ctx);
+      const extracted = await extractVariation('my-flag', ctx);
+
+      expect(result.enabled).toBe(true);
+      expect(result.config?.model.name).toBe('gpt-4o');
+      expect(extracted.config.model.name).toBe('gpt-4o');
+    });
+
     it('preserves modelKey and modelVersion from _ldMeta on meta', async () => {
       const mockClient = makeMockClient();
       mockClient.variation = vi.fn().mockResolvedValue({

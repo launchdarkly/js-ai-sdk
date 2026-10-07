@@ -32,10 +32,7 @@ export type AiConfigRep = {
         name: string;
     };
     outputFormat?: Record<string, unknown>;
-    skills?: ReadonlyArray<{
-        readonly key: string;
-        readonly version: number;
-    }>;
+    skills?: unknown;
 };
 
 // @public

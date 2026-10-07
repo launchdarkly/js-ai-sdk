@@ -280,8 +280,11 @@ export { createSkill, createSkillOutcome, createSkillReference } from './types.j
 The stage rules (shared spec §0.3), which every change here must keep:
 
 - **Core never names experimental.** No root export, core type, function signature, or option may
-  mention an experimental name. `AiConfigRep.skills` is therefore typed structurally rather than as
+  mention an experimental name. `AiConfigRep.skills` is therefore typed `unknown` rather than as
   `SkillReference[]`, and the store is set with `setSkillStore`, not an `initClient` option.
+- **An experimental field never fails a core call.** `parseAiConfig` passes `skills` through
+  unvalidated; `skillRefs` validates it and throws on a present but malformed field, rather than
+  returning a partial list that would authorize a prune.
   Experimental code may import core freely.
 - **Core reaches experimental only through an internal hook**, and a failure there is caught and
   logged, never thrown into the core call. Core never imports an experimental module: an experimental
@@ -555,7 +558,7 @@ Three specifics a later contributor is most likely to widen:
 
 - **The 22 Windows reserved device names** — `con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9` — are rejected by `keyRejectionReason` on every platform.
   - No `process.platform === 'win32'` gate: a root written by a Linux container and read from a Windows host is an ordinary deployment, and with no Windows CI runner a platform branch would be untested.
-  - Not in `isValidSkillKey` or `SKILL_KEY_PATTERN` either. `parseAiConfig` fails closed on a bad `skills` entry, so a grammar rejection would invalidate the *whole* AI Config for a customer who never touches Windows. `skillRefs` would also drop the reference (with a warning), shortening what it hands `writeSkills` so prune deletes the skill's on-disk copy — "fails to write on Windows" becomes "deleted on Linux". The 255-byte path-component bound lives in this layer for the same reason.
+  - Not in `isValidSkillKey` or `SKILL_KEY_PATTERN` either. `skillRefs` fails closed on a bad `skills` entry, so a grammar rejection would reject *every* skill reference for a customer who never touches Windows. A grammar that dropped the entry instead would shorten what `skillRefs` hands `writeSkills`, so prune deletes the skill's on-disk copy — "fails to write on Windows" becomes "deleted on Linux". The 255-byte path-component bound lives in this layer for the same reason.
   - The set is exact: `com0` and `lpt0` are not reserved, and no case folding or suffix stripping is needed because the key grammar admits no uppercase, no `.`, and no `$`.
 - **Adoption narrows the clobber refusal; it is not a hole in it.** A file at a managed path with no manifest entry is adopted (recorded, reported `skipped_current`) only when its on-disk sha256 equals the resolved content hash. That lets a reconcile killed between the content writes and the final manifest write heal instead of wedging. Adopt on anything weaker than an exact hash match and the guarantee is gone. `skipped_current` is reused because a new `ReconcileActionKind` member would break every consumer with an exhaustive `switch`.
 - **`readRegularFile` is what makes that read safe**, and every part is load-bearing:

@@ -1801,13 +1801,12 @@ describe('writeSkills Windows reserved device names', () => {
 
   it('a reserved name is still a valid key at the grammar level', () => {
     // This is the whole reason the check lives in the filesystem layer rather
-    // than in `isValidSkillKey`. `parseAiConfig` fails closed on a bad skills
-    // entry, so a grammar-level rejection would invalidate the *entire* AI
-    // Config — model, provider, instructions, tools — for a Linux or macOS
-    // customer, over a constraint that only exists on Windows. And `skillRefs`
-    // would silently drop the reference, which lets prune delete the skill's
-    // on-disk copy: "this fails to write on Windows" would become "this gets
-    // deleted on Linux".
+    // than in `isValidSkillKey`. `skillRefs` fails closed on a bad skills
+    // entry, so a grammar-level rejection would reject *every* skill reference
+    // for a Linux or macOS customer, over a constraint that only exists on
+    // Windows. A grammar that dropped the entry instead would let prune delete
+    // the skill's on-disk copy: "this fails to write on Windows" would become
+    // "this gets deleted on Linux".
     for (const key of WINDOWS_RESERVED_KEYS) expect(isValidSkillKey(key)).toBe(true);
 
     const parsed = parseAiConfig({
