@@ -16,24 +16,10 @@ import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { jsonSchema, type LanguageModel, type ModelMessage, stepCountIs, ToolLoopAgent, type ToolSet, tool } from 'ai';
 import type { VercelAgentsOptions } from './handler.js';
 import { gatewayModelId } from './model-id.js';
+import { buildModelParameterOptions } from './model-parameters.js';
 
 const TRACER_NAME = '@launchdarkly/ai-vercel-agents';
 const MAX_STEPS = 10;
-const OWNED_PARAMETER_NAMES = new Set([
-  'model',
-  'messages',
-  'prompt',
-  'system',
-  'instructions',
-  'tools',
-  'stream',
-  'output',
-  'outputformat',
-  'stopwhen',
-  'maxsteps',
-  'apikey',
-  'baseurl',
-]);
 
 export interface VercelNativeGraphOptions extends VercelAgentsOptions {
   toolHandlers?: Record<string, ToolHandlerFn | NativeTool>;
@@ -52,15 +38,6 @@ function normalizeUsage(usage: unknown): Usage {
   const input = numberOrZero(raw.inputTokens ?? raw.input_tokens ?? raw.input);
   const output = numberOrZero(raw.outputTokens ?? raw.output_tokens ?? raw.output);
   return { input, output, total: numberOrZero(raw.totalTokens ?? raw.total_tokens) || input + output };
-}
-
-function modelSettings(node: GraphNode): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(node.config.model.parameters ?? {}).filter(([key]) => {
-      const normalized = key.replaceAll('_', '').replaceAll('-', '').toLowerCase();
-      return !OWNED_PARAMETER_NAMES.has(normalized);
-    }),
-  );
 }
 
 async function resolveModel(node: GraphNode, options: VercelNativeGraphOptions): Promise<LanguageModel | string> {
@@ -181,7 +158,7 @@ export const toVercelAgents = (
           agents.set(
             node.key,
             new ToolLoopAgent({
-              ...modelSettings(node),
+              ...buildModelParameterOptions(node.config.model.parameters),
               model: await resolveModel(node, options),
               ...(nodeInstructions(node, variables) ? { instructions: nodeInstructions(node, variables) } : {}),
               ...(Object.keys(tools).length > 0 ? { tools } : {}),
