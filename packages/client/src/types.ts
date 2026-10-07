@@ -153,10 +153,14 @@ export type AiConfigRep = {
    */
   outputFormat?: Record<string, unknown>;
   /**
-   * Optional version-pinned references to Agent Skills attached to this
-   * variation. Project them into typed values with `skillRefs(config)`.
+   * Optional version-pinned skill references attached to this variation, as
+   * delivered. `parseAiConfig` does not validate it, so a malformed field never
+   * fails a core call; read it with `skillRefs` from
+   * `@launchdarkly/ai-server/experimental`, which does. Typed `unknown` because
+   * it is unvalidated, and because Agent Skills is experimental, so this core
+   * type does not name its types.
    */
-  skills?: SkillReference[];
+  skills?: unknown;
 };
 
 type ParseResult<T> = { success: true; data: T } | { success: false; error: { message: string } };
@@ -414,25 +418,6 @@ export function isValidSkillVersion(version: unknown): version is number {
   return typeof version === 'number' && Number.isInteger(version) && version >= 1;
 }
 
-/**
- * Validates the optional `skills` array. Returns an error message or `null`.
- *
- * Fails closed: one malformed reference fails the whole config, rather than
- * silently materializing a partial skill set.
- */
-function parseSkills(raw: unknown): string | null {
-  if (!Array.isArray(raw)) return 'skills must be an array of {key, version} objects';
-
-  for (const [index, entry] of raw.entries()) {
-    if (!isObject(entry)) return `skills[${index}] must be an object with key and version`;
-    if (!isValidSkillKey(entry.key)) {
-      return `skills[${index}].key must be a string matching ^[a-z0-9][a-z0-9-]*$ of at most ${SKILL_KEY_MAX_LENGTH} characters`;
-    }
-    if (!isValidSkillVersion(entry.version)) return `skills[${index}].version must be an integer >= 1`;
-  }
-  return null;
-}
-
 function parseTool(raw: unknown, key: string): string | null {
   if (!isObject(raw)) return `tools.${key} must be an object`;
   if (typeof raw.name !== 'string') return `tools.${key}.name must be a string`;
@@ -484,10 +469,9 @@ export function parseAiConfig(raw: unknown): ParseResult<AiConfigRep> {
     return { success: false, error: { message: 'outputFormat must be an object (JSON Schema)' } };
   }
 
-  if (raw.skills !== undefined) {
-    const err = parseSkills(raw.skills);
-    if (err) return { success: false, error: { message: err } };
-  }
+  // `skills` is passed through unvalidated. Agent Skills is experimental, so a
+  // malformed field must not fail a core config call (TESTING.md §0.3);
+  // `skillRefs` rejects it where the references are used.
 
   return { success: true, data: raw as AiConfigRep };
 }
@@ -886,14 +870,6 @@ export type InitBaseClientOptions = {
   serviceName?: string;
   environment?: string;
   otlpEndpoint?: string;
-  /**
-   * The store the Agent Skills accessors read from. Without one, they throw.
-   *
-   * Unlike other options, applied on **every** `initClient` call, so you can add
-   * a store after initialization. A nullish value never clears the current store
-   * (use `shutdown()`).
-   */
-  skillStore?: SkillStore;
 };
 
 /** Instantiation args for {@link routedModel}. */
