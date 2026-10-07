@@ -89,14 +89,17 @@ export {
 export type { RunUsage, SpanUsage } from './utils.js';
 export {
   addCachedTokensToInput,
+  camelizeModelParameters,
   collapseMessagesToInstructions,
   createHandler,
   createRunUsage,
   endSpanOnce,
   langChainSpanUsage,
+  normalizeModelParameters,
   omitModelStamps,
   parseJSONWithPossibleFences,
   parseTemplate,
+  pickForwardedModelParameters,
   setLdSpanAttributes,
   setModelIdentityAttributes,
   setUsageSpanAttributes,
