@@ -114,6 +114,17 @@
         "aiCompletionConfig": { "introduced": "0.1" }
       }
     },
+    "js-ai-typesafe": {
+      "name": "JavaScript AI SDK for TypeSafe",
+      "type": "ai-provider",
+      "path": "packages/typesafe",
+      "languages": ["JavaScript", "TypeScript"],
+      "aiSdkNames": ["@launchdarkly/ai-typesafe"],
+      "releases": { "tag-prefix": "@launchdarkly/ai-typesafe-" },
+      "features": {
+        "aiCompletionConfig": { "introduced": "0.1" }
+      }
+    },
     "js-ai-vercel-agents": {
       "name": "JavaScript AI SDK for Vercel Agents",
       "type": "ai-provider",

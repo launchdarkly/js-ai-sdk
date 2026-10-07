@@ -112,6 +112,26 @@ describe('withJudgeEvaluation', () => {
     expect(event?.attributes?.['gen_ai.evaluation.score.label']).toBeUndefined();
   });
 
+  it('keeps span attributes on the first evaluation when later labels are recorded', async () => {
+    await withJudgeEvaluation('jev-judge', async (record) => {
+      await tracer.startActiveSpan('invoke_agent', async (span) => {
+        span.end();
+      });
+      record(0.25, undefined, 'jev-judge.accuracy');
+      record(0.93, undefined, 'jev-judge.tone');
+    });
+
+    const [span] = finished().filter((s) => s.name === 'invoke_agent');
+    expect(span.attributes['gen_ai.evaluation.name']).toBe('jev-judge.accuracy');
+    expect(span.attributes['gen_ai.evaluation.score.value']).toBe(0.25);
+    const events = span.events.filter((e) => e.name === 'gen_ai.evaluation.result');
+    expect(events.map((event) => event.attributes?.['gen_ai.evaluation.name'])).toEqual([
+      'jev-judge.accuracy',
+      'jev-judge.tone',
+    ]);
+    expect(events.map((event) => event.attributes?.['gen_ai.evaluation.score.value'])).toEqual([0.25, 0.93]);
+  });
+
   it('does not invent a score.label', async () => {
     await withJudgeEvaluation('judge-key', async (record) => {
       await tracer.startActiveSpan('invoke_agent', async (span) => {

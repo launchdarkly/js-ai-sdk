@@ -40,6 +40,7 @@
     "@launchdarkly/ai-openai-messages": "*",
     "@launchdarkly/ai-otel": "*",
     "@launchdarkly/ai-server": "*",
+    "@launchdarkly/ai-typesafe": "*",
     "@launchdarkly/ai-vercel-agents": "*",
     "@launchdarkly/ai-vercel-messages": "*",
     "@launchdarkly/node-server-sdk": "^9.7.3",

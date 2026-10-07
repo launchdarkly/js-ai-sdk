@@ -36,7 +36,7 @@ export {
   imageBlockToUrl,
   isContentBlocks,
 } from './history.js';
-export { buildJudgeTasks, runJudge } from './judges.js';
+export { buildJudgeTasks, FORMATTING_INSTRUCTIONS, runJudge } from './judges.js';
 export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';

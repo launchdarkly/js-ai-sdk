@@ -92,6 +92,7 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-langchain-agents](packages/langchain-agents/README.md)`     | `*` (any) | `agent`    | LangGraph `createReactAgent` — managed ReAct loop     |
 | `[@launchdarkly/ai-vercel-messages](packages/vercel-messages/README.md)`       | `*` (any) | `messages` | AI SDK 7 `generateText` / `streamText` / `experimental_evaluate` via AI Gateway |
 | `[@launchdarkly/ai-vercel-agents](packages/vercel-agents/README.md)`           | `*` (any) | `agent`    | AI SDK 7 `ToolLoopAgent` and native graph runner      |
+| `[@launchdarkly/ai-typesafe](packages/typesafe/README.md)`                     | TypeSafe  | `messages` | TypeSafe Jev judge handler                            |
 
 
 ## Module format support

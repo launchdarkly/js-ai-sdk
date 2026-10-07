@@ -146,6 +146,39 @@ describe('runJudges', () => {
     expect(callArgs.config.messages).toHaveLength(0);
   });
 
+  it('prefers an exact provider handler over an earlier wildcard', async () => {
+    mockExtractVariation.mockResolvedValue({
+      config: { ...mockJudgeConfig, provider: { name: 'TypeSafe' }, model: { name: 'jev' } },
+      meta: mockJudgeMeta,
+    });
+    const wildcard: ProviderHandler = vi
+      .fn()
+      .mockResolvedValue({ output: '{"score":0.1,"reasoning":"no"}', usage: {} });
+    wildcard.providesFor = ['*', 'messages'];
+    const typesafe: ProviderHandler = vi
+      .fn()
+      .mockResolvedValue({ output: '{"score":0.5,"reasoning":"ok"}', usage: {} });
+    typesafe.providesFor = ['TypeSafe', 'messages'];
+
+    await runJudges({
+      config: {
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'Be helpful.',
+        judgeConfiguration: { judges: [{ key: 'jev', samplingRate: 1 }] },
+      },
+      userContext: mockContext,
+      handler: wildcard,
+      handlers: [wildcard, typesafe],
+      userInput: 'question',
+      llmResponse: 'answer',
+      baseTrackData,
+    });
+
+    expect(mockExecuteAndTrack).toHaveBeenCalledWith(expect.objectContaining({ handler: typesafe }));
+    expect(wildcard).not.toHaveBeenCalled();
+  });
+
   it('uses an exact agent handler for the same provider when no messages handler is registered, and collapses messages', async () => {
     const judgeConfigWithMessages = {
       model: { name: 'claude-3-5-sonnet' },
@@ -425,5 +458,127 @@ describe('runJudge result trackData', () => {
     const result = await runJudge(makeTask(parentTrackData), [makeHandler()]);
     expect(result!.trackData.modelKey).toBe('judge-model');
     expect(result!.trackData.modelVersion).toBe(2);
+  });
+});
+
+describe('typesafe judge results', () => {
+  const payload = JSON.stringify({
+    kind: 'typesafe',
+    results: [
+      {
+        key: 'migration_intent',
+        eventKey: '$ld:ai:judge:jev:migration_intent',
+        score: 0.25,
+        reason: 'Unclear',
+      },
+      { key: 'migration', eventKey: '$ld:ai:judge:jev:migration', score: 0.9, reason: 'Yes' },
+    ],
+  });
+  const usage = { input: 100, output: 20, total: 120 };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExtractVariation.mockResolvedValue({
+      config: { ...mockJudgeConfig, provider: { name: 'TypeSafe' } },
+      meta: mockJudgeMeta,
+    });
+    mockExecuteAndTrack.mockResolvedValue({
+      usage,
+      response: payload,
+      trackData: baseTrackData,
+    });
+  });
+
+  it('returns one result per label with full usage and tracks each eventKey', async () => {
+    const track = vi.fn();
+    mockGetClient.mockReturnValue({ track });
+    const result = await runJudges({
+      config: {
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'Be helpful.',
+        judgeConfiguration: { judges: [{ key: 'jev-judge', samplingRate: 1 }] },
+      },
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'question',
+      llmResponse: 'answer',
+      baseTrackData,
+    });
+
+    expect(mockExecuteAndTrack).toHaveBeenCalledTimes(1);
+    expect(mockExecuteAndTrack).toHaveBeenCalledWith(
+      expect.objectContaining({
+        variables: expect.objectContaining({ input: 'question', response_to_evaluate: 'answer' }),
+      }),
+    );
+    expect(result['jev-judge.migration_intent']).toEqual({
+      usage,
+      response: 'Unclear',
+      score: 0.25,
+      eventKey: '$ld:ai:judge:jev:migration_intent',
+    });
+    expect(result['jev-judge.migration']).toEqual({
+      usage,
+      response: 'Yes',
+      score: 0.9,
+      eventKey: '$ld:ai:judge:jev:migration',
+    });
+    expect(track).toHaveBeenCalledTimes(2);
+    expect(track).toHaveBeenCalledWith(
+      '$ld:ai:judge:jev:migration_intent',
+      mockContext,
+      expect.objectContaining({ judgeConfigKey: 'jev-judge.migration_intent' }),
+      0.25,
+    );
+    expect(track).toHaveBeenCalledWith(
+      '$ld:ai:judge:jev:migration',
+      mockContext,
+      expect.objectContaining({ judgeConfigKey: 'jev-judge.migration' }),
+      0.9,
+    );
+  });
+
+  it('returns every label from runJudge and a metric for each eventKey', async () => {
+    const handler: ProviderHandler = vi.fn();
+    handler.providesFor = ['TypeSafe', 'messages'];
+    const result = await runJudge(
+      {
+        configKey: 'jev-judge',
+        judgeConfig: { ...mockJudgeConfig, provider: { name: 'TypeSafe' } },
+        judgeMeta: mockJudgeMeta,
+        actualOutput: 'answer',
+        userInput: 'question',
+        userContext: mockContext,
+        judgeProvider: 'TypeSafe',
+        judgeMode: 'messages',
+        collapseMessages: false,
+        parentTrackData: baseTrackData,
+      },
+      [handler],
+    );
+    expect(mockExecuteAndTrack).toHaveBeenCalledWith(
+      expect.objectContaining({
+        variables: expect.objectContaining({ input: 'question', response_to_evaluate: 'answer' }),
+      }),
+    );
+    expect(result?.score).toBe(0.25);
+    expect(result?.response).toBe('Unclear');
+    expect(result?.eventKey).toBe('$ld:ai:judge:jev:migration_intent');
+    expect(result?.usage).toEqual(usage);
+    expect(result?.results?.['jev-judge.migration']).toEqual({
+      usage,
+      response: 'Yes',
+      score: 0.9,
+      eventKey: '$ld:ai:judge:jev:migration',
+    });
+    expect(result?.metrics).toEqual([
+      {
+        eventKey: '$ld:ai:judge:jev:migration_intent',
+        score: 0.25,
+        judgeConfigKey: 'jev-judge.migration_intent',
+      },
+      { eventKey: '$ld:ai:judge:jev:migration', score: 0.9, judgeConfigKey: 'jev-judge.migration' },
+    ]);
   });
 });
