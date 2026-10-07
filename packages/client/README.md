@@ -462,7 +462,7 @@ The line is a `[LaunchDarkly] ` prefix, the event name, a space, and one JSON ob
 
 **The record is written regardless of telemetry configuration.** It is not sampled, batched, or dependent on a LaunchDarkly connection. If you send LaunchDarkly nothing, this record is your complete detection surface for tampered or malformed skill content.
 
-**`ld.skills.integrity_failure` is a stability commitment.** The event name will not be renamed, and no field will be renamed or removed, outside a major release with a changelog entry.
+**Changes to `ld.skills.integrity_failure` are always announced.** Agent Skills is experimental, so like every name in this section the event name and its fields may change in a minor release. Any rename or removal gets a changelog entry under **Experimental**, so check the changelog before upgrading if you alert on this record. Once Agent Skills is promoted out of experimental, they change only in a major release.
 
 | Field | Always present | Value |
 |---|---|---|
