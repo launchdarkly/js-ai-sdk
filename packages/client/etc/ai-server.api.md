@@ -51,6 +51,9 @@ export const buildJudgeTasks: (input: {
 }) => Promise<JudgeTask[]>;
 
 // @public
+export function camelizeModelParameters(parameters: Record<string, unknown>): Record<string, unknown>;
+
+// @public
 export type CanonicalTurn = {
     role: 'user' | 'assistant';
     content: MessageContent;
@@ -410,6 +413,9 @@ export class NativeTool {
 }
 
 // @public
+export function normalizeModelParameters(parameters: unknown): Record<string, unknown>;
+
+// @public
 export const omitModelStamps: <T extends {
     modelKey?: string;
     modelVersion?: number;
@@ -420,6 +426,9 @@ export function parseJSONWithPossibleFences<T>(rawText: string): T | null;
 
 // @public
 export function parseTemplate(template: string, variables: Record<string, unknown>): string;
+
+// @public
+export function pickForwardedModelParameters<K extends string>(parameters: Record<string, unknown> | undefined, keys: ReadonlyArray<K>): Record<string, unknown>;
 
 // @public
 export type ProviderGraphResponse = {
