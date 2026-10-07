@@ -208,7 +208,6 @@ export const toVercelAgents = (
           const client = getClient();
           client.track('$ld:ai:graph:duration:total', context, trackData, Date.now() - startedAt);
           client.track('$ld:ai:graph:total_tokens', context, trackData, total.total);
-          client.track('$ld:ai:graph:path', context, trackData, path.length);
           client.track('$ld:ai:graph:invocation_success', context, trackData, 1);
         }
         span.setStatus({ code: SpanStatusCode.OK });

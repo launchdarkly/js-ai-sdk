@@ -609,6 +609,25 @@ describe('graph() conversation id', () => {
     expect(flagEvents[0].attributes?.['feature_flag.key']).toBe('graph-flag');
   });
 
+  it('gives each invocation with the same context its own run id', async () => {
+    setupTwoNodeGraph();
+    const g = graph('graph-flag', { handlers: [makeStreamingHandler(['ok'])] });
+    await g.invoke('hi', mockContext);
+    await collectStream(g.stream('hi', mockContext));
+
+    const runIds = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === 'launchdarkly.graph')
+      .map((s) => s.attributes['launchdarkly.run.id']);
+    expect(runIds).toHaveLength(2);
+    expect(runIds[0]).not.toBe(runIds[1]);
+
+    const successRunIds = mockTrack.mock.calls
+      .filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_success')
+      .map((c: unknown[]) => (c[2] as { runId: string }).runId);
+    expect(successRunIds).toEqual(runIds);
+  });
+
   it('nests handler spans under launchdarkly.graph on the stream path (single trace)', async () => {
     setupTwoNodeGraph();
     const handler = makeSpanCreatingStreamHandler(['ok']);

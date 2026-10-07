@@ -319,6 +319,7 @@ describe('toVercelAgents', () => {
         '$ld:ai:tokens:total',
       ]),
     );
+    expect(names).not.toContain('$ld:ai:graph:path');
     expect(telemetryMocks.track.mock.calls.every((call) => call[1] === context)).toBe(true);
   });
 
