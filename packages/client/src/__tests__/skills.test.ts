@@ -1022,6 +1022,7 @@ describe('store configuration', () => {
     ['an empty object', {}],
     ['a number', 0],
     ['an object with only getObject', { getObject: () => null }],
+    ['an object with only allObjects', { allObjects: () => [] }],
   ])('rejects %s, leaving the configured store alone', async (_label, notAStore) => {
     // A value without the store methods fails where it is passed, not as a
     // store_unavailable on the first accessor call (matches Python).

@@ -282,6 +282,9 @@ const refs = skillRefs({
 
 // In real use the config comes from LaunchDarkly:
 // const info = await inspectConfig('doc-agent', { kind: 'user', key: 'user-123' });
+// // The config could not be resolved. Stop here: an empty reference list
+// // passed to writeSkills would prune every skill it manages.
+// if (!info.config) return;
 // const refs = skillRefs(info.config);
 
 // Retrieve content. Every skill is hash-verified before you see it.
