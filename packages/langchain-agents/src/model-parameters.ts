@@ -35,6 +35,8 @@ import {
  * - `audio`, `modalities`: change the output type, not how text is generated.
  * - `promptCacheRetention`, `zdrEnabled`: data retention.
  * - `user`: identity and attribution.
+ * - `promptCacheKey`: the Python `ChatOpenAI` has no such field, so the cross-SDK list cuts it for
+ *   both SDKs.
  */
 export const CHAT_OPENAI_FORWARDED_KEYS = [
   'frequencyPenalty',
@@ -44,7 +46,6 @@ export const CHAT_OPENAI_FORWARDED_KEYS = [
   'maxTokens',
   'n',
   'presencePenalty',
-  'promptCacheKey',
   'service_tier',
   'stop',
   'stopSequences',

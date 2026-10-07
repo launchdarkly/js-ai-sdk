@@ -32,7 +32,6 @@ describe('modelConstructorParameters', () => {
           max_tokens: 100,
           n: 2,
           presence_penalty: 0.2,
-          prompt_cache_key: 'k',
           service_tier: 'flex',
           stop: ['END'],
           stop_sequences: ['STOP'],
@@ -51,7 +50,6 @@ describe('modelConstructorParameters', () => {
       maxTokens: 100,
       n: 2,
       presencePenalty: 0.2,
-      promptCacheKey: 'k',
       // ChatOpenAI reads this one field in snake_case.
       service_tier: 'flex',
       stop: ['END'],
