@@ -42,8 +42,8 @@ import {
   BACKOFF_RESET_INTERVAL_MS,
   backoffDelayMs,
   classifyStatus,
-  DEFAULT_POLL_TIMEOUT_MS,
-  DEFAULT_STREAM_READ_TIMEOUT_MS,
+  DEFAULT_POLL_TIMEOUT_SECONDS,
+  DEFAULT_STREAM_READ_TIMEOUT_SECONDS,
   decodePollBody,
   FatalTransportError,
   FDV2_KEY_DELIMITER,
@@ -64,6 +64,7 @@ import {
   SkillObjectSet,
   StaleRequestStateError,
   seamObjectFromPut,
+  secondsToMs,
   splitWireKey,
   tombstoneFromDelete,
 } from '../skills-fdv2.js';
@@ -354,9 +355,9 @@ function pollStore(options: Record<string, unknown> = {}): FDv2SkillStore {
   const store = new FDv2SkillStore(SDK_KEY, {
     baseUri: endpoint.baseUri,
     mode: 'poll',
-    pollIntervalMs: 20,
-    initialBackoffMs: 5,
-    maxBackoffMs: 20,
+    pollIntervalSeconds: 0.02,
+    initialBackoffSeconds: 0.005,
+    maxBackoffSeconds: 0.02,
     ...options,
   });
   openStores.push(store);
@@ -367,8 +368,8 @@ function streamStore(options: Record<string, unknown> = {}): FDv2SkillStore {
   const store = new FDv2SkillStore(SDK_KEY, {
     baseUri: endpoint.baseUri,
     mode: 'stream',
-    initialBackoffMs: 5,
-    maxBackoffMs: 20,
+    initialBackoffSeconds: 0.005,
+    maxBackoffSeconds: 0.02,
     ...options,
   });
   openStores.push(store);
@@ -1370,7 +1371,7 @@ describe('polling against the endpoint', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     const store = pollStore();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')?.version).toBe(3);
   });
 
@@ -1382,7 +1383,7 @@ describe('polling against the endpoint', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     expect(endpoint.requests[0].path).toBe('/sdk/poll');
     expect(endpoint.requests[0].authorization).toBe(SDK_KEY);
     expect('mv' in endpoint.requests[0].query).toBe(false);
@@ -1398,7 +1399,7 @@ describe('polling against the endpoint', () => {
     endpoint.queuePoll([], { status: 304 });
     const store = pollStore();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(await waitUntil(() => endpoint.requests.length >= 2)).toBe(true);
     expect(endpoint.requests[0].query.kinds).toBe('agent-skill');
     expect(endpoint.requests[0].query.basis).toBeUndefined();
@@ -1410,7 +1411,7 @@ describe('polling against the endpoint', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     expect(endpoint.requests[0].query.basis).toBeUndefined();
   });
 
@@ -1419,7 +1420,7 @@ describe('polling against the endpoint', () => {
     endpoint.queuePoll([], { status: 304 });
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     expect(await waitUntil(() => endpoint.requests.length >= 2)).toBe(true);
     expect(endpoint.requests[1].query.basis).toBe('selector-abc');
   });
@@ -1473,7 +1474,7 @@ describe('polling against the endpoint', () => {
     endpoint.queuePoll([], { status: 304 });
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     expect(await waitUntil(() => endpoint.requests.length >= 3)).toBe(true);
     expect(endpoint.requests.slice(0, 3).map((r) => r.query.basis)).toEqual([undefined, 'basis-1', 'basis-1']);
     expect(endpoint.requests.slice(0, 3).map((r) => r.ifNoneMatch)).toEqual([undefined, undefined, 'W/"v2"']);
@@ -1495,7 +1496,7 @@ describe('polling against the endpoint', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]], 'basis-1'), { etag: 'W/"v2"' });
     const store = pollStore();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(endpoint.requests[1].ifNoneMatch).toBeUndefined();
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
@@ -1506,7 +1507,7 @@ describe('polling against the endpoint', () => {
     endpoint.queuePoll([], { status: 304 });
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     expect(await waitUntil(() => endpoint.requests.length >= 3)).toBe(true);
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
     expect(store.diagnostics.payloadsTransferred).toBe(1);
@@ -1530,7 +1531,7 @@ describe('polling against the endpoint', () => {
     endpoint.queuePoll([], { status: 304 });
     const store = pollStore();
     store.start();
-    expect(await store.waitForSkills(500)).toBe(false);
+    expect(await store.waitForSkills({ timeoutSeconds: 0.5 })).toBe(false);
     expect(store.isInitialized()).toBe(false);
     // Not a failure either: the poll was answered, and the store is still asking.
     expect(store.failed).toBeNull();
@@ -1577,7 +1578,7 @@ describe('polling against the endpoint', () => {
     );
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     const held = store.allObjects(SKILL_OBJECT_KIND);
     expect(Object.keys(held)).toHaveLength(1);
     expect(Object.values(held)[0].key).toBe('pdf-extraction');
@@ -1607,7 +1608,7 @@ describe('polling against the endpoint', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     expect(store.getObject('flag', 'pdf-extraction')).toBeNull();
     expect(store.allObjects('flag')).toEqual({});
   });
@@ -1768,7 +1769,7 @@ describe('streaming against the endpoint', () => {
     endpoint.queueStream(fullPayload([['put-object', putSkill()]]));
     const store = streamStore();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
 
@@ -1777,7 +1778,7 @@ describe('streaming against the endpoint', () => {
     endpoint.queueStream(fullPayload([['put-object', putSkill()]]));
     const store = streamStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     expect(endpoint.requests[0].path).toBe('/sdk/stream');
     expect(endpoint.requests[0].accept).toBe('text/event-stream');
   });
@@ -1787,7 +1788,7 @@ describe('streaming against the endpoint', () => {
     endpoint.queueStream(fullPayload([['put-object', putSkill()]]));
     const store = streamStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     expect(endpoint.requests[0].query.kinds).toBe('agent-skill');
   });
 
@@ -1883,7 +1884,7 @@ describe('streaming against the endpoint', () => {
     endpoint.queueStream(fullPayload([['put-object', putSkill()]]));
     const store = streamStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     const started = Date.now();
     await store.close();
     expect(Date.now() - started).toBeLessThan(1000);
@@ -1894,7 +1895,7 @@ describe('streaming against the endpoint', () => {
     endpoint.queueStream(fullPayload([['put-object', putSkill()]]));
     const store = streamStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     await store.close();
     expect(store.failed).toBeNull();
   });
@@ -1909,19 +1910,19 @@ describe('streaming against the endpoint', () => {
     }
     const store = streamStore();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(await waitUntil(() => endpoint.requests.length >= 5)).toBe(true);
     expect(store.failed).toBeNull();
     expect(store.diagnostics.payloadsTransferred).toBeGreaterThanOrEqual(4);
   });
 
-  it('reconnects when the stream goes quiet past readTimeoutMs', async () => {
-    // `readTimeoutMs` exists to bound a stream that has gone quiet so the loop
+  it('reconnects when the stream goes quiet past readTimeoutSeconds', async () => {
+    // `readTimeoutSeconds` exists to bound a stream that has gone quiet so the loop
     // can reconnect; tripping it must do that and not the opposite.
     endpoint.holdStreamOpen = true;
     endpoint.queueStream(fullPayload([['put-object', putSkill()]]));
     endpoint.queueStream(fullPayload([['put-object', putSkill()]], 'basis-2'));
-    const store = streamStore({ readTimeoutMs: 100 });
+    const store = streamStore({ readTimeoutSeconds: 0.1 });
     store.start();
     expect(await waitUntil(() => endpoint.requests.length >= 2)).toBe(true);
     expect(store.failed).toBeNull();
@@ -2126,8 +2127,8 @@ const retryDelays = (): number[] =>
 function scriptedStreamStore(requester: Requester, options: Record<string, unknown> = {}): FDv2SkillStore {
   const store = new FDv2SkillStore(SDK_KEY, {
     mode: 'stream',
-    initialBackoffMs: 1,
-    maxBackoffMs: 2,
+    initialBackoffSeconds: 0.001,
+    maxBackoffSeconds: 0.002,
     requester,
     ...options,
   });
@@ -2161,7 +2162,7 @@ describe('failure handling', () => {
     const started = Date.now();
     // `false`, and promptly: a caller gating boot on the return value must not
     // be told a payload arrived, nor be left to sit out the whole timeout.
-    expect(await store.waitForSkills(5000)).toBe(false);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(false);
     expect(Date.now() - started).toBeLessThan(2000);
     expect(store.failed).not.toBeNull();
   });
@@ -2172,7 +2173,7 @@ describe('failure handling', () => {
     store.start();
     expect(await waitUntil(() => store.failed !== null)).toBe(true);
     const started = Date.now();
-    expect(await store.waitForSkills(5000)).toBe(false);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(false);
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
@@ -2191,7 +2192,7 @@ describe('failure handling', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     const store = pollStore();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(store.failed).toBeNull();
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
@@ -2202,7 +2203,7 @@ describe('failure handling', () => {
     endpoint.queuePoll([], { status: 304 });
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     expect(await waitUntil(() => store.diagnostics.connectionFailures === 0)).toBe(true);
   });
 
@@ -2213,14 +2214,14 @@ describe('failure handling', () => {
     const requester = new ScriptedRequester([asPairs(fullPayload([['put-object', putSkill()]]))]);
     const store = new FDv2SkillStore(SDK_KEY, {
       mode: 'poll',
-      pollIntervalMs: 5,
-      initialBackoffMs: 1,
-      maxBackoffMs: 2,
+      pollIntervalSeconds: 0.005,
+      initialBackoffSeconds: 0.001,
+      maxBackoffSeconds: 0.002,
       requester,
     });
     openStores.push(store);
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(await waitUntil(() => store.diagnostics.connectionFailures >= 15)).toBe(true);
     expect(store.failed).toBeNull();
     // Still counting, so still retrying.
@@ -2244,7 +2245,7 @@ describe('failure handling', () => {
     const store = scriptedStreamStore(new ScriptedRequester());
     store.start();
     const started = Date.now();
-    expect(await store.waitForSkills(300)).toBe(false);
+    expect(await store.waitForSkills({ timeoutSeconds: 0.3 })).toBe(false);
     expect(Date.now() - started).toBeGreaterThanOrEqual(250);
     expect(store.failed).toBeNull();
     expect(store.diagnostics.connectionFailures).toBeGreaterThan(0);
@@ -2253,7 +2254,7 @@ describe('failure handling', () => {
   it('does not count recycled stream connections as failures', async () => {
     // A streaming connection only ever ends by being dropped, so a loop that
     // counted every drop as a failure would back a healthy server off to
-    // maxBackoffMs and report it as failing.
+    // maxBackoffSeconds and report it as failing.
     const requester = new RecyclingRequester();
     const store = scriptedStreamStore(requester);
     store.start();
@@ -2269,7 +2270,7 @@ describe('failure handling', () => {
   it('does not count an up-to-date connection as a failure', async () => {
     // An environment whose skills never change is answered with the `none`
     // intent and then recycled, so nothing ever commits. Clearing the failure
-    // row only at a commit would back this healthy server off to maxBackoffMs
+    // row only at a commit would back this healthy server off to maxBackoffSeconds
     // and report it as failing.
     const requester = new UnchangingRequester();
     const store = scriptedStreamStore(requester);
@@ -2287,7 +2288,7 @@ describe('failure handling', () => {
     const requester = new UnchangingRequester(fullPayload([['put-object', putSkill()]], 'basis-1'));
     const store = scriptedStreamStore(requester);
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(await waitUntil(() => requester.connections >= 6, 2000)).toBe(true);
     expect(store.failed).toBeNull();
     expect(store.diagnostics.connectionFailures).toBe(0);
@@ -2301,7 +2302,7 @@ describe('failure handling', () => {
     const requester = new UnchangingRequester(fullPayload([['put-object', putSkill()]], 'basis-1'), true, true);
     const store = scriptedStreamStore(requester);
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(await waitUntil(() => requester.connections >= 3, 2000)).toBe(true);
     expect(store.failed).toBeNull();
     expect(store.diagnostics.lastError).toBe('server sent a catastrophic goodbye: server recycle');
@@ -2360,8 +2361,8 @@ describe('failure handling', () => {
     // Polled, so the success is a request of its own rather than a stream whose
     // own end counts as the next failure. The fourth request parks, freezing
     // the count after the second failure. A completed poll also starts the
-    // backoff over, since `pollIntervalMs` already spaces the requests.
-    // No jitter, so the first step is exactly `initialBackoffMs` and the second
+    // backoff over, since `pollIntervalSeconds` already spaces the requests.
+    // No jitter, so the first step is exactly `initialBackoffSeconds` and the second
     // exactly twice it.
     vi.spyOn(Math, 'random').mockReturnValue(0);
     const requester = new ScriptedRequester([
@@ -2372,9 +2373,9 @@ describe('failure handling', () => {
     ]);
     const store = new FDv2SkillStore(SDK_KEY, {
       mode: 'poll',
-      pollIntervalMs: 5,
-      initialBackoffMs: 100,
-      maxBackoffMs: 10_000,
+      pollIntervalSeconds: 0.005,
+      initialBackoffSeconds: 0.1,
+      maxBackoffSeconds: 10,
       requester,
     });
     openStores.push(store);
@@ -2383,7 +2384,7 @@ describe('failure handling', () => {
     expect(store.diagnostics.connectionFailures).toBe(1);
     expect(store.diagnostics.lastError).toBe('y');
     // And the retry was on the first step of the backoff (at most
-    // initialBackoffMs), not the second (more than it).
+    // initialBackoffSeconds), not the second (more than it).
     const retries = logged(warnSpy)
       .split('\n')
       .map((line) => /Skill delivery failed \(y\); retrying in (\d+)ms/.exec(line)?.[1])
@@ -2396,11 +2397,11 @@ describe('failure handling', () => {
     // Each connection completes an exchange, so the failure count resets every
     // time and never climbs past one. The delay must not reset with it: a
     // degraded server that answers and then drops would otherwise be
-    // reconnected at `initialBackoffMs`, by every process, for as long as it
+    // reconnected at `initialBackoffSeconds`, by every process, for as long as it
     // stayed degraded. Only a stream that stays open resets the delay.
     vi.spyOn(Math, 'random').mockReturnValue(0);
     const requester = new AnswerThenDropRequester();
-    const store = scriptedStreamStore(requester, { initialBackoffMs: 2, maxBackoffMs: 10_000 });
+    const store = scriptedStreamStore(requester, { initialBackoffSeconds: 0.002, maxBackoffSeconds: 10 });
     let worst = 0;
     store.start();
     expect(
@@ -2419,7 +2420,7 @@ describe('failure handling', () => {
   it('retries at the first step after a stream that stayed open past the reset interval (§3.25)', async () => {
     // Three refused connects advance the step to 8ms; the fourth connection
     // answers and is held open past the (shortened) reset interval before it
-    // drops, so the reconnect after it starts over at `initialBackoffMs`.
+    // drops, so the reconnect after it starts over at `initialBackoffSeconds`.
     vi.spyOn(Math, 'random').mockReturnValue(0);
     const requester = new HeldStreamRequester([
       new RecoverableTransportError('x'),
@@ -2427,7 +2428,7 @@ describe('failure handling', () => {
       new RecoverableTransportError('x'),
       { events: events(['server-intent', serverIntent('none')]), holdMs: 80 },
     ]);
-    const store = scriptedStreamStore(requester, { initialBackoffMs: 2, maxBackoffMs: 10_000 });
+    const store = scriptedStreamStore(requester, { initialBackoffSeconds: 0.002, maxBackoffSeconds: 10 });
     store._backoffResetIntervalMs = 20;
     store.start();
     expect(await waitUntil(() => requester.connections === 5)).toBe(true);
@@ -2444,7 +2445,7 @@ describe('failure handling', () => {
       new RecoverableTransportError('x'),
       { events: events(['server-intent', serverIntent('none')]), holdMs: 80 },
     ]);
-    const store = scriptedStreamStore(requester, { initialBackoffMs: 2, maxBackoffMs: 10_000 });
+    const store = scriptedStreamStore(requester, { initialBackoffSeconds: 0.002, maxBackoffSeconds: 10 });
     expect(store._backoffResetIntervalMs).toBe(BACKOFF_RESET_INTERVAL_MS);
     expect(BACKOFF_RESET_INTERVAL_MS).toBe(60_000);
     store.start();
@@ -2464,7 +2465,7 @@ describe('failure handling', () => {
     ]);
     const store = scriptedStreamStore(requester);
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(await waitUntil(() => requester.calls.length === 5)).toBe(true);
     expect(store.diagnostics.connectionFailures).toBe(1);
     expect(store.diagnostics.lastError).toContain('closed unexpectedly');
@@ -2526,10 +2527,10 @@ describe('failure handling', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     // A one-second request sitting between a 20ms backoff and a 5s cap, so the
     // wait that follows can only have come from the header.
-    const store = pollStore({ initialBackoffMs: 20, maxBackoffMs: 5000 });
+    const store = pollStore({ initialBackoffSeconds: 0.02, maxBackoffSeconds: 5 });
     const started = Date.now();
     store.start();
-    expect(await store.waitForSkills(4000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 4 })).toBe(true);
     expect(Date.now() - started).toBeGreaterThanOrEqual(900);
   });
 
@@ -2538,7 +2539,7 @@ describe('failure handling', () => {
     // over the backoff and reconnect with no wait, a tight loop against the
     // endpoint for as long as the proxy kept doing it.
     for (let i = 0; i < 5; i += 1) endpoint.queuePoll([], { status: 503, retryAfter: '' });
-    const store = pollStore({ initialBackoffMs: 100, maxBackoffMs: 100 });
+    const store = pollStore({ initialBackoffSeconds: 0.1, maxBackoffSeconds: 0.1 });
     const started = Date.now();
     store.start();
     expect(await waitUntil(() => endpoint.requests.length >= 4, 4000)).toBe(true);
@@ -2547,7 +2548,7 @@ describe('failure handling', () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(120);
   });
 
-  it('floors an honoured Retry-After at initialBackoffMs', async () => {
+  it('floors an honoured Retry-After at initialBackoffSeconds', async () => {
     // `Retry-After: 0` is legal and means "try again now". Taken literally it
     // is a busy loop against the endpoint, so it is honoured as the shortest
     // delay the store was configured to wait.
@@ -2557,15 +2558,15 @@ describe('failure handling', () => {
     ]);
     const store = new FDv2SkillStore(SDK_KEY, {
       mode: 'poll',
-      pollIntervalMs: 10_000,
-      initialBackoffMs: 200,
-      maxBackoffMs: 5_000,
+      pollIntervalSeconds: 10,
+      initialBackoffSeconds: 0.2,
+      maxBackoffSeconds: 5,
       requester,
     });
     openStores.push(store);
     const started = Date.now();
     store.start();
-    expect(await store.waitForSkills(3000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 3 })).toBe(true);
     expect(Date.now() - started).toBeGreaterThanOrEqual(180);
   });
 
@@ -2644,7 +2645,7 @@ describe('failure handling', () => {
   });
 
   it('neither dies on nor parks behind an unreasonable Retry-After', async () => {
-    // `Retry-After` is a request and `maxBackoffMs` is a promise: the header
+    // `Retry-After` is a request and `maxBackoffSeconds` is a promise: the header
     // may come from a proxy rather than LaunchDarkly, and an hour would park
     // revocation for that long.
     const requester = new ScriptedRequester([
@@ -2653,14 +2654,14 @@ describe('failure handling', () => {
     ]);
     const store = new FDv2SkillStore(SDK_KEY, {
       mode: 'poll',
-      pollIntervalMs: 10_000,
-      initialBackoffMs: 20,
-      maxBackoffMs: 20,
+      pollIntervalSeconds: 10,
+      initialBackoffSeconds: 0.02,
+      maxBackoffSeconds: 0.02,
       requester,
     });
     openStores.push(store);
     store.start();
-    expect(await store.waitForSkills(3000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 3 })).toBe(true);
     expect(requester.calls.length).toBeGreaterThanOrEqual(2);
     expect(store.failed).toBeNull();
   });
@@ -2761,13 +2762,13 @@ describe('failure handling', () => {
     endpoint.defaultPollStatus = 422;
     const store = pollStore();
     store.start();
-    const timeoutMs = 10_000;
+    const timeoutSeconds = 10;
     const began = performance.now();
     // Waiting this out would take ten seconds; returning early takes the one
     // round trip to the loopback endpoint.
-    expect(await store.waitForSkills(timeoutMs)).toBe(false);
+    expect(await store.waitForSkills({ timeoutSeconds })).toBe(false);
     const elapsed = performance.now() - began;
-    expect(elapsed).toBeLessThan(timeoutMs / 4);
+    expect(elapsed).toBeLessThan((timeoutSeconds * 1000) / 4);
     expect(store.failed).not.toBeNull();
   });
 
@@ -2788,7 +2789,7 @@ describe('failure handling', () => {
     // A store that gave up before any payload committed never initialized, and
     // neither wait parks: both answers have already arrived.
     expect(store.isInitialized()).toBe(false);
-    expect(await store.waitForSkills(100)).toBe(false);
+    expect(await store.waitForSkills({ timeoutSeconds: 0.1 })).toBe(false);
     _setStore(store);
     const report = await writeSkills('*', root);
     // Retrieval is reported unavailable rather than answered as "no skills".
@@ -2812,7 +2813,7 @@ describe('failure handling', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     expect(store.start()).toBe(store);
     expect(store.failed).toBeNull();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(store.getObject('skill', 'pdf-extraction')).not.toBeNull();
   });
 
@@ -2838,7 +2839,7 @@ describe('failure handling', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     store.start();
     expect(store.diagnostics.connectionFailures).toBe(0);
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(store.failed).toBeNull();
   });
 
@@ -2877,13 +2878,13 @@ describe('failure handling', () => {
     const store = new FDv2SkillStore(SDK_KEY, {
       baseUri: 'https://sdk.example.com',
       mode: 'poll',
-      pollIntervalMs: 20,
-      initialBackoffMs: 5,
-      maxBackoffMs: 20,
+      pollIntervalSeconds: 0.02,
+      initialBackoffSeconds: 0.005,
+      maxBackoffSeconds: 0.02,
     });
     openStores.push(store);
     store.start();
-    expect(await store.waitForSkills(10_000)).toBe(false);
+    expect(await store.waitForSkills({ timeoutSeconds: 10 })).toBe(false);
     expect(store.failed).toMatch(/transport bound/);
     expect(store.diagnostics.lastError).toMatch(/transport bound/);
     // Accounted as a fatal: it never retries, so it is not a recoverable failure.
@@ -2909,12 +2910,12 @@ describe('failure handling', () => {
     const store = new FDv2SkillStore(SDK_KEY, {
       baseUri: 'https://sdk.example.com',
       mode: 'stream',
-      initialBackoffMs: 5,
-      maxBackoffMs: 20,
+      initialBackoffSeconds: 0.005,
+      maxBackoffSeconds: 0.02,
     });
     openStores.push(store);
     store.start();
-    expect(await store.waitForSkills(10_000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 10 })).toBe(true);
     expect(await waitUntil(() => store.failed !== null, 10_000)).toBe(true);
     expect(store.failed).toMatch(/characters/);
     expect(store.diagnostics.lastError).toBe(store.failed);
@@ -2999,7 +3000,7 @@ describe('the missing contentHash', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill('pdf-extraction', { omitHash: true })]]));
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     _setStore(store);
 
     const outcome = await getSkillResult('pdf-extraction');
@@ -3016,7 +3017,7 @@ describe('the missing contentHash', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill('pdf-extraction', { omitHash: true })]]));
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     const raw = store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction');
     expect(raw).not.toBeNull();
     expect('contentHash' in (raw as RawSkillObject)).toBe(false);
@@ -3033,9 +3034,9 @@ describe('the missing contentHash', () => {
     // known-good copy. Which is the outcome this transport was written to avoid.
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
 
-    const store = pollStore({ pollIntervalMs: 20 });
+    const store = pollStore({ pollIntervalSeconds: 0.02 });
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     _setStore(store);
 
     const root = path.join(await scratchRoot(), 'skills');
@@ -3072,7 +3073,7 @@ describe('the missing contentHash', () => {
     );
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     expect(store.diagnostics.hashlessObjects).toBe(2);
     expect(store.diagnostics.skillObjectsReceived).toBe(3);
   });
@@ -3081,7 +3082,7 @@ describe('the missing contentHash', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill('pdf-extraction', { omitHash: true })]]));
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     const errors = consoleErrors();
     expect(errors).toContain('missing_content_hash');
     expect(errors).toContain('pdf-extraction');
@@ -3097,7 +3098,7 @@ describe('the missing contentHash', () => {
     );
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     const summaries = hashlessSummaries();
     expect(summaries).toHaveLength(1);
     expect(summaries[0]).toContain('All 2 skill object(s)');
@@ -3197,7 +3198,7 @@ describe('the missing contentHash', () => {
     );
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     expect(consoleErrors()).not.toContain('No skill content will resolve');
   });
 
@@ -3209,7 +3210,7 @@ describe('the missing contentHash', () => {
     );
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     expect(store.diagnostics.hashlessObjects).toBe(0);
     _setStore(store);
     expect((await getSkillResult('pdf-extraction')).reason).toBe('integrity_failure');
@@ -3220,7 +3221,7 @@ describe('the missing contentHash', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     _setStore(store);
 
     const skill = await getSkill('pdf-extraction');
@@ -3240,7 +3241,7 @@ describe('the missing contentHash', () => {
     );
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     _setStore(store);
 
     const pinned = await getSkill('pdf-extraction', { version: 2 });
@@ -3257,7 +3258,7 @@ describe('the missing contentHash', () => {
     );
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     _setStore(store);
 
     const byPayloadVersion = await getSkillResult('pdf-extraction', { version: 42 });
@@ -3313,9 +3314,9 @@ describe('watchSkills', () => {
     );
     endpoint.queuePoll([], { status: 304 });
 
-    const store = pollStore({ pollIntervalMs: 100 });
+    const store = pollStore({ pollIntervalSeconds: 0.1 });
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     _setStore(store);
 
     const root = path.join(await scratchRoot(), 'skills');
@@ -3341,9 +3342,9 @@ describe('watchSkills', () => {
     );
     endpoint.queuePoll([], { status: 304 });
 
-    const store = pollStore({ pollIntervalMs: 100 });
+    const store = pollStore({ pollIntervalSeconds: 0.1 });
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     _setStore(store);
 
     const root = path.join(await scratchRoot(), 'skills');
@@ -3368,9 +3369,9 @@ describe('watchSkills', () => {
     // three commits arrive a poll apart and only the debounce window can merge
     // them.
     endpoint.queuePoll(fullPayload([['put-object', putSkill('seed')]]));
-    const store = pollStore({ pollIntervalMs: 20 });
+    const store = pollStore({ pollIntervalSeconds: 0.02 });
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     _setStore(store);
 
     const root = path.join(await scratchRoot(), 'skills');
@@ -3426,9 +3427,9 @@ describe('watchSkills', () => {
     // "everything was revoked".
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     endpoint.queuePoll([], { status: 500 });
-    const store = pollStore({ pollIntervalMs: 20 });
+    const store = pollStore({ pollIntervalSeconds: 0.02 });
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     _setStore(store);
 
     const root = path.join(await scratchRoot(), 'skills');
@@ -3456,9 +3457,9 @@ describe('watchSkills', () => {
     );
     endpoint.queuePoll([], { status: 304 });
 
-    const store = pollStore({ pollIntervalMs: 100 });
+    const store = pollStore({ pollIntervalSeconds: 0.1 });
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     _setStore(store);
 
     const root = path.join(await scratchRoot(), 'skills');
@@ -3915,7 +3916,7 @@ describe('watchSkills', () => {
     expect(() => store.addListener('flag', fn)).toThrow();
     expect(() => store.removeListener('flag', fn)).not.toThrow();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(fn).not.toHaveBeenCalled();
   });
 });
@@ -3928,7 +3929,7 @@ describe('lifecycle', () => {
     const store = pollStore();
     expect(store.start()).toBe(store);
     expect(store.start()).toBe(store);
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
   });
 
   it('makes close idempotent', async () => {
@@ -3942,7 +3943,7 @@ describe('lifecycle', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     const store = pollStore();
     store.start();
-    await store.waitForSkills(5000);
+    await store.waitForSkills({ timeoutSeconds: 5 });
     await store.close();
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
@@ -3953,19 +3954,19 @@ describe('lifecycle', () => {
     // the same answer through `allObjects`; this is what tells them apart.
     const silent = new FDv2SkillStore(SDK_KEY, {
       mode: 'poll',
-      pollIntervalMs: 60_000,
+      pollIntervalSeconds: 60,
       requester: new ScriptedRequester([new Promise(() => {})]),
     });
     openStores.push(silent);
     expect(silent.isInitialized()).toBe(false);
     silent.start();
-    expect(await silent.waitForSkills(50)).toBe(false);
+    expect(await silent.waitForSkills({ timeoutSeconds: 0.05 })).toBe(false);
     expect(silent.isInitialized()).toBe(false);
 
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     const delivering = pollStore();
     delivering.start();
-    expect(await delivering.waitForSkills(5000)).toBe(true);
+    expect(await delivering.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(delivering.isInitialized()).toBe(true);
     await delivering.close();
     // Content outlives the connection, so the fact about it does too.
@@ -3983,7 +3984,7 @@ describe('lifecycle', () => {
     endpoint.queuePoll([], { status: 304 });
     const store = pollStore();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(await waitUntil(() => endpoint.requests.length >= 3)).toBe(true);
     expect(endpoint.requests[2].ifNoneMatch).toBe('W/"v2"');
     expect(store.isInitialized()).toBe(true);
@@ -3993,22 +3994,22 @@ describe('lifecycle', () => {
   it('times out waitForSkills rather than hanging', async () => {
     const store = new FDv2SkillStore(SDK_KEY, {
       mode: 'poll',
-      pollIntervalMs: 60_000,
+      pollIntervalSeconds: 60,
       requester: new ScriptedRequester([new Promise(() => {})]),
     });
     openStores.push(store);
-    expect(await store.waitForSkills(50)).toBe(false);
+    expect(await store.waitForSkills({ timeoutSeconds: 0.05 })).toBe(false);
   });
 
   it('retains no waiter for a wait that timed out', async () => {
     const store = new FDv2SkillStore(SDK_KEY, {
       mode: 'poll',
-      pollIntervalMs: 60_000,
+      pollIntervalSeconds: 60,
       requester: new ScriptedRequester([new Promise(() => {})]),
     });
     openStores.push(store);
     const waiters = (store as unknown as { firstPayloadWaiters: unknown[] }).firstPayloadWaiters;
-    for (let i = 0; i < 3; i += 1) expect(await store.waitForSkills(10)).toBe(false);
+    for (let i = 0; i < 3; i += 1) expect(await store.waitForSkills({ timeoutSeconds: 0.01 })).toBe(false);
     // Every timed-out wait left behind is retained for the store's lifetime.
     expect(waiters).toHaveLength(0);
   });
@@ -4049,7 +4050,7 @@ describe('lifecycle', () => {
       `import { FDv2SkillStore } from STORE_URL;
 const store = new FDv2SkillStore('${SDK_KEY}', ${UNREACHABLE}).start();
 const started = Date.now();
-const ready = await store.waitForSkills(${WAIT_MS});
+const ready = await store.waitForSkills({ timeoutSeconds: ${WAIT_MS / 1000} });
 console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));
 await store.close();`,
     ],
@@ -4060,7 +4061,7 @@ await store.close();`,
   const { FDv2SkillStore } = await import(STORE_URL);
   const store = new FDv2SkillStore('${SDK_KEY}', ${UNREACHABLE}).start();
   const started = Date.now();
-  const ready = await store.waitForSkills(${WAIT_MS});
+  const ready = await store.waitForSkills({ timeoutSeconds: ${WAIT_MS / 1000} });
   console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));
   await store.close();
 })();`,
@@ -4071,7 +4072,7 @@ await store.close();`,
       `import { FDv2SkillStore } from STORE_URL;
 const store = new FDv2SkillStore('${SDK_KEY}', ${UNREACHABLE});
 const started = Date.now();
-const ready = await store.waitForSkills(${WAIT_MS});
+const ready = await store.waitForSkills({ timeoutSeconds: ${WAIT_MS / 1000} });
 console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));`,
     ],
   ])(
@@ -4105,7 +4106,7 @@ console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));`,
     expect(await waitUntil(() => endpoint.requests.length > 0)).toBe(true);
     await store.close();
     const started = Date.now();
-    expect(await store.waitForSkills(3_000)).toBe(false);
+    expect(await store.waitForSkills({ timeoutSeconds: 3 })).toBe(false);
     expect(Date.now() - started).toBeLessThan(1_000);
   });
 
@@ -4113,7 +4114,7 @@ console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));`,
     const store = pollStore();
     await store.close();
     const started = Date.now();
-    expect(await store.waitForSkills(3_000)).toBe(false);
+    expect(await store.waitForSkills({ timeoutSeconds: 3 })).toBe(false);
     expect(Date.now() - started).toBeLessThan(1_000);
   });
 
@@ -4124,7 +4125,7 @@ console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));`,
     store.start();
     expect(await waitUntil(() => endpoint.requests.length > 0)).toBe(true);
     await store.close();
-    expect(await store.waitForSkills(50)).toBe(false);
+    expect(await store.waitForSkills({ timeoutSeconds: 0.05 })).toBe(false);
     expect(store.failed).toBeNull();
   });
 
@@ -4132,9 +4133,9 @@ console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));`,
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
     const store = pollStore();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     await store.close();
-    expect(await store.waitForSkills(3_000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 3 })).toBe(true);
   });
 
   it('refuses to restart a closed store', async () => {
@@ -4146,9 +4147,9 @@ console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));`,
 
   it('opens no second delivery loop once closed', async () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
-    const store = pollStore({ pollIntervalMs: 60_000 });
+    const store = pollStore({ pollIntervalSeconds: 60 });
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     await store.close();
     const requests = endpoint.requests.length;
     // The refusal itself is asserted above; what matters here is that the store
@@ -4180,7 +4181,7 @@ console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));`,
 /**
  * A listening socket that accepts connections and never sends a byte.
  *
- * This is the host `readTimeoutMs` exists for: the TCP handshake completes, so
+ * This is the host `readTimeoutSeconds` exists for: the TCP handshake completes, so
  * nothing fails fast, and then no response ever comes. A request against it can
  * only end by timing out, which makes the elapsed time a direct measurement of
  * the timeout actually applied.
@@ -4211,9 +4212,9 @@ const requesterOf = (store: FDv2SkillStore): FetchRequester =>
   (store as unknown as { requester: FetchRequester }).requester;
 
 describe('timeouts', () => {
-  // `readTimeoutMs` is the only network timeout, and every request honours it.
+  // `readTimeoutSeconds` is the only network timeout, and every request honours it.
   // The bounds asserted here are loose on purpose: the point is that a request
-  // against an unresponsive host fails in roughly `readTimeoutMs` rather than
+  // against an unresponsive host fails in roughly `readTimeoutSeconds` rather than
   // in minutes, and that a regression back to a much longer default fails this
   // suite quickly instead of hanging it.
   let blackHole: BlackHole;
@@ -4227,8 +4228,8 @@ describe('timeouts', () => {
     await blackHole.close();
   });
 
-  it('fails a poll against an unresponsive host within readTimeoutMs', async () => {
-    const requester = new FetchRequester(SDK_KEY, blackHole.baseUri, 300);
+  it('fails a poll against an unresponsive host within readTimeoutSeconds', async () => {
+    const requester = new FetchRequester(SDK_KEY, blackHole.baseUri, 0.3);
     const started = Date.now();
     await expect(requester.poll(null, null, new AbortController().signal)).rejects.toThrow(/timed out/);
     const elapsed = Date.now() - started;
@@ -4236,8 +4237,8 @@ describe('timeouts', () => {
     expect(elapsed).toBeLessThan(2000);
   });
 
-  it('fails a stream connect against an unresponsive host within readTimeoutMs', async () => {
-    const requester = new FetchRequester(SDK_KEY, blackHole.baseUri, 300);
+  it('fails a stream connect against an unresponsive host within readTimeoutSeconds', async () => {
+    const requester = new FetchRequester(SDK_KEY, blackHole.baseUri, 0.3);
     const started = Date.now();
     await expect(requester.stream(null, new AbortController().signal)).rejects.toThrow(RecoverableTransportError);
     expect(Date.now() - started).toBeLessThan(2000);
@@ -4247,10 +4248,10 @@ describe('timeouts', () => {
     const store = new FDv2SkillStore(SDK_KEY, {
       baseUri: blackHole.baseUri,
       mode: 'poll',
-      pollIntervalMs: 50,
-      initialBackoffMs: 10,
-      maxBackoffMs: 50,
-      readTimeoutMs: 300,
+      pollIntervalSeconds: 0.05,
+      initialBackoffSeconds: 0.01,
+      maxBackoffSeconds: 0.05,
+      readTimeoutSeconds: 0.3,
     });
     openStores.push(store);
     store.start();
@@ -4263,7 +4264,7 @@ describe('timeouts', () => {
     // Before the connect returns there is no body read to interrupt; aborting
     // the signal has to reach the pending `fetch` itself, or close waits on a
     // host that will never speak.
-    const store = new FDv2SkillStore(SDK_KEY, { baseUri: blackHole.baseUri, mode: 'stream', readTimeoutMs: 60_000 });
+    const store = new FDv2SkillStore(SDK_KEY, { baseUri: blackHole.baseUri, mode: 'stream', readTimeoutSeconds: 60 });
     store.start();
     await new Promise((resolve) => setTimeout(resolve, 50));
     const started = Date.now();
@@ -4273,20 +4274,22 @@ describe('timeouts', () => {
   });
 
   it('defaults the bound per mode', () => {
-    expect(DEFAULT_POLL_TIMEOUT_MS).toBe(10_000);
-    expect(DEFAULT_STREAM_READ_TIMEOUT_MS).toBe(300_000);
-    expect(requesterOf(new FDv2SkillStore(SDK_KEY, { mode: 'poll' })).readTimeoutMs).toBe(DEFAULT_POLL_TIMEOUT_MS);
-    expect(requesterOf(new FDv2SkillStore(SDK_KEY, { mode: 'stream' })).readTimeoutMs).toBe(
-      DEFAULT_STREAM_READ_TIMEOUT_MS,
+    expect(DEFAULT_POLL_TIMEOUT_SECONDS).toBe(10);
+    expect(DEFAULT_STREAM_READ_TIMEOUT_SECONDS).toBe(300);
+    expect(requesterOf(new FDv2SkillStore(SDK_KEY, { mode: 'poll' })).readTimeoutSeconds).toBe(
+      DEFAULT_POLL_TIMEOUT_SECONDS,
+    );
+    expect(requesterOf(new FDv2SkillStore(SDK_KEY, { mode: 'stream' })).readTimeoutSeconds).toBe(
+      DEFAULT_STREAM_READ_TIMEOUT_SECONDS,
     );
   });
 
-  it.each(['poll', 'stream'] as const)('lets an explicit readTimeoutMs override the %s default', (mode) => {
-    expect(requesterOf(new FDv2SkillStore(SDK_KEY, { mode, readTimeoutMs: 42_000 })).readTimeoutMs).toBe(42_000);
+  it.each(['poll', 'stream'] as const)('lets an explicit readTimeoutSeconds override the %s default', (mode) => {
+    expect(requesterOf(new FDv2SkillStore(SDK_KEY, { mode, readTimeoutSeconds: 42 })).readTimeoutSeconds).toBe(42);
   });
 
-  it.each([0, -1, Number.POSITIVE_INFINITY, Number.NaN])('rejects a non-positive readTimeoutMs (%s)', (value) => {
-    expect(() => new FDv2SkillStore(SDK_KEY, { readTimeoutMs: value })).toThrow(/readTimeoutMs/);
+  it.each([0, -1, Number.POSITIVE_INFINITY, Number.NaN])('rejects a non-positive readTimeoutSeconds (%s)', (value) => {
+    expect(() => new FDv2SkillStore(SDK_KEY, { readTimeoutSeconds: value })).toThrow(/readTimeoutSeconds/);
   });
 });
 
@@ -4343,7 +4346,7 @@ describe('endpoints', () => {
   });
 
   it('carries the basis to whichever host the request goes to', async () => {
-    const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1000, 'https://stream.example.com');
+    const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1, 'https://stream.example.com');
     const urls: string[] = [];
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       urls.push(String(input));
@@ -4387,7 +4390,7 @@ describe('endpoints', () => {
     const chunk = 1024 * 1024;
     const { body, reads } = oversizedPollBody(chunk);
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }));
-    const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1000);
+    const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1);
     await expect(requester.poll(null, null, new AbortController().signal)).rejects.toBeInstanceOf(FatalTransportError);
     expect(reads()).toBeLessThanOrEqual(MAX_RESPONSE_CHARS / chunk + 2);
   });
@@ -4395,7 +4398,7 @@ describe('endpoints', () => {
   it('says nothing was applied when a poll body crosses the bound', async () => {
     const { body } = oversizedPollBody(4 * 1024 * 1024);
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }));
-    const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1000);
+    const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1);
     await expect(requester.poll(null, null, new AbortController().signal)).rejects.toThrow(
       /exceeded the \d+ character transport bound.*nothing from it was applied/,
     );
@@ -4416,7 +4419,7 @@ describe('endpoints', () => {
       },
     });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }));
-    const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1000);
+    const requester = new FetchRequester(SDK_KEY, 'https://sdk.example.com', 1);
     const result = await requester.poll(null, null, new AbortController().signal);
     expect(result.events).toEqual([['put-object', { note: 'café — naïve' }]]);
   });
@@ -4515,7 +4518,7 @@ describe('transport contract', () => {
     ]);
     const store = scriptedStreamStore(requester);
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(await waitUntil(() => store.failed !== null, 5000)).toBe(true);
     expect(consoleErrors()).toMatch(/will not retry/);
     expect(consoleErrors()).toMatch(/HTTP 401/);
@@ -4529,7 +4532,7 @@ describe('transport contract', () => {
     endpoint.queuePoll(fullPayload([['put-object', putSkill('tampered', { contentHash: hash('something else') })]]));
     const store = pollStore();
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     _setStore(store);
     expect(store.getObject(SKILL_OBJECT_KIND, 'tampered')).not.toBeNull();
     const outcome = await getSkillResult('tampered');
@@ -4543,12 +4546,14 @@ describe('transport contract', () => {
     -1,
     Number.NaN,
     Number.POSITIVE_INFINITY,
-  ])('rejects a non-positive or non-finite pollIntervalMs (%s)', (value) => {
+  ])('rejects a non-positive or non-finite pollIntervalSeconds (%s)', (value) => {
     // `NaN` is the case a `<= 0` guard misses.
-    expect(() => new FDv2SkillStore(SDK_KEY, { mode: 'poll', pollIntervalMs: value })).toThrow(/pollIntervalMs/);
+    expect(() => new FDv2SkillStore(SDK_KEY, { mode: 'poll', pollIntervalSeconds: value })).toThrow(
+      /pollIntervalSeconds/,
+    );
   });
 
-  describe.each(['initialBackoffMs', 'maxBackoffMs'] as const)('%s', (option) => {
+  describe.each(['initialBackoffSeconds', 'maxBackoffSeconds'] as const)('%s', (option) => {
     // With no failure bound, the backoff options are the only limit on the
     // retry loop: a zero or negative delay against a failing server is a
     // reconnect as fast as the network allows, for the life of the process.
@@ -4562,22 +4567,22 @@ describe('transport contract', () => {
     ])('rejects a non-positive or non-finite value (%s)', (value) => {
       // The other option is set out of the way, so only the one under test can
       // be what the constructor refuses.
-      const other = option === 'initialBackoffMs' ? { maxBackoffMs: 30_000 } : { initialBackoffMs: 1 };
+      const other = option === 'initialBackoffSeconds' ? { maxBackoffSeconds: 30 } : { initialBackoffSeconds: 0.001 };
       expect(() => new FDv2SkillStore(SDK_KEY, { ...other, [option]: value })).toThrow(new RegExp(option));
     });
   });
 
-  it('rejects an initialBackoffMs greater than maxBackoffMs', () => {
-    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffMs: 5_000, maxBackoffMs: 20 })).toThrow(
-      /initialBackoffMs.*must not exceed maxBackoffMs/,
+  it('rejects an initialBackoffSeconds greater than maxBackoffSeconds', () => {
+    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffSeconds: 5, maxBackoffSeconds: 0.02 })).toThrow(
+      /initialBackoffSeconds.*must not exceed maxBackoffSeconds/,
     );
     // Either one alone can produce the inversion against the other's default.
-    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffMs: 60_000 })).toThrow(/must not exceed/);
-    expect(() => new FDv2SkillStore(SDK_KEY, { maxBackoffMs: 500 })).toThrow(/must not exceed/);
+    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffSeconds: 60 })).toThrow(/must not exceed/);
+    expect(() => new FDv2SkillStore(SDK_KEY, { maxBackoffSeconds: 0.5 })).toThrow(/must not exceed/);
   });
 
-  it('accepts an initialBackoffMs equal to maxBackoffMs, and the defaults', () => {
-    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffMs: 250, maxBackoffMs: 250 })).not.toThrow();
+  it('accepts an initialBackoffSeconds equal to maxBackoffSeconds, and the defaults', () => {
+    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffSeconds: 0.25, maxBackoffSeconds: 0.25 })).not.toThrow();
     expect(() => new FDv2SkillStore(SDK_KEY)).not.toThrow();
   });
 
@@ -4594,22 +4599,76 @@ describe('transport contract', () => {
   it.each([
     Number.NaN,
     Number.NEGATIVE_INFINITY,
+    Number.POSITIVE_INFINITY,
     -1,
-  ])('waitForSkills rejects a non-finite or negative timeoutMs (%s)', async (value) => {
+  ])('waitForSkills rejects a non-finite or negative timeoutSeconds (%s)', async (value) => {
     const store = pollStore();
-    await expect(store.waitForSkills(value)).rejects.toThrow(/timeoutMs/);
+    await expect(store.waitForSkills({ timeoutSeconds: value })).rejects.toThrow(/timeoutSeconds/);
+  });
+
+  it.each([
+    ['a bare number', 10_000],
+    ['null', null],
+    ['a string', '10'],
+  ])('waitForSkills rejects %s with a TypeError naming the options form', async (_label, value) => {
+    // The timeout used to be a positional millisecond count. Read as seconds,
+    // `waitForSkills(10_000)` would wait almost three hours, so it is refused.
+    const store = pollStore();
+    const wait = store.waitForSkills(value as never);
+    await expect(wait).rejects.toBeInstanceOf(TypeError);
+    await expect(wait).rejects.toThrow(/waitForSkills\(\{ timeoutSeconds: 10 \}\)/);
+  });
+
+  it('waitForSkills defaults to ten seconds, and accepts a timeout of zero', async () => {
+    const store = pollStore();
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    const waiting = store.waitForSkills();
+    expect(timers.mock.calls.map((call) => call[1])).toContain(10_000);
+    // A wait already pending resolves `false` when the store closes.
+    await store.close();
+    expect(await waiting).toBe(false);
+    expect(await pollStore().waitForSkills({ timeoutSeconds: 0 })).toBe(false);
+  });
+
+  it.each([
+    [1.005, 0, 1005],
+    [0.29, 0, 290],
+    [30, 0, 30_000],
+    [0, 0, 0],
+    [0.0001, 1, 1],
+    [0.0001, 0, 0],
+  ])('converts %s seconds to whole milliseconds (minimum %s): %s', (seconds, minimum, ms) => {
+    // Rounded rather than truncated: `1.005 * 1000` is `1004.9999999999999`.
+    // The floor of 1 is for options that must be positive, so a sub-millisecond
+    // value cannot become a zero delay.
+    expect(secondsToMs(seconds, minimum)).toBe(ms);
+  });
+
+  it('converts a time option to milliseconds only at the timer it sets', async () => {
+    // `pollIntervalSeconds: 1.005` must sleep 1005ms between polls. Truncating
+    // `1.005 * 1000` would sleep 1004.
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    const store = new FDv2SkillStore(SDK_KEY, {
+      mode: 'poll',
+      pollIntervalSeconds: 1.005,
+      requester: new ScriptedRequester([asPairs(fullPayload([['put-object', putSkill()]]))]),
+    });
+    openStores.push(store);
+    store.start();
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
+    expect(await waitUntil(() => timers.mock.calls.some((call) => call[1] === 1005))).toBe(true);
   });
 
   it('an idle stream carrying heartbeats stays connected past what the read timeout alone would allow', async () => {
     // The read deadline bounds the gap between reads, not the connection's
-    // life. Heartbeats well inside `readTimeoutMs` keep one connection open for
+    // life. Heartbeats well inside `readTimeoutSeconds` keep one connection open for
     // several multiples of it, with no reconnect.
     endpoint.holdStreamOpen = true;
     endpoint.heartbeatMs = 20;
     endpoint.queueStream(fullPayload([['put-object', putSkill()]]));
-    const store = streamStore({ readTimeoutMs: 100 });
+    const store = streamStore({ readTimeoutSeconds: 0.1 });
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 450));
     expect(endpoint.requests).toHaveLength(1);
     expect(store.failed).toBeNull();
@@ -4732,7 +4791,7 @@ describe('transport contract', () => {
     it.each([301, 302, 307, 308])('a poll redirect (%i) is fatal and not followed', async (status) => {
       const second = await secondEndpoint();
       endpoint.queuePoll([], { status, location: `${second.baseUri}/sdk/poll` });
-      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5000);
+      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5);
       const failure = await requester.poll(null, null, new AbortController().signal).then(
         () => null,
         (cause: unknown) => cause,
@@ -4748,7 +4807,7 @@ describe('transport contract', () => {
     it('a stream redirect is fatal and not followed', async () => {
       const second = await secondEndpoint();
       endpoint.redirectStreamTo = `${second.baseUri}/sdk/stream`;
-      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5000);
+      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5);
       await expect(requester.stream(null, new AbortController().signal)).rejects.toThrow(FatalTransportError);
       await expect(requester.stream(null, new AbortController().signal)).rejects.toThrow(/307.*redirect/);
       expect(second.requests).toEqual([]);
@@ -4758,7 +4817,7 @@ describe('transport contract', () => {
       // The endpoints do not redirect, so there is nothing legitimate to follow.
       endpoint.queuePoll([], { status: 302, location: `${endpoint.baseUri}/sdk/poll` });
       endpoint.queuePoll(fullPayload([['put-object', putSkill()]]));
-      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5000);
+      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5);
       await expect(requester.poll(null, null, new AbortController().signal)).rejects.toThrow(FatalTransportError);
       expect(endpoint.requests).toHaveLength(1);
     });
@@ -4782,7 +4841,7 @@ describe('transport contract', () => {
       const store = pollStore();
       store.start();
       expect(await waitUntil(() => store.failed !== null)).toBe(true);
-      expect(await store.waitForSkills(5000)).toBe(false);
+      expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(false);
       expect(store.failed).toContain('301');
       expect(store.failed).toContain('never forwarded');
       expect(consoleErrors()).toContain('redirect');
@@ -4809,7 +4868,7 @@ describe('transport contract', () => {
       endpoint.queuePoll([], { status: 302, location: `${second.baseUri}/sdk/poll` });
       const store = pollStore();
       store.start();
-      expect(await store.waitForSkills(5000)).toBe(true);
+      expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
       expect(await waitUntil(() => store.failed !== null)).toBe(true);
       expect(store.failed).toContain('302');
       expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
@@ -4818,14 +4877,14 @@ describe('transport contract', () => {
 
     it('a redirect with no Location is still fatal', async () => {
       endpoint.queuePoll([], { status: 302 });
-      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5000);
+      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5);
       await expect(requester.poll(null, null, new AbortController().signal)).rejects.toThrow(FatalTransportError);
     });
 
     it('a 304 is not a redirect', async () => {
       // The refusal must leave the poll's not-modified path exactly as it was.
       endpoint.queuePoll([], { status: 304 });
-      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5000);
+      const requester = new FetchRequester(SDK_KEY, endpoint.baseUri, 5);
       const result = await requester.poll(null, 'etag-1', new AbortController().signal);
       expect(result.notModified).toBe(true);
       expect(result.etag).toBe('etag-1');
@@ -4855,7 +4914,7 @@ describe('listeners', () => {
         throw new Error('async listener exploded');
       });
       store.start();
-      expect(await store.waitForSkills(5000)).toBe(true);
+      expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
       expect(await waitUntil(() => /async listener exploded/.test(consoleErrors()), 5000)).toBe(true);
       expect(consoleErrors()).toContain('delivery continues');
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -4941,9 +5000,9 @@ describe('telemetry', () => {
       ),
     );
 
-    const store = pollStore({ pollIntervalMs: 20 });
+    const store = pollStore({ pollIntervalSeconds: 0.02 });
     store.start();
-    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(await waitUntil(() => store.diagnostics.objectsRevoked > 0, 10_000)).toBe(true);
     // Serving is part of the cycle too, and it is the surface a naive
     // implementation would verify on.
