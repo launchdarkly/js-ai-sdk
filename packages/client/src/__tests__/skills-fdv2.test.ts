@@ -852,13 +852,21 @@ describe('protocol reader', () => {
     expect(outcome.expected).toBe(true);
   });
 
-  it('treats a catastrophic goodbye as fatal', () => {
+  it('treats a catastrophic goodbye as a counted disconnect, not as fatal', () => {
+    // Neither base JS package reads `catastrophe`, and the streamer sets it on
+    // its own connection-error path. Fatal stopped delivery until `start()`, so
+    // one server-side error ended revocation for the life of the process.
     const outcome = new ProtocolReader(new SkillObjectSet()).handle('goodbye', {
       reason: 'no',
-      silent: false,
+      silent: true,
       catastrophe: true,
     });
-    expect(outcome.fatal).toBeTruthy();
+    expect(outcome.fatal).toBeFalsy();
+    expect(outcome.disconnect).toMatch(/catastrophic goodbye: no/);
+    // Never a routine recycle, so the reconnect always counts as a failure.
+    expect(outcome.expected).not.toBe(true);
+    // Logged at error level, even when the server marks it silent.
+    expect(consoleErrors()).toMatch(/catastrophic goodbye: no/);
   });
 
   it('holds everything and commits nothing on transfer-none', () => {
@@ -2005,6 +2013,7 @@ class UnchangingRequester implements Requester {
   constructor(
     private readonly firstTransfer: WireEvent[] = [],
     private readonly silent = true,
+    private readonly catastrophe = false,
   ) {}
 
   poll(): Promise<PollResult> {
@@ -2019,7 +2028,7 @@ class UnchangingRequester implements Requester {
         : events(['server-intent', serverIntent('none')]);
     const scripted = asPairs([
       ...transfer,
-      ...events(['goodbye', { reason: 'server recycle', silent: this.silent, catastrophe: false }]),
+      ...events(['goodbye', { reason: 'server recycle', silent: this.silent, catastrophe: this.catastrophe }]),
     ]);
     return (async function* () {
       yield* scripted;
@@ -2282,6 +2291,23 @@ describe('failure handling', () => {
     expect(await waitUntil(() => requester.connections >= 6, 2000)).toBe(true);
     expect(store.failed).toBeNull();
     expect(store.diagnostics.connectionFailures).toBe(0);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+  });
+
+  it('reconnects after a catastrophic goodbye, and counts it even after a completed exchange', async () => {
+    // Was fatal: delivery stopped at the first one and stayed stopped until
+    // `start()`. It now retries on the backoff schedule like any failure, and
+    // unlike a recycle it is counted even on a connection that committed.
+    const requester = new UnchangingRequester(fullPayload([['put-object', putSkill()]], 'basis-1'), true, true);
+    const store = scriptedStreamStore(requester);
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await waitUntil(() => requester.connections >= 3, 2000)).toBe(true);
+    expect(store.failed).toBeNull();
+    expect(store.diagnostics.lastError).toBe('server sent a catastrophic goodbye: server recycle');
+    expect(consoleErrors()).toMatch(/catastrophic goodbye: server recycle/);
+    expect(consoleErrors()).not.toMatch(/will not retry/);
+    expect(logged(warnSpy)).toMatch(/Skill delivery failed \(server sent a catastrophic goodbye: server recycle\)/);
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
 

@@ -233,7 +233,7 @@ export type StoreDiagnostics = {
   /**
    * Recoverable transport failures in a row; reset by a completed exchange (a
    * commit or a `none` intent). A server-initiated `goodbye` after such an
-   * exchange is not counted.
+   * exchange is not counted, unless it is marked `catastrophe`.
    */
   readonly connectionFailures: number;
   /** The most recent transport error, if any. Human-readable; do not parse. */
@@ -858,13 +858,20 @@ export class ProtocolReader {
   private goodbye(data: unknown): TransferOutcome {
     const parsed = (data ?? {}) as { reason?: unknown; silent?: unknown; catastrophe?: unknown };
     this.abandonInFlight();
+    if (parsed.catastrophe === true) {
+      // Recoverable, as in the base SDKs, which do not read `catastrophe`: the
+      // streamer sets it on its own connection-error path, and treating it as
+      // fatal stopped delivery, revocations included, until `start()`. Never
+      // `expected`, so it is counted even after a completed exchange. Logged at
+      // error whatever `silent` says.
+      const reason = `server sent a catastrophic goodbye: ${String(parsed.reason)}`;
+      error(`FDv2 connection closing: ${reason}`);
+      return { disconnect: reason };
+    }
     // Debug only: a goodbye after a completed exchange is a routine recycle, and
     // the reader cannot tell. The delivery loop warns for one that counts.
     if (parsed.silent !== true) {
       debug(`FDv2 connection closing: ${String(parsed.reason)}`);
-    }
-    if (parsed.catastrophe === true) {
-      return { fatal: `server sent a catastrophic goodbye: ${String(parsed.reason)}` };
     }
     // How the server recycles a long-lived stream.
     return { disconnect: `server said goodbye: ${String(parsed.reason)}`, expected: true };
