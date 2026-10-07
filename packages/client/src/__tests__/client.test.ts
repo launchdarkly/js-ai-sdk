@@ -703,6 +703,7 @@ describe('invoke() judgeTasks via buildJudgeTasks', () => {
     expect(task.judgeMode).toBe('messages');
     expect(task.collapseMessages).toBe(false);
     expect(task.parentTrackData).toMatchObject({ configKey: 'flag' });
+    expect(task.userInput).toBe('q');
   });
 
   it('sets collapseMessages=true when judge is messages-mode but only an agent handler is registered', async () => {

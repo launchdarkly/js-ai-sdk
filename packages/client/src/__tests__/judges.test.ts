@@ -146,6 +146,39 @@ describe('runJudges', () => {
     expect(callArgs.config.messages).toHaveLength(0);
   });
 
+  it('prefers an exact provider handler over an earlier wildcard', async () => {
+    mockExtractVariation.mockResolvedValue({
+      config: { ...mockJudgeConfig, provider: { name: 'TypeSafe' }, model: { name: 'jev' } },
+      meta: mockJudgeMeta,
+    });
+    const wildcard: ProviderHandler = vi
+      .fn()
+      .mockResolvedValue({ output: '{"score":0.1,"reasoning":"no"}', usage: {} });
+    wildcard.providesFor = ['*', 'messages'];
+    const typesafe: ProviderHandler = vi
+      .fn()
+      .mockResolvedValue({ output: '{"score":0.5,"reasoning":"ok"}', usage: {} });
+    typesafe.providesFor = ['TypeSafe', 'messages'];
+
+    await runJudges({
+      config: {
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'Be helpful.',
+        judgeConfiguration: { judges: [{ key: 'jev', samplingRate: 1 }] },
+      },
+      userContext: mockContext,
+      handler: wildcard,
+      handlers: [wildcard, typesafe],
+      userInput: 'question',
+      llmResponse: 'answer',
+      baseTrackData,
+    });
+
+    expect(mockExecuteAndTrack).toHaveBeenCalledWith(expect.objectContaining({ handler: typesafe }));
+    expect(wildcard).not.toHaveBeenCalled();
+  });
+
   it('uses an exact agent handler for the same provider when no messages handler is registered, and collapses messages', async () => {
     const judgeConfigWithMessages = {
       model: { name: 'claude-3-5-sonnet' },
@@ -474,6 +507,11 @@ describe('typesafe judge results', () => {
     });
 
     expect(mockExecuteAndTrack).toHaveBeenCalledTimes(1);
+    expect(mockExecuteAndTrack).toHaveBeenCalledWith(
+      expect.objectContaining({
+        variables: expect.objectContaining({ input: 'question', response_to_evaluate: 'answer' }),
+      }),
+    );
     expect(result['jev-judge.migration_intent']).toEqual({
       usage,
       response: 'Unclear',
@@ -510,6 +548,7 @@ describe('typesafe judge results', () => {
         judgeConfig: { ...mockJudgeConfig, provider: { name: 'TypeSafe' } },
         judgeMeta: mockJudgeMeta,
         actualOutput: 'answer',
+        userInput: 'question',
         userContext: mockContext,
         judgeProvider: 'TypeSafe',
         judgeMode: 'messages',
@@ -517,6 +556,11 @@ describe('typesafe judge results', () => {
         parentTrackData: baseTrackData,
       },
       [handler],
+    );
+    expect(mockExecuteAndTrack).toHaveBeenCalledWith(
+      expect.objectContaining({
+        variables: expect.objectContaining({ input: 'question', response_to_evaluate: 'answer' }),
+      }),
     );
     expect(result?.score).toBe(0.25);
     expect(result?.response).toBe('Unclear');

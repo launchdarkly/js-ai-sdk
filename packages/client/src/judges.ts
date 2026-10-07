@@ -102,6 +102,18 @@ export function typesafeJudgeEntries(raw: unknown): TypesafeJudgeEntry[] | undef
   });
 }
 
+/** Exact `(provider, mode)` match, then a same-mode wildcard. */
+function handlerFor(
+  handlers: ProviderHandler[],
+  provider: string | undefined,
+  mode: string,
+): ProviderHandler | undefined {
+  return (
+    handlers.find((handler) => handler.providesFor?.[0] === provider && handler.providesFor?.[1] === mode) ??
+    handlers.find((handler) => handler.providesFor?.[0] === '*' && handler.providesFor?.[1] === mode)
+  );
+}
+
 export const runJudges = async ({
   config,
   userContext,
@@ -155,14 +167,9 @@ export const runJudges = async ({
     let judgeHandler: ProviderHandler;
     let collapseMessages = false;
     if (handlers) {
-      const matchesProvider = (h: ProviderHandler) =>
-        h.providesFor?.[0] === judgeProvider || h.providesFor?.[0] === '*';
-
-      const exactMatch = handlers.find((h) => matchesProvider(h) && h.providesFor?.[1] === judgeMode);
+      const exactMatch = handlerFor(handlers, judgeProvider, judgeMode);
       const agentFallback =
-        judgeMode === 'messages'
-          ? handlers.find((h) => matchesProvider(h) && h.providesFor?.[1] === 'agent')
-          : undefined;
+        judgeMode === 'messages' && !exactMatch ? handlerFor(handlers, judgeProvider, 'agent') : undefined;
 
       if (exactMatch) {
         judgeHandler = exactMatch;
@@ -201,6 +208,7 @@ export const runJudges = async ({
         variables: {
           message_history: messageHistory,
           response_to_evaluate: llmResponse,
+          ...(userInput ? { input: userInput } : {}),
         },
       });
       const judgeResponse = typeof rawJudgeResponse === 'string' ? rawJudgeResponse : JSON.stringify(rawJudgeResponse);
@@ -277,6 +285,7 @@ export const buildJudgeTasks = async ({
   handlers,
   llmResponse,
   baseTrackData,
+  userInput,
 }: {
   config: AiConfigRep;
   userContext: LDContext;
@@ -284,6 +293,7 @@ export const buildJudgeTasks = async ({
   handlers?: ProviderHandler[];
   llmResponse: string;
   baseTrackData: TrackData;
+  userInput?: string;
 }): Promise<JudgeTask[]> => {
   const judges = config.judgeConfiguration?.judges ?? [];
   const hasActiveJudge = judges.some((j: { samplingRate: number }) => j.samplingRate > 0);
@@ -303,14 +313,9 @@ export const buildJudgeTasks = async ({
 
     let collapseMessages = false;
     if (handlers) {
-      const matchesProvider = (h: ProviderHandler) =>
-        h.providesFor?.[0] === judgeProvider || h.providesFor?.[0] === '*';
-
-      const exactMatch = handlers.find((h) => matchesProvider(h) && h.providesFor?.[1] === judgeMode);
+      const exactMatch = handlerFor(handlers, judgeProvider, judgeMode);
       const agentFallback =
-        judgeMode === 'messages'
-          ? handlers.find((h) => matchesProvider(h) && h.providesFor?.[1] === 'agent')
-          : undefined;
+        judgeMode === 'messages' && !exactMatch ? handlerFor(handlers, judgeProvider, 'agent') : undefined;
 
       if (exactMatch) {
         collapseMessages = false;
@@ -335,6 +340,7 @@ export const buildJudgeTasks = async ({
       collapseMessages,
       evaluationMetricKey: judgeConfig.evaluationMetricKey,
       parentTrackData: baseTrackData,
+      userInput,
     });
   }
 
@@ -366,15 +372,12 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
     collapseMessages,
     parentTrackData,
     configKey,
+    userInput,
   } = task;
 
-  const matchesProvider = (h: ProviderHandler) => h.providesFor?.[0] === judgeProvider || h.providesFor?.[0] === '*';
-
-  const exactMatch = handlers.find((h) => matchesProvider(h) && h.providesFor?.[1] === judgeMode);
+  const exactMatch = handlerFor(handlers, judgeProvider, judgeMode);
   const agentFallback =
-    judgeMode === 'messages' && !exactMatch
-      ? handlers.find((h) => matchesProvider(h) && h.providesFor?.[1] === 'agent')
-      : undefined;
+    judgeMode === 'messages' && !exactMatch ? handlerFor(handlers, judgeProvider, 'agent') : undefined;
 
   const judgeHandler = exactMatch ?? agentFallback;
   if (!judgeHandler) return null;
@@ -400,6 +403,7 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
         ...variables,
         message_history: messageHistory,
         response_to_evaluate: actualOutput,
+        ...(userInput ? { input: userInput } : {}),
       },
     });
 

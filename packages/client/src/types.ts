@@ -349,6 +349,11 @@ export type JudgeTask = {
    * originating request.
    */
   parentTrackData: TrackData;
+  /**
+   * The input that produced `actualOutput`. A TypeSafe judge reads this as
+   * Jev's `input` field.
+   */
+  userInput?: string;
 };
 
 /**

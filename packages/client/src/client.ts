@@ -100,6 +100,7 @@ export const config = ({ key, handler, toolHandlers, registry, skipJudges = fals
         handlers: resolvedHandlerArray,
         llmResponse: llmResponseStr,
         baseTrackData,
+        userInput,
       });
       return {
         response: parsedResponse as T,
