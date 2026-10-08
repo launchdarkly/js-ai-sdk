@@ -84,6 +84,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 });
 
 import { createLangChainAgentsHandler } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1003,7 +1004,10 @@ describe('model source', () => {
     expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: llm }));
   });
 
-  it('spreads model.parameters into the default OpenAI constructor', async () => {
+  // @langchain/openai's ChatOpenAI constructor only reads camelCase (`maxTokens`), so the
+  // snake_case bag the UI writes is camelized, then narrowed to ChatOpenAI's allowlist: `tools`
+  // is not a constructor field, so it is dropped.
+  it('passes allowlisted model.parameters to the default OpenAI constructor, camelized, and drops the rest', async () => {
     const constructed = { tag: 'default-openai' };
     MockChatOpenAI.mockImplementation(function MockChatOpenAI() {
       return constructed;
@@ -1015,11 +1019,44 @@ describe('model source', () => {
     await createLangChainAgentsHandler()(cfg as any, 'q');
     expect(MockChatOpenAI).toHaveBeenCalledWith({
       temperature: 0.2,
-      max_tokens: 512,
-      tools: ['openai-tool'],
+      maxTokens: 512,
       model: 'gpt-4o',
     });
     expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: constructed }));
+  });
+
+  it('camelCase model.parameters keys still pass through unchanged into the default constructor', async () => {
+    const constructed = { tag: 'default-openai-camel' };
+    MockChatOpenAI.mockImplementation(function MockChatOpenAI() {
+      return constructed;
+    });
+    const cfg = {
+      model: { name: 'gpt-4o', parameters: { temperature: 0.2, maxTokens: 512 } },
+      provider: { name: 'LangChain' },
+      instructions: 'Be helpful.',
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
+  });
+
+  it.each([
+    ['OpenAI', 'gpt-4o', MockChatOpenAI],
+    ['Anthropic', 'claude-sonnet-4-5', MockChatAnthropic],
+    ['Bedrock', 'anthropic.claude-sonnet-4-5', MockChatBedrockConverse],
+  ] as const)('never passes credentials or connection settings to the default %s constructor', async (provider, name, ctor) => {
+    ctor.mockClear();
+    ctor.mockImplementation(function MockChatModel() {
+      return {};
+    });
+    const cfg = {
+      provider: { name: provider },
+      model: { name, parameters: { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 } },
+      instructions: 'Be helpful.',
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    const args = ctor.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(args.temperature).toBe(0.3);
+    expectNoNeverForwardedValue(args);
   });
 
   it('spreads model.parameters into the default Anthropic constructor', async () => {

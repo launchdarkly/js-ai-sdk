@@ -41,7 +41,7 @@ export type { InspectConfigResult } from './lifecycle.js';
 export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';
 export { registerAiSdkPackage } from './sdk-info.js';
-export { makeNodeTrackData } from './tracking.js';
+export { makeNodeTrackData, makeRunTrackData } from './tracking.js';
 export type {
   ConfigArgs,
   ConfigMessage,
@@ -51,6 +51,7 @@ export type {
   GraphEdge,
   GraphNode,
   GraphOptions,
+  GraphStreamEvent,
   GraphTopology,
   HandlerStreamEvent,
   ImageContentBlock,
@@ -84,14 +85,17 @@ export { GraphTopologySchema, NATIVE_TOOL_KEY, NativeTool } from './types.js';
 export type { RunUsage, SpanUsage } from './utils.js';
 export {
   addCachedTokensToInput,
+  camelizeModelParameters,
   collapseMessagesToInstructions,
   createHandler,
   createRunUsage,
   endSpanOnce,
   langChainSpanUsage,
+  normalizeModelParameters,
   omitModelStamps,
   parseJSONWithPossibleFences,
   parseTemplate,
+  pickForwardedModelParameters,
   setLdSpanAttributes,
   setModelIdentityAttributes,
   setUsageSpanAttributes,

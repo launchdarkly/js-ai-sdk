@@ -47,6 +47,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 
 import { NativeTool } from '@launchdarkly/ai-server';
 import { toClaudeAgents } from '../native-graph.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -110,6 +111,45 @@ describe('toClaudeAgents', () => {
     }
   });
 
+  it("forwards each node's allowlisted model.parameters, including maxTurns, to that node's query()", async () => {
+    const def = makeGraphDef();
+    (def.root!.config.model as any).parameters = {
+      max_turns: 3,
+      thinking: { type: 'enabled', budget_tokens: 2048 },
+      effort: 'low',
+    };
+    (def.getNode('leaf')!.config.model as any).parameters = { max_turns: 6, max_budget_usd: 0.5 };
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+
+    const rootOptions = mockQuery.mock.calls[0][0].options;
+    expect(rootOptions).toMatchObject({
+      maxTurns: 3,
+      thinking: { type: 'enabled', budgetTokens: 2048 },
+      effort: 'low',
+      model: 'claude-opus-4-5',
+    });
+
+    // The leaf runs when the root calls its sub-agent tool; call that tool's handler directly.
+    const leafTool = mockTool.mock.calls.find((call) => call[0] === 'leaf');
+    await (leafTool![3] as (args: { input: string }) => Promise<unknown>)({ input: 'sub task' });
+    const leafOptions = mockQuery.mock.calls[1][0].options;
+    expect(leafOptions).toMatchObject({ maxTurns: 6, maxBudgetUsd: 0.5 });
+    expect(leafOptions).not.toHaveProperty('max_turns');
+  });
+
+  it('never forwards credentials, endpoints, remote tools or host-process settings from any node', async () => {
+    const def = makeGraphDef();
+    (def.root!.config.model as any).parameters = NEVER_FORWARDED_PARAMETERS;
+    (def.getNode('leaf')!.config.model as any).parameters = NEVER_FORWARDED_PARAMETERS;
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+    const leafTool = mockTool.mock.calls.find((call) => call[0] === 'leaf');
+    await (leafTool![3] as (args: { input: string }) => Promise<unknown>)({ input: 'sub task' });
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    for (const call of mockQuery.mock.calls) {
+      expectNoNeverForwardedValue(call[0].options, ['mcpServers', 'hooks']);
+    }
+  });
+
   it('throws when the graph is disabled', async () => {
     const def = makeGraphDef({ enabled: false });
     await expect(
@@ -167,6 +207,11 @@ describe('toClaudeAgents', () => {
       expect.objectContaining({ configKey: 'leaf' }),
       1,
     );
+    const leafNodes = mockTrack.mock.calls.filter(
+      (c: unknown[]) => c[0] === '$ld:ai:graph:node' && (c[2] as { nodeKey?: string }).nodeKey === 'leaf',
+    );
+    expect(leafNodes).toHaveLength(1);
+    expect(leafNodes[0][3]).toBe(1);
   });
 
   // T8: invocation_success tracking
@@ -181,6 +226,18 @@ describe('toClaudeAgents', () => {
       { kind: 'user', key: 'user-1' },
       expect.any(Object),
       1,
+    );
+    expect(mockTrack).toHaveBeenCalledWith(
+      '$ld:ai:graph:node',
+      { kind: 'user', key: 'user-1' },
+      expect.objectContaining({ nodeKey: 'root', index: 0 }),
+      1,
+    );
+    expect(mockTrack).not.toHaveBeenCalledWith(
+      '$ld:ai:graph:path',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
     );
   });
 
