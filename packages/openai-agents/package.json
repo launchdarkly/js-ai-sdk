@@ -50,7 +50,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@launchdarkly/ai-server": "*",
+    "@launchdarkly/ai-server": "^0.3.0",
     "@openai/agents": "^0.11.6",
     "@opentelemetry/api": "^1.9.1",
     "openai": "^6.42.0",
