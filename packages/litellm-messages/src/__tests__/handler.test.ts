@@ -138,13 +138,15 @@ describe('createLiteLLMMessagesHandler', () => {
 
   describe('factory, proxy ownership, and evaluated config', () => {
     it('advertises wildcard messages metadata and captureContent', () => {
-      expect(createLiteLLMMessagesHandler().providesFor).toEqual(['*', 'messages']);
-      expect(createLiteLLMMessagesHandler().captureContent).toBe(false);
-      expect(createLiteLLMMessagesHandler({ captureContent: true }).captureContent).toBe(true);
+      const options = { baseURL: 'https://proxy.test/v1' };
+      expect(createLiteLLMMessagesHandler(options).providesFor).toEqual(['*', 'messages']);
+      expect(createLiteLLMMessagesHandler(options).captureContent).toBe(false);
+      expect(createLiteLLMMessagesHandler({ ...options, captureContent: true }).captureContent).toBe(true);
     });
 
     it('returns independent handlers', () => {
-      expect(createLiteLLMMessagesHandler()).not.toBe(createLiteLLMMessagesHandler());
+      const options = { baseURL: 'https://proxy.test/v1' };
+      expect(createLiteLLMMessagesHandler(options)).not.toBe(createLiteLLMMessagesHandler(options));
     });
 
     it('uses an injected OpenAI-compatible client without constructing another client', async () => {
@@ -188,14 +190,9 @@ describe('createLiteLLMMessagesHandler', () => {
     });
 
     it('never targets api.openai.com when no base URL is configured', () => {
+      expect(() => createLiteLLMMessagesHandler()).toThrow(/LITELLM_BASE_URL|baseURL/i);
       expect(() => createLiteLLMMessagesHandler({ apiKey: 'proxy-key' })).toThrow(/LITELLM_BASE_URL|baseURL/i);
       expect(JSON.stringify(constructedClients)).not.toContain('api.openai.com');
-    });
-
-    it('keeps the no-arg factory metadata-safe but rejects before constructing a default client', async () => {
-      const handler = createLiteLLMMessagesHandler();
-      await expect(handler(baseConfig as never, 'hello')).rejects.toThrow(/LITELLM_BASE_URL|baseURL/i);
-      expect(constructedClients).toHaveLength(0);
     });
 
     it('resolves clientFactory after evaluation and scopes it to the handler instance', async () => {
@@ -222,8 +219,11 @@ describe('createLiteLLMMessagesHandler', () => {
         model: {
           name: 'bedrock/company-alias',
           parameters: {
+            api_base: 'http://127.0.0.1:9',
+            extra_headers: { 'X-Smuggled': '1' },
             max_tokens: 321,
             messages: ['malicious'],
+            metadata: { user: 'attacker' },
             model: 'gpt-default',
             api_key: 'provider-secret',
             base_url: 'https://wrong.example.test',
@@ -246,7 +246,10 @@ describe('createLiteLLMMessagesHandler', () => {
       expect(request.tools).not.toEqual(['malicious']);
       expect(request.response_format).toBeUndefined();
       expect(request.api_key).toBeUndefined();
+      expect(request.api_base).toBeUndefined();
       expect(request.base_url).toBeUndefined();
+      expect(request.extra_headers).toBeUndefined();
+      expect(request.metadata).toBeUndefined();
     });
   });
 
@@ -597,6 +600,16 @@ describe('createLiteLLMMessagesHandler', () => {
       const chat = mockSpans.find(({ name }) => name.startsWith('chat '));
       expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.request.model', 'anthropic/claude-sonnet-4');
       expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 8);
+    });
+
+    it('defaults gen_ai.provider.name to litellm when the config names no provider', async () => {
+      const create = vi.fn().mockResolvedValue(completion('ok'));
+      const { provider: _provider, ...config } = baseConfig;
+      await createLiteLLMMessagesHandler({ client: { chat: { completions: { create } } } as never })(
+        config as never,
+        'q',
+      );
+      expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', 'litellm');
     });
 
     it('captures prompt and completion only when captureContent is enabled', async () => {

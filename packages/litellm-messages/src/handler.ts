@@ -12,12 +12,15 @@ import {
   type MessageContent,
   type ProviderHandler,
   parseTemplate,
+  setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
+  setOutputContentAttributes,
   setToolCallContentAttributes,
   setUsageSpanAttributes,
   type Tool,
   type ToolHandlerFn,
+  textMessage,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
@@ -97,7 +100,7 @@ function failSpan(span: Span, error: unknown): void {
   span.end();
 }
 
-const servingProvider = (configRep: AiConfigRep) => (configRep.provider?.name || 'openai').toLowerCase();
+const servingProvider = (configRep: AiConfigRep) => (configRep.provider?.name || 'litellm').toLowerCase();
 
 function setIdentity(span: Span, configRep: AiConfigRep): void {
   setModelIdentityAttributes(span, servingProvider(configRep), configRep.model.name, 'litellm');
@@ -118,16 +121,20 @@ function startToolSpan(name: string, id: string, parentContext: Context): Span {
   return span;
 }
 
-const HANDLER_OWNED_MODEL_PARAMETERS = [
-  'api_key',
-  'base_url',
-  'messages',
-  'model',
-  'output_format',
-  'response_format',
-  'stream',
-  'stream_options',
-  'tools',
+// Generation settings only. Anything else in model.parameters, including api_base,
+// api_key, extra_headers, and metadata, is dropped before chat.completions.create.
+const FORWARDED_MODEL_PARAMETERS = [
+  'frequency_penalty',
+  'max_completion_tokens',
+  'max_tokens',
+  'parallel_tool_calls',
+  'presence_penalty',
+  'reasoning_effort',
+  'seed',
+  'stop',
+  'temperature',
+  'tool_choice',
+  'top_p',
 ] as const;
 
 function mapContent(content: MessageContent): unknown {
@@ -202,12 +209,7 @@ function resolveClient(options: LiteLLMMessagesOptions, configRep: AiConfigRep):
 }
 
 function checkedOptions(options: LiteLLMMessagesOptions): LiteLLMMessagesOptions {
-  if (
-    options.apiKey &&
-    !options.client &&
-    !options.clientFactory &&
-    !(options.baseURL ?? process.env.LITELLM_BASE_URL)
-  ) {
+  if (!options.client && !options.clientFactory && !(options.baseURL ?? process.env.LITELLM_BASE_URL)) {
     throw new Error('LiteLLM proxy baseURL is required (pass baseURL or set LITELLM_BASE_URL)');
   }
   return options;
@@ -227,8 +229,11 @@ function ownedRequest(
   tools: unknown[],
   stream: boolean,
 ): Record<string, unknown> {
-  const parameters = { ...(configRep.model.parameters ?? {}) } as Record<string, unknown>;
-  for (const key of HANDLER_OWNED_MODEL_PARAMETERS) delete parameters[key];
+  const raw = (configRep.model.parameters ?? {}) as Record<string, unknown>;
+  const parameters: Record<string, unknown> = {};
+  for (const key of FORWARDED_MODEL_PARAMETERS) {
+    if (raw[key] !== undefined) parameters[key] = raw[key];
+  }
   return {
     ...parameters,
     model: configRep.model.name,
@@ -251,18 +256,10 @@ function ownedRequest(
   };
 }
 
-function setInputContent(span: Span, capture: boolean, messages: Array<Record<string, unknown>>): void {
-  if (!capture) return;
-  messages.forEach((message, index) => {
-    span.setAttribute(`gen_ai.prompt.${index}.role`, String(message.role));
-    span.setAttribute(`gen_ai.prompt.${index}.content`, contentToText(message.content as MessageContent));
-  });
-}
-
-function setOutputContent(span: Span, capture: boolean, output: string): void {
-  if (!capture) return;
-  span.setAttribute('gen_ai.completion.0.role', 'assistant');
-  span.setAttribute('gen_ai.completion.0.content', output);
+function spanMessages(messages: Array<Record<string, unknown>>) {
+  return messages.map((message) =>
+    textMessage(String(message.role), message.content == null ? '' : contentToText(message.content as MessageContent)),
+  );
 }
 
 export function createLiteLLMMessagesHandler(options: LiteLLMMessagesOptions = {}): ProviderHandler {
@@ -284,7 +281,7 @@ export function createLiteLLMMessagesHandler(options: LiteLLMMessagesOptions = {
         setLdSpanAttributes(span, variables);
         const parentContext = trace.setSpan(context.active(), span);
         const messages = buildMessages(configRep, userInput, variables, history);
-        setInputContent(span, captureContent, messages);
+        setInputContentAttributes(span, captureContent, { messages: spanMessages(messages) });
         const tools = configRep.tools ? buildTools(configRep.tools, toolHandlers) : [];
         const usage = { input_tokens: 0, output_tokens: 0 };
 
@@ -293,7 +290,7 @@ export function createLiteLLMMessagesHandler(options: LiteLLMMessagesOptions = {
           let output = '';
           for (let step = 0; step <= MAX_STEPS; step++) {
             const chatSpan = startModelSpan(configRep, parentContext);
-            setInputContent(chatSpan, captureContent, messages);
+            setInputContentAttributes(chatSpan, captureContent, { messages: spanMessages(messages) });
             let response: ChatCompletion;
             try {
               response = (await client.chat.completions.create(
@@ -312,7 +309,7 @@ export function createLiteLLMMessagesHandler(options: LiteLLMMessagesOptions = {
               cacheCreation: 0,
             });
             const choice = response.choices?.[0]?.message ?? {};
-            setOutputContent(chatSpan, captureContent, choice.content ?? '');
+            setOutputContentAttributes(chatSpan, captureContent, [textMessage('assistant', choice.content ?? '')]);
             chatSpan.setStatus({ code: SpanStatusCode.OK });
             chatSpan.end();
 
@@ -351,7 +348,7 @@ export function createLiteLLMMessagesHandler(options: LiteLLMMessagesOptions = {
             messages.push(...results);
           }
 
-          setOutputContent(span, captureContent, output);
+          setOutputContentAttributes(span, captureContent, [textMessage('assistant', output)]);
           span.setAttribute('gen_ai.response.model', configRep.model.name);
           setUsageSpanAttributes(span, {
             input: usage.input_tokens,
@@ -380,7 +377,7 @@ export function createLiteLLMMessagesHandler(options: LiteLLMMessagesOptions = {
       setLdSpanAttributes(span, variables);
       const parentContext = trace.setSpan(context.active(), span);
       const messages = buildMessages(configRep, userInput, variables, history);
-      setInputContent(span, captureContent, messages);
+      setInputContentAttributes(span, captureContent, { messages: spanMessages(messages) });
       const tools = configRep.tools ? buildTools(configRep.tools, toolHandlers) : [];
       const usage = { input_tokens: 0, output_tokens: 0 };
       let client: CompatibleClient;
@@ -395,7 +392,7 @@ export function createLiteLLMMessagesHandler(options: LiteLLMMessagesOptions = {
         client = resolveClient(resolvedOptions, configRep);
         for (let step = 0; step <= MAX_STEPS; step++) {
           activeModelSpan = startModelSpan(configRep, parentContext);
-          setInputContent(activeModelSpan, captureContent, messages);
+          setInputContentAttributes(activeModelSpan, captureContent, { messages: spanMessages(messages) });
           activeStream = (await client.chat.completions.create(
             ownedRequest(configRep, messages, tools, true),
           )) as ChatStream;
@@ -421,7 +418,7 @@ export function createLiteLLMMessagesHandler(options: LiteLLMMessagesOptions = {
           }
 
           activeModelSpan.setAttribute('gen_ai.response.model', configRep.model.name);
-          setOutputContent(activeModelSpan, captureContent, turnContent);
+          setOutputContentAttributes(activeModelSpan, captureContent, [textMessage('assistant', turnContent)]);
           setUsageSpanAttributes(activeModelSpan, {
             input: turnUsage.input_tokens,
             output: turnUsage.output_tokens,
@@ -440,30 +437,33 @@ export function createLiteLLMMessagesHandler(options: LiteLLMMessagesOptions = {
             function: { name: call.name, arguments: call.arguments },
           }));
           messages.push({ role: 'assistant', content: turnContent || null, tool_calls: toolCalls });
-          for (const call of calls.values()) {
-            const toolSpan = startToolSpan(call.name, call.id, parentContext);
-            setToolCallContentAttributes(toolSpan, captureContent, { arguments: call.arguments });
-            const handler = toolHandlers[call.name] as unknown as (args: Record<string, unknown>) => unknown;
-            try {
-              if (typeof handler !== 'function') throw new Error(`No handler registered for tool "${call.name}"`);
-              const result = await handler(parseToolArguments(call.name, call.arguments));
-              setToolCallContentAttributes(toolSpan, captureContent, { result });
-              messages.push({
-                role: 'tool',
-                tool_call_id: call.id,
-                content: typeof result === 'string' ? result : JSON.stringify(result),
-              });
-              toolSpan.setStatus({ code: SpanStatusCode.OK });
-              toolSpan.end();
-            } catch (error) {
-              failSpan(toolSpan, error);
-              throw error;
-            }
-          }
+          const results = await Promise.all(
+            [...calls.values()].map(async (call) => {
+              const toolSpan = startToolSpan(call.name, call.id, parentContext);
+              setToolCallContentAttributes(toolSpan, captureContent, { arguments: call.arguments });
+              const handler = toolHandlers[call.name] as unknown as (args: Record<string, unknown>) => unknown;
+              try {
+                if (typeof handler !== 'function') throw new Error(`No handler registered for tool "${call.name}"`);
+                const result = await handler(parseToolArguments(call.name, call.arguments));
+                setToolCallContentAttributes(toolSpan, captureContent, { result });
+                toolSpan.setStatus({ code: SpanStatusCode.OK });
+                toolSpan.end();
+                return {
+                  role: 'tool',
+                  tool_call_id: call.id,
+                  content: typeof result === 'string' ? result : JSON.stringify(result),
+                };
+              } catch (error) {
+                failSpan(toolSpan, error);
+                throw error;
+              }
+            }),
+          );
+          messages.push(...results);
         }
 
         completed = true;
-        setOutputContent(span, captureContent, output);
+        setOutputContentAttributes(span, captureContent, [textMessage('assistant', output)]);
         span.setAttribute('gen_ai.response.model', configRep.model.name);
         setUsageSpanAttributes(span, {
           input: usage.input_tokens,

@@ -3,41 +3,28 @@ import {
   contentToText,
   type GraphDefinition,
   type GraphNode,
+  getClient,
   imageBlockToUrl,
+  type LDContext,
   type Message,
   type MessageContent,
+  makeNodeTrackData,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
   type ToolHandlerFn,
 } from '@launchdarkly/ai-server';
-import {
-  Agent,
-  handoff,
-  type Model,
-  OpenAIChatCompletionsModel,
-  Runner,
-  setTracingDisabled,
-  tool,
-} from '@openai/agents';
+import { Agent, handoff, type Model, OpenAIChatCompletionsModel, Runner, tool } from '@openai/agents';
+import { SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
-import type { LiteLLMAgentOptions } from './handler.js';
+import { agentRunSettings, type LiteLLMAgentsOptions } from './handler.js';
 
 type AgentConfig = ConstructorParameters<typeof Agent>[0];
-const HANDLER_OWNED_MODEL_PARAMETERS = [
-  'api_key',
-  'base_url',
-  'messages',
-  'model',
-  'output_format',
-  'response_format',
-  'stream',
-  'stream_options',
-  'tools',
-] as const;
 
-export interface LiteLLMNativeGraphOptions extends LiteLLMAgentOptions {
+export interface LiteLLMNativeGraphOptions extends LiteLLMAgentsOptions {
   toolHandlers?: Record<string, ToolHandlerFn | NativeTool>;
+  /** LaunchDarkly context used for tracking events. Required for LD telemetry. */
+  context?: LDContext;
 }
 
 const sanitizeName = (name: string) => name.replace(/[^a-z0-9_-]/gi, '_').slice(0, 64);
@@ -74,14 +61,6 @@ function resolveClient(options: LiteLLMNativeGraphOptions, root: GraphNode): Ope
 
 function modelFor(client: OpenAI, node: GraphNode) {
   return new OpenAIChatCompletionsModel(client, node.config.model.name);
-}
-
-function nodeSettings(node: GraphNode) {
-  const parameters = { ...(node.config.model.parameters ?? {}) } as Record<string, unknown>;
-  for (const key of HANDLER_OWNED_MODEL_PARAMETERS) delete parameters[key];
-  delete parameters.maxTurns;
-  delete parameters.max_turns;
-  return parameters;
 }
 
 function userParts(content: MessageContent) {
@@ -126,57 +105,134 @@ export const toLiteLLMAgents = (
   invoke: async (input = '', variables = {}, history) => {
     const graph = await definition;
     if (!graph.enabled) throw new Error(`LiteLLM agent graph "${graph.key}" is disabled`);
-    if (!graph.root) throw new Error(`LiteLLM agent graph "${graph.key}" has no root node`);
+    const root = graph.root;
+    if (!root) throw new Error(`LiteLLM agent graph "${graph.key}" has no root node`);
 
-    setTracingDisabled(true);
-    const client = resolveClient(options, graph.root);
+    const client = resolveClient(options, root);
     const agents: Record<string, Agent> = {};
     const models: Record<string, Model> = {};
+    const ldContext = options.context;
 
-    await graph.reverseTraverse(async (node, context) => {
-      const childHandoffs = node.edges.map((edge) => {
-        const child = agents[edge.targetKey];
-        if (!child) throw new Error(`Child agent "${edge.targetKey}" was not built`);
-        return handoff(child);
+    return trace.getTracer('@launchdarkly/ai-litellm-agents').startActiveSpan('launchdarkly.graph', async (span) => {
+      span.setAttribute('launchdarkly.graph.key', graph.key);
+      const startTime = Date.now();
+      const runId = crypto.randomUUID();
+      const path: string[] = [];
+      const agentNameToKey = new Map<string, string>();
+
+      await graph.reverseTraverse(async (node, context) => {
+        const childHandoffs = node.edges.map((edge) => {
+          const child = agents[edge.targetKey];
+          if (!child) throw new Error(`Child agent "${edge.targetKey}" was not built`);
+          return handoff(child);
+        });
+        const model = modelFor(client, node);
+        models[node.key] = model;
+        const instructions = instructionsFor(node, variables);
+        const nodeTools = buildTools(node, options.toolHandlers ?? {});
+        const agentName = sanitizeName(node.key);
+        agentNameToKey.set(agentName, node.key);
+        const { modelSettings } = agentRunSettings(node.config.model.parameters as Record<string, unknown> | undefined);
+        const agent = new Agent({
+          name: agentName,
+          model,
+          modelSettings: modelSettings as unknown as AgentConfig['modelSettings'],
+          handoffs: childHandoffs,
+          ...(instructions ? { instructions } : {}),
+          ...(nodeTools.length ? { tools: nodeTools } : {}),
+        });
+        agents[node.key] = agent;
+        context[node.key] = agent;
       });
-      const model = modelFor(client, node);
-      models[node.key] = model;
-      const instructions = instructionsFor(node, variables);
-      const nodeTools = buildTools(node, options.toolHandlers ?? {});
-      const agent = new Agent({
-        name: sanitizeName(node.key),
-        model,
-        modelSettings: nodeSettings(node) as unknown as AgentConfig['modelSettings'],
-        handoffs: childHandoffs,
-        ...(instructions ? { instructions } : {}),
-        ...(nodeTools.length ? { tools: nodeTools } : {}),
+
+      const rootAgent = agents[root.key];
+      if (!rootAgent) throw new Error(`Root agent "${root.key}" was not built`);
+      const rootModel = models[root.key];
+      if (!rootModel) throw new Error(`Root model "${root.key}" was not built`);
+      const runner = new Runner({ modelProvider: { getModel: async () => rootModel }, tracingDisabled: true });
+      runner.on('agent_start', (_runCtx: unknown, agent: { name: string }) => {
+        const nodeKey = agentNameToKey.get(agent.name);
+        if (!nodeKey || path.includes(nodeKey)) return;
+        const index = path.length;
+        path.push(nodeKey);
+        if (!ldContext) return;
+        const node = graph.getNode(nodeKey);
+        if (!node) return;
+        getClient().track(
+          '$ld:ai:graph:node',
+          ldContext,
+          { ...makeNodeTrackData(node, graph.key, runId), nodeKey, index },
+          1,
+        );
       });
-      agents[node.key] = agent;
-      context[node.key] = agent;
+      runner.on('agent_end', (_runCtx: unknown, agent: { name: string }) => {
+        if (!ldContext) return;
+        const nodeKey = agentNameToKey.get(agent.name);
+        const node = nodeKey ? graph.getNode(nodeKey) : undefined;
+        if (node)
+          getClient().track('$ld:ai:generation:success', ldContext, makeNodeTrackData(node, graph.key, runId), 1);
+      });
+      runner.on('agent_handoff', (_runCtx: unknown, fromAgent: { name: string }) => {
+        if (!ldContext) return;
+        const fromKey = agentNameToKey.get(fromAgent.name);
+        const fromNode = fromKey ? graph.getNode(fromKey) : undefined;
+        if (fromNode)
+          getClient().track(
+            '$ld:ai:graph:handoff_success',
+            ldContext,
+            makeNodeTrackData(fromNode, graph.key, runId),
+            1,
+          );
+      });
+      const runnerInput = buildInput(input, root, variables, history);
+      const rootMaxTurns = agentRunSettings(
+        root.config.model.parameters as Record<string, unknown> | undefined,
+      ).runOptions;
+      const runInput = runnerInput as unknown as string;
+      let result: {
+        finalOutput?: unknown;
+        state: { usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } };
+      };
+      try {
+        result = (
+          'maxTurns' in rootMaxTurns
+            ? await runner.run(rootAgent, runInput, rootMaxTurns)
+            : await runner.run(rootAgent, runInput)
+        ) as typeof result;
+        span.setStatus({ code: SpanStatusCode.OK });
+      } catch (error) {
+        span.recordException(error instanceof Error ? error : new Error(String(error)));
+        span.setStatus({ code: SpanStatusCode.ERROR, message: String(error) });
+        if (ldContext) {
+          getClient().track('$ld:ai:graph:invocation_failure', ldContext, makeNodeTrackData(root, graph.key, runId), 1);
+        }
+        span.end();
+        throw error;
+      }
+      const response =
+        typeof result.finalOutput === 'string'
+          ? result.finalOutput
+          : result.finalOutput == null
+            ? ''
+            : JSON.stringify(result.finalOutput);
+      const inputTokens = Number(result.state.usage.inputTokens ?? 0);
+      const outputTokens = Number(result.state.usage.outputTokens ?? 0);
+      const totalTokens = Number(result.state.usage.totalTokens ?? inputTokens + outputTokens);
+      span.setAttribute('launchdarkly.graph.path', path.join('->'));
+      span.setAttribute('gen_ai.usage.input_tokens', inputTokens);
+      span.setAttribute('gen_ai.usage.output_tokens', outputTokens);
+      span.setAttribute('gen_ai.usage.total_tokens', totalTokens);
+      if (ldContext) {
+        const rootTrackData = makeNodeTrackData(root, graph.key, runId);
+        getClient().track('$ld:ai:graph:duration:total', ldContext, rootTrackData, Date.now() - startTime);
+        getClient().track('$ld:ai:graph:total_tokens', ldContext, rootTrackData, totalTokens);
+        getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
+      }
+      span.end();
+      return {
+        response,
+        usage: { input: inputTokens, output: outputTokens, total: totalTokens },
+      };
     });
-
-    const rootAgent = agents[graph.root.key];
-    if (!rootAgent) throw new Error(`Root agent "${graph.root.key}" was not built`);
-    const rootModel = models[graph.root.key];
-    if (!rootModel) throw new Error(`Root model "${graph.root.key}" was not built`);
-    const runner = new Runner({ modelProvider: { getModel: async () => rootModel } });
-    const runnerInput = buildInput(input, graph.root, variables, history);
-    const result = await runner.run(rootAgent, runnerInput as unknown as string);
-    const response =
-      typeof result.finalOutput === 'string'
-        ? result.finalOutput
-        : result.finalOutput == null
-          ? ''
-          : JSON.stringify(result.finalOutput);
-    const inputTokens = Number(result.state.usage.inputTokens ?? 0);
-    const outputTokens = Number(result.state.usage.outputTokens ?? 0);
-    return {
-      response,
-      usage: {
-        input: inputTokens,
-        output: outputTokens,
-        total: Number(result.state.usage.totalTokens ?? inputTokens + outputTokens),
-      },
-    };
   },
 });

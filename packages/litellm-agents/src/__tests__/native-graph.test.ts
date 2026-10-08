@@ -33,6 +33,7 @@ vi.mock('@openai/agents', () => ({
   },
   Runner: class {
     run = mockRun;
+    on = vi.fn();
     constructor(options: Record<string, unknown>) {
       runnerArgs.push(options);
     }

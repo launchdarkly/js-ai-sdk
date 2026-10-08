@@ -1,5 +1,7 @@
 # `@launchdarkly/ai-litellm-agents`
 
+**Experimental.** This package stays on 0.x until the Python and JavaScript LiteLLM integrations match.
+
 LiteLLM integration for `@launchdarkly/ai-server` using the OpenAI Agents SDK.
 Every evaluated model is explicitly bound to an OpenAI-compatible client owned
 by the caller, so requests cannot fall back to the default OpenAI endpoint.
@@ -24,18 +26,20 @@ the proxy, not in the Node.js application.
 ## Usage
 
 ```ts
-import { createLiteLLMAgentHandler } from '@launchdarkly/ai-litellm-agents';
+import { createLiteLLMAgentsHandler } from '@launchdarkly/ai-litellm-agents';
 import { config } from '@launchdarkly/ai-server';
 
 const result = await config({
   key: 'agent-config',
-  handler: createLiteLLMAgentHandler(),
+  handler: createLiteLLMAgentsHandler(),
 }).invoke('Research this', { kind: 'user', key: 'user-123' });
 ```
 
 The package exports `litellmAgents`, `litellmGraph`, and `toLiteLLMAgents`
 convenience adapters. The handler advertises `['*', 'agent']`. `baseURL` (or
-`LITELLM_BASE_URL`) is mandatory unless `client` or `clientFactory` is supplied.
+`LITELLM_BASE_URL`) is mandatory unless `client` or `clientFactory` is supplied,
+and `createLiteLLMAgentsHandler` throws at creation when it is missing. The
+messages package throws at creation the same way.
 It reads the optional proxy credential from `LITELLM_API_KEY`; an unauthenticated
 proxy needs no key. Internally, unauthenticated proxies receive a non-secret
 placeholder rather than an unrelated provider credential. Explicit `baseURL`

@@ -1,7 +1,7 @@
 import { type GraphOptions, graph } from '@launchdarkly/ai-server';
-import { createLiteLLMAgentHandler, type LiteLLMAgentOptions } from './handler.js';
+import { createLiteLLMAgentsHandler, type LiteLLMAgentsOptions } from './handler.js';
 
-export type LiteLLMGraphOptions = Omit<GraphOptions, 'handlers'> & LiteLLMAgentOptions;
+export type LiteLLMGraphOptions = Omit<GraphOptions, 'handlers'> & LiteLLMAgentsOptions;
 
 /** Runs a LaunchDarkly graph with a wildcard LiteLLM proxy handler pre-bound. */
 export const litellmGraph = (
@@ -10,5 +10,5 @@ export const litellmGraph = (
 ) =>
   graph(key, {
     ...options,
-    handlers: [createLiteLLMAgentHandler({ apiKey, baseURL, captureContent, client, clientFactory })],
+    handlers: [createLiteLLMAgentsHandler({ apiKey, baseURL, captureContent, client, clientFactory })],
   });

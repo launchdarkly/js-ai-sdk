@@ -114,7 +114,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 });
 
 import { litellmGraph } from '../graph.js';
-import { createLiteLLMAgentHandler, litellmAgents } from '../handler.js';
+import { createLiteLLMAgentsHandler, litellmAgents } from '../handler.js';
 
 const baseConfig = {
   instructions: 'You are helpful.',
@@ -135,7 +135,7 @@ async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
   return events;
 }
 
-describe('createLiteLLMAgentHandler', () => {
+describe('createLiteLLMAgentsHandler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv('LITELLM_BASE_URL', '');
@@ -153,9 +153,9 @@ describe('createLiteLLMAgentHandler', () => {
   });
 
   it('advertises wildcard agent metadata and captureContent', () => {
-    expect(createLiteLLMAgentHandler({ baseURL: 'https://proxy.test/v1' }).providesFor).toEqual(['*', 'agent']);
-    expect(createLiteLLMAgentHandler({ baseURL: 'https://proxy.test/v1' }).captureContent).toBe(false);
-    expect(createLiteLLMAgentHandler({ baseURL: 'https://proxy.test/v1', captureContent: true }).captureContent).toBe(
+    expect(createLiteLLMAgentsHandler({ baseURL: 'https://proxy.test/v1' }).providesFor).toEqual(['*', 'agent']);
+    expect(createLiteLLMAgentsHandler({ baseURL: 'https://proxy.test/v1' }).captureContent).toBe(false);
+    expect(createLiteLLMAgentsHandler({ baseURL: 'https://proxy.test/v1', captureContent: true }).captureContent).toBe(
       true,
     );
   });
@@ -163,7 +163,7 @@ describe('createLiteLLMAgentHandler', () => {
   it('binds the evaluated model to a chat-completions model backed by the injected proxy client', async () => {
     mockRun.mockResolvedValue(result());
     const client = { marker: 'litellm-client' };
-    await createLiteLLMAgentHandler({ client: client as never })(baseConfig as never, 'hello');
+    await createLiteLLMAgentsHandler({ client: client as never })(baseConfig as never, 'hello');
     expect(modelArgs).toContainEqual([client, 'anthropic/claude-sonnet-4']);
     expect(modelArgs).toHaveLength(1);
     expect(agentArgs[0].model).toBeDefined();
@@ -173,7 +173,7 @@ describe('createLiteLLMAgentHandler', () => {
 
   it('constructs the compatible client with proxy credentials and never api.openai.com', async () => {
     mockRun.mockResolvedValue(result());
-    await createLiteLLMAgentHandler({
+    await createLiteLLMAgentsHandler({
       apiKey: 'proxy-key',
       baseURL: 'https://litellm.example.test/v1',
     })(baseConfig as never, 'hello');
@@ -189,7 +189,7 @@ describe('createLiteLLMAgentHandler', () => {
     vi.stubEnv('OPENAI_API_KEY', 'provider-secret');
     mockRun.mockResolvedValue(result());
 
-    await createLiteLLMAgentHandler()(baseConfig as never, 'hello');
+    await createLiteLLMAgentsHandler()(baseConfig as never, 'hello');
 
     expect(clientArgs).toEqual([
       expect.objectContaining({
@@ -202,7 +202,7 @@ describe('createLiteLLMAgentHandler', () => {
   });
 
   it('rejects missing proxy ownership rather than falling back to the default provider', () => {
-    expect(() => createLiteLLMAgentHandler({ apiKey: 'key' })).toThrow(/LITELLM_BASE_URL|baseURL/i);
+    expect(() => createLiteLLMAgentsHandler({ apiKey: 'key' })).toThrow(/LITELLM_BASE_URL|baseURL/i);
     expect(providerArgs).toHaveLength(0);
   });
 
@@ -214,8 +214,8 @@ describe('createLiteLLMAgentHandler', () => {
     const secondFactory = vi.fn().mockReturnValue(secondClient);
     const config = { ...baseConfig, model: { name: 'company-router-alias', parameters: { temperature: 0.2 } } };
 
-    await createLiteLLMAgentHandler({ clientFactory: firstFactory })(config as never, 'one');
-    await createLiteLLMAgentHandler({ clientFactory: secondFactory })(config as never, 'two');
+    await createLiteLLMAgentsHandler({ clientFactory: firstFactory })(config as never, 'one');
+    await createLiteLLMAgentsHandler({ clientFactory: secondFactory })(config as never, 'two');
 
     expect(firstFactory).toHaveBeenCalledWith(config);
     expect(secondFactory).toHaveBeenCalledWith(config);
@@ -231,8 +231,10 @@ describe('createLiteLLMAgentHandler', () => {
       model: {
         name: 'gemini/team-route',
         parameters: {
+          api_base: 'http://127.0.0.1:9',
           api_key: 'provider-secret',
           base_url: 'https://wrong.example.test',
+          extra_headers: { 'X-Smuggled': '1' },
           max_tokens: 250,
           model: 'gpt-default',
           response_format: { type: 'text' },
@@ -242,15 +244,12 @@ describe('createLiteLLMAgentHandler', () => {
         },
       },
     };
-    await createLiteLLMAgentHandler({ client: client as never })(config as never, 'q');
-    expect(modelArgs).toContainEqual([
-      client,
-      'gemini/team-route',
-      expect.objectContaining({ max_tokens: 250, temperature: 0.1 }),
-    ]);
+    await createLiteLLMAgentsHandler({ client: client as never })(config as never, 'q');
+    expect(modelArgs).toContainEqual([client, 'gemini/team-route']);
     expect(JSON.stringify(modelArgs)).not.toContain('gpt-default');
     expect(JSON.stringify(modelArgs)).not.toContain('provider-secret');
-    expect(agentArgs[0].modelSettings).toEqual({ max_tokens: 250, temperature: 0.1 });
+    expect(JSON.stringify(agentArgs[0].modelSettings)).not.toContain('api_base');
+    expect(agentArgs[0].modelSettings).toEqual({ maxTokens: 250, temperature: 0.1 });
   });
 
   it.each([
@@ -258,7 +257,7 @@ describe('createLiteLLMAgentHandler', () => {
     ['maxTurns', 9],
   ])('forwards %s to Runner without leaking it into model settings', async (key, value) => {
     mockRun.mockResolvedValue(result());
-    await createLiteLLMAgentHandler({ client: {} as never })(
+    await createLiteLLMAgentsHandler({ client: {} as never })(
       {
         ...baseConfig,
         model: { name: 'proxy-alias', parameters: { [key]: value, temperature: 0.2 } },
@@ -296,7 +295,7 @@ describe('createLiteLLMAgentHandler', () => {
         },
       },
     };
-    await createLiteLLMAgentHandler({ client: {} as never })(
+    await createLiteLLMAgentsHandler({ client: {} as never })(
       config as never,
       'question',
       { search },
@@ -317,7 +316,7 @@ describe('createLiteLLMAgentHandler', () => {
 
   it('maps config messages without duplicating a final user turn', async () => {
     mockRun.mockResolvedValue(result());
-    await createLiteLLMAgentHandler({ client: {} as never })(
+    await createLiteLLMAgentsHandler({ client: {} as never })(
       {
         model: baseConfig.model,
         provider: baseConfig.provider,
@@ -345,7 +344,7 @@ describe('createLiteLLMAgentHandler', () => {
         search: { name: 'search', parameters: { type: 'object' }, type: 'function' },
       },
     };
-    await createLiteLLMAgentHandler({ client: {} as never })(config as never, 'q', {
+    await createLiteLLMAgentsHandler({ client: {} as never })(config as never, 'q', {
       search: vi.fn().mockRejectedValue(error),
     });
     expect(mockTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'search' }));
@@ -354,20 +353,19 @@ describe('createLiteLLMAgentHandler', () => {
 
   it('returns final output and aggregate Agents SDK usage', async () => {
     mockRun.mockResolvedValue(result('done', 12, 7));
-    const response = await createLiteLLMAgentHandler({ client: {} as never })(baseConfig as never, 'q');
+    const response = await createLiteLLMAgentsHandler({ client: {} as never })(baseConfig as never, 'q');
     expect(response).toMatchObject({ output: 'done', usage: { input_tokens: 12, output_tokens: 7 } });
   });
 
   it('disables duplicate Agents SDK tracing and emits LaunchDarkly telemetry with content gated', async () => {
-    const { setTracingDisabled } = await import('@openai/agents');
     mockRun.mockResolvedValue(result('secret answer', 8, 4));
-    await createLiteLLMAgentHandler({ client: {} as never })(
+    await createLiteLLMAgentsHandler({ client: {} as never })(
       baseConfig as never,
       'secret question',
       {},
       { __ld: { configKey: 'cfg', runId: 'run', variationKey: 'var' } },
     );
-    expect(setTracingDisabled).toHaveBeenCalledWith(true);
+    expect(runnerArgs[0]).toEqual(expect.objectContaining({ tracingDisabled: true }));
     expect(mockRootSpan.addEvent).toHaveBeenCalledWith(
       'feature_flag',
       expect.objectContaining({ 'feature_flag.key': 'cfg' }),
@@ -380,6 +378,13 @@ describe('createLiteLLMAgentHandler', () => {
     expect(mockRootSpan.end).toHaveBeenCalledOnce();
   });
 
+  it('defaults gen_ai.provider.name to litellm when the config names no provider', async () => {
+    mockRun.mockResolvedValue(result('ok'));
+    const { provider: _provider, ...withoutProvider } = baseConfig;
+    await createLiteLLMAgentsHandler({ client: {} as never })(withoutProvider as never, 'q');
+    expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', 'litellm');
+  });
+
   it('emits execute_tool children from Agents SDK lifecycle hooks', async () => {
     mockRun.mockImplementation(async () => {
       const details = { toolCall: { arguments: '{"q":"x"}', callId: 'call-1', name: 'search' } };
@@ -387,7 +392,7 @@ describe('createLiteLLMAgentHandler', () => {
       agentListeners.agent_tool_end?.[0]?.({}, { name: 'search' }, 'found', details);
       return result();
     });
-    await createLiteLLMAgentHandler({ client: {} as never })(
+    await createLiteLLMAgentsHandler({ client: {} as never })(
       {
         ...baseConfig,
         tools: { search: { name: 'search', parameters: { type: 'object' }, type: 'function' } },
@@ -402,7 +407,7 @@ describe('createLiteLLMAgentHandler', () => {
 
   it('wraps each Agents SDK model turn in a provider-aware chat span', async () => {
     mockRun.mockResolvedValue(result());
-    await createLiteLLMAgentHandler({ client: {} as never })(baseConfig as never, 'q');
+    await createLiteLLMAgentsHandler({ client: {} as never })(baseConfig as never, 'q');
     const provider = runnerArgs[0].modelProvider as { getModel: () => Promise<{ getResponse: Function }> };
     const model = await provider.getModel();
     await model.getResponse({ input: 'q', systemInstructions: 'help', tools: [] });
@@ -415,7 +420,7 @@ describe('createLiteLLMAgentHandler', () => {
 
   it('captures prompt and completion only when enabled', async () => {
     mockRun.mockResolvedValue(result('visible answer'));
-    await createLiteLLMAgentHandler({ captureContent: true, client: {} as never })(
+    await createLiteLLMAgentsHandler({ captureContent: true, client: {} as never })(
       baseConfig as never,
       'visible question',
     );
@@ -426,7 +431,7 @@ describe('createLiteLLMAgentHandler', () => {
   it('records, ends, and rethrows run errors', async () => {
     const error = new Error('agent failed');
     mockRun.mockRejectedValue(error);
-    await expect(createLiteLLMAgentHandler({ client: {} as never })(baseConfig as never, 'q')).rejects.toThrow(
+    await expect(createLiteLLMAgentsHandler({ client: {} as never })(baseConfig as never, 'q')).rejects.toThrow(
       'agent failed',
     );
     expect(mockRootSpan.recordException).toHaveBeenCalledWith(error);
@@ -446,7 +451,7 @@ describe('createLiteLLMAgentHandler', () => {
       };
       mockRun.mockResolvedValue(run);
       const events = await collect(
-        createLiteLLMAgentHandler({ client: {} as never }).stream?.(
+        createLiteLLMAgentsHandler({ client: {} as never }).stream?.(
           baseConfig as never,
           'q',
           {},
@@ -473,7 +478,7 @@ describe('createLiteLLMAgentHandler', () => {
         },
       };
       mockRun.mockResolvedValue(run);
-      const iterable = createLiteLLMAgentHandler({ client: {} as never }).stream?.(
+      const iterable = createLiteLLMAgentsHandler({ client: {} as never }).stream?.(
         baseConfig as never,
         'q',
         {},
@@ -490,7 +495,7 @@ describe('createLiteLLMAgentHandler', () => {
       mockRun.mockRejectedValue(error);
       await expect(
         collect(
-          createLiteLLMAgentHandler({ client: {} as never }).stream?.(
+          createLiteLLMAgentsHandler({ client: {} as never }).stream?.(
             baseConfig as never,
             'q',
             {},

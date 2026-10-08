@@ -1,5 +1,7 @@
 # `@launchdarkly/ai-litellm-messages`
 
+**Experimental.** This package stays on 0.x until the Python and JavaScript LiteLLM integrations match.
+
 LiteLLM messages integration for `@launchdarkly/ai-server`. It uses the OpenAI
 chat-completions client while requiring a user-owned OpenAI-compatible LiteLLM
 proxy. Evaluated LaunchDarkly model names are passed through unchanged.
@@ -35,7 +37,9 @@ const result = await config({
 
 The handler advertises `['*', 'messages']`, supports tools, structured output,
 multimodal history, streaming, and optional `captureContent`. `baseURL` (or
-`LITELLM_BASE_URL`) is mandatory unless `client` or `clientFactory` is supplied.
+`LITELLM_BASE_URL`) is mandatory unless `client` or `clientFactory` is supplied,
+and `createLiteLLMMessagesHandler` throws at creation when it is missing. The
+agents package throws at creation the same way.
 It reads the optional proxy credential from `LITELLM_API_KEY`; an unauthenticated
 proxy needs no key. Internally, unauthenticated proxies receive a non-secret
 placeholder rather than an unrelated provider credential. Explicit `baseURL`

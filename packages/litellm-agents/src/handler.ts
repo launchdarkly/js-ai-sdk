@@ -21,28 +21,47 @@ import {
   setUsageSpanAttributes,
   type Tool,
   type ToolHandlerFn,
+  textMessage,
 } from '@launchdarkly/ai-server';
 import type { JsonSchemaDefinition, ModelRequest, ModelResponse, StreamEvent } from '@openai/agents';
-import { Agent, type Model, OpenAIChatCompletionsModel, Runner, setTracingDisabled, tool } from '@openai/agents';
+import { Agent, type Model, OpenAIChatCompletionsModel, Runner, tool } from '@openai/agents';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
 
 const TRACER_NAME = '@launchdarkly/ai-litellm-agents';
-const HANDLER_OWNED_MODEL_PARAMETERS = [
-  'api_key',
-  'base_url',
-  'messages',
-  'model',
-  'output_format',
-  'response_format',
-  'stream',
-  'stream_options',
-  'tools',
-] as const;
+
+// Snake_case names the AI Config UI writes, mapped to the Agents SDK's camelCase
+// ModelSettings fields. Connection keys and providerData are not in this list.
+const MODEL_SETTING_FIELDS: Array<[string, string]> = [
+  ['frequency_penalty', 'frequencyPenalty'],
+  ['max_tokens', 'maxTokens'],
+  ['parallel_tool_calls', 'parallelToolCalls'],
+  ['presence_penalty', 'presencePenalty'],
+  ['reasoning', 'reasoning'],
+  ['store', 'store'],
+  ['temperature', 'temperature'],
+  ['tool_choice', 'toolChoice'],
+  ['top_p', 'topP'],
+  ['verbosity', 'verbosity'],
+];
+
+export function agentRunSettings(parameters: Record<string, unknown> | undefined) {
+  const raw = parameters ?? {};
+  const modelSettings: Record<string, unknown> = {};
+  for (const [snake, camel] of MODEL_SETTING_FIELDS) {
+    const value = raw[snake] !== undefined ? raw[snake] : raw[camel];
+    if (value !== undefined) modelSettings[camel] = value;
+  }
+  const maxTurns = Number(raw.max_turns ?? raw.maxTurns);
+  return {
+    modelSettings,
+    runOptions: Number.isFinite(maxTurns) && maxTurns > 0 ? { maxTurns } : {},
+  };
+}
 
 type CompatibleClient = OpenAI;
 
-export interface LiteLLMAgentOptions extends ContentCaptureOptions {
+export interface LiteLLMAgentsOptions extends ContentCaptureOptions {
   apiKey?: string;
   baseURL?: string;
   client?: CompatibleClient;
@@ -51,14 +70,14 @@ export interface LiteLLMAgentOptions extends ContentCaptureOptions {
 
 const proxyApiKey = (apiKey?: string) => (apiKey ?? process.env.LITELLM_API_KEY) || 'not-needed';
 
-function checkedOptions(options: LiteLLMAgentOptions): LiteLLMAgentOptions {
+function checkedOptions(options: LiteLLMAgentsOptions): LiteLLMAgentsOptions {
   if (!options.client && !options.clientFactory && !(options.baseURL ?? process.env.LITELLM_BASE_URL)) {
     throw new Error('LiteLLM proxy baseURL is required (pass baseURL or set LITELLM_BASE_URL)');
   }
   return options;
 }
 
-export function resolveLiteLLMClient(options: LiteLLMAgentOptions, configRep: AiConfigRep): CompatibleClient {
+export function resolveLiteLLMClient(options: LiteLLMAgentsOptions, configRep: AiConfigRep): CompatibleClient {
   if (options.clientFactory) return options.clientFactory(configRep);
   if (options.client) return options.client;
   return new OpenAI({
@@ -68,20 +87,10 @@ export function resolveLiteLLMClient(options: LiteLLMAgentOptions, configRep: Ai
 }
 
 function modelFor(client: CompatibleClient, configRep: AiConfigRep): Model {
-  const original = { ...(configRep.model.parameters ?? {}) } as Record<string, unknown>;
-  const parameters = { ...original };
-  for (const key of HANDLER_OWNED_MODEL_PARAMETERS) delete parameters[key];
-  delete parameters.maxTurns;
-  delete parameters.max_turns;
-  // The current SDK constructor accepts client + model. Keep the compatibility
-  // options argument only when rejecting a colliding model default; this also
-  // supports SDK builds that accept per-model defaults in that position.
-  return 'model' in original
-    ? new OpenAIChatCompletionsModel(client, configRep.model.name, parameters)
-    : new OpenAIChatCompletionsModel(client, configRep.model.name);
+  return new OpenAIChatCompletionsModel(client, configRep.model.name);
 }
 
-const servingProvider = (configRep: AiConfigRep) => (configRep.provider?.name || 'openai').toLowerCase();
+const servingProvider = (configRep: AiConfigRep) => (configRep.provider?.name || 'litellm').toLowerCase();
 
 function setIdentity(span: Span, configRep: AiConfigRep): void {
   setModelIdentityAttributes(span, servingProvider(configRep), configRep.model.name, 'litellm');
@@ -246,16 +255,7 @@ function attachToolSpans(agent: AgentEventSink, parentContext: Context, captureC
 }
 
 function runSettings(configRep: AiConfigRep) {
-  const parameters = { ...(configRep.model.parameters ?? {}) } as Record<string, unknown>;
-  const rawMaxTurns = parameters.maxTurns ?? parameters.max_turns;
-  for (const key of HANDLER_OWNED_MODEL_PARAMETERS) delete parameters[key];
-  delete parameters.maxTurns;
-  delete parameters.max_turns;
-  const maxTurns = Number(rawMaxTurns);
-  return {
-    modelSettings: parameters,
-    runOptions: Number.isFinite(maxTurns) && maxTurns > 0 ? { maxTurns } : {},
-  };
+  return agentRunSettings(configRep.model.parameters as Record<string, unknown> | undefined);
 }
 
 function buildTools(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn | NativeTool>) {
@@ -396,16 +396,18 @@ function failSpan(span: Span, error: unknown): void {
 }
 
 function setCapturedInput(span: Span, capture: boolean, input: RunnerInput, instructions?: string): void {
-  if (!capture) return;
-  if (instructions) span.setAttribute('gen_ai.prompt.0.content', instructions);
-  const text = typeof input === 'string' ? input : JSON.stringify(input);
-  span.setAttribute('gen_ai.prompt.1.content', text);
+  const messages =
+    typeof input === 'string'
+      ? [textMessage('user', input)]
+      : input.map((item) =>
+          textMessage(item.role, item.content.map((part) => ('text' in part ? part.text : '')).join('')),
+        );
+  setInputContentAttributes(span, capture, { systemInstructions: instructions, messages });
 }
 
-export function createLiteLLMAgentHandler(options: LiteLLMAgentOptions = {}): ProviderHandler {
+export function createLiteLLMAgentsHandler(options: LiteLLMAgentsOptions = {}): ProviderHandler {
   const resolvedOptions = checkedOptions(options);
   const captureContent = resolvedOptions.captureContent ?? false;
-  setTracingDisabled(true);
 
   return createHandler(
     ['*', 'agent'],
@@ -432,7 +434,7 @@ export function createLiteLLMAgentHandler(options: LiteLLMAgentOptions = {}): Pr
         );
         const input = runnerInput(configRep, userInput, variables, history);
         setCapturedInput(span, captureContent, input, instructions);
-        const runner = new Runner({ modelProvider: fixedProvider(model) });
+        const runner = new Runner({ modelProvider: fixedProvider(model), tracingDisabled: true });
         const toolSpans = attachToolSpans(agent as unknown as AgentEventSink, parentContext, captureContent);
 
         try {
@@ -442,7 +444,7 @@ export function createLiteLLMAgentHandler(options: LiteLLMAgentOptions = {}): Pr
               : await runner.run(agent, input as unknown as string);
           const finalOutput = result.finalOutput ?? '';
           const usage = usageOf(result);
-          if (captureContent) span.setAttribute('gen_ai.completion.0.content', String(finalOutput));
+          setOutputContentAttributes(span, captureContent, [textMessage('assistant', String(finalOutput))]);
           span.setAttribute('gen_ai.response.model', configRep.model.name);
           setUsageSpanAttributes(span, {
             input: usage.input_tokens,
@@ -483,7 +485,7 @@ export function createLiteLLMAgentHandler(options: LiteLLMAgentOptions = {}): Pr
       );
       const input = runnerInput(configRep, userInput, variables, history);
       setCapturedInput(span, captureContent, input, instructions);
-      const runner = new Runner({ modelProvider: fixedProvider(model) });
+      const runner = new Runner({ modelProvider: fixedProvider(model), tracingDisabled: true });
       const toolSpans = attachToolSpans(agent as unknown as AgentEventSink, parentContext, captureContent);
       let run: StreamedAgentRun | undefined;
       let completed = false;
@@ -509,7 +511,7 @@ export function createLiteLLMAgentHandler(options: LiteLLMAgentOptions = {}): Pr
               ? streamedOutput
               : JSON.stringify(finalOutput);
         const usage = usageOf(run);
-        if (captureContent) span.setAttribute('gen_ai.completion.0.content', output);
+        setOutputContentAttributes(span, captureContent, [textMessage('assistant', output)]);
         span.setAttribute('gen_ai.response.model', configRep.model.name);
         setUsageSpanAttributes(span, {
           input: usage.input_tokens,
@@ -552,10 +554,10 @@ export const litellmAgents = (
     variables,
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
-    LiteLLMAgentOptions & { variables?: Record<string, unknown> } = {},
+    LiteLLMAgentsOptions & { variables?: Record<string, unknown> } = {},
 ) =>
   config({
     ...options,
     key: configKey,
-    handler: createLiteLLMAgentHandler({ apiKey, baseURL, captureContent, client, clientFactory }),
+    handler: createLiteLLMAgentsHandler({ apiKey, baseURL, captureContent, client, clientFactory }),
   }).invoke(userInput, context, variables);
