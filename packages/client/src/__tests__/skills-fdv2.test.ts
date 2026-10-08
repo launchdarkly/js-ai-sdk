@@ -1674,6 +1674,21 @@ describe('SSE framing', () => {
   });
 
   it.each([
+    'server-intent',
+    'put-object',
+    'delete-object',
+    'payload-transferred',
+    'goodbye',
+    'error',
+  ])('parses a %s event, which the reader reads the data of', async (eventName) => {
+    // Pins the parse set: an event dropped from it would reach `handle` with
+    // null data, and a catastrophic goodbye would read as a recycle.
+    expect(await framed(`event: ${eventName}\ndata: {"reason":"x","catastrophe":true}\n\n`)).toEqual([
+      [eventName, { reason: 'x', catastrophe: true }],
+    ]);
+  });
+
+  it.each([
     'heart-beat',
     'x-future-event',
   ])('does not parse a %s event, so data that is not JSON leaves the connection up', async (eventName) => {
@@ -1908,6 +1923,25 @@ describe('streaming against the endpoint', () => {
     expect(store.getObject(SKILL_OBJECT_KIND, 'a')).not.toBeNull();
     expect(store.failed).toBeNull();
     expect(logged(warnSpy)).toMatch(/'put-object' event whose data was not JSON/);
+  });
+
+  it('counts a streamed catastrophic goodbye after a commit, through the SSE parser', async () => {
+    // The other catastrophe tests hand the reader parsed events. This one goes
+    // through `iterSse`, so a goodbye whose data it stopped parsing would
+    // arrive as null and pass as an uncounted recycle.
+    endpoint.holdStreamOpen = true;
+    endpoint.queueStream([
+      ...fullPayload([['put-object', putSkill()]], 'basis-1'),
+      ...events(['goodbye', { reason: 'meltdown', catastrophe: true }]),
+    ]);
+    const store = streamStore();
+    store.start();
+    expect(await waitUntil(() => endpoint.requests.length >= 2)).toBe(true);
+    expect(endpoint.requests[1].query.basis).toBe('basis-1');
+    expect(store.diagnostics.connectionFailures).toBe(1);
+    expect(store.diagnostics.lastError).toBe('server sent a catastrophic goodbye: meltdown');
+    expect(store.failed).toBeNull();
+    expect(consoleErrors()).toMatch(/catastrophic goodbye: meltdown/);
   });
 
   it('reconnects with the basis it reached', async () => {
