@@ -76,10 +76,13 @@ export const DEFAULT_STREAM_READ_TIMEOUT_SECONDS = 300;
  * Rounded, not truncated: `1.005 * 1000` is `1004.9999999999999`, so truncating
  * would take a millisecond off a value the caller wrote exactly. `minimum` is 1
  * for an option that must be positive, so a sub-millisecond value never becomes
- * a zero delay.
+ * a zero delay. Capped at 2^31−1, the longest delay `setTimeout` honors; past
+ * that Node fires the timer after 1ms, and a poll interval would spin.
  */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
 export function secondsToMs(seconds: number, minimum = 0): number {
-  return Math.max(minimum, Math.round(seconds * 1000));
+  return Math.min(MAX_TIMEOUT_MS, Math.max(minimum, Math.round(seconds * 1000)));
 }
 
 const EVENT_SERVER_INTENT = 'server-intent';
@@ -1597,6 +1600,20 @@ export class FDv2SkillStore implements SkillStore {
     if (this.mode !== 'stream' && this.mode !== 'poll') {
       throw new Error(`mode must be 'stream' or 'poll', got ${JSON.stringify(options.mode)}`);
     }
+    // The retired millisecond names are not read. TypeScript rejects them in an
+    // object literal; a JavaScript caller, or a spread, would otherwise poll on
+    // the defaults with no signal. One warning names every one that is present.
+    const retiredMs = (
+      [
+        ['pollIntervalMs', 'pollIntervalSeconds'],
+        ['readTimeoutMs', 'readTimeoutSeconds'],
+        ['initialBackoffMs', 'initialBackoffSeconds'],
+        ['maxBackoffMs', 'maxBackoffSeconds'],
+      ] as const
+    ).filter(([key]) => Object.hasOwn(options, key));
+    if (retiredMs.length > 0) {
+      warn(retiredMs.map(([was, next]) => `${was} is no longer read; use ${next} (seconds)`).join('. '));
+    }
     // Every time option is in seconds, and stays in seconds until `secondsToMs`
     // at the timer or deadline it sets.
     this.pollIntervalSeconds = options.pollIntervalSeconds ?? 30;
@@ -1713,11 +1730,16 @@ export class FDv2SkillStore implements SkillStore {
    */
   waitForSkills(options: { readonly timeoutSeconds?: number } = {}): Promise<boolean> {
     if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+      // `String([])` is empty and `String('10')` hides the quotes, so the value
+      // is shown with its type (or JSON, for a string, null, or array).
+      const got =
+        typeof options === 'object' || typeof options === 'string'
+          ? JSON.stringify(options)
+          : `${typeof options} ${String(options)}`;
       return Promise.reject(
         new TypeError(
-          `waitForSkills takes an options object, { timeoutSeconds }, got ${
-            typeof options === 'number' ? `the number ${options}` : String(options)
-          }. The timeout is in seconds: waitForSkills(10_000) is now waitForSkills({ timeoutSeconds: 10 }).`,
+          `waitForSkills takes an options object, { timeoutSeconds }, got ${got}. ` +
+            'The timeout is in seconds: waitForSkills(10_000) is now waitForSkills({ timeoutSeconds: 10 }).',
         ),
       );
     }

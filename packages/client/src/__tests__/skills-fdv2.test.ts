@@ -4768,16 +4768,19 @@ describe('transport contract', () => {
   });
 
   it.each([
-    ['a bare number', 10_000],
-    ['null', null],
-    ['a string', '10'],
-  ])('waitForSkills rejects %s with a TypeError naming the options form', async (_label, value) => {
+    ['a bare number', 10_000, 'number 10000'],
+    ['null', null, 'null'],
+    ['a string', '10', '"10"'],
+    ['an array', [], '[]'],
+  ])('waitForSkills rejects %s with a TypeError naming the options form', async (_label, value, shown) => {
     // The timeout used to be a positional millisecond count. Read as seconds,
     // `waitForSkills(10_000)` would wait almost three hours, so it is refused.
+    // `String([])` is empty and `String('10')` hides that it was a string.
     const store = pollStore();
     const wait = store.waitForSkills(value as never);
     await expect(wait).rejects.toBeInstanceOf(TypeError);
     await expect(wait).rejects.toThrow(/waitForSkills\(\{ timeoutSeconds: 10 \}\)/);
+    await expect(wait).rejects.toThrow(`got ${shown}`);
   });
 
   it('waitForSkills defaults to ten seconds, and accepts a timeout of zero', async () => {
@@ -4798,6 +4801,9 @@ describe('transport contract', () => {
     [0, 0, 0],
     [0.0001, 1, 1],
     [0.0001, 0, 0],
+    // Above 2^31−1 ms, `setTimeout` fires after 1ms.
+    [3e6, 1, 2 ** 31 - 1],
+    [3e6, 0, 2 ** 31 - 1],
   ])('converts %s seconds to whole milliseconds (minimum %s): %s', (seconds, minimum, ms) => {
     // Rounded rather than truncated: `1.005 * 1000` is `1004.9999999999999`.
     // The floor of 1 is for options that must be positive, so a sub-millisecond
@@ -4818,6 +4824,45 @@ describe('transport contract', () => {
     store.start();
     expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
     expect(await waitUntil(() => timers.mock.calls.some((call) => call[1] === 1005))).toBe(true);
+  });
+
+  it('caps a poll interval past the setTimeout limit instead of spinning', async () => {
+    // `pollIntervalSeconds: 3e6` is about 34 days. Uncapped, Node's timer
+    // overflows and fires after 1ms, so poll mode spins.
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    const store = new FDv2SkillStore(SDK_KEY, {
+      mode: 'poll',
+      pollIntervalSeconds: 3e6,
+      requester: new ScriptedRequester([asPairs(fullPayload([['put-object', putSkill()]]))]),
+    });
+    openStores.push(store);
+    store.start();
+    expect(await store.waitForSkills({ timeoutSeconds: 5 })).toBe(true);
+    expect(await waitUntil(() => timers.mock.calls.some((call) => call[1] === 2 ** 31 - 1))).toBe(true);
+  });
+
+  it('warns once when a retired millisecond option is passed, and does not read it', async () => {
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    const store = new FDv2SkillStore(SDK_KEY, {
+      mode: 'poll',
+      pollIntervalMs: 5000,
+      readTimeoutMs: 1,
+      initialBackoffMs: 1,
+      maxBackoffMs: 300_000,
+      requester: new ScriptedRequester([asPairs(fullPayload([['put-object', putSkill()]]))]),
+    } as never);
+    openStores.push(store);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const message = logged(warnSpy);
+    expect(message).toContain('pollIntervalMs is no longer read; use pollIntervalSeconds (seconds)');
+    expect(message).toContain('readTimeoutMs is no longer read; use readTimeoutSeconds (seconds)');
+    expect(message).toContain('initialBackoffMs is no longer read; use initialBackoffSeconds (seconds)');
+    expect(message).toContain('maxBackoffMs is no longer read; use maxBackoffSeconds (seconds)');
+    store.start();
+    // The wait is 1s, so a 5000ms timer can only be the old poll interval being read.
+    expect(await store.waitForSkills({ timeoutSeconds: 1 })).toBe(true);
+    expect(await waitUntil(() => timers.mock.calls.some((call) => call[1] === 30_000))).toBe(true);
+    expect(timers.mock.calls.some((call) => call[1] === 5000)).toBe(false);
   });
 
   it('an idle stream carrying heartbeats stays connected past what the read timeout alone would allow', async () => {
