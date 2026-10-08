@@ -29,6 +29,7 @@
     "prepare": "lefthook install"
   },
   "devDependencies": {
+    "@ai-sdk/openai": "^3.0.41",
     "@biomejs/biome": "2.5.2",
     "@launchdarkly/ai-claude-agents": "*",
     "@launchdarkly/ai-claude-messages": "*",
@@ -39,6 +40,8 @@
     "@launchdarkly/ai-openai-messages": "*",
     "@launchdarkly/ai-otel": "*",
     "@launchdarkly/ai-server": "*",
+    "@launchdarkly/ai-vercel-agents": "*",
+    "@launchdarkly/ai-vercel-messages": "*",
     "@launchdarkly/node-server-sdk": "^9.7.3",
     "@types/node": "^22.0.0",
     "dotenv": "^16.5.0",

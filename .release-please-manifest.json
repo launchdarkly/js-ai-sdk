@@ -7,5 +7,7 @@
   "packages/openai-agents": "0.3.0",
   "packages/openai-messages": "0.3.0",
   "packages/langchain-agents": "0.3.0",
-  "packages/langchain-messages": "0.3.0"
+  "packages/langchain-messages": "0.3.0",
+  "packages/vercel-agents": "0.1.0",
+  "packages/vercel-messages": "0.1.0"
 }

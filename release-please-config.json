@@ -1,6 +1,7 @@
 {
   "include-component-in-tag": true,
   "bootstrap-sha": "ca500f05e888975132ad4e373f946a4d0fb86d20",
+  "plugins": ["node-workspace"],
   "packages": {
     "packages/client": {
       "release-type": "node",
@@ -81,6 +82,24 @@
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
       "component": "@launchdarkly/ai-langchain-messages"
+    },
+    "packages/vercel-agents": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
+      "component": "@launchdarkly/ai-vercel-agents"
+    },
+    "packages/vercel-messages": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
+      "component": "@launchdarkly/ai-vercel-messages"
     }
   }
 }

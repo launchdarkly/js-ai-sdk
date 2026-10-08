@@ -16,6 +16,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { Agent, handoff, Runner, tool } from '@openai/agents';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
+import { buildMaxTurns, buildModelSettings } from './model-parameters.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -124,8 +125,8 @@ export const toOpenAIAgents = (
     const toolHandlers = opts?.toolHandlers ?? {};
     const ldContext = opts?.context;
 
-    return trace.getTracer('@launchdarkly/ai-openai-agents').startActiveSpan('ld.ai.graph', async (span) => {
-      span.setAttribute('ld.ai.graph.key', def.key);
+    return trace.getTracer('@launchdarkly/ai-openai-agents').startActiveSpan('launchdarkly.graph', async (span) => {
+      span.setAttribute('launchdarkly.graph.key', def.key);
       const startTime = Date.now();
       const runId = crypto.randomUUID();
 
@@ -150,9 +151,11 @@ export const toOpenAIAgents = (
         const agentName = sanitizeName(node.key);
         agentNameToKey.set(agentName, node.key);
 
+        const modelSettings = buildModelSettings(node.config.model.parameters);
         const agent = new Agent({
           name: agentName,
           model: node.config.model.name,
+          ...(modelSettings ? { modelSettings } : {}),
           ...(instructions ? { instructions } : {}),
           ...(tools.length > 0 ? { tools } : {}),
           ...(childHandoffs.length > 0 ? { handoffs: childHandoffs } : {}),
@@ -175,9 +178,14 @@ export const toOpenAIAgents = (
 
       runner.on('agent_start', (_runCtx: unknown, agent: { name: string }) => {
         const nodeKey = agentNameToKey.get(agent.name);
-        if (nodeKey && !path.includes(nodeKey)) {
-          path.push(nodeKey);
-        }
+        if (!nodeKey || path.includes(nodeKey)) return;
+        const index = path.length;
+        path.push(nodeKey);
+        if (!ldContext) return;
+        const node = def.getNode(nodeKey);
+        if (!node) return;
+        const trackData = makeNodeTrackData(node, def.key, runId);
+        getClient().track('$ld:ai:graph:node', ldContext, { ...trackData, nodeKey, index }, 1);
       });
 
       runner.on('agent_end', (_runCtx: unknown, agent: { name: string }, _output: string) => {
@@ -192,7 +200,7 @@ export const toOpenAIAgents = (
         }
       });
 
-      runner.on('agent_handoff', (_runCtx: unknown, fromAgent: { name: string }, toAgent: { name: string }) => {
+      runner.on('agent_handoff', (_runCtx: unknown, fromAgent: { name: string }, _toAgent: { name: string }) => {
         if (!ldContext) return;
         const fromKey = agentNameToKey.get(fromAgent.name);
         if (fromKey) {
@@ -202,11 +210,6 @@ export const toOpenAIAgents = (
             getClient().track('$ld:ai:graph:handoff_success', ldContext, trackData, 1);
           }
         }
-        // Ensure the target node appears in path if agent_start doesn't fire for it
-        const toKey = agentNameToKey.get(toAgent.name);
-        if (toKey && !path.includes(toKey)) {
-          path.push(toKey);
-        }
       });
 
       // History is a root-only concern: it seeds the entry agent's input via the
@@ -214,11 +217,19 @@ export const toOpenAIAgents = (
       // handoffs and receive their context from the Runner, not from `history`.
       const rootInput = history && history.length > 0 ? toRunnerInput(history, input) : input;
 
+      // One Runner.run drives the whole graph through handoffs, so the turn cap is the root
+      // node's `max_turns`, as in the Python SDK.
+      const maxTurns = buildMaxTurns(root.config.model.parameters);
+
       // biome-ignore lint/suspicious/noImplicitAnyLet: assigned immediately in try; catch always re-throws
       let result;
       try {
         // biome-ignore lint/suspicious/noExplicitAny: Runner.run accepts string | AgentInputItem[]; our item shape is structurally compatible
-        result = await runner.run(rootAgent, rootInput as any);
+        const runInput = rootInput as any;
+        result =
+          maxTurns !== undefined
+            ? await runner.run(rootAgent, runInput, { maxTurns })
+            : await runner.run(rootAgent, runInput);
         span.setStatus({ code: SpanStatusCode.OK });
       } catch (err) {
         span.recordException(err instanceof Error ? err : new Error(String(err)));
@@ -240,7 +251,7 @@ export const toOpenAIAgents = (
       const totalUsage = { input: inputTokens, output: outputTokens, total: totalTokens };
       const duration = Date.now() - startTime;
 
-      span.setAttribute('ld.ai.graph.path', path.join('->'));
+      span.setAttribute('launchdarkly.graph.path', path.join('->'));
       span.setAttribute('gen_ai.usage.input_tokens', inputTokens);
       span.setAttribute('gen_ai.usage.output_tokens', outputTokens);
       span.setAttribute('gen_ai.usage.total_tokens', totalTokens);
@@ -249,7 +260,6 @@ export const toOpenAIAgents = (
         const rootTrackData = makeNodeTrackData(root, def.key, runId);
         getClient().track('$ld:ai:graph:duration:total', ldContext, rootTrackData, duration);
         getClient().track('$ld:ai:graph:total_tokens', ldContext, rootTrackData, totalTokens);
-        getClient().track('$ld:ai:graph:path', ldContext, rootTrackData, path.length);
         getClient().track('$ld:ai:graph:invocation_success', ldContext, rootTrackData, 1);
       }
 

@@ -79,6 +79,20 @@ describe('import diagnostics', () => {
       expect(moduleNameFromError(error, 'fallback')).toBe('@opentelemetry/sdk-trace-node');
     });
 
+    it('reads the package name from a pnpm path', () => {
+      const error = new Error(
+        'require() of ES Module /app/node_modules/.pnpm/@opentelemetry+core@1.30.1/node_modules/@opentelemetry/core/build/index.js',
+      );
+      expect(moduleNameFromError(error, 'fallback')).toBe('@opentelemetry/core');
+    });
+
+    it('names the failing package, not the importer', () => {
+      const error = new Error(
+        'require() of ES Module /app/node_modules/@opentelemetry/core/build/index.js from /app/node_modules/@launchdarkly/ai-server/dist/index.cjs is not supported',
+      );
+      expect(moduleNameFromError(error, 'fallback')).toBe('@opentelemetry/core');
+    });
+
     it('falls back when the message names no package', () => {
       expect(moduleNameFromError(new Error('boom'), 'an OpenTelemetry SDK package')).toBe(
         'an OpenTelemetry SDK package',

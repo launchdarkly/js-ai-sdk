@@ -26,7 +26,7 @@ That call is the whole integration. Everything it does is configured in LaunchDa
 - Run agents and multi-step graphs, where each step can use a different provider
 - Score output quality with judges, including scoring that stays off the request path
 - See cost, latency, token usage, errors, and full conversations with no instrumentation code
-- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, or your own handler
+- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, Vercel AI SDK, or your own handler
 
 - [What you get](#what-you-get)
 - [How It Works](#how-it-works)
@@ -90,6 +90,8 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-claude-agents](packages/claude-agents/README.md)`           | Anthropic | `agent`    | Claude Agent SDK — agentic loop with MCP tool support |
 | `[@launchdarkly/ai-langchain-messages](packages/langchain-messages/README.md)` | `*` (any) | `messages` | Any `BaseChatModel` via LangChain `bindTools` loop    |
 | `[@launchdarkly/ai-langchain-agents](packages/langchain-agents/README.md)`     | `*` (any) | `agent`    | LangGraph `createReactAgent` — managed ReAct loop     |
+| `[@launchdarkly/ai-vercel-messages](packages/vercel-messages/README.md)`       | `*` (any) | `messages` | AI SDK 7 `generateText` / `streamText` / `experimental_evaluate` via AI Gateway |
+| `[@launchdarkly/ai-vercel-agents](packages/vercel-agents/README.md)`           | `*` (any) | `agent`    | AI SDK 7 `ToolLoopAgent` and native graph runner      |
 
 
 ## Module format support
@@ -179,6 +181,9 @@ console.log(result.response);
 | `claudeAgents`      | `@launchdarkly/ai-claude-agents`      | `@anthropic-ai/claude-agent-sdk` | Claude Agent SDK (MCP)       |
 | `langchainMessages` | `@launchdarkly/ai-langchain-messages` | `@langchain/core`                | LangChain `bindTools` loop   |
 | `langchainAgents`   | `@launchdarkly/ai-langchain-agents`   | `@langchain/langgraph`           | LangGraph `createReactAgent` |
+| `vercelMessages`    | `@launchdarkly/ai-vercel-messages`    | `ai`                             | `generateText` / `streamText` / `experimental_evaluate` |
+| `vercelEvaluate`    | `@launchdarkly/ai-vercel-messages`    | `ai`                             | `experimental_evaluate`      |
+| `vercelAgents`      | `@launchdarkly/ai-vercel-agents`      | `ai`                             | `ToolLoopAgent`              |
 
 
 ---
@@ -266,22 +271,30 @@ Because each node runs through the same path as `config()`, every node emits its
 | `options.graphJudge`   | `string`                                | No       | Optional judge config key evaluated against the final output |
 
 
-Returns `{ invoke(input: string | undefined, context: LDContext, variables?: Record<string, any>): Promise<ProviderGraphResponse> }`.
+Returns `{ invoke(...): Promise<ProviderGraphResponse>, stream(...): AsyncGenerator<GraphStreamEvent> }`.
 
 ```ts
 import 'dotenv/config';
 import { graph, shutdown } from '@launchdarkly/ai-server';
 import { createClaudeAgentsHandler } from '@launchdarkly/ai-claude-agents';
 
-const result = await graph('support-graph', {
+const g = graph('support-graph', {
   handlers: [createClaudeAgentsHandler()],
-}).invoke('I was double charged', { kind: 'user', key: 'user-123' }, { account_tier: 'pro' });
+});
+
+const result = await g.invoke('I was double charged', { kind: 'user', key: 'user-123' }, { account_tier: 'pro' });
 
 console.log(result.response); // final output
 console.log(result.usage);    // aggregate { input, output, total }
 
+for await (const event of g.stream('I was double charged', { kind: 'user', key: 'user-123' })) {
+  if (event.type === 'chunk') process.stdout.write(event.text);
+}
+
 await shutdown();
 ```
+
+`stream()` uses the same model-driven router and graph telemetry as `invoke()`, and yields `GraphStreamEvent` values (`node_start`, `chunk`+`nodeKey`, `node_done`, `handoff`, final `done`) so callers can render per-node UI.
 
 Provider packages also export single-provider conveniences (`claudeGraph`, `openaiGraph`, `langchainGraph`) that pre-bind their handler. For mixed-provider graphs, use the base `graph()` and pass multiple handlers.
 
@@ -588,7 +601,12 @@ yarn start [example] [flag-key] [user-input]
 | `graph`             | `yarn start graph`        | `graph()` multi-agent workflow driven by a LaunchDarkly agent graph flag                        |
 | `graph-history`     | `yarn start graph-history` | `graph().invoke()` with multimodal `history` forwarded to the root node                        |
 | `native-graph`      | `yarn start native-graph` | `toClaudeAgents` + `resolveGraph` — native Claude Agent SDK runner                              |
+| `native-graph-vercel` | `yarn start native-graph-vercel` | `toVercelAgents` + `resolveGraph` — native Vercel AI SDK graph runner                       |
 | `openai-only`       | `yarn start openai-only`  | `config()` with a custom `Registry` restricted to OpenAI handlers                   |
+| `vercel-agents`     | `yarn start vercel-agents` | Vercel AI SDK `ToolLoopAgent` handler via AI Gateway                              |
+| `vercel-messages`   | `yarn start vercel-messages` | Vercel AI SDK messages handler via AI Gateway                                    |
+| `vercel-direct`     | `yarn start vercel-direct` | Vercel messages handler with an injected `@ai-sdk/openai` model (no Gateway)    |
+| `vercel-evaluate`   | `yarn start vercel-evaluate` | Vercel generation followed by typed `experimental_evaluate`                     |
 
 
 **Examples:**

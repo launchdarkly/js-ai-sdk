@@ -33,6 +33,7 @@ import {
   type ToolHandlerFn,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
+import { type LangChainModelClass, modelConstructorParameters } from './model-parameters.js';
 
 const TRACER_NAME = '@launchdarkly/ai-langchain-messages';
 
@@ -169,13 +170,16 @@ function normalizeOutputSchema(schema: Record<string, unknown>): Record<string, 
  */
 export type LangChainModelSource = BaseChatModel | ((config: AiConfigRep) => BaseChatModel | Promise<BaseChatModel>);
 
-function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record<string, unknown> {
-  const parameters = {
-    ...(config.model?.parameters && typeof config.model.parameters === 'object' ? config.model.parameters : {}),
+function modelConstructorArgs(
+  config: AiConfigRep,
+  fallbackName: string,
+  modelClass: LangChainModelClass,
+): Record<string, unknown> {
+  // Name from the config always wins; `model` is never on a forwarded-keys list anyway.
+  return {
+    ...modelConstructorParameters(config.model?.parameters, modelClass),
+    model: resolvedModelName(config, fallbackName),
   };
-  if ((config.provider?.name ?? '').toLowerCase() === 'bedrock') delete parameters.tools;
-  // Name from the config always wins over a colliding `model` key in the parameter bag.
-  return { ...parameters, model: resolvedModelName(config, fallbackName) };
 }
 
 /**
@@ -184,7 +188,8 @@ function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record
  * Otherwise, the provider and model name from the AI config are used to
  * instantiate the appropriate model via a dynamic import, so that neither
  * @langchain/openai, @langchain/anthropic, nor @langchain/aws is a hard
- * dependency. Parameters are passed through unchanged.
+ * dependency. Only the model class's allowlisted model.parameters are passed; see
+ * modelConstructorParameters.
  */
 async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource): Promise<BaseChatModel> {
   const invocation = configForModelCall(config);
@@ -201,7 +206,7 @@ async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource)
         'Using Anthropic models requires @langchain/anthropic. Install it with: npm install @langchain/anthropic',
       );
     }
-    return new mod.ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022'));
+    return new mod.ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022', 'anthropic'));
   }
   if (providerName === 'bedrock') {
     // biome-ignore lint/suspicious/noExplicitAny: @langchain/aws loaded via dynamic import with no static types
@@ -211,7 +216,7 @@ async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource)
     } catch {
       throw new Error('Using Bedrock models requires @langchain/aws. Install it with: npm install @langchain/aws');
     }
-    return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, ''));
+    return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '', 'bedrock'));
   }
   // biome-ignore lint/suspicious/noExplicitAny: @langchain/openai loaded via dynamic import with no static types
   let mod: any;
@@ -220,23 +225,32 @@ async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource)
   } catch {
     throw new Error('Using OpenAI models requires @langchain/openai. Install it with: npm install @langchain/openai');
   }
-  return new mod.ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o'));
+  return new mod.ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o', 'openai'));
 }
 
 const buildTools = (
   configTools: Record<string, Tool>,
   toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
-): LangChainToolDef[] =>
-  Object.entries(configTools)
-    .filter(([name]) => typeof toolHandlers[name] === 'function')
-    .map(([name, toolConfig]) => ({
-      type: 'function',
-      function: {
-        name,
-        description: toolConfig.description ?? '',
-        parameters: toolConfig.parameters as Record<string, unknown>,
+): { tools: LangChainToolDef[]; executableTools: Map<string, ToolHandlerFn> } => {
+  const executableTools = new Map<string, ToolHandlerFn>();
+  const tools = Object.entries(configTools).flatMap<LangChainToolDef>(([name, toolConfig]) => {
+    if (!Object.hasOwn(toolHandlers, name)) return [];
+    const handler = toolHandlers[name];
+    if (typeof handler !== 'function') return [];
+    executableTools.set(name, handler);
+    return [
+      {
+        type: 'function',
+        function: {
+          name,
+          description: toolConfig.description ?? '',
+          parameters: toolConfig.parameters as Record<string, unknown>,
+        },
       },
-    }));
+    ];
+  });
+  return { tools, executableTools };
+};
 
 const buildMessages = (
   config: AiConfigRep,
@@ -349,7 +363,9 @@ export function createLangChainHandler(
           // Resolved per-request so the correct provider/model from the AI config is used.
           const baseModel = await resolveBaseModel(config, llm);
 
-          const toolDefs = config.tools ? buildTools(config.tools, toolHandlers) : [];
+          const { tools: toolDefs, executableTools } = config.tools
+            ? buildTools(config.tools, toolHandlers)
+            : { tools: [], executableTools: new Map() };
           const outputFormat = config.outputFormat;
           const normalizedSchema = outputFormat ? normalizeOutputSchema(outputFormat) : undefined;
 
@@ -460,11 +476,11 @@ export function createLangChainHandler(
                 const toolSpan = startToolSpan(tc.name, tc.id ?? tc.name, parentContext);
                 setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.args });
                 try {
-                  const handlerFn = toolHandlers[tc.name];
-                  if (!handlerFn || typeof handlerFn !== 'function') {
+                  const handlerFn = executableTools.get(tc.name);
+                  if (!handlerFn) {
                     throw new Error(`No handler registered for tool "${tc.name}"`);
                   }
-                  const result = await (handlerFn as (...args: unknown[]) => unknown)(tc.args);
+                  const result = await handlerFn(tc.args);
                   setToolCallContentAttributes(toolSpan, captureContent, { result });
                   toolSpan.setStatus({ code: SpanStatusCode.OK });
                   toolSpan.end();
@@ -529,7 +545,9 @@ export function createLangChainHandler(
         // Resolved per-request so the correct provider/model from the AI config is used.
         const baseModel = await resolveBaseModel(config, llm);
 
-        const toolDefs = config.tools ? buildTools(config.tools, toolHandlers) : [];
+        const { tools: toolDefs, executableTools } = config.tools
+          ? buildTools(config.tools, toolHandlers)
+          : { tools: [], executableTools: new Map() };
         const outputFormat = config.outputFormat;
         const normalizedSchema = outputFormat ? normalizeOutputSchema(outputFormat) : undefined;
 
@@ -662,11 +680,11 @@ export function createLangChainHandler(
               const toolSpan = startToolSpan(tc.name, tc.id ?? tc.name, parentContext);
               setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.args });
               try {
-                const handlerFn = toolHandlers[tc.name];
-                if (!handlerFn || typeof handlerFn !== 'function') {
+                const handlerFn = executableTools.get(tc.name);
+                if (!handlerFn) {
                   throw new Error(`No handler registered for tool "${tc.name}"`);
                 }
-                const result = await (handlerFn as (...args: unknown[]) => unknown)(tc.args);
+                const result = await handlerFn(tc.args);
                 setToolCallContentAttributes(toolSpan, captureContent, { result });
                 toolSpan.setStatus({ code: SpanStatusCode.OK });
                 toolSpan.end();
