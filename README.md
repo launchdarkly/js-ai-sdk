@@ -26,7 +26,7 @@ That call is the whole integration. Everything it does is configured in LaunchDa
 - Run agents and multi-step graphs, where each step can use a different provider
 - Score output quality with judges, including scoring that stays off the request path
 - See cost, latency, token usage, errors, and full conversations with no instrumentation code
-- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, Vercel AI SDK, or your own handler
+- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, Vercel AI SDK, LiteLLM, or your own handler
 
 - [What you get](#what-you-get)
 - [How It Works](#how-it-works)
@@ -92,6 +92,8 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-langchain-agents](packages/langchain-agents/README.md)`     | `*` (any) | `agent`    | LangGraph `createReactAgent` — managed ReAct loop     |
 | `[@launchdarkly/ai-vercel-messages](packages/vercel-messages/README.md)`       | `*` (any) | `messages` | AI SDK 7 `generateText` / `streamText` / `experimental_evaluate` via AI Gateway |
 | `[@launchdarkly/ai-vercel-agents](packages/vercel-agents/README.md)`           | `*` (any) | `agent`    | AI SDK 7 `ToolLoopAgent` and native graph runner      |
+| `[@launchdarkly/ai-litellm-messages](packages/litellm-messages/README.md)`     | `*` (any) | `messages` | OpenAI-compatible requests through a LiteLLM proxy    |
+| `[@launchdarkly/ai-litellm-agents](packages/litellm-agents/README.md)`         | `*` (any) | `agent`    | OpenAI Agents SDK through a LiteLLM proxy              |
 
 
 ## Module format support
@@ -143,6 +145,10 @@ cp .env.example .env
 # Fill in LD_SDK_KEY and the API key for your provider
 ```
 
+LiteLLM integrations additionally require `LITELLM_BASE_URL` to point to the
+proxy's OpenAI-compatible `/v1` endpoint. Set `LITELLM_API_KEY` only when the
+proxy has authentication enabled. Provider credentials belong on the proxy.
+
 ### 3. Call a model
 
 #### 3a. Convenience functions
@@ -184,6 +190,8 @@ console.log(result.response);
 | `vercelMessages`    | `@launchdarkly/ai-vercel-messages`    | `ai`                             | `generateText` / `streamText` / `experimental_evaluate` |
 | `vercelEvaluate`    | `@launchdarkly/ai-vercel-messages`    | `ai`                             | `experimental_evaluate`      |
 | `vercelAgents`      | `@launchdarkly/ai-vercel-agents`      | `ai`                             | `ToolLoopAgent`              |
+| `litellmMessages`   | `@launchdarkly/ai-litellm-messages`   | `openai`                         | LiteLLM proxy chat completions |
+| `litellmAgents`     | `@launchdarkly/ai-litellm-agents`     | `@openai/agents`                 | OpenAI Agents via LiteLLM proxy |
 
 
 ---
@@ -296,7 +304,7 @@ await shutdown();
 
 `stream()` uses the same model-driven router and graph telemetry as `invoke()`, and yields `GraphStreamEvent` values (`node_start`, `chunk`+`nodeKey`, `node_done`, `handoff`, final `done`) so callers can render per-node UI.
 
-Provider packages also export single-provider conveniences (`claudeGraph`, `openaiGraph`, `langchainGraph`) that pre-bind their handler. For mixed-provider graphs, use the base `graph()` and pass multiple handlers.
+Provider packages also export single-provider conveniences (`claudeGraph`, `openaiGraph`, `langchainGraph`, `vercelGraph`, `litellmGraph`) that pre-bind their handler. For mixed-provider graphs, use the base `graph()` and pass multiple handlers.
 
 ---
 
@@ -353,6 +361,21 @@ import { toOpenAIAgents } from '@launchdarkly/ai-openai-agents';
 const result = await toOpenAIAgents(
   resolveGraph('support-graph', { context }),
   { toolHandlers: registry.tools, context }
+).invoke('I was double charged');
+```
+
+##### `toLiteLLMAgents` — OpenAI Agents SDK over LiteLLM
+
+Builds the same native Agents SDK handoff tree while binding each evaluated
+node model to the configured LiteLLM proxy.
+
+```ts
+import { resolveGraph } from '@launchdarkly/ai-server';
+import { toLiteLLMAgents } from '@launchdarkly/ai-litellm-agents';
+
+const result = await toLiteLLMAgents(
+  resolveGraph('support-graph', { context }),
+  { toolHandlers: registry.tools },
 ).invoke('I was double charged');
 ```
 
@@ -607,6 +630,9 @@ yarn start [example] [flag-key] [user-input]
 | `vercel-messages`   | `yarn start vercel-messages` | Vercel AI SDK messages handler via AI Gateway                                    |
 | `vercel-direct`     | `yarn start vercel-direct` | Vercel messages handler with an injected `@ai-sdk/openai` model (no Gateway)    |
 | `vercel-evaluate`   | `yarn start vercel-evaluate` | Vercel generation followed by typed `experimental_evaluate`                     |
+| `litellm`           | `yarn start litellm` | `config()` routing both messages and agents through LiteLLM |
+| `litellm-agents`    | `yarn start litellm-agents` | `litellmAgents()` through the configured LiteLLM proxy |
+| `litellm-messages`  | `yarn start litellm-messages` | `litellmMessages()` through the configured LiteLLM proxy |
 
 
 **Examples:**
@@ -648,7 +674,9 @@ js-ai-sdk/
 │   ├── openai-agents/   # @launchdarkly/ai-openai-agents
 │   ├── openai-messages/ # @launchdarkly/ai-openai-messages
 │   ├── langchain-agents/   # @launchdarkly/ai-langchain-agents
-│   └── langchain-messages/ # @launchdarkly/ai-langchain-messages
+│   ├── langchain-messages/ # @launchdarkly/ai-langchain-messages
+│   ├── litellm-agents/     # @launchdarkly/ai-litellm-agents
+│   └── litellm-messages/   # @launchdarkly/ai-litellm-messages
 ├── .env.example         # Template — copy to .env and fill in your values
 └── agents.md            # Architecture reference for AI agents and contributors
 ```
