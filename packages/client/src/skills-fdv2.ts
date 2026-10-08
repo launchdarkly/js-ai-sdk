@@ -1240,8 +1240,10 @@ export async function* iterSse(
   // would otherwise commit the transfer without it and advance the basis past
   // it, so a lost `delete-object` would never be sent again. The reconnect
   // resumes from the last committed basis, as the base SDK's
-  // `PayloadStreamReader` does. Other events are not parsed, so their data
-  // cannot end the connection.
+  // `PayloadStreamReader` does. Empty data is not JSON either: read as null, a
+  // `delete-object` would be ignored and a `payload-transferred` would commit
+  // with no selector. Other events are not parsed, so their data cannot end
+  // the connection.
   const dispatch = (): [string, unknown] | null => {
     const eventName = name;
     const payload = dataLines.join('\n');
@@ -1249,7 +1251,7 @@ export async function* iterSse(
     dataLines = [];
     dataChars = 0;
     if (eventName === null) return null;
-    if (payload === '' || !EVENTS_WITH_DATA.has(eventName)) return [eventName, null];
+    if (!EVENTS_WITH_DATA.has(eventName)) return [eventName, null];
     try {
       return [eventName, JSON.parse(payload)];
     } catch {

@@ -816,6 +816,59 @@ describe('protocol reader', () => {
     expect(outcomes.every((o) => !o.fatal && !o.disconnect)).toBe(true);
   });
 
+  it('ignores a delete with no usable key, and commits the rest of its transfer', () => {
+    // Pins TESTING.md §3.25's experimental-stage rule: warned and ignored, not
+    // an interruption, so the revocation it carried is lost and `revoked` stays
+    // served. Base ldclient interrupts instead. The choice is to be revisited
+    // before 1.0, and changing it should fail this test.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(
+      reader,
+      fullPayload([
+        ['put-object', putSkill('a', { objectVersion: 1 })],
+        ['put-object', putSkill('revoked', { objectVersion: 1 })],
+      ]),
+    );
+    const { key: _key, ...keyless } = deleteSkill('revoked', { objectVersion: 1 });
+    const outcomes = drive(
+      reader,
+      events(
+        ['server-intent', serverIntent('xfer-changes')],
+        ['put-object', putSkill('fresh', { objectVersion: 1 })],
+        ['delete-object', keyless],
+        ['payload-transferred', transferred('basis-2')],
+      ),
+    );
+    expect(outcomes.every((o) => !o.fatal && !o.disconnect)).toBe(true);
+    expect(outcomes.at(-1)?.committed).toBe(true);
+    expect(held.get('revoked', null)).not.toBeNull();
+    expect(held.get('fresh', null)).not.toBeNull();
+  });
+
+  it('revokes by omission a skill whose put in an xfer-full has no usable key', () => {
+    // The other half of the same rule: the skill is missing from the full
+    // transfer, so it is revoked, and `writeSkills('*')` would prune it.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, fullPayload([['put-object', putSkill('a', { objectVersion: 1 })]]));
+    const { key: _key, ...keyless } = putSkill('a', { objectVersion: 1 });
+    const outcomes = drive(
+      reader,
+      fullPayload(
+        [
+          ['put-object', putSkill('b', { objectVersion: 1 })],
+          ['put-object', keyless],
+        ],
+        'basis-2',
+      ),
+    );
+    expect(outcomes.every((o) => !o.fatal && !o.disconnect)).toBe(true);
+    expect(outcomes.at(-1)?.committed).toBe(true);
+    expect(held.get('a', null)).toBeNull();
+    expect(held.get('b', null)).not.toBeNull();
+  });
+
   it('ignores an unknown event name', () => {
     const outcome = new ProtocolReader(new SkillObjectSet()).handle('some-future-event', { anything: true });
     expect(outcome.fatal).toBeUndefined();
@@ -1681,6 +1734,23 @@ describe('SSE framing', () => {
     'payload-transferred',
     'goodbye',
     'error',
+  ])('fails recoverably on a %s event with no data, since empty data is not JSON', async (eventName) => {
+    // Read as null, a delete-object would be ignored and a
+    // payload-transferred would commit with no selector.
+    for (const block of [`event: ${eventName}\n\n`, `event: ${eventName}\ndata:\n\n`]) {
+      const failure = framed(block);
+      await expect(failure).rejects.toBeInstanceOf(RecoverableTransportError);
+      await expect(failure).rejects.toThrow(/not JSON/);
+    }
+  });
+
+  it.each([
+    'server-intent',
+    'put-object',
+    'delete-object',
+    'payload-transferred',
+    'goodbye',
+    'error',
   ])('parses a %s event, which the reader reads the data of', async (eventName) => {
     // Pins the parse set: an event dropped from it would reach `handle` with
     // null data, and a catastrophic goodbye would read as a recycle.
@@ -1838,10 +1908,14 @@ describe('streaming against the endpoint', () => {
     ).toBe(true);
   });
 
-  it('abandons a transfer carrying an event whose data is not JSON, and resumes from the last commit', async () => {
+  it.each([
+    ['cut short', (data: string) => data.slice(0, -4)],
+    ['empty', () => ''],
+  ] as const)('abandons a transfer carrying a delete-object whose data is %s, and resumes from the last commit', async (_label, corrupt) => {
     // Before, the corrupt `delete-object` was skipped and the transfer committed
     // without it: `c` landed, `a` stayed, and the reconnect asked for changes
-    // since `basis-2`, so the revocation of `a` was never sent again.
+    // since `basis-2`, so the revocation of `a` was never sent again. Empty
+    // data was read as null, with the same result.
     endpoint.holdStreamOpen = true;
     const deleteA = JSON.stringify(deleteSkill('a', { objectVersion: 1 }));
     endpoint.queueStream([
@@ -1853,7 +1927,7 @@ describe('streaming against the endpoint', () => {
         'basis-1',
       ),
       ...events(['server-intent', serverIntent('xfer-changes')], ['put-object', putSkill('c', { objectVersion: 1 })]),
-      { event: 'delete-object', raw: deleteA.slice(0, -4) },
+      { event: 'delete-object', raw: corrupt(deleteA) },
       ...events(['payload-transferred', transferred('basis-2')]),
     ]);
     // The clean retransmission the reconnect is answered with.
