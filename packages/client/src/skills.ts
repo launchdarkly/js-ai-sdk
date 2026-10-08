@@ -242,8 +242,13 @@ function skillsFieldRejectionReason(raw: unknown): string | null {
  * Returns the skill references attached to a resolved AI Config.
  *
  * Pure: no network, store, or telemetry. Returns `[]` when the config has no
- * `skills` field, or when `config` is not an object (for example `null` from a
- * failed `inspectConfig`). Typical use: `await getSkills(skillRefs(config))`.
+ * `skills` field. Typical use: `await getSkills(skillRefs(config))`.
+ *
+ * A `config` that is not an object throws, `null` and `undefined` included.
+ * `inspectConfig` answers `config: null` when the config could not be resolved,
+ * and that is not a config with no skills: read as one, the pipeline
+ * `writeSkills(skillRefs(info.config), root)` would prune every skill it
+ * manages during an outage. Check `info.config` first, or let it throw.
  *
  * `parseAiConfig` does not validate `skills`, so a malformed field does not
  * fail core config calls. It is validated here instead, and rejected whole:
@@ -251,12 +256,20 @@ function skillsFieldRejectionReason(raw: unknown): string | null {
  * from the list, so a partial or empty list is never returned for a field that
  * is present.
  *
- * @throws TypeError if `skills` is present but is not an array of
+ * @throws TypeError if `config` is not an object (including `null` and
+ * `undefined`), or if `skills` is present but is not an array of
  * `{ key, version }` objects with a valid key and an integer version >= 1,
  * including `skills: null`.
  */
 export function skillRefs(config: AiConfigRep | null | undefined): SkillReference[] {
-  if (typeof config !== 'object' || config === null) return [];
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+    throw new TypeError(
+      `skillRefs needs a resolved AI Config object, got ${
+        config === null ? 'null' : Array.isArray(config) ? 'an array' : typeof config
+      }. A config that could not be resolved has no skill list: returning [] would let writeSkills prune every ` +
+        'skill it manages. Check that the config resolved before reading its skills.',
+    );
+  }
 
   const raw: unknown = config.skills;
   if (raw === undefined) return [];

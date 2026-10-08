@@ -16,13 +16,16 @@
  *   are instead of as a server script.
  */
 
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createRequire } from 'node:module';
 import { createServer as createTcpServer, type Socket, type Server as TcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -84,7 +87,12 @@ const hash = (content: string): string => createHash('sha256').update(content, '
 
 // ─── Wire builders — one place that knows the shape ──────────────────────────
 
-type WireEvent = { event: string; data?: unknown };
+/**
+ * One event on the wire. `raw`, when given, is sent as the `data:` field
+ * verbatim instead of `data` serialized, so a test can send data that is not
+ * JSON.
+ */
+type WireEvent = { event: string; data?: unknown; raw?: string };
 
 /**
  * The wire `key` of one skill object: `<key>:<version>`.
@@ -274,7 +282,7 @@ class FakeFDv2Endpoint {
     const payloadEvents = this.streams.shift() ?? [];
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
     const body = payloadEvents
-      .map((event) => `event: ${event.event}\ndata: ${JSON.stringify(event.data ?? null)}\n\n`)
+      .map((event) => `event: ${event.event}\ndata: ${event.raw ?? JSON.stringify(event.data ?? null)}\n\n`)
       .join('');
     if (this.dropStreams) {
       // Kills the socket once the events have been flushed, rather than ending
@@ -807,6 +815,59 @@ describe('protocol reader', () => {
     expect(outcomes.every((o) => !o.fatal && !o.disconnect)).toBe(true);
   });
 
+  it('ignores a delete with no usable key, and commits the rest of its transfer', () => {
+    // Pins TESTING.md §3.25's experimental-stage rule: warned and ignored, not
+    // an interruption, so the revocation it carried is lost and `revoked` stays
+    // served. Base ldclient interrupts instead. The choice is to be revisited
+    // before 1.0, and changing it should fail this test.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(
+      reader,
+      fullPayload([
+        ['put-object', putSkill('a', { objectVersion: 1 })],
+        ['put-object', putSkill('revoked', { objectVersion: 1 })],
+      ]),
+    );
+    const { key: _key, ...keyless } = deleteSkill('revoked', { objectVersion: 1 });
+    const outcomes = drive(
+      reader,
+      events(
+        ['server-intent', serverIntent('xfer-changes')],
+        ['put-object', putSkill('fresh', { objectVersion: 1 })],
+        ['delete-object', keyless],
+        ['payload-transferred', transferred('basis-2')],
+      ),
+    );
+    expect(outcomes.every((o) => !o.fatal && !o.disconnect)).toBe(true);
+    expect(outcomes.at(-1)?.committed).toBe(true);
+    expect(held.get('revoked', null)).not.toBeNull();
+    expect(held.get('fresh', null)).not.toBeNull();
+  });
+
+  it('revokes by omission a skill whose put in an xfer-full has no usable key', () => {
+    // The other half of the same rule: the skill is missing from the full
+    // transfer, so it is revoked, and `writeSkills('*')` would prune it.
+    const held = new SkillObjectSet();
+    const reader = new ProtocolReader(held);
+    drive(reader, fullPayload([['put-object', putSkill('a', { objectVersion: 1 })]]));
+    const { key: _key, ...keyless } = putSkill('a', { objectVersion: 1 });
+    const outcomes = drive(
+      reader,
+      fullPayload(
+        [
+          ['put-object', putSkill('b', { objectVersion: 1 })],
+          ['put-object', keyless],
+        ],
+        'basis-2',
+      ),
+    );
+    expect(outcomes.every((o) => !o.fatal && !o.disconnect)).toBe(true);
+    expect(outcomes.at(-1)?.committed).toBe(true);
+    expect(held.get('a', null)).toBeNull();
+    expect(held.get('b', null)).not.toBeNull();
+  });
+
   it('ignores an unknown event name', () => {
     const outcome = new ProtocolReader(new SkillObjectSet()).handle('some-future-event', { anything: true });
     expect(outcome.fatal).toBeUndefined();
@@ -844,13 +905,21 @@ describe('protocol reader', () => {
     expect(outcome.expected).toBe(true);
   });
 
-  it('treats a catastrophic goodbye as fatal', () => {
+  it('treats a catastrophic goodbye as a counted disconnect, not as fatal', () => {
+    // Neither base JS package reads `catastrophe`, and the streamer sets it on
+    // its own connection-error path. Fatal stopped delivery until `start()`, so
+    // one server-side error ended revocation for the life of the process.
     const outcome = new ProtocolReader(new SkillObjectSet()).handle('goodbye', {
       reason: 'no',
-      silent: false,
+      silent: true,
       catastrophe: true,
     });
-    expect(outcome.fatal).toBeTruthy();
+    expect(outcome.fatal).toBeFalsy();
+    expect(outcome.disconnect).toMatch(/catastrophic goodbye: no/);
+    // Never a routine recycle, so the reconnect always counts as a failure.
+    expect(outcome.expected).not.toBe(true);
+    // Logged at error level, even when the server marks it silent.
+    expect(consoleErrors()).toMatch(/catastrophic goodbye: no/);
   });
 
   it('holds everything and commits nothing on transfer-none', () => {
@@ -1613,29 +1682,92 @@ describe('SSE framing', () => {
   };
 
   it('drops a block with no event name without eating the next event', async () => {
-    expect(await framed('data: {"orphan":true}\n\nevent: heart-beat\ndata: {}\n\n')).toEqual([['heart-beat', {}]]);
+    expect(await framed('data: {"orphan":true}\n\nevent: put-object\ndata: {}\n\n')).toEqual([['put-object', {}]]);
   });
 
   it('keeps both named events around a nameless block', async () => {
     expect(
-      await framed('event: heart-beat\ndata: {"n":1}\n\ndata: {"orphan":true}\n\nevent: heart-beat\ndata: {"n":2}\n\n'),
+      await framed('event: put-object\ndata: {"n":1}\n\ndata: {"orphan":true}\n\nevent: put-object\ndata: {"n":2}\n\n'),
     ).toEqual([
-      ['heart-beat', { n: 1 }],
-      ['heart-beat', { n: 2 }],
+      ['put-object', { n: 1 }],
+      ['put-object', { n: 2 }],
     ]);
   });
 
   it('ignores a comment between events', async () => {
     expect(
-      await framed('event: heart-beat\ndata: {"n":1}\n\n: keep-alive\n\nevent: heart-beat\ndata: {"n":2}\n\n'),
+      await framed('event: put-object\ndata: {"n":1}\n\n: keep-alive\n\nevent: put-object\ndata: {"n":2}\n\n'),
     ).toEqual([
-      ['heart-beat', { n: 1 }],
-      ['heart-beat', { n: 2 }],
+      ['put-object', { n: 1 }],
+      ['put-object', { n: 2 }],
     ]);
   });
 
   it('dispatches a named block with no data as a null payload', async () => {
     expect(await framed('event: heart-beat\n\n')).toEqual([['heart-beat', null]]);
+  });
+
+  it('fails recoverably on an event whose data is not JSON, rather than skipping it', async () => {
+    // Skipping it let the `payload-transferred` after it commit the transfer
+    // without it, and advance the basis past it. A dropped `delete-object` then
+    // left a revoked skill served for as long as the store ran. Failing ends the
+    // connection, so the transfer is abandoned and the reconnect resumes from
+    // the last committed basis. The base SDK's reader does the same.
+    const seen: Array<[string, unknown]> = [];
+    const failure = (async () => {
+      for await (const event of iterSse(
+        sseBody('event: put-object\ndata: {"n":1}\n\nevent: delete-object\ndata: {"key":"pdf-extr\n\n'),
+      )) {
+        seen.push(event);
+      }
+    })();
+    await expect(failure).rejects.toBeInstanceOf(RecoverableTransportError);
+    await expect(failure).rejects.toThrow(/'delete-object' event whose data was not JSON/);
+    expect(seen).toEqual([['put-object', { n: 1 }]]);
+  });
+
+  it.each([
+    'server-intent',
+    'put-object',
+    'delete-object',
+    'payload-transferred',
+    'goodbye',
+    'error',
+  ])('fails recoverably on a %s event with no data, since empty data is not JSON', async (eventName) => {
+    // Read as null, a delete-object would be ignored and a
+    // payload-transferred would commit with no selector.
+    for (const block of [`event: ${eventName}\n\n`, `event: ${eventName}\ndata:\n\n`]) {
+      const failure = framed(block);
+      await expect(failure).rejects.toBeInstanceOf(RecoverableTransportError);
+      await expect(failure).rejects.toThrow(/not JSON/);
+    }
+  });
+
+  it.each([
+    'server-intent',
+    'put-object',
+    'delete-object',
+    'payload-transferred',
+    'goodbye',
+    'error',
+  ])('parses a %s event, which the reader reads the data of', async (eventName) => {
+    // Pins the parse set: an event dropped from it would reach `handle` with
+    // null data, and a catastrophic goodbye would read as a recycle.
+    expect(await framed(`event: ${eventName}\ndata: {"reason":"x","catastrophe":true}\n\n`)).toEqual([
+      [eventName, { reason: 'x', catastrophe: true }],
+    ]);
+  });
+
+  it.each([
+    'heart-beat',
+    'x-future-event',
+  ])('does not parse a %s event, so data that is not JSON leaves the connection up', async (eventName) => {
+    // Unknown events are ignored by contract, and the reader reads no data
+    // from a heart-beat, so neither may end the connection over its data.
+    expect(await framed(`event: ${eventName}\ndata: not json\n\nevent: put-object\ndata: {"n":1}\n\n`)).toEqual([
+      [eventName, null],
+      ['put-object', { n: 1 }],
+    ]);
   });
 
   /**
@@ -1773,6 +1905,117 @@ describe('streaming against the endpoint', () => {
         () => store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction') === null && store.diagnostics.objectsRevoked === 1,
       ),
     ).toBe(true);
+  });
+
+  it.each([
+    ['cut short', (data: string) => data.slice(0, -4)],
+    ['empty', () => ''],
+  ] as const)('abandons a transfer carrying a delete-object whose data is %s, and resumes from the last commit', async (_label, corrupt) => {
+    // Before, the corrupt `delete-object` was skipped and the transfer committed
+    // without it: `c` landed, `a` stayed, and the reconnect asked for changes
+    // since `basis-2`, so the revocation of `a` was never sent again. Empty
+    // data was read as null, with the same result.
+    endpoint.holdStreamOpen = true;
+    const deleteA = JSON.stringify(deleteSkill('a', { objectVersion: 1 }));
+    endpoint.queueStream([
+      ...fullPayload(
+        [
+          ['put-object', putSkill('a', { objectVersion: 1 })],
+          ['put-object', putSkill('b', { objectVersion: 1 })],
+        ],
+        'basis-1',
+      ),
+      ...events(['server-intent', serverIntent('xfer-changes')], ['put-object', putSkill('c', { objectVersion: 1 })]),
+      { event: 'delete-object', raw: corrupt(deleteA) },
+      ...events(['payload-transferred', transferred('basis-2')]),
+    ]);
+    // The clean retransmission the reconnect is answered with.
+    endpoint.queueStream(
+      events(
+        ['server-intent', serverIntent('xfer-changes')],
+        ['put-object', putSkill('c', { objectVersion: 1 })],
+        ['delete-object', deleteSkill('a', { objectVersion: 1 })],
+        ['payload-transferred', transferred('basis-2')],
+      ),
+    );
+    const store = streamStore();
+    const notified: string[] = [];
+    store.addListener(SKILL_OBJECT_KIND, (raw) => {
+      notified.push(`${String(raw.key)}:${String(raw.version)}${raw.content === undefined ? ' revoked' : ''}`);
+    });
+    store.start();
+    expect(
+      await waitUntil(() => endpoint.requests.length >= 2 && store.getObject(SKILL_OBJECT_KIND, 'a') === null),
+    ).toBe(true);
+    // The reconnect carried the basis of the last commit, not the abandoned one.
+    expect(endpoint.requests.map((r) => r.query.basis)).toEqual([undefined, 'basis-1']);
+    // Nothing from the corrupt transfer was committed: `c` reached listeners
+    // once, from the retransmission, not once from each.
+    expect(notified).toEqual(['a:1', 'b:1', 'c:1', 'a:1 revoked']);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'b')).not.toBeNull();
+    expect(store.getObject(SKILL_OBJECT_KIND, 'c')).not.toBeNull();
+    expect(store.failed).toBeNull();
+    expect(logged(warnSpy)).toMatch(/'delete-object' event whose data was not JSON/);
+  });
+
+  it('abandons an xfer-full carrying a put-object whose data is not JSON, rather than revoking it by omission', async () => {
+    // Skipped, the corrupt `put a` would leave the full transfer without `a`,
+    // and committing it would revoke `a` although the server still serves it.
+    endpoint.holdStreamOpen = true;
+    const putA = JSON.stringify(putSkill('a', { objectVersion: 1 }));
+    endpoint.queueStream([
+      ...fullPayload([['put-object', putSkill('a', { objectVersion: 1 })]], 'basis-1'),
+      ...events(['server-intent', serverIntent('xfer-full')], ['put-object', putSkill('b', { objectVersion: 1 })]),
+      { event: 'put-object', raw: putA.slice(0, -4) },
+      ...events(['payload-transferred', transferred('basis-2')]),
+    ]);
+    // The clean retransmission the reconnect is answered with.
+    endpoint.queueStream(
+      fullPayload(
+        [
+          ['put-object', putSkill('b', { objectVersion: 1 })],
+          ['put-object', putSkill('a', { objectVersion: 1 })],
+        ],
+        'basis-2',
+      ),
+    );
+    const store = streamStore();
+    const notified: string[] = [];
+    store.addListener(SKILL_OBJECT_KIND, (raw) => {
+      notified.push(`${String(raw.key)}:${String(raw.version)}${raw.content === undefined ? ' revoked' : ''}`);
+    });
+    store.start();
+    expect(
+      await waitUntil(() => endpoint.requests.length >= 2 && store.getObject(SKILL_OBJECT_KIND, 'b') !== null),
+    ).toBe(true);
+    // The reconnect carried the basis of the last commit, not the abandoned one.
+    expect(endpoint.requests.map((r) => r.query.basis)).toEqual([undefined, 'basis-1']);
+    // Nothing from the corrupt transfer was committed: `a` was never revoked,
+    // and `b` reached listeners once, from the retransmission.
+    expect(notified).not.toContain('a:1 revoked');
+    expect(notified.filter((n) => n === 'b:1')).toHaveLength(1);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'a')).not.toBeNull();
+    expect(store.failed).toBeNull();
+    expect(logged(warnSpy)).toMatch(/'put-object' event whose data was not JSON/);
+  });
+
+  it('counts a streamed catastrophic goodbye after a commit, through the SSE parser', async () => {
+    // The other catastrophe tests hand the reader parsed events. This one goes
+    // through `iterSse`, so a goodbye whose data it stopped parsing would
+    // arrive as null and pass as an uncounted recycle.
+    endpoint.holdStreamOpen = true;
+    endpoint.queueStream([
+      ...fullPayload([['put-object', putSkill()]], 'basis-1'),
+      ...events(['goodbye', { reason: 'meltdown', catastrophe: true }]),
+    ]);
+    const store = streamStore();
+    store.start();
+    expect(await waitUntil(() => endpoint.requests.length >= 2)).toBe(true);
+    expect(endpoint.requests[1].query.basis).toBe('basis-1');
+    expect(store.diagnostics.connectionFailures).toBe(1);
+    expect(store.diagnostics.lastError).toBe('server sent a catastrophic goodbye: meltdown');
+    expect(store.failed).toBeNull();
+    expect(consoleErrors()).toMatch(/catastrophic goodbye: meltdown/);
   });
 
   it('reconnects with the basis it reached', async () => {
@@ -1931,6 +2174,7 @@ class UnchangingRequester implements Requester {
   constructor(
     private readonly firstTransfer: WireEvent[] = [],
     private readonly silent = true,
+    private readonly catastrophe = false,
   ) {}
 
   poll(): Promise<PollResult> {
@@ -1945,7 +2189,7 @@ class UnchangingRequester implements Requester {
         : events(['server-intent', serverIntent('none')]);
     const scripted = asPairs([
       ...transfer,
-      ...events(['goodbye', { reason: 'server recycle', silent: this.silent, catastrophe: false }]),
+      ...events(['goodbye', { reason: 'server recycle', silent: this.silent, catastrophe: this.catastrophe }]),
     ]);
     return (async function* () {
       yield* scripted;
@@ -2208,6 +2452,23 @@ describe('failure handling', () => {
     expect(await waitUntil(() => requester.connections >= 6, 2000)).toBe(true);
     expect(store.failed).toBeNull();
     expect(store.diagnostics.connectionFailures).toBe(0);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
+  });
+
+  it('reconnects after a catastrophic goodbye, and counts it even after a completed exchange', async () => {
+    // Was fatal: delivery stopped at the first one and stayed stopped until
+    // `start()`. It now retries on the backoff schedule like any failure, and
+    // unlike a recycle it is counted even on a connection that committed.
+    const requester = new UnchangingRequester(fullPayload([['put-object', putSkill()]], 'basis-1'), true, true);
+    const store = scriptedStreamStore(requester);
+    store.start();
+    expect(await store.waitForSkills(5000)).toBe(true);
+    expect(await waitUntil(() => requester.connections >= 3, 2000)).toBe(true);
+    expect(store.failed).toBeNull();
+    expect(store.diagnostics.lastError).toBe('server sent a catastrophic goodbye: server recycle');
+    expect(consoleErrors()).toMatch(/catastrophic goodbye: server recycle/);
+    expect(consoleErrors()).not.toMatch(/will not retry/);
+    expect(logged(warnSpy)).toMatch(/Skill delivery failed \(server sent a catastrophic goodbye: server recycle\)/);
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
 
@@ -3912,6 +4173,87 @@ describe('lifecycle', () => {
     // Every timed-out wait left behind is retained for the store's lifetime.
     expect(waiters).toHaveLength(0);
   });
+
+  /**
+   * Runs a standalone script against the store's source in a fresh `node`, and
+   * returns its exit code and stdout. The test runner keeps its own event loop
+   * alive, so whether a pending wait holds the process up is only observable in
+   * a process that has nothing else to do.
+   */
+  const runStandalone = async (
+    file: string,
+    source: string,
+  ): Promise<{ code: number | null; stdout: string; stderr: string }> => {
+    const root = await scratchRoot();
+    const script = path.join(root, file);
+    const storeUrl = pathToFileURL(fileURLToPath(new URL('../skills-fdv2.ts', import.meta.url))).href;
+    await writeFile(script, source.replaceAll('STORE_URL', JSON.stringify(storeUrl)));
+    const tsx = path.join(path.dirname(createRequire(import.meta.url).resolve('tsx/package.json')), 'dist/cli.mjs');
+    return new Promise((resolve) => {
+      execFile(process.execPath, [tsx, script], { timeout: 20_000 }, (failure, stdout, stderr) => {
+        const code = failure === null ? 0 : typeof failure.code === 'number' ? failure.code : null;
+        resolve({ code, stdout, stderr });
+      });
+    });
+  };
+
+  // A store whose delivery is failing recoverably holds nothing that keeps the
+  // process up: the backoff sleep is unreffed, and a refused connection leaves no
+  // socket open. Only the wait's own timer can.
+  const UNREACHABLE = `{ mode: 'poll', baseUri: 'http://127.0.0.1:1' }`;
+  const WAIT_MS = 800;
+
+  it.each([
+    [
+      'ESM top-level await',
+      'wait.mts',
+      `import { FDv2SkillStore } from STORE_URL;
+const store = new FDv2SkillStore('${SDK_KEY}', ${UNREACHABLE}).start();
+const started = Date.now();
+const ready = await store.waitForSkills(${WAIT_MS});
+console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));
+await store.close();`,
+    ],
+    [
+      'a CommonJS async function',
+      'wait.cts',
+      `(async () => {
+  const { FDv2SkillStore } = await import(STORE_URL);
+  const store = new FDv2SkillStore('${SDK_KEY}', ${UNREACHABLE}).start();
+  const started = Date.now();
+  const ready = await store.waitForSkills(${WAIT_MS});
+  console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));
+  await store.close();
+})();`,
+    ],
+    [
+      'a store that was never started',
+      'never-started.mts',
+      `import { FDv2SkillStore } from STORE_URL;
+const store = new FDv2SkillStore('${SDK_KEY}', ${UNREACHABLE});
+const started = Date.now();
+const ready = await store.waitForSkills(${WAIT_MS});
+console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));`,
+    ],
+  ])(
+    'keeps a standalone process alive until waitForSkills times out (%s)',
+    async (_label, file, source) => {
+      // An unreffed wait let `node` exit mid-await: ESM top-level await exited 13,
+      // and CommonJS exited 0 without running the line after the `await`.
+      const { code, stdout, stderr } = await runStandalone(file, source);
+      expect({ code, stderr: code === 0 ? '' : stderr }).toEqual({ code: 0, stderr: '' });
+      const line = stdout
+        .split('\n')
+        .find((l) => l.startsWith('{'))
+        ?.trim();
+      expect(line, `no result line in stdout: ${stdout}`).toBeDefined();
+      const result = JSON.parse(line ?? '{}') as { ready: boolean; elapsed: number };
+      expect(result.ready).toBe(false);
+      // Resolved by the timeout, not by anything else ending the wait early.
+      expect(result.elapsed).toBeGreaterThanOrEqual(WAIT_MS - 50);
+    },
+    30_000,
+  );
 
   it('resolves waitForSkills false at once for a wait started after close', async () => {
     // A connection that is open and has delivered nothing: the store is neither

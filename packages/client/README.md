@@ -280,11 +280,12 @@ const refs = skillRefs({
   skills: [{ key: 'pdf-extraction', version: 2 }],
 }); // [{ key: 'pdf-extraction', version: 2 }]
 
-// In real use the config comes from LaunchDarkly:
+// In real use the config comes from LaunchDarkly. inspectConfig answers
+// `config: null` when the config could not be resolved, and skillRefs throws a
+// TypeError for it rather than returning [], which writeSkills would read as
+// "prune every skill it manages". Check first to handle it without the throw:
 // const info = await inspectConfig('doc-agent', { kind: 'user', key: 'user-123' });
-// // The config could not be resolved. Stop here: an empty reference list
-// // passed to writeSkills would prune every skill it manages.
-// if (!info.config) return;
+// if (!info.config) return; // unresolved: leave the skills on disk as they are
 // const refs = skillRefs(info.config);
 
 // Retrieve content. Every skill is hash-verified before you see it.
@@ -328,7 +329,7 @@ const report = await writeSkills('*', '.claude/skills', {
 | Export | Description |
 |---|---|
 | `setSkillStore(store)` | Set the `SkillStore` the accessors, `writeSkills`, and `watchSkills` read from. Applies on every call; a nullish argument never clears the configured store, and `shutdown()` does. Throws `TypeError` for anything else without `getObject` and `allObjects` methods. Replacing a store does not close the old one, and a running watcher keeps the store it started with. Not an `initClient` option. |
-| `skillRefs(config)` | Project a config's `skills` array into typed `SkillReference[]`. Pure — no client, no store, no telemetry. `[]` when the field is absent or `config` is nullish. Throws `TypeError` when the field is present but malformed (including `null`, or one bad entry), so `writeSkills` never receives a partial list that would prune skills the config still references. `parseAiConfig` does not check `skills`, so a malformed field never fails `config().invoke()` or other core calls. |
+| `skillRefs(config)` | Project a config's `skills` array into typed `SkillReference[]`. Pure — no client, no store, no telemetry. `[]` when the field is absent. Throws `TypeError` when `config` is not an object, `null` and `undefined` included, since that is what `inspectConfig` answers for a config it could not resolve, and when the field is present but malformed (including `null`, or one bad entry). Either way `writeSkills` never receives an empty or partial list that would prune skills the config still references. `parseAiConfig` does not check `skills`, so a malformed field never fails `config().invoke()` or other core calls. |
 | `getSkill(key, { version? })` | One verified skill. Omit `version` for the newest available. Resolves to `null` when the skill is unavailable; throws only when no store is configured. |
 | `getSkillResult(key, { version? })` | The same retrieval, reporting **why**: resolves to `{ skill, reason, detail }`, where `reason` is `ok` / `absent` / `integrity_failure` / `store_unavailable` / `wrong_version`. Throws only when no store is configured. See [fail closed on tampering](#fail-closed-on-tampering-getskillresult). |
 | `getSkills(refs)` | Batch form. Accepts `SkillReference` values and bare key strings (string = latest). Results follow input order; missing or unverifiable entries are omitted, and a warning logs how many failed verification. |
@@ -461,7 +462,7 @@ The line is a `[LaunchDarkly] ` prefix, the event name, a space, and one JSON ob
 
 **The record is written regardless of telemetry configuration.** It is not sampled, batched, or dependent on a LaunchDarkly connection. If you send LaunchDarkly nothing, this record is your complete detection surface for tampered or malformed skill content.
 
-**`ld.skills.integrity_failure` is a stability commitment.** The event name will not be renamed, and no field will be renamed or removed, outside a major release with a changelog entry.
+**Changes to `ld.skills.integrity_failure` are always announced.** Agent Skills is experimental, so like every name in this section the event name and its fields may change in a minor release. Any rename or removal gets a changelog entry under **Experimental**, so check the changelog before upgrading if you alert on this record. Once Agent Skills is promoted out of experimental, they change only in a major release.
 
 | Field | Always present | Value |
 |---|---|---|
