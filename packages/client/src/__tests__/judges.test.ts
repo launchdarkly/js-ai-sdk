@@ -216,6 +216,33 @@ describe('runJudges', () => {
     expect(callArgs.config).toBe(mockJudgeConfig);
   });
 
+  it('skips a scoped wildcard when the judge provider is outside its list', async () => {
+    const scoped: ProviderHandler = vi.fn().mockResolvedValue({ output: '{"score":1,"reasoning":"ok"}', usage: {} });
+    scoped.providesFor = ['*', 'agent'];
+    scoped.providers = ['Bedrock'];
+    const parent = makeHandler();
+    mockExtractVariation.mockResolvedValue({
+      config: { ...mockJudgeConfig, provider: { name: 'Anthropic' } },
+      meta: mockJudgeMeta,
+    });
+    const config = {
+      model: { name: 'gpt-4o' },
+      provider: { name: 'OpenAI' },
+      instructions: 'Be helpful.',
+      judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
+    };
+    await runJudges({
+      config,
+      userContext: mockContext,
+      handler: parent,
+      handlers: [scoped],
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+    expect(mockExecuteAndTrack).not.toHaveBeenCalled();
+  });
+
   it('skips a judge when no compatible handler is found (mismatched provider, no wildcard)', async () => {
     const openaiHandler = makeHandler(); // ['OpenAI', 'messages']
     mockExtractVariation.mockResolvedValue({

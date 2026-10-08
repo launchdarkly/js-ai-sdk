@@ -38,18 +38,82 @@ type StreamHandlerInput = (
  * implementation. When present, `model().stream()` will call it instead of
  * the blocking handler, yielding text chunks in real time. When absent,
  * `model().stream()` falls back to the blocking handler.
+ *
+ * `providers` is consulted only when `providesFor` starts with `'*'`. It limits
+ * which `config.provider.name` values that wildcard accepts. Omit it to leave
+ * the property unset, which means the wildcard accepts every provider.
  */
 export function createHandler(
   providesFor: [string, 'agent' | 'messages'],
   handler: HandlerInput,
   streamHandler?: StreamHandlerInput,
   captureContent?: boolean,
+  providers?: readonly string[],
 ): ProviderHandler {
+  if (providers !== undefined && (providers.length === 0 || providers.some((name) => name.trim() === ''))) {
+    throw new Error('providers must be a non-empty list of provider names');
+  }
   const ph = handler as ProviderHandler;
   ph.providesFor = providesFor;
   if (streamHandler) ph.stream = streamHandler;
   if (captureContent !== undefined) ph.captureContent = captureContent;
+  if (providers !== undefined) ph.providers = providers;
   return ph;
+}
+
+/** Whether a `'*'` handler accepts `provider`. An allowlist is a filter; an absent one accepts every name. */
+export function wildcardCovers(handler: ProviderHandler, provider: string | undefined): boolean {
+  if (handler.providesFor?.[0] !== '*') return false;
+  const allow = handler.providers;
+  if (allow === undefined) return true;
+  return provider !== undefined && allow.includes(provider);
+}
+
+/**
+ * The `'*'` handler of `mode` that accepts `provider`.
+ *
+ * A scoped list beats an unscoped wildcard. Among scoped lists that contain
+ * the name, the shorter list wins, and equal lengths keep the earlier registration.
+ */
+export function bestWildcard(
+  handlers: readonly ProviderHandler[],
+  provider: string | undefined,
+  mode: 'agent' | 'messages',
+): ProviderHandler | undefined {
+  let bestScoped: { length: number; handler: ProviderHandler } | undefined;
+  let unscoped: ProviderHandler | undefined;
+  for (const handler of handlers) {
+    if (handler.providesFor?.[1] !== mode || !wildcardCovers(handler, provider)) continue;
+    const allow = handler.providers;
+    if (allow === undefined) {
+      if (!unscoped) unscoped = handler;
+      continue;
+    }
+    if (!bestScoped || allow.length < bestScoped.length) {
+      bestScoped = { length: allow.length, handler };
+    }
+  }
+  return bestScoped?.handler ?? unscoped;
+}
+
+/** Exact `(provider, mode)` first, then the best wildcard of that mode. */
+export function selectModeHandler(
+  handlers: readonly ProviderHandler[],
+  provider: string | undefined,
+  mode: 'agent' | 'messages',
+): ProviderHandler | undefined {
+  if (provider) {
+    const exact = handlers.find(
+      (handler) => handler.providesFor?.[0] === provider && handler.providesFor?.[1] === mode,
+    );
+    if (exact) return exact;
+  }
+  return bestWildcard(handlers, provider, mode);
+}
+
+/** True when the handler names `provider` or its wildcard allowlist contains it, in any mode. */
+export function coversProviderName(handler: ProviderHandler, provider: string): boolean {
+  return handler.providesFor?.[0] === provider || wildcardCovers(handler, provider);
 }
 
 /**

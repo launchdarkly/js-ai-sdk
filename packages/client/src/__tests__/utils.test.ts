@@ -234,6 +234,30 @@ describe('createHandler', () => {
     expect(handler.providesFor).toEqual(['MyProvider', 'agent']);
   });
 
+  it('leaves providers unset when omitted', () => {
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any);
+    expect(handler.providers).toBeUndefined();
+  });
+
+  it('attaches a provider list', () => {
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any, undefined, false, [
+      'Bedrock',
+      'Anthropic',
+    ]);
+    expect(handler.providesFor).toEqual(['*', 'messages']);
+    expect(handler.providers).toEqual(['Bedrock', 'Anthropic']);
+  });
+
+  it('rejects an empty provider list', () => {
+    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, undefined, false, [])).toThrow(/providers/i);
+  });
+
+  it('rejects a blank provider name', () => {
+    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, undefined, false, ['Bedrock', ''])).toThrow(
+      /providers/i,
+    );
+  });
+
   it('returns the same function reference', () => {
     const fn = makeRawHandler();
     const handler = createHandler(['MyProvider', 'agent'], fn as any);

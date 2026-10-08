@@ -181,6 +181,20 @@ describe('createLangChainAgentsHandler', () => {
     expect(createLangChainAgentsHandler({} as any).providesFor).toEqual(['*', 'agent']);
   });
 
+  it('leaves providers unset by default', () => {
+    expect(createLangChainAgentsHandler({} as any).providers).toBeUndefined();
+  });
+
+  it('scopes the wildcard to the given providers', () => {
+    const handler = createLangChainAgentsHandler({} as any, { providers: ['Bedrock'] });
+    expect(handler.providesFor).toEqual(['*', 'agent']);
+    expect(handler.providers).toEqual(['Bedrock']);
+  });
+
+  it('rejects an empty provider list', () => {
+    expect(() => createLangChainAgentsHandler({} as any, { providers: [] })).toThrow(/providers/i);
+  });
+
   it('returns independent instances on multiple calls', () => {
     const llm = {} as any;
     expect(createLangChainAgentsHandler(llm)).not.toBe(createLangChainAgentsHandler(llm));
@@ -520,6 +534,19 @@ describe('createLangChainAgentsHandler', () => {
         handler: expect.objectContaining({ providesFor: ['*', 'agent'] }),
       }),
     );
+  });
+
+  it('forwards providers onto the handler and not to config()', async () => {
+    const { langchainAgents } = await import('../handler.js');
+    const { config } = await import('@launchdarkly/ai-server');
+    const ctx = { kind: 'user' as const, key: 'u' };
+    await langchainAgents('flag', 'hello', ctx, { providers: ['Bedrock'] } as any);
+    expect(config).toHaveBeenCalledWith(
+      expect.objectContaining({
+        handler: expect.objectContaining({ providesFor: ['*', 'agent'], providers: ['Bedrock'] }),
+      }),
+    );
+    expect((config as ReturnType<typeof vi.fn>).mock.calls[0][0].providers).toBeUndefined();
   });
 
   // ── 1.8 Streaming ────────────────────────────────────────────────────────────
@@ -940,6 +967,26 @@ describe('langchainGraph', () => {
         handlers: expect.arrayContaining([expect.objectContaining({ providesFor: ['*', 'agent'] })]),
       }),
     );
+  });
+
+  it('forwards providers onto the handler and not to graph()', async () => {
+    vi.resetModules();
+    const graphMock = vi.fn().mockReturnValue({ call: vi.fn() });
+    vi.doMock('@launchdarkly/ai-server', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
+      return { ...actual, graph: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
+    });
+    const { langchainGraph } = await import('../graph.js');
+    langchainGraph('graph-flag', { providers: ['Bedrock'] } as any);
+    expect(graphMock).toHaveBeenCalledWith(
+      'graph-flag',
+      expect.objectContaining({
+        handlers: expect.arrayContaining([
+          expect.objectContaining({ providesFor: ['*', 'agent'], providers: ['Bedrock'] }),
+        ]),
+      }),
+    );
+    expect(graphMock.mock.calls[0][1].providers).toBeUndefined();
   });
 
   it('forwards extra options (e.g. toolHandlers) to graph()', async () => {
