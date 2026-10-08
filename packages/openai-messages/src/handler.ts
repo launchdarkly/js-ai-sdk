@@ -3,9 +3,10 @@ import {
   type CanonicalTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
+  type config,
+  configInternal,
   contentToText,
-  createHandler,
+  createHandlerInternal,
   createRunUsage,
   endSpanOnce,
   imageBlockToUrl,
@@ -16,6 +17,7 @@ import {
   type ProviderHandler,
   parseTemplate,
   pickForwardedModelParameters,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   type SpanUsage,
@@ -31,6 +33,7 @@ import {
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
 import type { ResponseCreateParamsBase } from 'openai/resources/responses/responses';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-openai-messages';
 
@@ -445,11 +448,16 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
 }
 
 export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+  reportUsage('openai-messages.createOpenAIHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createOpenAIHandlerInternal({ captureContent });
+}
+
+function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   const openai = new OpenAI();
 
   const MAX_STEPS = 10;
 
-  return createHandler(
+  return createHandlerInternal(
     ['OpenAI', 'messages'],
     async (
       config: AiConfigRep,
@@ -771,9 +779,11 @@ export const openaiMessages = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createOpenAIHandler({ captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+) => {
+  reportUsage('openai-messages.openaiMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createOpenAIHandlerInternal({ captureContent }),
+  }).invoke(userInput, context, variables);
+};

@@ -21,7 +21,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
     ...actual,
-    inspectConfig: serverMocks.inspectConfig,
+    inspectConfigInternal: serverMocks.inspectConfig,
     getClient: serverMocks.getClient,
   };
 });

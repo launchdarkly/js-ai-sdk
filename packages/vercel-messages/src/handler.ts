@@ -4,14 +4,16 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
-  createHandler,
+  type config,
+  configInternal,
+  createHandlerInternal,
   type LDContext,
   type Message,
   type MessageContent,
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -37,6 +39,7 @@ import {
 } from 'ai';
 import { gatewayModelId } from './model-id.js';
 import { buildModelParameterOptions } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-vercel-messages';
 const MAX_STEPS = 10;
@@ -251,8 +254,13 @@ function resultUsage(result: { usage?: unknown; steps?: Array<{ usage?: unknown 
 }
 
 export function createVercelMessagesHandler(options: VercelMessagesOptions = {}): ProviderHandler {
+  reportUsage('vercel-messages.createVercelMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createVercelMessagesHandlerInternal(options);
+}
+
+function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}): ProviderHandler {
   const { captureContent = false } = options;
-  return createHandler(
+  return createHandlerInternal(
     ['*', 'messages'],
     async (configRep, userInput = '', toolHandlers = {}, variables = {}, history) =>
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (rootSpan) => {
@@ -384,9 +392,11 @@ export const vercelMessages = (
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     VercelMessagesOptions & { variables?: Record<string, unknown> } = {},
-) =>
-  config({
+) => {
+  reportUsage('vercel-messages.vercelMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
     ...options,
     key: configKey,
-    handler: createVercelMessagesHandler({ captureContent, model, modelFactory }),
+    handler: createVercelMessagesHandlerInternal({ captureContent, model, modelFactory }),
   }).invoke(userInput, context, variables);
+};

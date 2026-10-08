@@ -9,6 +9,7 @@ import {
   warnEsmExternalizationOnce,
 } from './import-diagnostics.js';
 import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
+import { flushSdkUsage, reportUsage, resetSdkUsage } from './sdk-usage.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
 import { parseAiConfig } from './types.js';
 
@@ -253,11 +254,13 @@ export async function initClient(
     singleton.client = optionsOrClient;
     singleton.initPromise = Promise.resolve(optionsOrClient);
     flushAiSdkInfo(optionsOrClient);
+    flushSdkUsage(optionsOrClient);
     return optionsOrClient;
   }
 
   if (singleton.client) {
     flushAiSdkInfo(singleton.client);
+    flushSdkUsage(singleton.client);
     return singleton.client;
   }
   if (!singleton.initPromise) {
@@ -265,6 +268,7 @@ export async function initClient(
   }
   singleton.client = await singleton.initPromise;
   flushAiSdkInfo(singleton.client);
+  flushSdkUsage(singleton.client);
   return singleton.client;
 }
 
@@ -283,6 +287,7 @@ export async function shutdown(): Promise<void> {
   singleton.client = null;
   singleton.initPromise = null;
   resetAiSdkInfo();
+  resetSdkUsage();
   await shutdownTelemetry();
   try {
     await client.flush();
@@ -320,6 +325,18 @@ export type InspectConfigResult = {
  * Lazily initializes the LD client when `LD_SDK_KEY` is set.
  */
 export async function inspectConfig(key: string, context: LDContext): Promise<InspectConfigResult> {
+  reportUsage('client.inspectConfig');
+  return inspectConfigInternal(key, context);
+}
+
+/**
+ * {@link inspectConfig} without the `$ld:ai:sdk:usage` report. `vercelEvaluate`
+ * calls this so it reports only its own helper.
+ *
+ * @internal Exported for the LaunchDarkly handler packages; applications should
+ * call {@link inspectConfig}.
+ */
+export async function inspectConfigInternal(key: string, context: LDContext): Promise<InspectConfigResult> {
   try {
     await initClient();
     const variation = await getClient().variation(key, context, { enabled: false });

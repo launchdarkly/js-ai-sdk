@@ -1,14 +1,15 @@
 import { createSdkMcpServer, type HookInput, query, tool } from '@anthropic-ai/claude-agent-sdk';
-import type { LDContext } from '@launchdarkly/ai-server';
 import {
   type GraphDefinition,
   type GraphNode,
   getClient,
+  type LDContext,
   type Message,
   makeNodeTrackData,
   NATIVE_TOOL_KEY,
   NativeTool,
   type ProviderGraphResponse,
+  reportUsage,
   type ToolHandlerFn,
   type TrackData,
 } from '@launchdarkly/ai-server';
@@ -16,6 +17,7 @@ import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
 import { buildPrompt, buildQueryPrompt, buildToolMCP, partitionTools } from './handler.js';
 import { buildModelParameterQueryOptions } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TOOL_MCP_NAME = 'tool-mcp';
 const SUBAGENT_MCP_NAME = 'subagents';
@@ -169,6 +171,7 @@ export const toClaudeAgents = (
 ): {
   invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 } => {
+  reportUsage('claude-agents.toClaudeAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   const invoke = async (
     input = '',
     variables: Record<string, unknown> = {},
