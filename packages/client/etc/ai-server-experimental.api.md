@@ -225,7 +225,7 @@ export type WriteSkillsOptions = {
 
 // Warnings were encountered during analysis:
 //
-// temp/dts/skills-fdv2.d.ts:451:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point experimental.d.ts
+// temp/dts/skills-fdv2.d.ts:452:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point experimental.d.ts
 
 // (No @packageDocumentation comment for this package)
 

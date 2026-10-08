@@ -1629,24 +1629,24 @@ describe('SSE framing', () => {
   };
 
   it('drops a block with no event name without eating the next event', async () => {
-    expect(await framed('data: {"orphan":true}\n\nevent: heart-beat\ndata: {}\n\n')).toEqual([['heart-beat', {}]]);
+    expect(await framed('data: {"orphan":true}\n\nevent: put-object\ndata: {}\n\n')).toEqual([['put-object', {}]]);
   });
 
   it('keeps both named events around a nameless block', async () => {
     expect(
-      await framed('event: heart-beat\ndata: {"n":1}\n\ndata: {"orphan":true}\n\nevent: heart-beat\ndata: {"n":2}\n\n'),
+      await framed('event: put-object\ndata: {"n":1}\n\ndata: {"orphan":true}\n\nevent: put-object\ndata: {"n":2}\n\n'),
     ).toEqual([
-      ['heart-beat', { n: 1 }],
-      ['heart-beat', { n: 2 }],
+      ['put-object', { n: 1 }],
+      ['put-object', { n: 2 }],
     ]);
   });
 
   it('ignores a comment between events', async () => {
     expect(
-      await framed('event: heart-beat\ndata: {"n":1}\n\n: keep-alive\n\nevent: heart-beat\ndata: {"n":2}\n\n'),
+      await framed('event: put-object\ndata: {"n":1}\n\n: keep-alive\n\nevent: put-object\ndata: {"n":2}\n\n'),
     ).toEqual([
-      ['heart-beat', { n: 1 }],
-      ['heart-beat', { n: 2 }],
+      ['put-object', { n: 1 }],
+      ['put-object', { n: 2 }],
     ]);
   });
 
@@ -1663,14 +1663,26 @@ describe('SSE framing', () => {
     const seen: Array<[string, unknown]> = [];
     const failure = (async () => {
       for await (const event of iterSse(
-        sseBody('event: heart-beat\ndata: {"n":1}\n\nevent: delete-object\ndata: {"key":"pdf-extr\n\n'),
+        sseBody('event: put-object\ndata: {"n":1}\n\nevent: delete-object\ndata: {"key":"pdf-extr\n\n'),
       )) {
         seen.push(event);
       }
     })();
     await expect(failure).rejects.toBeInstanceOf(RecoverableTransportError);
     await expect(failure).rejects.toThrow(/'delete-object' event whose data was not JSON/);
-    expect(seen).toEqual([['heart-beat', { n: 1 }]]);
+    expect(seen).toEqual([['put-object', { n: 1 }]]);
+  });
+
+  it.each([
+    'heart-beat',
+    'x-future-event',
+  ])('does not parse a %s event, so data that is not JSON leaves the connection up', async (eventName) => {
+    // Unknown events are ignored by contract, and the reader reads no data
+    // from a heart-beat, so neither may end the connection over its data.
+    expect(await framed(`event: ${eventName}\ndata: not json\n\nevent: put-object\ndata: {"n":1}\n\n`)).toEqual([
+      [eventName, null],
+      ['put-object', { n: 1 }],
+    ]);
   });
 
   /**
@@ -1855,6 +1867,47 @@ describe('streaming against the endpoint', () => {
     expect(store.getObject(SKILL_OBJECT_KIND, 'c')).not.toBeNull();
     expect(store.failed).toBeNull();
     expect(logged(warnSpy)).toMatch(/'delete-object' event whose data was not JSON/);
+  });
+
+  it('abandons an xfer-full carrying a put-object whose data is not JSON, rather than revoking it by omission', async () => {
+    // Skipped, the corrupt `put a` would leave the full transfer without `a`,
+    // and committing it would revoke `a` although the server still serves it.
+    endpoint.holdStreamOpen = true;
+    const putA = JSON.stringify(putSkill('a', { objectVersion: 1 }));
+    endpoint.queueStream([
+      ...fullPayload([['put-object', putSkill('a', { objectVersion: 1 })]], 'basis-1'),
+      ...events(['server-intent', serverIntent('xfer-full')], ['put-object', putSkill('b', { objectVersion: 1 })]),
+      { event: 'put-object', raw: putA.slice(0, -4) },
+      ...events(['payload-transferred', transferred('basis-2')]),
+    ]);
+    // The clean retransmission the reconnect is answered with.
+    endpoint.queueStream(
+      fullPayload(
+        [
+          ['put-object', putSkill('b', { objectVersion: 1 })],
+          ['put-object', putSkill('a', { objectVersion: 1 })],
+        ],
+        'basis-2',
+      ),
+    );
+    const store = streamStore();
+    const notified: string[] = [];
+    store.addListener(SKILL_OBJECT_KIND, (raw) => {
+      notified.push(`${String(raw.key)}:${String(raw.version)}${raw.content === undefined ? ' revoked' : ''}`);
+    });
+    store.start();
+    expect(
+      await waitUntil(() => endpoint.requests.length >= 2 && store.getObject(SKILL_OBJECT_KIND, 'b') !== null),
+    ).toBe(true);
+    // The reconnect carried the basis of the last commit, not the abandoned one.
+    expect(endpoint.requests.map((r) => r.query.basis)).toEqual([undefined, 'basis-1']);
+    // Nothing from the corrupt transfer was committed: `a` was never revoked,
+    // and `b` reached listeners once, from the retransmission.
+    expect(notified).not.toContain('a:1 revoked');
+    expect(notified.filter((n) => n === 'b:1')).toHaveLength(1);
+    expect(store.getObject(SKILL_OBJECT_KIND, 'a')).not.toBeNull();
+    expect(store.failed).toBeNull();
+    expect(logged(warnSpy)).toMatch(/'put-object' event whose data was not JSON/);
   });
 
   it('reconnects with the basis it reached', async () => {
