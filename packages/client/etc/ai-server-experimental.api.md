@@ -48,7 +48,9 @@ export class FDv2SkillStore implements SkillStore {
     isInitialized(): boolean;
     removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
     start(): this;
-    waitForSkills(timeoutMs?: number): Promise<boolean>;
+    waitForSkills(options?: {
+        readonly timeoutSeconds?: number;
+    }): Promise<boolean>;
 }
 
 // @public (undocumented)
@@ -56,10 +58,10 @@ export type FDv2SkillStoreOptions = {
     readonly mode?: FDv2Mode;
     readonly baseUri?: string;
     readonly streamUri?: string;
-    readonly pollIntervalMs?: number;
-    readonly readTimeoutMs?: number;
-    readonly initialBackoffMs?: number;
-    readonly maxBackoffMs?: number;
+    readonly pollIntervalSeconds?: number;
+    readonly readTimeoutSeconds?: number;
+    readonly initialBackoffSeconds?: number;
+    readonly maxBackoffSeconds?: number;
     readonly requester?: Requester;
 };
 
@@ -225,7 +227,7 @@ export type WriteSkillsOptions = {
 
 // Warnings were encountered during analysis:
 //
-// temp/dts/skills-fdv2.d.ts:452:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point experimental.d.ts
+// temp/dts/skills-fdv2.d.ts:454:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point experimental.d.ts
 
 // (No @packageDocumentation comment for this package)
 

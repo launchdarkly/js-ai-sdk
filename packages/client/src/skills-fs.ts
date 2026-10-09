@@ -474,7 +474,7 @@ function availableStore(deadline: number, subject: string): SkillStore | Retriev
     return {
       blocked: unavailable(
         `the skill store has not received its initial data, so ${subject} could not be retrieved and nothing on ` +
-          'disk was changed. Wait for delivery before reconciling: FDv2SkillStore.waitForSkills(timeoutMs) ' +
+          'disk was changed. Wait for delivery before reconciling: FDv2SkillStore.waitForSkills({ timeoutSeconds }) ' +
           'resolves true once the first payload has arrived.',
       ),
     };

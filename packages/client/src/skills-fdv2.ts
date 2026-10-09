@@ -60,14 +60,30 @@ export const SKILLS_DEFAULT_STREAM_URI = 'https://stream.launchdarkly.com';
 export const POLL_PATH = '/sdk/poll';
 export const STREAM_PATH = '/sdk/stream';
 
-/** Default `readTimeoutMs` in `'poll'` mode: the bound on one whole request. */
-export const DEFAULT_POLL_TIMEOUT_MS = 10_000;
+/** Default `readTimeoutSeconds` in `'poll'` mode: the bound on one whole request. */
+export const DEFAULT_POLL_TIMEOUT_SECONDS = 10;
 
 /**
- * Default `readTimeoutMs` in `'stream'` mode: the longest gap tolerated between
- * two reads. LaunchDarkly's heartbeats arrive well inside this.
+ * Default `readTimeoutSeconds` in `'stream'` mode: the longest gap tolerated
+ * between two reads. LaunchDarkly's heartbeats arrive well inside this.
  */
-export const DEFAULT_STREAM_READ_TIMEOUT_MS = 300_000;
+export const DEFAULT_STREAM_READ_TIMEOUT_SECONDS = 300;
+
+/**
+ * Seconds as whole milliseconds, for `setTimeout` and the read deadline. Every
+ * time option is in seconds; this is the one place they become milliseconds.
+ *
+ * Rounded, not truncated: `1.005 * 1000` is `1004.9999999999999`, so truncating
+ * would take a millisecond off a value the caller wrote exactly. `minimum` is 1
+ * for an option that must be positive, so a sub-millisecond value never becomes
+ * a zero delay. Capped at 2^31−1, the longest delay `setTimeout` honors; past
+ * that Node fires the timer after 1ms, and a poll interval would spin.
+ */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
+export function secondsToMs(seconds: number, minimum = 0): number {
+  return Math.min(MAX_TIMEOUT_MS, Math.max(minimum, Math.round(seconds * 1000)));
+}
 
 const EVENT_SERVER_INTENT = 'server-intent';
 const EVENT_PUT_OBJECT = 'put-object';
@@ -1314,8 +1330,8 @@ export type Requester = {
 /**
  * The only place this module opens a connection.
  *
- * `readTimeoutMs` bounds every request through a {@link ReadDeadline} (connect,
- * headers, body); there is no separate connect timeout.
+ * `readTimeoutSeconds` bounds every request through a {@link ReadDeadline}
+ * (connect, headers, body); there is no separate connect timeout.
  */
 export class FetchRequester implements Requester {
   /** Origin `GET /sdk/poll` is sent to. */
@@ -1326,7 +1342,7 @@ export class FetchRequester implements Requester {
   constructor(
     private readonly sdkKey: string,
     baseUri: string,
-    readonly readTimeoutMs: number,
+    readonly readTimeoutSeconds: number,
     streamUri: string = baseUri,
   ) {
     this.baseUri = baseUri.replace(/\/+$/, '');
@@ -1352,7 +1368,7 @@ export class FetchRequester implements Requester {
     if (etag) headers['If-None-Match'] = etag;
 
     // Never touched, so it bounds the whole request.
-    const deadline = readDeadline(signal, this.readTimeoutMs);
+    const deadline = readDeadline(signal, secondsToMs(this.readTimeoutSeconds, 1));
     try {
       const response = await fetch(this.url(this.baseUri, POLL_PATH, basis), {
         headers,
@@ -1388,7 +1404,7 @@ export class FetchRequester implements Requester {
     };
 
     // Bounds the connect, then (touched by `iterSse`) the gap between reads.
-    const deadline = readDeadline(signal, this.readTimeoutMs);
+    const deadline = readDeadline(signal, secondsToMs(this.readTimeoutSeconds, 1));
     let response: Response;
     try {
       response = await fetch(this.url(this.streamUri, STREAM_PATH, basis), {
@@ -1439,7 +1455,8 @@ export function backoffDelayMs(attempt: number, baseMs: number, maximumMs: numbe
 
 /**
  * How long a stream must stay open for the reconnect after it to start again at
- * `initialBackoffMs`, as in the base server-side SDKs. Internal, not an option.
+ * `initialBackoffSeconds`, as in the base server-side SDKs. Internal, not an
+ * option.
  */
 export const BACKOFF_RESET_INTERVAL_MS = 60_000;
 
@@ -1470,7 +1487,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export type FDv2SkillStoreOptions = {
   /**
    * `'stream'` (default, recommended: revocations arrive in seconds) or
-   * `'poll'` (revocations arrive within one `pollIntervalMs`).
+   * `'poll'` (revocations arrive within one `pollIntervalSeconds`).
    */
   readonly mode?: FDv2Mode;
   /**
@@ -1486,26 +1503,26 @@ export type FDv2SkillStoreOptions = {
    * `baseUri` when that is given). Same `https://` rule as `baseUri`.
    */
   readonly streamUri?: string;
-  /** Milliseconds between polls; positive and finite. Default `30_000`. */
-  readonly pollIntervalMs?: number;
+  /** Seconds between polls; positive and finite. Default `30`. */
+  readonly pollIntervalSeconds?: number;
   /**
-   * The only network timeout, in milliseconds; positive and finite. In `'poll'`
-   * mode it bounds the whole request ({@link DEFAULT_POLL_TIMEOUT_MS}); in
+   * The only network timeout, in seconds; positive and finite. In `'poll'` mode
+   * it bounds the whole request ({@link DEFAULT_POLL_TIMEOUT_SECONDS}); in
    * `'stream'` mode, each wait for more bytes
-   * ({@link DEFAULT_STREAM_READ_TIMEOUT_MS}).
+   * ({@link DEFAULT_STREAM_READ_TIMEOUT_SECONDS}).
    */
-  readonly readTimeoutMs?: number;
+  readonly readTimeoutSeconds?: number;
   /**
-   * The first retry delay, in milliseconds; positive, finite, and no greater
-   * than `maxBackoffMs`. Default `1_000`.
+   * The first retry delay, in seconds; positive, finite, and no greater than
+   * `maxBackoffSeconds`. Default `1`.
    */
-  readonly initialBackoffMs?: number;
+  readonly initialBackoffSeconds?: number;
   /**
-   * Caps every retry delay, including `Retry-After`; positive and finite.
-   * Default `30_000`. Recoverable failures are retried for the life of the
+   * Caps every retry delay, in seconds, including `Retry-After`; positive and
+   * finite. Default `30`. Recoverable failures are retried for the life of the
    * store; only a fatal status stops delivery.
    */
-  readonly maxBackoffMs?: number;
+  readonly maxBackoffSeconds?: number;
   /** Replaces the built-in `fetch` transport. Intended for testing. */
   readonly requester?: Requester;
 };
@@ -1518,7 +1535,7 @@ export type FDv2SkillStoreOptions = {
  *
  * ```ts
  * const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
- * await store.waitForSkills(10_000);
+ * await store.waitForSkills({ timeoutSeconds: 10 });
  * setSkillStore(store);
  *
  * const skill = await getSkill('pdf-extraction');
@@ -1545,9 +1562,9 @@ export class FDv2SkillStore implements SkillStore {
   private readonly listeners = new Map<string, Array<(raw: RawSkillObject) => unknown>>();
   private readonly requester: Requester;
   private readonly mode: FDv2Mode;
-  private readonly pollIntervalMs: number;
-  private readonly initialBackoffMs: number;
-  private readonly maxBackoffMs: number;
+  private readonly pollIntervalSeconds: number;
+  private readonly initialBackoffSeconds: number;
+  private readonly maxBackoffSeconds: number;
 
   private basis: string | null = null;
   private etag: string | null = null;
@@ -1568,7 +1585,7 @@ export class FDv2SkillStore implements SkillStore {
   private reachedServer = false;
   // The backoff step, kept apart from `failures`: a completed exchange does not
   // reset it, or a server that answers and then drops would be reconnected at
-  // `initialBackoffMs` for as long as it stayed degraded. It resets after a
+  // `initialBackoffSeconds` for as long as it stayed degraded. It resets after a
   // stream outlives `_backoffResetIntervalMs`, or a completed poll.
   private backoffAttempt = 0;
   // When the current stream connection opened (`performance.now()`), or `null`
@@ -1583,31 +1600,57 @@ export class FDv2SkillStore implements SkillStore {
     if (this.mode !== 'stream' && this.mode !== 'poll') {
       throw new Error(`mode must be 'stream' or 'poll', got ${JSON.stringify(options.mode)}`);
     }
-    this.pollIntervalMs = options.pollIntervalMs ?? 30_000;
+    // The retired millisecond names are not read. TypeScript rejects them in an
+    // object literal; a JavaScript caller, or a spread, would otherwise poll on
+    // the defaults with no signal. One warning names every one that is present.
+    const retiredMs = (
+      [
+        ['pollIntervalMs', 'pollIntervalSeconds'],
+        ['readTimeoutMs', 'readTimeoutSeconds'],
+        ['initialBackoffMs', 'initialBackoffSeconds'],
+        ['maxBackoffMs', 'maxBackoffSeconds'],
+      ] as const
+    ).filter(([key]) => Object.hasOwn(options, key));
+    if (retiredMs.length > 0) {
+      warn(retiredMs.map(([was, next]) => `${was} is no longer read; use ${next} (seconds)`).join('. '));
+    }
+    // Every time option is in seconds, and stays in seconds until `secondsToMs`
+    // at the timer or deadline it sets.
+    this.pollIntervalSeconds = options.pollIntervalSeconds ?? 30;
     // `NaN` passes a `<= 0` check, and `setTimeout(fn, NaN)` fires at once.
-    if (typeof this.pollIntervalMs !== 'number' || !Number.isFinite(this.pollIntervalMs) || this.pollIntervalMs <= 0) {
-      throw new Error(`pollIntervalMs must be a positive, finite number, got ${String(options.pollIntervalMs)}`);
+    if (
+      typeof this.pollIntervalSeconds !== 'number' ||
+      !Number.isFinite(this.pollIntervalSeconds) ||
+      this.pollIntervalSeconds <= 0
+    ) {
+      throw new Error(
+        `pollIntervalSeconds must be a positive, finite number, got ${String(options.pollIntervalSeconds)}`,
+      );
     }
-    const readTimeoutMs =
-      options.readTimeoutMs ?? (this.mode === 'stream' ? DEFAULT_STREAM_READ_TIMEOUT_MS : DEFAULT_POLL_TIMEOUT_MS);
-    if (typeof readTimeoutMs !== 'number' || !Number.isFinite(readTimeoutMs) || readTimeoutMs <= 0) {
-      throw new Error(`readTimeoutMs must be positive, got ${String(options.readTimeoutMs)}`);
+    const readTimeoutSeconds =
+      options.readTimeoutSeconds ??
+      (this.mode === 'stream' ? DEFAULT_STREAM_READ_TIMEOUT_SECONDS : DEFAULT_POLL_TIMEOUT_SECONDS);
+    if (typeof readTimeoutSeconds !== 'number' || !Number.isFinite(readTimeoutSeconds) || readTimeoutSeconds <= 0) {
+      throw new Error(
+        `readTimeoutSeconds must be a positive, finite number, got ${String(options.readTimeoutSeconds)}`,
+      );
     }
-    this.initialBackoffMs = options.initialBackoffMs ?? 1_000;
-    this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
+    this.initialBackoffSeconds = options.initialBackoffSeconds ?? 1;
+    this.maxBackoffSeconds = options.maxBackoffSeconds ?? 30;
     // With no failure bound these two are the only limit on the retry loop: a
     // zero, negative or `NaN` delay is no wait at all, against a failing server.
     for (const [name, value] of [
-      ['initialBackoffMs', this.initialBackoffMs],
-      ['maxBackoffMs', this.maxBackoffMs],
+      ['initialBackoffSeconds', this.initialBackoffSeconds],
+      ['maxBackoffSeconds', this.maxBackoffSeconds],
     ] as const) {
       if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
         throw new Error(`${name} must be a positive, finite number, got ${String(value)}`);
       }
     }
-    if (this.initialBackoffMs > this.maxBackoffMs) {
+    if (this.initialBackoffSeconds > this.maxBackoffSeconds) {
       throw new Error(
-        `initialBackoffMs (${this.initialBackoffMs}) must not exceed maxBackoffMs (${this.maxBackoffMs})`,
+        `initialBackoffSeconds (${this.initialBackoffSeconds}) must not exceed maxBackoffSeconds ` +
+          `(${this.maxBackoffSeconds})`,
       );
     }
     const baseUri = requireHttpsUri(options.baseUri ?? SKILLS_DEFAULT_BASE_URI);
@@ -1616,7 +1659,7 @@ export class FDv2SkillStore implements SkillStore {
       options.streamUri ?? (options.baseUri === undefined ? SKILLS_DEFAULT_STREAM_URI : baseUri),
       'streamUri',
     );
-    this.requester = options.requester ?? new FetchRequester(key, baseUri, readTimeoutMs, streamUri);
+    this.requester = options.requester ?? new FetchRequester(key, baseUri, readTimeoutSeconds, streamUri);
   }
 
   // -- lifecycle ---------------------------------------------------------
@@ -1666,7 +1709,8 @@ export class FDv2SkillStore implements SkillStore {
   }
 
   /**
-   * Resolves once the first payload arrives, or after `timeoutMs`.
+   * Resolves once the first payload arrives, or after `timeoutSeconds`
+   * (default `10`).
    *
    * Resolves `true` once a payload has committed or a 304 confirmed the one held
    * is current. That does not mean any skill verified, or that the environment
@@ -1675,13 +1719,35 @@ export class FDv2SkillStore implements SkillStore {
    * Resolves `false` on timeout, or immediately if delivery has ended (`close`,
    * or a failure that will not be retried; `failed` tells them apart). A store
    * that gave up waits again once `start()` runs delivery again; only `close` is
-   * final. Rejects for a negative or non-finite `timeoutMs`.
+   * final.
+   *
+   * Takes an options object rather than a bare number, as the base SDK's
+   * `waitForInitialization({ timeoutSeconds })` does. Rejects with a
+   * `TypeError` for anything else, a number included: the timeout used to be a
+   * positional millisecond count, and reading `waitForSkills(10_000)` as seconds
+   * would wait almost three hours. Rejects for a negative or non-finite
+   * `timeoutSeconds`.
    */
-  waitForSkills(timeoutMs = 10_000): Promise<boolean> {
-    if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs < 0) {
+  waitForSkills(options: { readonly timeoutSeconds?: number } = {}): Promise<boolean> {
+    if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+      // `String([])` is empty and `String('10')` hides the quotes, so the value
+      // is shown with its type (or JSON, for a string, null, or array).
+      const got =
+        typeof options === 'object' || typeof options === 'string'
+          ? JSON.stringify(options)
+          : `${typeof options} ${String(options)}`;
+      return Promise.reject(
+        new TypeError(
+          `waitForSkills takes an options object, { timeoutSeconds }, got ${got}. ` +
+            'The timeout is in seconds: waitForSkills(10_000) is now waitForSkills({ timeoutSeconds: 10 }).',
+        ),
+      );
+    }
+    const { timeoutSeconds = 10 } = options;
+    if (typeof timeoutSeconds !== 'number' || !Number.isFinite(timeoutSeconds) || timeoutSeconds < 0) {
       // `setTimeout(fn, NaN)` fires at once and would read as a timeout.
       return Promise.reject(
-        new Error(`waitForSkills timeoutMs must be a non-negative, finite number, got ${String(timeoutMs)}`),
+        new Error(`waitForSkills timeoutSeconds must be a non-negative, finite number, got ${String(timeoutSeconds)}`),
       );
     }
     if (this.firstPayload) return Promise.resolve(true);
@@ -1696,10 +1762,10 @@ export class FDv2SkillStore implements SkillStore {
         // Remove the expired waiter so it is not retained.
         this.dropWaiter(waiter);
         resolve(this.firstPayload);
-      }, timeoutMs);
+      }, secondsToMs(timeoutSeconds));
       // Deliberately not unreffed, unlike every other timer here. During an
       // outage nothing else holds the process up, so an unreffed wait let `node`
-      // exit mid-`await`. Bounded by `timeoutMs`, and cleared on release.
+      // exit mid-`await`. Bounded by `timeoutSeconds`, and cleared on release.
       this.firstPayloadWaiters.push(waiter);
     });
   }
@@ -1828,7 +1894,7 @@ export class FDv2SkillStore implements SkillStore {
         // A returned poll is a current answer, even a 304. Stream successes are
         // recorded in `apply`.
         this.recordSuccess();
-        // `pollIntervalMs` already spaces the requests, so a completed poll
+        // `pollIntervalSeconds` already spaces the requests, so a completed poll
         // also starts the backoff over.
         this.backoffAttempt = 0;
       } catch (cause) {
@@ -1866,14 +1932,16 @@ export class FDv2SkillStore implements SkillStore {
         }
         this.backoffAttempt += 1;
         const requested = cause.retryAfterMs;
+        const initialBackoffMs = secondsToMs(this.initialBackoffSeconds, 1);
+        const maxBackoffMs = secondsToMs(this.maxBackoffSeconds, 1);
         const delay = Math.min(
           requested !== null && Number.isFinite(requested)
-            ? // Floor at `initialBackoffMs` so `Retry-After: 0` cannot cause a
-              // tight reconnect loop.
-              Math.max(requested, this.initialBackoffMs)
-            : backoffDelayMs(this.backoffAttempt, this.initialBackoffMs, this.maxBackoffMs),
-          // Cap at `maxBackoffMs` even if `Retry-After` asks for more.
-          this.maxBackoffMs,
+            ? // Floor at `initialBackoffSeconds` so `Retry-After: 0` cannot
+              // cause a tight reconnect loop.
+              Math.max(requested, initialBackoffMs)
+            : backoffDelayMs(this.backoffAttempt, initialBackoffMs, maxBackoffMs),
+          // Cap at `maxBackoffSeconds` even if `Retry-After` asks for more.
+          maxBackoffMs,
         );
         if (!cause.expected) {
           warn(`Skill delivery failed (${cause.message}); retrying in ${Math.round(delay)}ms`);
@@ -1885,7 +1953,7 @@ export class FDv2SkillStore implements SkillStore {
         continue;
       }
 
-      if (this.mode === 'poll') await sleep(this.pollIntervalMs, signal);
+      if (this.mode === 'poll') await sleep(secondsToMs(this.pollIntervalSeconds, 1), signal);
     }
   }
 
