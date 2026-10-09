@@ -692,6 +692,25 @@ describe('writeSkills atomicity and permissions', () => {
     expect(mode & fsConstants.S_IXOTH).toBe(0);
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'creates per-skill directories as 0755 even under a restrictive umask',
+    async () => {
+      // mkdir's mode is masked by the umask, so without an explicit chmod a 0077
+      // umask leaves <root>/<key>/ at 0700 and a separate agent identity cannot
+      // read the SKILL.md inside it.
+      const previous = process.umask(0o077);
+      let report: Awaited<ReturnType<typeof writeSkills>>;
+      try {
+        report = await writeSkills([skill('a')], root);
+      } finally {
+        process.umask(previous);
+      }
+      expect(report.ok).toBe(true);
+      expect((await stat(path.join(root, 'a'))).mode & 0o777).toBe(0o755);
+      expect((await stat(path.join(root, 'a', SKILL_MD))).mode & 0o777).toBe(0o644);
+    },
+  );
+
   it('goes through a single atomic rename with the temp file in the target directory', async () => {
     // Positive control for the interception hook. Without this,
     // the `calls === []` assertions in the failure tests below and in the

@@ -7,7 +7,20 @@
  */
 
 import { constants as fsConstants } from 'node:fs';
-import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -71,6 +84,17 @@ describe('openOrCreateDirectory', () => {
     } finally {
       await handle.close();
     }
+  });
+
+  it.skipIf(process.platform === 'win32')('leaves the mode of an existing directory alone', async () => {
+    // The explicit 0755 is for directories this call creates; one that was
+    // already there keeps the mode its owner chose.
+    const dir = path.join(scratch, 'existing');
+    await mkdir(dir);
+    await chmod(dir, 0o700);
+    const handle = await openOrCreateDirectory(dir);
+    await handle.close();
+    expect((await stat(dir)).mode & 0o777).toBe(0o700);
   });
 
   it('refuses an existing symlink-to-directory', async () => {

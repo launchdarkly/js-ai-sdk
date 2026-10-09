@@ -31,6 +31,13 @@ import path from 'node:path';
 /** Mode set explicitly on every written file: never from the umask, never executable. */
 const FILE_MODE = 0o644;
 
+/**
+ * Mode set explicitly on every directory this module creates, because `mkdir`'s
+ * mode argument is masked by the umask: under `0077` a separate agent identity
+ * could not traverse the directory to read what is inside.
+ */
+const DIRECTORY_MODE = 0o755;
+
 /** Bound on the `O_EXCL` retry loop; with 64-bit random names it only keeps the loop finite. */
 const TEMP_NAME_ATTEMPTS = 5;
 
@@ -180,15 +187,29 @@ export async function openDirectoryNoFollow(directory: string): Promise<FileHand
  * `mkdir(..., { recursive: true })` accepts an existing symlink-to-directory.
  */
 export async function openOrCreateDirectory(directory: string): Promise<FileHandle> {
+  let created = false;
   try {
-    await mkdir(directory, 0o755);
+    await mkdir(directory, DIRECTORY_MODE);
+    created = true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     const info = await lstat(directory);
     if (info.isSymbolicLink()) throw new Error('the directory is a symlink');
     if (!info.isDirectory()) throw new Error('the path is not a directory');
   }
-  return openDirectoryNoFollow(directory);
+  const handle = await openDirectoryNoFollow(directory);
+  // Only a directory this call created: an existing one keeps the mode its
+  // owner gave it. Set on the handle, never chmod on the path, which a swap
+  // between mkdir and open could redirect.
+  if (created) {
+    try {
+      await handle.chmod(DIRECTORY_MODE);
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      throw error;
+    }
+  }
+  return handle;
 }
 
 /**
