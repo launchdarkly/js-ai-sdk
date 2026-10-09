@@ -6,11 +6,13 @@ import {
   type LDContext,
   type Message,
   type MessageContent,
+  makeGraphTrackData,
   makeNodeTrackData,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
   reportUsage,
+  setLdSpanAttributes,
   type ToolHandlerFn,
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
@@ -109,7 +111,6 @@ export const toVercelAgents = (
       const root = def.root;
 
       return trace.getTracer(TRACER_NAME).startActiveSpan('launchdarkly.graph', async (span) => {
-        span.setAttribute('launchdarkly.graph.key', def.key);
         const startedAt = Date.now();
         const runId = crypto.randomUUID();
         const context = options.context;
@@ -120,6 +121,7 @@ export const toVercelAgents = (
         const path: string[] = [];
 
         try {
+          setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext: context });
           await def.traverse(async (node) => {
             nodes.set(node.key, node);
             const regularTools = Object.entries(node.config.tools ?? {}).filter(
@@ -206,11 +208,10 @@ export const toVercelAgents = (
           span.setAttribute('gen_ai.usage.total_tokens', total.total);
 
           if (context) {
-            const trackData = makeNodeTrackData(root, def.key, runId);
+            const trackData = makeGraphTrackData(def.key, runId);
             const client = getClient();
             client.track('$ld:ai:graph:duration:total', context, trackData, Date.now() - startedAt);
             client.track('$ld:ai:graph:total_tokens', context, trackData, total.total);
-            client.track('$ld:ai:graph:path', context, trackData, path.length);
             client.track('$ld:ai:graph:invocation_success', context, trackData, 1);
           }
           span.setStatus({ code: SpanStatusCode.OK });
@@ -220,7 +221,7 @@ export const toVercelAgents = (
           span.recordException(exception);
           span.setStatus({ code: SpanStatusCode.ERROR, message: exception.message });
           if (context) {
-            getClient().track('$ld:ai:graph:invocation_failure', context, makeNodeTrackData(root, def.key, runId), 1);
+            getClient().track('$ld:ai:graph:invocation_failure', context, makeGraphTrackData(def.key, runId), 1);
           }
           throw error;
         } finally {

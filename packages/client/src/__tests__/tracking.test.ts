@@ -15,6 +15,7 @@ import { getClient } from '../lifecycle.js';
 import {
   executeAndStream,
   executeAndTrack,
+  makeGraphTrackData,
   makeNodeTrackData,
   makeRunTrackData,
   modelStampsFromMeta,
@@ -543,6 +544,42 @@ describe('makeNodeTrackData', () => {
     const td = makeNodeTrackData(node({ variationKey: 'v1', version: 1 }), 'graph-key', 'run-1');
     expect('modelKey' in td).toBe(false);
     expect('modelVersion' in td).toBe(false);
+  });
+
+  it('carries the environment id so a tagged span can set feature_flag.set.id', () => {
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({
+      _featureStore: { getInitMetaData: () => ({ environmentId: 'env-abc' }) },
+    });
+    const td = makeNodeTrackData(node({ variationKey: 'v1', version: 1 }), 'graph-key', 'run-1');
+    expect(td.environmentId).toBe('env-abc');
+  });
+
+  it('leaves environmentId undefined when the client cannot provide one', () => {
+    (getClient as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error('not initialized');
+    });
+    const td = makeNodeTrackData(node({ variationKey: 'v1', version: 1 }), 'graph-key', 'run-1');
+    expect(td.environmentId).toBeUndefined();
+  });
+});
+
+// ─── makeGraphTrackData ──────────────────────────────────────────────────────
+
+describe('makeGraphTrackData', () => {
+  it('uses the graph key as the config key and carries the environment id', () => {
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({
+      _featureStore: { getInitMetaData: () => ({ environmentId: 'env-abc' }) },
+    });
+    expect(makeGraphTrackData('graph-key', 'run-1')).toEqual({
+      runId: 'run-1',
+      configKey: 'graph-key',
+      variationKey: '',
+      version: 1,
+      modelName: '',
+      providerName: '',
+      graphKey: 'graph-key',
+      environmentId: 'env-abc',
+    });
   });
 });
 
