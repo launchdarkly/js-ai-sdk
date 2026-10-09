@@ -18,6 +18,7 @@ import {
   readFile,
   realpath,
   rm,
+  rmdir,
   stat,
   symlink,
   writeFile,
@@ -690,6 +691,47 @@ describe('writeSkills atomicity and permissions', () => {
     expect(mode & fsConstants.S_IXUSR).toBe(0);
     expect(mode & fsConstants.S_IXGRP).toBe(0);
     expect(mode & fsConstants.S_IXOTH).toBe(0);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'creates per-skill directories as 0755 even under a restrictive umask',
+    async () => {
+      // mkdir's mode is masked by the umask, so without an explicit chmod a 0077
+      // umask leaves <root>/<key>/ at 0700 and a separate agent identity cannot
+      // read the SKILL.md inside it.
+      const previous = process.umask(0o077);
+      let report: Awaited<ReturnType<typeof writeSkills>>;
+      try {
+        report = await writeSkills([skill('a')], root);
+      } finally {
+        process.umask(previous);
+      }
+      expect(report.ok).toBe(true);
+      expect((await stat(path.join(root, 'a'))).mode & 0o777).toBe(0o755);
+      expect((await stat(path.join(root, 'a', SKILL_MD))).mode & 0o777).toBe(0o644);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')('keeps a setgid bit the new skill directory inherited', async (ctx) => {
+    // Linux copies a setgid parent's bit onto a new directory so files inside
+    // inherit the shared group. The explicit 0755 must not clear it; fchmod
+    // sets exactly the bits it is given.
+    await chmod(root, 0o2755);
+    const probe = path.join(root, 'probe');
+    await mkdir(probe);
+    const inherits = ((await stat(probe)).mode & 0o2000) !== 0;
+    await rmdir(probe);
+    if (!inherits) ctx.skip();
+
+    const previous = process.umask(0o077);
+    let report: Awaited<ReturnType<typeof writeSkills>>;
+    try {
+      report = await writeSkills([skill('a')], root);
+    } finally {
+      process.umask(previous);
+    }
+    expect(report.ok).toBe(true);
+    expect((await stat(path.join(root, 'a'))).mode & 0o7777).toBe(0o2755);
   });
 
   it('goes through a single atomic rename with the temp file in the target directory', async () => {
