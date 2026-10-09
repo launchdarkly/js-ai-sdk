@@ -151,9 +151,9 @@ export const runJudges = async ({
 
     const messageHistory = [userInput, llmResponse, FORMATTING_INSTRUCTIONS].filter(Boolean).join('\n\n');
 
-    // `executeAndTrack` stays outside the `try`, as it was before judge evaluations existed: a
-    // provider/auth/network failure must reject out of `runJudges` rather than be swallowed and
-    // logged as a parse failure. Only parsing and recording are caught.
+    // `executeAndTrack` stays outside the `try`: a provider/auth/network failure must reject out of
+    // `runJudges` rather than be swallowed and logged as a parse failure. Only parsing and recording
+    // are caught.
     await withJudgeEvaluation(judge.key, async (recordEvaluation) => {
       const { usage, response: rawJudgeResponse } = await executeAndTrack({
         configKey: judge.key,

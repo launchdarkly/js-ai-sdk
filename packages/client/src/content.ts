@@ -1,14 +1,13 @@
 import type { Span } from '@opentelemetry/api';
 
 /**
- * Conversation content on spans, per LaunchDarkly's "Richer LLM spans" proposal.
+ * Conversation content on spans.
  *
  * Two rules drive everything in this file.
  *
  * **Attributes, not events.** Canonical content lives on span attributes. OTEP 4430 deprecated the
  * span-event recording API, and LaunchDarkly's ingest does not normalize content events into the
- * canonical shape — a `gen_ai.content.prompt` event, which is what these handlers emitted before,
- * is read by nothing on the LaunchDarkly side.
+ * canonical shape — a `gen_ai.content.prompt` event is read by nothing on the LaunchDarkly side.
  *
  * **Off by default.** Everything here is conversation content, which is PII. A handler opts in with
  * `captureContent: true`; every function below takes that decision as its `capture` argument and
@@ -23,8 +22,7 @@ import type { Span } from '@opentelemetry/api';
  * Two carriers are written for the same content, deliberately:
  *
  * - `gen_ai.input.messages` / `gen_ai.output.messages` / `gen_ai.system_instructions` /
- *   `gen_ai.tool.definitions` — the canonical JSON shape from the OTel GenAI semconv, and the shape
- *   the proposal makes normative.
+ *   `gen_ai.tool.definitions` — the canonical JSON shape from the OTel GenAI semconv.
  * - `gen_ai.prompt.{i}.role|content` / `gen_ai.completion.{i}.role|content` — the OpenLLMetry shape,
  *   one numbered attribute per field.
  *   LaunchDarkly's LLM trace view and conversation view read *only* this one today, so canonical
@@ -32,14 +30,12 @@ import type { Span } from '@opentelemetry/api';
  *
  * A third carrier is written alongside them: the `gen_ai.content.prompt` / `gen_ai.content.completion`
  * span events. OTEP 4430 deprecated the span-event recording API and LaunchDarkly's ingest reads
- * nothing from them, so they are redundant today — but they are what every published version of
- * these handlers has emitted, and removing them would silently break any consumer that learned to
- * read them. They are written from the same messages and behind the same gate as everything else
- * here, so the three carriers cannot disagree.
+ * nothing from them, so they are redundant for LaunchDarkly — but other consumers may read them,
+ * and removing them would silently break those consumers. They are written from the same messages
+ * and behind the same gate as everything else here, so the three carriers cannot disagree.
  *
- * Both are listed as supported in the proposal's attribute table; the OpenLLMetry pair is annotated there
- * as being kept "so today's LLM trace view still renders it". Drop the flat writes once the reader
- * parses the canonical attributes.
+ * The OpenLLMetry pair is written so LaunchDarkly's LLM trace view renders the transcript; the flat
+ * writes can go once that view parses the canonical attributes.
  */
 
 /**
@@ -178,12 +174,11 @@ const SEMCONV_FINISH_REASONS: Record<string, string> = {
 /**
  * Maps one provider's own finish reason onto semconv's `gen_ai.response.finish_reasons` vocabulary.
  *
- * This SDK used to pass the provider's string through untranslated on four of six handlers, on the
- * argument that translating `end_turn` into `stop` loses information. Measuring it settled the
- * argument the other way: a single Actuator run emits `chat` spans from more than one handler, so a
- * consumer grouping by finish reason saw `stop` and `end_turn` as two different outcomes for the
- * same event. Cross-handler consistency is the whole point of the attribute, and it is what the
- * semantic conventions ask for — an enum, not whatever the vendor happened to name it.
+ * Every handler translates, even though translating `end_turn` into `stop` looks like it loses
+ * information. A single application can emit `chat` spans from more than one handler, so without
+ * translation a consumer grouping by finish reason would see `stop` and `end_turn` as two different
+ * outcomes for the same event. Cross-handler consistency is the whole point of the attribute, and
+ * it is what the semantic conventions ask for — an enum, not whatever the vendor happened to name it.
  *
  * Nothing is lost. The provider's own wording is still on the span: the raw response is what
  * `gen_ai.output.messages` was built from, and an unrecognised reason is passed through verbatim

@@ -74,7 +74,7 @@ export const wrapToolHandlers = (
  * Keys are omitted (not set to `undefined`) when absent; an empty `modelKey`
  * is treated as absent. `_ldMeta` is an untyped flag payload, so a
  * `modelVersion` that does not coerce to a finite integer is omitted rather
- * than emitted as `NaN`. Gonfalon's cost attribution reads these two fields
+ * than emitted as `NaN`. LaunchDarkly's cost attribution reads these two fields
  * from every `$ld:ai:*` event payload.
  *
  * @internal Exported for the client package's own tests; adapters should use

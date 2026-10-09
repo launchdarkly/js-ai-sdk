@@ -217,9 +217,9 @@ const buildGraph = async (
    * one `__handoff_*` tool per edge, the routing instruction suffix, and a recorder for the
    * edge the model picks.
    *
-   * Shared by {@link route} and {@link streamRoute} on purpose. These strings were tuned in
-   * #59 and a second copy silently reverted them on the streaming path — one copy is the only
-   * structural guarantee that the two entrypoints route identically.
+   * Shared by {@link route} and {@link streamRoute} on purpose. The tool descriptions and
+   * routing instructions are worded deliberately, and a second copy could silently drift on one
+   * path — one copy is the only structural guarantee that the two entrypoints route identically.
    *
    * `chosen()` is a getter, not a value: the handoff handlers run inside the provider call,
    * so the caller must read the choice *after* awaiting the model, not at build time.

@@ -382,7 +382,7 @@ describe('setLdSpanAttributes', () => {
   });
 });
 
-// ─── setLdSpanAttributes — context identity (TESTING.md §3.18) ────────────────
+// ─── setLdSpanAttributes — context identity ───────────────────────────────────
 
 function spanAttrs(span: ReturnType<typeof makeMockSpan>): Record<string, unknown> {
   return Object.fromEntries(span.setAttribute.mock.calls.map((call: unknown[]) => [call[0], call[1]]));
@@ -553,8 +553,8 @@ const USAGE_ATTRS = [
   'gen_ai.usage.cache_read.input_tokens',
   'gen_ai.usage.cache_creation.input_tokens',
   // OpenLLMetry aliases for input/output. Written by the same function on purpose: computed at a
-  // call site instead, they disagreed with the canonical pair on Anthropic, whose `input_tokens`
-  // excludes cached tokens — and Gonfalon prefers the alias.
+  // call site instead, they would disagree with the canonical pair on Anthropic, whose
+  // `input_tokens` excludes cached tokens — and LaunchDarkly prefers the alias.
   'gen_ai.usage.prompt_tokens',
   'gen_ai.usage.completion_tokens',
 ] as const;

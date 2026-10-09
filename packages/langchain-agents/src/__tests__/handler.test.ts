@@ -769,7 +769,7 @@ describe('createLangChainAgentsHandler', () => {
     await expect(executor({})).rejects.toThrow('tool exploded');
   });
 
-  // ── History (§1.11 — structured messages, not system-prompt text) ────────────
+  // ── History (structured messages, not system-prompt text) ────────────────────
 
   const sampleHistory = [
     { role: 'user' as const, content: 'What is feature flagging?' },
@@ -856,7 +856,7 @@ describe('createLangChainAgentsHandler', () => {
   });
 });
 
-// ── §1.9 outputFormat — withStructuredOutput after agent finishes ────────────
+// ── outputFormat — withStructuredOutput after agent finishes ─────────────────
 
 describe('createLangChainAgentsHandler — outputFormat (§1.9)', () => {
   const outputFormat = { type: 'object', properties: { result: { type: 'string' } } };
@@ -903,7 +903,7 @@ describe('createLangChainAgentsHandler — outputFormat (§1.9)', () => {
   });
 });
 
-// ─── langchainAgents — §1.7 invoke() argument passthrough ────────────────────
+// ─── langchainAgents — invoke() argument passthrough ─────────────────────────
 
 describe('langchainAgents — invoke() argument passthrough', () => {
   it('passes userInput and context to config().invoke()', async () => {

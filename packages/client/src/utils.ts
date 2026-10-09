@@ -324,10 +324,10 @@ export function setUsageSpanAttributes(span: Span, usage: SpanUsage): void {
   span.setAttribute('gen_ai.usage.total_tokens', input + output);
   span.setAttribute('gen_ai.usage.cache_read.input_tokens', numberOrZero(usage.cacheRead));
   span.setAttribute('gen_ai.usage.cache_creation.input_tokens', numberOrZero(usage.cacheCreation));
-  // OpenLLMetry aliases for the same two numbers. Gonfalon prefers these names, and they belong here
-  // rather than beside the completion text so they cannot disagree with the canonical attributes
-  // above: computed at a call site off `rawUsage.input_tokens`, the alias undercounted Anthropic by
-  // every cached token, because on Anthropic `input_tokens` excludes the cache.
+  // OpenLLMetry aliases for the same two numbers. LaunchDarkly prefers these names, and they belong
+  // here rather than beside the completion text so they cannot disagree with the canonical attributes
+  // above: computed at a call site off `rawUsage.input_tokens`, the alias would undercount Anthropic
+  // by every cached token, because on Anthropic `input_tokens` excludes the cache.
   span.setAttribute('gen_ai.usage.prompt_tokens', input);
   span.setAttribute('gen_ai.usage.completion_tokens', output);
 }
@@ -336,14 +336,12 @@ export function setUsageSpanAttributes(span: Span, usage: SpanUsage): void {
  * Writes the model identity attributes that every LLM span carries.
  *
  * Both spellings of the provider key are emitted on purpose. `gen_ai.system` is the
- * pre-1.37 semconv name and is what handlers shipped before the span hierarchy landed;
- * `gen_ai.provider.name` is the current name and the one the Richer LLM Spans proposal
- * lists. Emitting only the new key would silently break dashboards written against the
- * old one, and emitting only the old one leaves us off-spec — so both go out until the
- * next major.
+ * pre-1.37 semconv name; `gen_ai.provider.name` is the current name. Emitting only the
+ * new key would silently break dashboards written against the old one, and emitting only
+ * the old one leaves us off-spec — so both go out until the next major.
  *
  * `legacySystem` exists because the two keys do not always want the same value. The LangChain
- * handlers shipped `gen_ai.system = 'langchain'`, but `gen_ai.provider.name` means *who served the
+ * handlers report `gen_ai.system = 'langchain'`, but `gen_ai.provider.name` means *who served the
  * model* and its semconv enum has no `langchain` member — so those handlers pass the real provider
  * for the new key and keep the framework name on the old one.
  */

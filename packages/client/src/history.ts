@@ -12,8 +12,7 @@ export type ConfigTurn = { role: 'user' | 'assistant'; content: string };
 
 /**
  * Composes the ordered conversation turns a handler sends to its provider when
- * runtime `history` is present, applying the rules shared by every handler
- * (TESTING.md §1.11):
+ * runtime `history` is present, applying the rules shared by every handler:
  *
  *   [config conversation messages] → [history] → [userInput?]
  *
@@ -26,7 +25,7 @@ export type ConfigTurn = { role: 'user' | 'assistant'; content: string };
  *   carries the full (possibly multimodal) user turn is sent as-is.
  *
  * Callers only take this structured path when `history` is non-empty; with no
- * history they keep their existing single-string prompt behaviour, so empty
+ * history they keep their single-string prompt behaviour, so empty
  * history stays byte-for-byte identical to passing none.
  */
 export function composeHistory(opts: {

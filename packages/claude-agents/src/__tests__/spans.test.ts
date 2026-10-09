@@ -142,11 +142,11 @@ const ms = (hrtime: readonly [number, number]) => hrtime[0] * 1e3 + hrtime[1] / 
  * The tolerance every timing assertion below is written against.
  *
  * A span's timestamps come from `Date.now()` anchored to `performance.now()`, and drift between
- * those two clocks makes a `setTimeout(n)` legitimately measure a little under `n` — CI failed on
- * `>= 40` for a 40ms delay. Asserting the exact delay therefore tests the runtime's clocks, not the
- * handler. Half is the margin used instead: the bugs these tests pin collapse a window to near zero
- * or stretch it across an entire extra call, so half a delay still separates pass from fail by tens
- * of milliseconds in both directions.
+ * those two clocks makes a `setTimeout(n)` legitimately measure a little under `n` — enough to fail
+ * `>= 40` for a 40ms delay on CI. Asserting the exact delay therefore tests the runtime's clocks, not
+ * the handler. Half is the margin used instead: the failures these tests catch collapse a window to
+ * near zero or stretch it across an entire extra call, so half a delay still separates pass from
+ * fail by tens of milliseconds in both directions.
  */
 const atLeastHalf = (delayMs: number) => delayMs / 2;
 
@@ -214,9 +214,9 @@ describe('claude-agents span tree against a real tracer', () => {
     ]);
   });
 
-  // The bug this pins: the CLI splits one API response across several assistant messages, one per
-  // content block. Emitting a span per message produced 55 spans for 22 real calls on a live 8-turn
-  // run, and reported each call's tokens two to four times over. `request_id` is the unit.
+  // The CLI splits one API response across several assistant messages, one per content block.
+  // Emitting a span per message would multiply the spans and report each call's tokens two to four
+  // times over. `request_id` is the unit.
   it('emits one chat span per API call, not per assistant message', async () => {
     mockQuery.mockImplementation(async function* () {
       for (const m of responseBlocks(
@@ -591,8 +591,8 @@ describe('claude-agents span tree against a real tracer', () => {
     expect(inputs[1][2].parts[0]).toMatchObject({ type: 'tool_call_response', id: 'tu-1' });
   });
 
-  // Tool results used to be read only as a clock tick, so the model's own answer arrived on a span
-  // while the question that produced it was discarded.
+  // A tool result is carried into the next call's input, not read only as a clock tick; otherwise the
+  // model's own answer would arrive on a span while the question that produced it was discarded.
   it('carries the tool result into the next call input with its role intact', async () => {
     mockQuery.mockImplementation(async function* () {
       yield assistantMessage(10, 2, 'req_1', [{ type: 'tool_use', id: 'tu-9', name: 'search', input: {} }]);
@@ -782,9 +782,9 @@ describe('claude-agents span tree against a real tracer', () => {
   });
 
   it('fails the run when the agent SDK reports an error result, keeping the real token spend', async () => {
-    // `SDKResultError` carries no `result` field, so a key-presence gate never matched it: the loop
-    // just ended and the run was reported OK with zeroed usage, discarding both the token spend and
-    // the SDK's own error list.
+    // `SDKResultError` carries no `result` field, so a key-presence gate never matches it: the loop
+    // would just end and the run would be reported OK with zeroed usage, discarding both the token
+    // spend and the SDK's own error list.
     mockQuery.mockImplementation(async function* () {
       yield assistantMessage();
       yield errorResultMessage();
@@ -876,9 +876,9 @@ describe('claude-agents span tree against a real tracer', () => {
     expect(root()?.attributes['gen_ai.usage.input_tokens']).toBeUndefined();
   });
 
-  // The run ended without a `result` message, so nothing carried a run-level total. This path used
-  // to write a local that was never incremented, so it always claimed zero tokens for calls that
-  // really happened.
+  // The run ended without a `result` message, so nothing carried a run-level total. This path has to
+  // report the per-response sum; anything else would claim zero tokens for calls that really
+  // happened.
   it('reports the per-response sum when the stream ends with no result message', async () => {
     mockQuery.mockImplementation(async function* () {
       yield assistantMessage(100, 20, 'req_1');

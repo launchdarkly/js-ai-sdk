@@ -62,8 +62,8 @@ function numberOrZero(value: unknown): number {
  *
  * `gen_ai.provider.name` names who served the request, and its semconv enum has no `langchain`
  * member — LangChain is the framework, not the provider. Empty or missing names fall back to
- * `openai`. `gen_ai.system` keeps the `langchain` value the handler shipped, so existing
- * dashboards do not break.
+ * `openai`. `gen_ai.system` stays `langchain`, so dashboards built on that value do not
+ * break.
  */
 function servingProvider(config: AiConfigRep): string {
   return (config.provider?.name || 'openai').toLowerCase();
@@ -744,8 +744,8 @@ export const langchainMessages = (
   userInput: string,
   context: LDContext,
   // Both `captureContent` and `variables` are lifted out of `options`: the first configures the
-  // handler, the second belongs to the invocation. Passing either through to `config()` drops it —
-  // which is how a `{{user_input}}` placeholder used to reach the model unsubstituted whenever a
+  // handler, the second belongs to the invocation. Passing either through to `config()` would drop
+  // it, and a `{{user_input}}` placeholder would then reach the model unsubstituted whenever a
   // caller used one of these wrappers instead of `config().invoke()`.
   {
     captureContent,

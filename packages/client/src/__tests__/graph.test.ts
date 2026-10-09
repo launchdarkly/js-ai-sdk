@@ -465,7 +465,7 @@ describe('graph().invoke()', () => {
 
 // ─── conversation id on launchdarkly.graph ────────────────────────────────────
 //
-// The telemetry contract claims the conversation id lands on `launchdarkly.graph` spans. True by
+// The conversation id is expected to land on `launchdarkly.graph` spans. True by
 // construction — the shared processor stamps every span — but a graph span is created by
 // `startActiveSpan` / `startSpan` deep inside the await / generator chain, so this guards the
 // claim directly. Both invoke and stream tests share one TracerProvider: OTel's
@@ -977,7 +977,7 @@ describe('graph().stream()', () => {
       Record<string, () => unknown>,
     ];
 
-    // Tuned in #59: the prefix is unconditional, so a description sourced from the target's
+    // The prefix is unconditional, so a description sourced from the target's
     // own instructions cannot read as a tool that does the target's work.
     expect(rootConfig.tools.__handoff_agent_a.description).toBe('Transfer control to agent-a. I am A');
     expect(rootConfig.tools.__handoff_agent_b.description).toBe('Transfer control to agent-b. I am B');

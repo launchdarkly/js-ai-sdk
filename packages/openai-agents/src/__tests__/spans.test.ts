@@ -172,7 +172,7 @@ describe('openai-agents span tree against the real Runner', () => {
 
   // Neither the Agents SDK's ModelResponse nor the Responses API under it has a per-message finish
   // reason, so the semconv value is derived from the run `status`. `completed` is a run status and
-  // not a member of the finish-reason vocabulary; emitting it verbatim is what this used to do.
+  // not a member of the finish-reason vocabulary, so it must not be emitted verbatim.
   it('maps a completed run onto stop', async () => {
     responseQueue.push({ ...textResponse(), providerData: { status: 'completed' } });
 
@@ -181,8 +181,8 @@ describe('openai-agents span tree against the real Runner', () => {
     expect(named('chat')[0].attributes['gen_ai.response.finish_reasons']).toEqual(['stop']);
   });
 
-  // The regression this pins: a turn that stopped to call a tool reports `status: 'completed'` too,
-  // so passing the status through labelled every span in a tool loop identically. The output items
+  // A turn that stopped to call a tool reports `status: 'completed'` too, so passing the status
+  // through would label every span in a tool loop identically. The output items
   // are the only thing that tells the two apart.
   it('reports tool_calls for a turn that stopped to call a tool, not the completed status', async () => {
     responseQueue.push(
@@ -299,7 +299,7 @@ describe('openai-agents span tree against the real Runner', () => {
   });
 
   it('routes through the provider installed with setDefaultModelProvider', async () => {
-    // Regression guard: the handler used to hard-code `new OpenAIProvider()`, which silently sent
+    // Regression guard: hard-coding `new OpenAIProvider()` in the handler would silently send
     // Azure / LiteLLM / Ollama users to api.openai.com. Every other test in this file also depends
     // on the fake provider being reached, so this asserts the mechanism directly.
     const getModel = vi.fn(fakeModelProvider.getModel);
@@ -342,8 +342,8 @@ describe('openai-agents span tree against the real Runner', () => {
    * the same `usage` aggregate the success path reads. So a failed run has already told us what it
    * spent, and the root — the only span carrying `launchdarkly.config.key` — must report it.
    *
-   * This is not hypothetical: a live run hit `MaxTurnsExceededError` after ten calls and ~155k input
-   * tokens, and reported none of them, because the root's usage was written only on success.
+   * A run that hits `MaxTurnsExceededError` may already have made many calls, and writing the
+   * root's usage only on success would report none of their tokens.
    */
   it('reports the run spend the Agents SDK attached to its error on the root', async () => {
     const failure = Object.assign(new Error('Max turns (10) exceeded'), {

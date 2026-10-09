@@ -147,10 +147,10 @@ function toSpanUsage(usage: Record<string, unknown> | undefined): SpanUsage {
  * packages sit on the same API and a reader comparing their spans should not have to know which
  * handler produced one.
  *
- * Passing `status` straight through, as this used to, made the attribute worthless: a live
- * seven-turn capture put `"completed"` on all seven `chat` spans, including the six that stopped to
- * call a tool. Not only is `"completed"` absent from the semconv vocabulary, it was constant across
- * the run — the one thing a finish reason exists to distinguish is exactly what it hid.
+ * Passing `status` straight through would make the attribute worthless: a run reports `"completed"`
+ * on every turn, including the ones that stopped to call a tool. Not only is `"completed"` absent
+ * from the semconv vocabulary, it is constant across the run — the one thing a finish reason exists
+ * to distinguish is exactly what it would hide.
  *
  * The output items are the authority on `tool_calls`, and the SDK normalises them on both the
  * blocking and the streaming path, so that case survives even when the raw object does not reach
@@ -394,11 +394,10 @@ class SpanningModel implements Model {
  *
  * A bare `new Runner()` exposes it on its public `config`, and that is the only public way to
  * observe what `setDefaultModelProvider()` installed — the SDK exports the setter but no getter.
- * Hard-coding `new OpenAIProvider()` here instead, as this handler previously did, silently
- * redirected anyone routing through Azure, LiteLLM, Ollama or another custom `ModelProvider` back
- * to api.openai.com. Resolving per invocation also keeps late registration working and reuses the
- * SDK's own provider — and with it the model cache and OpenAI client — rather than building a
- * fresh one per request.
+ * Hard-coding `new OpenAIProvider()` here instead would silently redirect anyone routing through
+ * Azure, LiteLLM, Ollama or another custom `ModelProvider` back to api.openai.com. Resolving per
+ * invocation also keeps late registration working and reuses the SDK's own provider — and with it
+ * the model cache and OpenAI client — rather than building a fresh one per request.
  */
 function defaultModelProvider(): ModelProvider {
   return new Runner().config.modelProvider;
@@ -480,9 +479,6 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
  * SDK accepts. User turns carry typed content parts (`input_text` /
  * `input_image`) so images survive; assistant turns are plain text.
  */
-// The Agents SDK's `input_image` content part names the source `image` (a URL or
-// data URL), unlike the raw Responses API which uses `image_url`. Sending
-// `image_url` here makes the SDK drop the source and the API rejects the turn.
 // The Agents SDK's `input_image` content part names the source `image` (a URL or
 // data URL), unlike the raw Responses API which uses `image_url`. Sending
 // `image_url` here makes the SDK drop the source and the API rejects the turn.
@@ -779,8 +775,8 @@ export const openaiAgents = (
   userInput: string,
   context: LDContext,
   // Both `captureContent` and `variables` are lifted out of `options`: the first configures the
-  // handler, the second belongs to the invocation. Passing either through to `config()` drops it —
-  // which is how a `{{user_input}}` placeholder used to reach the model unsubstituted whenever a
+  // handler, the second belongs to the invocation. Passing either through to `config()` would drop
+  // it, and a `{{user_input}}` placeholder would then reach the model unsubstituted whenever a
   // caller used one of these wrappers instead of `config().invoke()`.
   {
     captureContent,

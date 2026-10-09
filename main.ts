@@ -103,7 +103,7 @@ main().catch(async (err) => {
   process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
   // Flush before exiting. A failed run is exactly when its trace is most worth having, and the
   // BatchSpanProcessor drops everything it is holding if the process exits without a shutdown —
-  // so error runs used to produce no telemetry at all.
+  // so without this, an error run would produce no telemetry at all.
   try {
     await shutdown();
   } catch {

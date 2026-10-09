@@ -220,7 +220,7 @@ describe('claude-messages span tree against a real tracer', () => {
       myTool: vi.fn().mockReturnValue('r'),
     });
 
-    // The canonical carrier the proposal makes normative.
+    // The canonical carrier (OTel GenAI semconv JSON).
     const [firstChat, secondChat] = named('chat');
     expect(JSON.parse(String(firstChat.attributes['gen_ai.input.messages']))).toEqual([
       { role: 'user', parts: [{ type: 'text', content: 'q' }] },

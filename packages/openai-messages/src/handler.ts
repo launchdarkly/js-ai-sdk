@@ -767,8 +767,8 @@ export const openaiMessages = (
   userInput: string,
   context: LDContext,
   // Both `captureContent` and `variables` are lifted out of `options`: the first configures the
-  // handler, the second belongs to the invocation. Passing either through to `config()` drops it —
-  // which is how a `{{user_input}}` placeholder used to reach the model unsubstituted whenever a
+  // handler, the second belongs to the invocation. Passing either through to `config()` would drop
+  // it, and a `{{user_input}}` placeholder would then reach the model unsubstituted whenever a
   // caller used one of these wrappers instead of `config().invoke()`.
   {
     captureContent,

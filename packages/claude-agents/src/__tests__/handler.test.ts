@@ -758,7 +758,7 @@ describe('createClaudeAgentsHandler', () => {
     expect(mockSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
   });
 
-  // ── History (§1.11 — structured query prompt, not system-prompt text) ────────
+  // ── History (structured query prompt, not system-prompt text) ────────────────
 
   const sampleHistory = [
     { role: 'user' as const, content: 'What is feature flagging?' },
@@ -906,7 +906,7 @@ describe('createClaudeAgentsHandler', () => {
   });
 
   // The streamed run is handed the same composed turns as the blocking one, so its captured input
-  // has to report them too — it used to record only the flattened latest `userInput`.
+  // has to report them too, not only the flattened latest `userInput`.
 
   it('streaming records the composed history turns, not just the latest userInput', async () => {
     mockQuery.mockImplementation(makeResultMessage());
@@ -1029,7 +1029,7 @@ describe('streaming additional coverage', () => {
   });
 });
 
-// ── §1.9 outputFormat — best-effort (system prompt injection) ─────────────────
+// ── outputFormat — best-effort (system prompt injection) ──────────────────────
 
 describe('createClaudeAgentsHandler — outputFormat (§1.9)', () => {
   const outputFormat = { type: 'object', properties: { result: { type: 'string' } } };
