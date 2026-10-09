@@ -311,6 +311,61 @@ describe('createClaudeAgentsHandler', () => {
     expect(options.outputFormat).toEqual({ type: 'json_schema', schema });
   });
 
+  // The Claude Agents list in the cross-SDK spec (TESTING.md §1.12): the options a config adds on
+  // top of what the handler sets itself are exactly these, on invoke and on stream.
+  it('adds exactly the canonical query options, the same on invoke and stream', async () => {
+    const parameters = {
+      betas: ['context-1m-2025-08-07'],
+      effort: 'high',
+      fallback_model: 'claude-haiku',
+      max_budget_usd: 1.5,
+      max_thinking_tokens: 2048,
+      max_turns: 4,
+      output_format: { type: 'json_schema', schema: { type: 'object' } },
+      thinking: { type: 'enabled', budget_tokens: 1024 },
+      temperature: 0.2,
+      top_p: 0.9,
+      made_up_key: 1,
+    };
+    const optionsFor = async (params: Record<string, unknown> | undefined, path: 'invoke' | 'stream') => {
+      mockQuery.mockClear();
+      const config = { ...baseConfig, model: { ...baseConfig.model, parameters: params } };
+      if (path === 'invoke') {
+        mockQuery.mockImplementation(makeResultMessage());
+        await createClaudeAgentsHandler()(config as any, 'q');
+      } else {
+        mockQuery.mockImplementation(async function* () {
+          yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+        });
+        await collectStream(createClaudeAgentsHandler().stream?.(config as any, 'q', {}, {}));
+      }
+      return mockQuery.mock.calls[0][0].options as Record<string, unknown>;
+    };
+    const expected = [
+      'betas',
+      'effort',
+      'fallbackModel',
+      'maxBudgetUsd',
+      'maxThinkingTokens',
+      'maxTurns',
+      'outputFormat',
+      'thinking',
+    ];
+    const added: Record<string, string[]> = {};
+    const forwarded: Record<string, Record<string, unknown>> = {};
+    for (const path of ['invoke', 'stream'] as const) {
+      const baseline = await optionsFor(undefined, path);
+      const options = await optionsFor(parameters, path);
+      added[path] = Object.keys(options)
+        .filter((key) => options[key] !== undefined && baseline[key] === undefined)
+        .sort();
+      forwarded[path] = Object.fromEntries(expected.map((key) => [key, options[key]]));
+    }
+    expect(added.invoke).toEqual(expected);
+    expect(added.stream).toEqual(expected);
+    expect(forwarded.stream).toEqual(forwarded.invoke);
+  });
+
   it('accepts a camelCase thinking.budgetTokens and drops a thinking value without a type', async () => {
     mockQuery.mockImplementation(makeResultMessage());
     const run = async (thinking: unknown) => {

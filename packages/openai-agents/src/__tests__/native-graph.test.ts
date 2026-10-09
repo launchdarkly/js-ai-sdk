@@ -149,6 +149,21 @@ describe('toOpenAIAgents', () => {
     expect(mockRunnerRun.mock.calls[0][2]).toEqual({ maxTurns: 7 });
   });
 
+  it("forwards only the cross-SDK OpenAI Agents keys from a node's model.parameters", async () => {
+    const def = makeTwoNodeGraph();
+    (def.root.config.model as any).parameters = {
+      temperature: 0.2,
+      verbosity: 'high',
+      store: true,
+      truncation: 'auto',
+      prompt_cache_retention: '24h',
+      context_management: [{ type: 'compaction' }],
+    };
+    await toOpenAIAgents(Promise.resolve(def as any)).invoke('hi');
+    const byName = Object.fromEntries(mockAgentConstructor.mock.calls.map(([args]) => [args.name, args]));
+    expect(byName['root-agent'].modelSettings).toEqual({ temperature: 0.2, text: { verbosity: 'high' } });
+  });
+
   it('sets no modelSettings and no run options when no node has model.parameters', async () => {
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
     for (const [args] of mockAgentConstructor.mock.calls) {
