@@ -286,8 +286,9 @@ async function initBaseClient(options: InitBaseClientOptions = {}): Promise<LDCl
 }
 
 async function startBaseClient(sdkKey: string, options: InitBaseClientOptions): Promise<LDClientInterface> {
-  // biome-ignore lint/suspicious/noExplicitAny: @launchdarkly/node-server-sdk loaded via dynamic import
-  let init: any;
+  // Type-only reference: erased at runtime, so the SDK stays an optional peer, and the real client
+  // is typechecked against LDClientInterface below.
+  let init: typeof import('@launchdarkly/node-server-sdk').init;
   try {
     ({ init } = await import('@launchdarkly/node-server-sdk'));
   } catch (err) {
@@ -303,15 +304,14 @@ async function startBaseClient(sdkKey: string, options: InitBaseClientOptions): 
   const baseUri = options.baseUri ?? env('LD_BASE_URI');
   const streamUri = options.streamUri ?? env('LD_STREAM_URI');
   const eventsUri = options.eventsUri ?? env('LD_EVENTS_URI');
-  const client: LDClientInterface = init(sdkKey, {
+  const client = init(sdkKey, {
     ...(baseUri !== undefined && { baseUri }),
     ...(streamUri !== undefined && { streamUri }),
     ...(eventsUri !== undefined && { eventsUri }),
   });
 
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: waitForInitialization is a concrete SDK method not in LDClientInterface
-    await (client as any).waitForInitialization({ timeout: 10 });
+    await client.waitForInitialization({ timeout: 10 });
     await waitForTelemetry();
   } catch (err) {
     // We built this client, so close it: a rejected init is retried rather than

@@ -40,7 +40,8 @@ export interface LDClientInterface {
   variation(key: string, context: LDContext, defaultValue: unknown): Promise<unknown>;
   track(eventName: string, context: LDContext, data?: unknown, metricValue?: number): void;
   flush(): Promise<void>;
-  close(): Promise<void>;
+  // Server SDKs return void; a custom client may return a Promise, and shutdown() awaits either.
+  close(): void | Promise<void>;
 }
 
 export type RegistryInput = Registry;

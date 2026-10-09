@@ -352,7 +352,7 @@ export function langChainSpanUsage(usage: Record<string, unknown> | undefined): 
 // @public (undocumented)
 export interface LDClientInterface {
     // (undocumented)
-    close(): Promise<void>;
+    close(): void | Promise<void>;
     // (undocumented)
     flush(): Promise<void>;
     // (undocumented)
