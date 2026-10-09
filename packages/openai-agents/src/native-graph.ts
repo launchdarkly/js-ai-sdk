@@ -1,4 +1,3 @@
-import type { LDContext } from '@launchdarkly/ai-server';
 import {
   composeHistory,
   contentToText,
@@ -6,6 +5,7 @@ import {
   type GraphNode,
   getClient,
   imageBlockToUrl,
+  type LDContext,
   type Message,
   type MessageContent,
   makeGraphTrackData,
@@ -13,12 +13,14 @@ import {
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
+  reportUsage,
   setLdSpanAttributes,
   type ToolHandlerFn,
 } from '@launchdarkly/ai-server';
 import { Agent, handoff, Runner, tool } from '@openai/agents';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { buildMaxTurns, buildModelSettings } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -111,6 +113,7 @@ export const toOpenAIAgents = (
 ): {
   invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 } => {
+  reportUsage('openai-agents.toOpenAIAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   const invoke = async (
     input = '',
     variables: Record<string, unknown> = {},

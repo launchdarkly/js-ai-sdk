@@ -53,7 +53,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
     ...actual,
-    config: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
+    configInternal: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
   };
 });
 
@@ -725,7 +725,7 @@ describe('createLangChainHandler', () => {
 
   it('langchainMessages calls config() with the correct handler, userInput, and context', async () => {
     const { langchainMessages } = await import('../handler.js');
-    const { config } = await import('@launchdarkly/ai-server');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
     const ctx = { kind: 'user' as const, key: 'u' };
     const mockInvoke = vi.fn().mockResolvedValue({ response: 'ok', usage: {} });
     (config as any).mockReturnValue({ invoke: mockInvoke });

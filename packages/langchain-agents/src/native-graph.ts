@@ -4,18 +4,19 @@ import { tool } from '@langchain/core/tools';
 import { Annotation, addMessages, Command, END, START, StateGraph } from '@langchain/langgraph';
 import { ToolNode, toolsCondition } from '@langchain/langgraph/prebuilt';
 import { ChatOpenAI } from '@langchain/openai';
-import type { LDContext } from '@launchdarkly/ai-server';
 import {
   composeHistory,
   type GraphDefinition,
   type GraphNode,
   getClient,
+  type LDContext,
   type Message,
   makeGraphTrackData,
   makeNodeTrackData,
   type NativeTool,
   type ProviderGraphResponse,
   parseTemplate,
+  reportUsage,
   setLdSpanAttributes,
   type ToolHandlerFn,
 } from '@launchdarkly/ai-server';
@@ -23,6 +24,7 @@ import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
 import { toLangChainMessages } from './messages.js';
 import { modelConstructorParameters } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -127,6 +129,7 @@ export const toLangGraph = (
 ): {
   invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 } => {
+  reportUsage('langchain-agents.toLangGraph', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   type ContentBlock = { type: string; text?: string };
 
   const invoke = async (

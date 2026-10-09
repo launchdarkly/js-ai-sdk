@@ -6,9 +6,10 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
+  type config,
+  configInternal,
   contentToText,
-  createHandler,
+  createHandlerInternal,
   endSpanOnce,
   type LDContext,
   type Message,
@@ -17,6 +18,7 @@ import {
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   setConversationIdIfAbsent,
@@ -35,6 +37,7 @@ import {
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
 import { buildModelParameterQueryOptions } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TOOL_MCP_NAME = 'tool-mcp';
 const MCP_TOOL_PREFIX = `mcp__${TOOL_MCP_NAME}__`;
@@ -921,7 +924,15 @@ function buildQueryOptions(
 }
 
 export function createClaudeAgentsHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  return createHandler(
+  reportUsage('claude-agents.createClaudeAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createClaudeAgentsHandlerInternal({ captureContent });
+}
+
+/** `createClaudeAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createClaudeAgentsHandlerInternal({
+  captureContent = false,
+}: ContentCaptureOptions = {}): ProviderHandler {
+  return createHandlerInternal(
     ['Anthropic', 'agent'],
     async (
       config: AiConfigRep,
@@ -1222,9 +1233,11 @@ export const claudeAgents = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createClaudeAgentsHandler({ captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+) => {
+  reportUsage('claude-agents.claudeAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createClaudeAgentsHandlerInternal({ captureContent }),
+  }).invoke(userInput, context, variables);
+};

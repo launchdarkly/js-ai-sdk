@@ -7,11 +7,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
-  return { ...actual, graph: mocks.graph };
+  return { ...actual, graphInternal: mocks.graph };
 });
 
 vi.mock('../handler.js', () => ({
-  createVercelAgentsHandler: mocks.createHandler,
+  createVercelAgentsHandlerInternal: mocks.createHandler,
 }));
 
 import { vercelGraph } from '../graph.js';
