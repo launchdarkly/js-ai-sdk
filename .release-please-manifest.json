@@ -1,13 +1,13 @@
 {
-  "packages/client": "0.4.0",
-  "packages/ai-node": "0.3.0",
+  "packages/client": "0.4.1",
+  "packages/ai-node": "0.3.1",
   "packages/ai-otel": "0.2.0",
-  "packages/claude-agents": "0.4.0",
-  "packages/claude-messages": "0.4.0",
-  "packages/openai-agents": "0.4.0",
-  "packages/openai-messages": "0.4.0",
-  "packages/langchain-agents": "0.4.0",
-  "packages/langchain-messages": "0.4.0",
-  "packages/vercel-agents": "0.2.0",
-  "packages/vercel-messages": "0.2.0"
+  "packages/claude-agents": "0.4.1",
+  "packages/claude-messages": "0.4.1",
+  "packages/openai-agents": "0.4.1",
+  "packages/openai-messages": "0.4.1",
+  "packages/langchain-agents": "0.4.1",
+  "packages/langchain-messages": "0.4.1",
+  "packages/vercel-agents": "0.2.1",
+  "packages/vercel-messages": "0.2.1"
 }

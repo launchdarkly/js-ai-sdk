@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.4.0...@launchdarkly/ai-server-0.4.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **AIC-3541:** accept a node-server-sdk client in initClient() without a cast ([#128](https://github.com/launchdarkly/js-ai-sdk/issues/128)) ([5819449](https://github.com/launchdarkly/js-ai-sdk/commit/58194493ebcea036115563ed2c2eda5aea303edd))
+
 ## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.3.0...@launchdarkly/ai-server-0.4.0) (2026-10-09)
 
 

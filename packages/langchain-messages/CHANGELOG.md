@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-messages-0.4.0...@launchdarkly/ai-langchain-messages-0.4.1) (2026-10-09)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.4.0 to ^0.4.1
+
 ## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-messages-0.3.0...@launchdarkly/ai-langchain-messages-0.4.0) (2026-10-09)
 
 
