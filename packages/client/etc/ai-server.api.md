@@ -40,15 +40,10 @@ export function anyMultimodal(turns: ReadonlyArray<{
     content: MessageContent;
 }>): boolean;
 
+// Warning: (ae-forgotten-export) The symbol "BuildJudgeTasksArgs" needs to be exported by the entry point index.d.ts
+//
 // @public
-export const buildJudgeTasks: (input: {
-    config: AiConfigRep;
-    userContext: LDContext;
-    handler: ProviderHandler;
-    handlers?: ProviderHandler[];
-    llmResponse: string;
-    baseTrackData: TrackData;
-}) => Promise<JudgeTask[]>;
+export const buildJudgeTasks: (args: BuildJudgeTasksArgs) => Promise<JudgeTask[]>;
 
 // @public
 export function camelizeModelParameters(parameters: Record<string, unknown>): Record<string, unknown>;
@@ -73,7 +68,7 @@ export function composeHistory(opts: {
 }): CanonicalTurn[];
 
 // @public (undocumented)
-export const config: (input: ConfigArgs) => {
+export const config: (args: ConfigArgs) => {
     invoke: <T = string>(userInput: string | undefined, context: LDContext, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderResponse<T>>;
     stream: (userInput: string | undefined, context: LDContext, variables?: Record<string, unknown>, history?: Message[]) => AsyncGenerator<StreamEvent>;
 };
@@ -85,6 +80,14 @@ export type ConfigArgs = {
     toolHandlers?: Record<string, ToolHandlerFn | NativeTool>;
     registry?: RegistryInput;
     skipJudges?: boolean;
+};
+
+// Warning: (ae-internal-missing-underscore) The name "configInternal" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export const configInternal: (input: ConfigArgs) => {
+    invoke: <T = string>(userInput: string | undefined, context: LDContext, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderResponse<T>>;
+    stream: (userInput: string | undefined, context: LDContext, variables?: Record<string, unknown>, history?: Message[]) => AsyncGenerator<StreamEvent>;
 };
 
 // @public
@@ -128,6 +131,11 @@ export class ConversationIdSpanProcessor {
 // @public
 export function createHandler(providesFor: [string, 'agent' | 'messages'], handler: HandlerInput, streamHandler?: StreamHandlerInput, captureContent?: boolean): ProviderHandler;
 
+// Warning: (ae-internal-missing-underscore) The name "createHandlerInternal" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export function createHandlerInternal(providesFor: [string, 'agent' | 'messages'], handler: HandlerInput, streamHandler?: StreamHandlerInput, captureContent?: boolean): ProviderHandler;
+
 // @public
 export function createRunUsage(): RunUsage;
 
@@ -140,11 +148,10 @@ export function getClient(): LDClientInterface;
 // @public (undocumented)
 export const globalRegistry: Registry;
 
+// Warning: (ae-forgotten-export) The symbol "GraphCaller" needs to be exported by the entry point index.d.ts
+//
 // @public
-export const graph: (key: string, options: GraphOptions) => {
-    invoke: (input: string | undefined, context: LDContext, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
-    stream: (input: string | undefined, context: LDContext, variables?: Record<string, unknown>, history?: Message[]) => AsyncGenerator<GraphStreamEvent>;
-};
+export const graph: (key: string, options: GraphOptions) => GraphCaller;
 
 // @public
 export type GraphArgs = GraphOptions & {
@@ -174,6 +181,11 @@ export type GraphEdge = {
     targetKey: string;
     handoff?: Record<string, unknown>;
 };
+
+// Warning: (ae-internal-missing-underscore) The name "graphInternal" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export const graphInternal: (key: string, options: GraphOptions) => GraphCaller;
 
 // @public
 export type GraphNode = {
@@ -273,6 +285,11 @@ export function initClient(options?: InitBaseClientOptions): Promise<LDClientInt
 
 // @public
 export function inspectConfig(key: string, context: LDContext): Promise<InspectConfigResult>;
+
+// Warning: (ae-internal-missing-underscore) The name "inspectConfigInternal" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export function inspectConfigInternal(key: string, context: LDContext): Promise<InspectConfigResult>;
 
 // @public
 export type InspectConfigResult = {
@@ -481,6 +498,12 @@ export class Registry {
 
 // @public (undocumented)
 export type RegistryInput = Registry;
+
+// @public
+export function reportUsage(helper: string): void;
+
+// @public (undocumented)
+export function reportUsage(helper: string, packageName: string, packageVersion: string): void;
 
 // @public
 export const resolveGraph: (key: string, options: GraphArgs) => Promise<GraphDefinition>;

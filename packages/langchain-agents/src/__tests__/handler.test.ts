@@ -79,7 +79,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
     ...actual,
-    config: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
+    configInternal: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
   };
 });
 
@@ -511,7 +511,7 @@ describe('createLangChainAgentsHandler', () => {
 
   it('langchainAgents calls config() with the correct handler', async () => {
     const { langchainAgents } = await import('../handler.js');
-    const { config } = await import('@launchdarkly/ai-server');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
     const ctx = { kind: 'user' as const, key: 'u' };
     await langchainAgents('flag', 'hello', ctx, {} as any);
     expect(config).toHaveBeenCalledWith(
@@ -913,7 +913,7 @@ describe('langchainAgents — invoke() argument passthrough', () => {
       const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
       return {
         ...actual,
-        config: vi.fn().mockReturnValue({ invoke: mockInvoke }),
+        configInternal: vi.fn().mockReturnValue({ invoke: mockInvoke }),
       };
     });
     const { langchainAgents } = await import('../handler.js');
@@ -930,7 +930,7 @@ describe('langchainGraph', () => {
     const graphMock = vi.fn().mockReturnValue({ call: vi.fn() });
     vi.doMock('@launchdarkly/ai-server', async (importOriginal) => {
       const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
-      return { ...actual, graph: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
+      return { ...actual, graphInternal: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
     });
     const { langchainGraph } = await import('../graph.js');
     langchainGraph('graph-flag', {});
@@ -947,7 +947,7 @@ describe('langchainGraph', () => {
     const graphMock = vi.fn().mockReturnValue({ call: vi.fn() });
     vi.doMock('@launchdarkly/ai-server', async (importOriginal) => {
       const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
-      return { ...actual, graph: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
+      return { ...actual, graphInternal: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
     });
     const { langchainGraph } = await import('../graph.js');
     const toolHandlers = { search: vi.fn() };
@@ -961,11 +961,11 @@ describe('langchainGraph', () => {
     const handlerFactorySpy = vi.fn().mockReturnValue({ providesFor: ['*', 'agent'] });
     vi.doMock('@launchdarkly/ai-server', async (importOriginal) => {
       const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
-      return { ...actual, graph: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
+      return { ...actual, graphInternal: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
     });
     vi.doMock('../handler.js', async (importOriginal) => {
       const actual = await importOriginal<typeof import('../handler.js')>();
-      return { ...actual, createLangChainAgentsHandler: handlerFactorySpy };
+      return { ...actual, createLangChainAgentsHandlerInternal: handlerFactorySpy };
     });
     const { langchainGraph } = await import('../graph.js');
     const stubLlm = { invoke: vi.fn() } as any;

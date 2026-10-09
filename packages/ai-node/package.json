@@ -68,7 +68,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@launchdarkly/ai-server": "*",
+    "@launchdarkly/ai-server": "^0.3.0",
     "@launchdarkly/node-server-sdk": "^9.7.3"
   },
   "devDependencies": {
