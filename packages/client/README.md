@@ -548,7 +548,7 @@ switch (outcome.reason) {
 
 #### Privilege separation: the agent must not be able to rewrite its own skills
 
-**Run `writeSkills` as a different identity than the agent.** Reconcile as one user, run the agent as another. The reconcile sets modes explicitly rather than from the process umask: skill files and the manifest at `0644` (applied to the open file handle, so it cannot be redirected), per-skill `<root>/<key>/` directories at `0755`, and never the execute bit. Those modes only protect anything if the two identities differ.
+**Run `writeSkills` as a different identity than the agent.** Reconcile as one user, run the agent as another. The reconcile sets modes explicitly rather than from the process umask: skill files and the manifest at `0644` (applied to the open file handle, so it cannot be redirected), per-skill `<root>/<key>/` directories at `0755` (keeping a setgid bit inherited from a setgid root, so a shared group still propagates), and never the execute bit. Those modes only protect anything if the two identities differ.
 
 **What to verify, as the identity that will run the agent.** The SDK cannot check this for you (see below), so make it a deployment step. The agent's identity must have no write access to:
 

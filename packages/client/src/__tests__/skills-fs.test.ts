@@ -18,6 +18,7 @@ import {
   readFile,
   realpath,
   rm,
+  rmdir,
   stat,
   symlink,
   writeFile,
@@ -710,6 +711,28 @@ describe('writeSkills atomicity and permissions', () => {
       expect((await stat(path.join(root, 'a', SKILL_MD))).mode & 0o777).toBe(0o644);
     },
   );
+
+  it.skipIf(process.platform === 'win32')('keeps a setgid bit the new skill directory inherited', async (ctx) => {
+    // Linux copies a setgid parent's bit onto a new directory so files inside
+    // inherit the shared group. The explicit 0755 must not clear it; fchmod
+    // sets exactly the bits it is given.
+    await chmod(root, 0o2755);
+    const probe = path.join(root, 'probe');
+    await mkdir(probe);
+    const inherits = ((await stat(probe)).mode & 0o2000) !== 0;
+    await rmdir(probe);
+    if (!inherits) ctx.skip();
+
+    const previous = process.umask(0o077);
+    let report: Awaited<ReturnType<typeof writeSkills>>;
+    try {
+      report = await writeSkills([skill('a')], root);
+    } finally {
+      process.umask(previous);
+    }
+    expect(report.ok).toBe(true);
+    expect((await stat(path.join(root, 'a'))).mode & 0o7777).toBe(0o2755);
+  });
 
   it('goes through a single atomic rename with the temp file in the target directory', async () => {
     // Positive control for the interception hook. Without this,

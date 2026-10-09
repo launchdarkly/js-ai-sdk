@@ -32,11 +32,14 @@ import path from 'node:path';
 const FILE_MODE = 0o644;
 
 /**
- * Mode set explicitly on every directory this module creates, because `mkdir`'s
+ * Permission bits set explicitly on every directory this module creates, because `mkdir`'s
  * mode argument is masked by the umask: under `0077` a separate agent identity
  * could not traverse the directory to read what is inside.
  */
 const DIRECTORY_MODE = 0o755;
+
+/** The setgid bit. Not in `fs.constants`, which exposes no special mode bits. */
+const S_ISGID = 0o2000;
 
 /** Bound on the `O_EXCL` retry loop; with 64-bit random names it only keeps the loop finite. */
 const TEMP_NAME_ATTEMPTS = 5;
@@ -203,7 +206,11 @@ export async function openOrCreateDirectory(directory: string): Promise<FileHand
   // between mkdir and open could redirect.
   if (created) {
     try {
-      await handle.chmod(DIRECTORY_MODE);
+      // Keep the setgid bit Linux copies from a setgid parent: fchmod sets
+      // exactly the bits given, so a bare 0755 would clear it and files
+      // written inside would stop inheriting the shared group.
+      const inherited = (await handle.stat()).mode & S_ISGID;
+      await handle.chmod(inherited | DIRECTORY_MODE);
     } catch (error) {
       await handle.close().catch(() => undefined);
       throw error;
