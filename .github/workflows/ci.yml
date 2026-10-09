@@ -118,6 +118,12 @@ jobs:
       - name: Type check all packages
         run: yarn typecheck
 
+      # Fails when a public name changes in either entry point of
+      # @launchdarkly/ai-server without the checked-in report under
+      # packages/client/etc/ being updated (yarn workspace @launchdarkly/ai-server api:update).
+      - name: Check client API reports
+        run: yarn workspace @launchdarkly/ai-server api:check
+
   # ─── Test ───────────────────────────────────────────────────────────────────
   test:
     name: Tests

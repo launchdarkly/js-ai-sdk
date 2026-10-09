@@ -153,12 +153,270 @@ export type AiConfigRep = {
    * best-effort fallback. Ignored in streaming mode.
    */
   outputFormat?: Record<string, unknown>;
+  /**
+   * Optional version-pinned skill references attached to this variation, as
+   * delivered. `parseAiConfig` does not validate it, so a malformed field never
+   * fails a core call; read it with `skillRefs` from
+   * `@launchdarkly/ai-server/experimental`, which does. Typed `unknown` because
+   * it is unvalidated, and because Agent Skills is experimental, so this core
+   * type does not name its types.
+   */
+  skills?: unknown;
 };
 
 type ParseResult<T> = { success: true; data: T } | { success: false; error: { message: string } };
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+// ---------------------------------------------------------------------------
+// Agent Skills — value types
+// ---------------------------------------------------------------------------
+
+/** A version-pinned pointer to a skill, as attached to an AI Config variation. */
+export type SkillReference = {
+  /** Immutable skill key — `^[a-z0-9][a-z0-9-]*$`, at most 256 characters. */
+  readonly key: string;
+  /** Immutable skill version — an integer >= 1. */
+  readonly version: number;
+};
+
+/**
+ * A single verified `SKILL.md` document. Frozen.
+ *
+ * The accessors return a `Skill` only after integrity verification, so `content`
+ * is exactly the bytes LaunchDarkly delivered and `contentHash` is their sha256.
+ */
+export type Skill = {
+  readonly key: string;
+  readonly version: number;
+  /** The verbatim bytes. The SDK never decodes or parses them. */
+  readonly content: Uint8Array;
+  /** sha256, lowercase hex, over the verbatim bytes of `content`. */
+  readonly contentHash: string;
+  /** Display name from LaunchDarkly metadata; never parsed from the content. */
+  readonly name: string | null;
+  /** Description from LaunchDarkly metadata; never parsed from the content. */
+  readonly description: string | null;
+};
+
+/**
+ * The outcomes `getSkillResult` reports.
+ *
+ * - `ok` — a verified skill was returned.
+ * - `absent` — the store does not hold the key.
+ * - `integrity_failure` — content failed verification and was withheld. Fail
+ *   closed on this one: it can indicate tampering.
+ * - `store_unavailable` — the store threw. An outage, not a deletion.
+ * - `wrong_version` — the store holds a different version than the one
+ *   requested, so nothing was returned.
+ */
+export type SkillOutcomeReason = 'absent' | 'integrity_failure' | 'ok' | 'store_unavailable' | 'wrong_version';
+
+/**
+ * The result of `getSkillResult`: the skill, plus why it was or wasn't returned.
+ * Frozen.
+ */
+export type SkillOutcome = {
+  /** The verified skill; set only when `reason === 'ok'`. */
+  readonly skill: Skill | null;
+  /** Which outcome happened; see {@link SkillOutcomeReason}. */
+  readonly reason: SkillOutcomeReason;
+  /**
+   * Human-readable message, set for every reason except `'ok'`.
+   *
+   * Safe to log: never contains skill content or filesystem paths. Branch on
+   * `reason`, not on this.
+   */
+  readonly detail: string | null;
+};
+
+/**
+ * The per-skill outcomes `writeSkills` reports.
+ *
+ * - `written` — the file did not exist and now holds the resolved content.
+ * - `updated` — a managed file held different bytes and was overwritten.
+ * - `skipped_current` — the bytes on disk already are the resolved content.
+ * - `removed` — the skill is no longer managed and is not on disk (whether this
+ *   run deleted it or it was already gone).
+ * - `error` — the outcome was refused or failed; see `ReconcileAction.error`.
+ */
+export type ReconcileActionKind = 'written' | 'updated' | 'skipped_current' | 'removed' | 'error';
+
+/** How `writeSkills` reacts to content it could not retrieve. */
+export type OnUnavailable = 'keep' | 'raise';
+
+/** What `writeSkills` did — or refused to do — for one skill. */
+export type ReconcileAction = {
+  /**
+   * The skill key, or `''` for a run-level failure not tied to one skill (for
+   * example a corrupt or unwritable manifest, or a failed retrieval). Expect `''`
+   * when grouping a report by key.
+   */
+  readonly key: string;
+  readonly action: ReconcileActionKind;
+  readonly version: number | null;
+  /** Canonical resolved path, when one was determined. */
+  readonly path: string | null;
+  /** Failure detail, set only when `action === 'error'`. */
+  readonly error: string | null;
+};
+
+/** The result of a `writeSkills` run: one action per outcome. */
+export type ReconcileReport = {
+  readonly actions: readonly ReconcileAction[];
+  /** `true` iff no action is an `error`. */
+  readonly ok: boolean;
+  /** The `error` actions, in `actions` order. */
+  readonly errors: readonly ReconcileAction[];
+};
+
+/**
+ * A raw skill object as a `SkillStore` serves it, before verification.
+ *
+ * Every field is `unknown`: this is untrusted input, and the accessors verify it.
+ */
+export type RawSkillObject = {
+  key?: unknown;
+  version?: unknown;
+  content?: unknown;
+  contentHash?: unknown;
+  name?: unknown;
+  description?: unknown;
+  [field: string]: unknown;
+};
+
+/**
+ * The interface a source of skill content implements. Structurally typed: pass
+ * any object with these methods. `FDv2SkillStore` (LaunchDarkly delivery) and
+ * `InMemorySkillStore` are the built-in implementations.
+ *
+ * Everything a store serves is treated as untrusted; the accessors re-verify
+ * key, version, size, and content hash on every read.
+ *
+ * Optional methods:
+ * - `addListener` / `removeListener` — needed by `watchSkills` (which throws
+ *   without `addListener`); the accessors use neither. `addListener` should throw
+ *   for a `kind` it cannot notify rather than accept a listener that never
+ *   fires. `removeListener` removes one registration and is a no-op if `fn` is
+ *   not registered.
+ * - `isInitialized` — whether the store has received its initial data. Absent
+ *   means initialized; a throw means not. `writeSkills` prunes nothing while the
+ *   store is uninitialized, so an empty store that hasn't heard yet is not
+ *   mistaken for "every skill was revoked".
+ */
+export type SkillStore = {
+  /**
+   * The object held for `key`, or `null`/`undefined` when there is none.
+   *
+   * `version` is the pinned version; omitted or `null` asks for the newest held.
+   * A store that cannot satisfy a pin should return what it has rather than
+   * nothing: the accessors withhold the mismatch and report it as
+   * `wrong_version` rather than `absent`.
+   */
+  getObject(kind: string, key: string, version?: number | null): RawSkillObject | null | undefined;
+  /** Every object held. Record keys are opaque; identity comes from each object's `key` and `version`. */
+  allObjects(kind: string): Record<string, RawSkillObject>;
+  addListener?(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+  removeListener?(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+  /** Whether the store has received its initial data. Absent means initialized. */
+  isInitialized?(): boolean;
+};
+
+/** Builds a frozen {@link SkillReference}. */
+export function createSkillReference(init: { key: string; version: number }): SkillReference {
+  return Object.freeze({ key: init.key, version: init.version });
+}
+
+/**
+ * Builds a frozen {@link Skill}.
+ *
+ * Does **not** verify the content; `writeSkills` re-verifies every skill before
+ * writing it.
+ */
+export function createSkill(init: {
+  key: string;
+  version: number;
+  content: Uint8Array;
+  contentHash: string;
+  name?: string | null;
+  description?: string | null;
+}): Skill {
+  // Only the wrapper is frozen (a TypedArray can't be); `content` shares the
+  // caller's bytes.
+  return Object.freeze({
+    key: init.key,
+    version: init.version,
+    content: init.content,
+    contentHash: init.contentHash,
+    name: init.name ?? null,
+    description: init.description ?? null,
+  });
+}
+
+/** Builds a frozen {@link SkillOutcome}. `reason` is required. */
+export function createSkillOutcome(init: {
+  skill?: Skill | null;
+  reason: SkillOutcomeReason;
+  detail?: string | null;
+}): SkillOutcome {
+  return Object.freeze({
+    skill: init.skill ?? null,
+    reason: init.reason,
+    detail: init.detail ?? null,
+  });
+}
+
+/** Builds a frozen {@link ReconcileAction}. Internal to the reconcile. */
+export function createReconcileAction(init: {
+  key: string;
+  action: ReconcileActionKind;
+  version?: number | null;
+  path?: string | null;
+  error?: string | null;
+}): ReconcileAction {
+  return Object.freeze({
+    key: init.key,
+    action: init.action,
+    version: init.version ?? null,
+    path: init.path ?? null,
+    error: init.error ?? null,
+  });
+}
+
+/** Builds a frozen {@link ReconcileReport}, deriving `ok` and `errors`. */
+export function createReconcileReport(actions: readonly ReconcileAction[]): ReconcileReport {
+  const frozenActions = Object.freeze([...actions]);
+  const errors = Object.freeze(frozenActions.filter((a) => a.action === 'error'));
+  // `ok` is defined in terms of `errors` so the two can never disagree.
+  return Object.freeze({ actions: frozenActions, ok: errors.length === 0, errors });
+}
+
+// ---------------------------------------------------------------------------
+// Agent Skills — validation
+// ---------------------------------------------------------------------------
+
+/**
+ * The skill key grammar. No `m` flag, so `$` cannot match before a trailing
+ * newline and let `'pdf-extraction\n'` through as a directory name.
+ */
+const SKILL_KEY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * Longest permitted skill key. `writeSkills` applies a tighter bound, since most
+ * filesystems cap a path component below 256 bytes.
+ */
+export const SKILL_KEY_MAX_LENGTH = 256;
+
+/** Whether `key` is a valid skill key: `^[a-z0-9][a-z0-9-]*$`, at most 256 characters. */
+export function isValidSkillKey(key: unknown): key is string {
+  return typeof key === 'string' && key.length <= SKILL_KEY_MAX_LENGTH && SKILL_KEY_PATTERN.test(key);
+}
+
+/** Whether `version` is a valid skill version: an integer >= 1 (not `NaN`, `Infinity`, or a boolean). */
+export function isValidSkillVersion(version: unknown): version is number {
+  return typeof version === 'number' && Number.isInteger(version) && version >= 1;
 }
 
 function parseTool(raw: unknown, key: string): string | null {
@@ -211,6 +469,10 @@ export function parseAiConfig(raw: unknown): ParseResult<AiConfigRep> {
   if (raw.outputFormat !== undefined && !isObject(raw.outputFormat)) {
     return { success: false, error: { message: 'outputFormat must be an object (JSON Schema)' } };
   }
+
+  // `skills` is passed through unvalidated. Agent Skills is experimental, so a
+  // malformed field must not fail a core config call (TESTING.md §0.3);
+  // `skillRefs` rejects it where the references are used.
 
   return { success: true, data: raw as AiConfigRep };
 }
