@@ -450,6 +450,11 @@
   resolved "https://registry.yarnpkg.com/@cfworker/json-schema/-/json-schema-4.1.1.tgz#4a2a3947ee9fa7b7c24be981422831b8674c3be6"
   integrity sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og==
 
+"@cloudflare/workers-types@^4.20230321.0":
+  version "4.20260702.1"
+  resolved "https://registry.yarnpkg.com/@cloudflare/workers-types/-/workers-types-4.20260702.1.tgz#7722067003b8db5f385cd4c36dac9b2190e6e55b"
+  integrity sha512-mOhf5TUEB1m2vPrxtqoIGfz0fUC9xyxRDx5gWHy5s+OCo6dcV+g7wI1R7gYCMFohhqF/2y2xeKVwMwCJjfn/WA==
+
 "@emnapi/core@1.10.0":
   version "1.10.0"
   resolved "https://registry.yarnpkg.com/@emnapi/core/-/core-1.10.0.tgz#380ccc8f2412ea22d1d972df7f8ee23a3b9c7467"
@@ -838,10 +843,48 @@
   resolved "https://registry.yarnpkg.com/@langchain/protocol/-/protocol-0.0.16.tgz#68b63d58feaf4f0acf77405cb8fb16f9c3f09b60"
   integrity sha512-ws+J7MaHyhO5dG7f0vdyHQiUn9hoCnki0f3crJPa4MCTGzcRC39jYSCghyrGtBPYQnZbUQiGyRVpW3z3M8IpJg==
 
+"@launchdarkly/akamai-edgeworker-sdk-common@^2.0.42":
+  version "2.0.42"
+  resolved "https://registry.yarnpkg.com/@launchdarkly/akamai-edgeworker-sdk-common/-/akamai-edgeworker-sdk-common-2.0.42.tgz#cf9a6f73389362339a2c0adc13c536b791d2c82c"
+  integrity sha512-2w40jPvVu1mC8d8zZEE7xnVvEodp8a5P1bp1nI2PgbrtGUu2y/mjDsJvyi6Dwt424TVumvDkd/s175V8KlL5pQ==
+  dependencies:
+    "@launchdarkly/js-server-sdk-common" "^2.24.1"
+    crypto-js "^4.1.1"
+
+"@launchdarkly/akamai-server-edgekv-sdk@^1.4.45":
+  version "1.4.45"
+  resolved "https://registry.yarnpkg.com/@launchdarkly/akamai-server-edgekv-sdk/-/akamai-server-edgekv-sdk-1.4.45.tgz#17f78688dcfb498b3a9d14b3c725fcc15db2128f"
+  integrity sha512-+tLeCDV6nJiPZBhf7eAodfNpZ0bHk4Fi3+/a9cxg87L7K38EccHf9hE9sV4M9BUfWJUvAQM9BNkH1IYgRIK69w==
+  dependencies:
+    "@launchdarkly/akamai-edgeworker-sdk-common" "^2.0.42"
+    "@launchdarkly/js-server-sdk-common" "^2.24.1"
+
+"@launchdarkly/cloudflare-server-sdk@^2.7.44":
+  version "2.7.44"
+  resolved "https://registry.yarnpkg.com/@launchdarkly/cloudflare-server-sdk/-/cloudflare-server-sdk-2.7.44.tgz#8bdd3bc3f8b760ac1082345a27f7039fc034c45c"
+  integrity sha512-iPH41+HMDKzqTbKtxLS3PWQFeDQbK11d/Ofxw0uqhcd8E7qI2gwAGNW630IPgVSePRvSbVom8qFFx+y7ET6CoQ==
+  dependencies:
+    "@cloudflare/workers-types" "^4.20230321.0"
+    "@launchdarkly/js-server-sdk-common-edge" "2.6.40"
+    crypto-js "^4.1.1"
+
 "@launchdarkly/js-sdk-common@2.25.1":
   version "2.25.1"
   resolved "https://registry.yarnpkg.com/@launchdarkly/js-sdk-common/-/js-sdk-common-2.25.1.tgz#0c91f23cccdc007801558ab79371df6a3884b721"
   integrity sha512-erG2RbA8QQMKW+D9Y7Uahez1dU+TzmyTzv9qlB7b0Pr/DS2SmUg5H8pJbkLcRrSxoshczZdB1UqsuE3RAk7UYQ==
+
+"@launchdarkly/js-sdk-common@2.29.0":
+  version "2.29.0"
+  resolved "https://registry.yarnpkg.com/@launchdarkly/js-sdk-common/-/js-sdk-common-2.29.0.tgz#d4b2a81cd118f51836eef9fe089f076430f97236"
+  integrity sha512-WBW4ajbfJO6RGEB4Ax44d7/6jl/HhZOi61dNnCJ3HdHS5znwGV1eh8dUnRFISiIfnodWbpDRaVv4fG8QdKeFWw==
+
+"@launchdarkly/js-server-sdk-common-edge@2.6.40":
+  version "2.6.40"
+  resolved "https://registry.yarnpkg.com/@launchdarkly/js-server-sdk-common-edge/-/js-server-sdk-common-edge-2.6.40.tgz#3f939923744811525ed0642b7ac6e4739285778a"
+  integrity sha512-Y6OT3+in21CEdCA3Ht4oqxk8WiiYgwT/eYwj+JOSJYwS+YzzV57bgPnLphbTBkiiegADfylmV5aAjp6M1jUQRA==
+  dependencies:
+    "@launchdarkly/js-server-sdk-common" "2.24.1"
+    crypto-js "^4.1.1"
 
 "@launchdarkly/js-server-sdk-common@2.19.1":
   version "2.19.1"
@@ -849,6 +892,14 @@
   integrity sha512-3N1R62FF5qeBJdZbZk62ixGFG73kbwwqoHD00e0OygMB3hIRuV+spYbB3S8BXZ8VpnzKBame0OChC8lYrb/Zow==
   dependencies:
     "@launchdarkly/js-sdk-common" "2.25.1"
+    semver "7.5.4"
+
+"@launchdarkly/js-server-sdk-common@2.24.1", "@launchdarkly/js-server-sdk-common@^2.24.1":
+  version "2.24.1"
+  resolved "https://registry.yarnpkg.com/@launchdarkly/js-server-sdk-common/-/js-server-sdk-common-2.24.1.tgz#84a32ef844c7c6f3076e5c72f4324243a6c49971"
+  integrity sha512-XoGxUyTarWE0LC0uUJtg6urLYtelzyH6nX2exfGIVF7T5t58pDkasK8hVKCPZYyyGOWGPALlEC/K8dTUOiYVmg==
+  dependencies:
+    "@launchdarkly/js-sdk-common" "2.29.0"
     semver "7.5.4"
 
 "@launchdarkly/node-server-sdk@^9.7.3":
@@ -859,6 +910,14 @@
     "@launchdarkly/js-server-sdk-common" "2.19.1"
     https-proxy-agent "^7.0.6"
     launchdarkly-eventsource "2.2.0"
+
+"@launchdarkly/vercel-server-sdk@^1.3.67":
+  version "1.3.67"
+  resolved "https://registry.yarnpkg.com/@launchdarkly/vercel-server-sdk/-/vercel-server-sdk-1.3.67.tgz#caa14f4c647855983a289a146625dd9ff2d70c35"
+  integrity sha512-AZsozxiBT/GA2ywOVX3uZIvnJtegLCzZmDtpCgJjpOjFJ+8DkZRbX5Ys6nv3Jpzf5XffyJrWNN5Nj/oR6q4uQQ==
+  dependencies:
+    "@launchdarkly/js-server-sdk-common-edge" "2.6.40"
+    "@vercel/edge-config" "^1.5.0"
 
 "@microsoft/api-extractor-model@7.33.15":
   version "7.33.15"
@@ -1459,6 +1518,18 @@
   dependencies:
     "@types/node" "*"
 
+"@vercel/edge-config@^1.5.0":
+  version "1.5.1"
+  resolved "https://registry.yarnpkg.com/@vercel/edge-config/-/edge-config-1.5.1.tgz#16633baaa8201e115fb5791e4462e2cfc2abd088"
+  integrity sha512-eawv5LKqEk+KL9lw+lzExpPELE8B1DdvWhpswtSr5nkUujH4nOLq89fY565uWp5z70XzTnfx6E08KIVmgOwSjg==
+  dependencies:
+    "@vercel/global-config-fs" "0.1.0"
+
+"@vercel/global-config-fs@0.1.0":
+  version "0.1.0"
+  resolved "https://registry.yarnpkg.com/@vercel/global-config-fs/-/global-config-fs-0.1.0.tgz#0fb582d73525383003aaaa5c1df57de8cfe9ce2e"
+  integrity sha512-xxMUwf96H/qKTA4Az+uh3xlVWkwnN3z400P5gex0uUsU8pe99njopYVyKVoUTfu8gN9xbHqaigWaIBr1+lufMg==
+
 "@vercel/oidc@3.2.0":
   version "3.2.0"
   resolved "https://registry.yarnpkg.com/@vercel/oidc/-/oidc-3.2.0.tgz#5782a4d4904443f015808705b5537cf9c3b68528"
@@ -1748,6 +1819,11 @@ cross-spawn@^7.0.5:
     path-key "^3.1.0"
     shebang-command "^2.0.0"
     which "^2.0.1"
+
+crypto-js@^4.1.1:
+  version "4.2.0"
+  resolved "https://registry.yarnpkg.com/crypto-js/-/crypto-js-4.2.0.tgz#4d931639ecdfd12ff80e8186dba6af2c2e856631"
+  integrity sha512-KALDyEYgpY+Rlob/iriUtjV6d5Eq+Y191A5g4UqLAi8CyGP9N1+FdVbkc1SxKc2r4YAYqG8JzO2KGL+AizD70Q==
 
 debug@4, debug@^4.4.0, debug@^4.4.3:
   version "4.4.3"

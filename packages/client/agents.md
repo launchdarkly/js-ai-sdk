@@ -517,6 +517,7 @@ Tier 0, so the runtime surface is deliberately tiny: two hard dependencies, and 
 |---|---|
 | the optional peers, mirrored | Each optional peer is repeated here so the test suite can import it. A peer that is *only* a peer would not be installed in this workspace and its tests could not run. |
 | `vitest`, `typescript`, `@types/node` | Test runner, compiler, and Node type definitions. |
+| `@launchdarkly/vercel-server-sdk`, `@launchdarkly/cloudflare-server-sdk`, `@launchdarkly/akamai-server-edgekv-sdk` | Type-only, for `src/__tests__/sdk-compat.typecheck.ts`: `yarn typecheck` fails if their clients stop satisfying `LDClientInterface`. Fastly is left out because its toolchain adds ~190 MB to every install. |
 
 ---
 
