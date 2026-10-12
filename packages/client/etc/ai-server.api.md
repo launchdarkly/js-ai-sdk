@@ -103,6 +103,9 @@ export type ConfigTurn = {
 };
 
 // @public
+export function configure(options: SDKOptions): void;
+
+// @public
 export type ContentBlock = TextContentBlock | ImageContentBlock;
 
 // @public
@@ -505,6 +508,11 @@ export function reportUsage(helper: string): void;
 // @public (undocumented)
 export function reportUsage(helper: string, packageName: string, packageVersion: string): void;
 
+// Warning: (ae-internal-missing-underscore) The name "resolveCaptureContent" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export function resolveCaptureContent(explicit?: boolean): boolean;
+
 // @public
 export const resolveGraph: (key: string, options: GraphArgs) => Promise<GraphDefinition>;
 
@@ -530,6 +538,11 @@ export interface RunUsage {
     readonly reported: boolean;
     // (undocumented)
     readonly total: SpanUsage;
+}
+
+// @public
+export interface SDKOptions {
+    captureContent?: boolean;
 }
 
 // @public

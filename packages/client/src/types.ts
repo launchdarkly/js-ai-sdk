@@ -667,9 +667,12 @@ export type ProviderHandler = ((
 }>) & {
   providesFor?: [provider: string, type: 'agent' | 'messages'];
   /**
-   * Whether this handler was built with content capture on. Declared here so the client core can
-   * apply the same gate to content it writes on the handler's behalf — notably the judge's
-   * reasoning — without reaching into the handler's closure.
+   * Explicit content-capture override for this handler. `undefined` means the
+   * handler omitted the option, so judge reasoning and the handler itself read
+   * the process default from `configure` when the call runs. `true` or `false`
+   * is an override of that default. The client core reads it for content it
+   * writes on the handler's behalf — notably the judge's reasoning — without
+   * reaching into the handler's closure.
    */
   captureContent?: boolean;
   /**

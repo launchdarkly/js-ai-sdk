@@ -14,6 +14,7 @@ import {
   type ProviderHandler,
   parseTemplate,
   reportUsage,
+  resolveCaptureContent,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -259,11 +260,11 @@ export function createVercelMessagesHandler(options: VercelMessagesOptions = {})
 }
 
 function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}): ProviderHandler {
-  const { captureContent = false } = options;
   return createHandlerInternal(
     ['*', 'messages'],
-    async (configRep, userInput = '', toolHandlers = {}, variables = {}, history) =>
-      trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (rootSpan) => {
+    async (configRep, userInput = '', toolHandlers = {}, variables = {}, history) => {
+      const captureContent = resolveCaptureContent(options.captureContent);
+      return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (rootSpan) => {
         rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
         setLdSpanAttributes(rootSpan, variables);
@@ -311,8 +312,10 @@ function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}
           failSpan(rootSpan, error);
           throw error;
         }
-      }),
+      });
+    },
     async function* streamHandler(configRep, userInput = '', toolHandlers = {}, variables = {}, history) {
+      const captureContent = resolveCaptureContent(options.captureContent);
       const rootSpan = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
@@ -376,7 +379,7 @@ function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}
         if (!rootEnded) rootSpan.end();
       }
     },
-    captureContent,
+    options.captureContent,
   );
 }
 

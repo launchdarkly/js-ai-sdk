@@ -9,6 +9,7 @@ import {
   warnEsmExternalizationOnce,
 } from './import-diagnostics.js';
 import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
+import { resetSdkOptions } from './sdk-options.js';
 import { flushSdkUsage, reportUsage, resetSdkUsage } from './sdk-usage.js';
 import { runShutdownHooks } from './shutdown-hooks.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
@@ -489,6 +490,9 @@ export function getClient(): LDClientInterface {
 
 export async function shutdown(): Promise<void> {
   const singleton = getSingleton();
+  // Process defaults are not tied to the client. A shutdown with no client
+  // still restores the built-in defaults and clears the invocation lock.
+  resetSdkOptions();
   // Experimental state (e.g. an Agent Skills store) can exist without a client,
   // and an init can be in flight without one, so shutdown() always leaves the
   // next initClient() starting from scratch. Dropping the init promise abandons

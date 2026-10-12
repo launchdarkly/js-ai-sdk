@@ -19,6 +19,7 @@ import {
   type ProviderHandler,
   parseTemplate,
   reportUsage,
+  resolveCaptureContent,
   type SpanMessage,
   type SpanMessagePart,
   setConversationIdIfAbsent,
@@ -923,14 +924,14 @@ function buildQueryOptions(
   };
 }
 
-export function createClaudeAgentsHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createClaudeAgentsHandler({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('claude-agents.createClaudeAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createClaudeAgentsHandlerInternal({ captureContent });
 }
 
 /** `createClaudeAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createClaudeAgentsHandlerInternal({
-  captureContent = false,
+  captureContent: requestedCapture,
 }: ContentCaptureOptions = {}): ProviderHandler {
   return createHandlerInternal(
     ['Anthropic', 'agent'],
@@ -941,6 +942,7 @@ export function createClaudeAgentsHandlerInternal({
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      const captureContent = resolveCaptureContent(requestedCapture);
       return trace.getTracer('@launchdarkly/ai-claude-agents').startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, 'anthropic', config.model.name);
@@ -1072,6 +1074,7 @@ export function createClaudeAgentsHandlerInternal({
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = resolveCaptureContent(requestedCapture);
       const span = trace.getTracer('@launchdarkly/ai-claude-agents').startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, 'anthropic', config.model.name);
@@ -1212,7 +1215,7 @@ export function createClaudeAgentsHandlerInternal({
         endSpanOnce(span, endedSpans, true);
       }
     },
-    captureContent,
+    requestedCapture,
   );
 }
 

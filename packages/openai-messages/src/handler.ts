@@ -18,6 +18,7 @@ import {
   parseTemplate,
   pickForwardedModelParameters,
   reportUsage,
+  resolveCaptureContent,
   type SpanMessage,
   type SpanMessagePart,
   type SpanUsage,
@@ -447,12 +448,14 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
   return pickForwardedModelParameters(withRenamedMaxTokens, FORWARDED_MODEL_PARAMETER_KEYS);
 }
 
-export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createOpenAIHandler({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('openai-messages.createOpenAIHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createOpenAIHandlerInternal({ captureContent });
 }
 
-function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+function createOpenAIHandlerInternal({
+  captureContent: requestedCapture,
+}: ContentCaptureOptions = {}): ProviderHandler {
   const openai = new OpenAI();
 
   const MAX_STEPS = 10;
@@ -466,6 +469,7 @@ function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureO
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      const captureContent = resolveCaptureContent(requestedCapture);
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, 'openai', config.model.name);
@@ -608,6 +612,7 @@ function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureO
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = resolveCaptureContent(requestedCapture);
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, 'openai', config.model.name);
@@ -758,7 +763,7 @@ function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureO
         endSpanOnce(span, endedSpans, true);
       }
     },
-    captureContent,
+    requestedCapture,
   );
 }
 

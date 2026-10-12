@@ -1,5 +1,6 @@
 import { withJudgeEvaluation } from './conversation.js';
 import { extractVariation, getClient } from './lifecycle.js';
+import { resolveCaptureContent } from './sdk-options.js';
 import { reportUsage } from './sdk-usage.js';
 import { executeAndTrack } from './tracking.js';
 import type {
@@ -181,7 +182,8 @@ export const runJudges = async ({
         judgeResults[judge.key] = { usage, response: reasoning, score };
         // The reasoning reaches telemetry only when the judge's own handler captures content.
         // It is model prose about the user's conversation, so it follows the content gate.
-        if (isFiniteScore(score)) recordEvaluation(score, judgeHandler.captureContent ? reasoning : undefined);
+        if (isFiniteScore(score))
+          recordEvaluation(score, resolveCaptureContent(judgeHandler.captureContent) ? reasoning : undefined);
 
         if (judgeConfig.evaluationMetricKey && score !== undefined) {
           getClient().track(
@@ -365,7 +367,8 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
     if (!parsed) return null;
 
     const { score, reasoning } = parsed;
-    if (isFiniteScore(score)) recordEvaluation(score, judgeHandler.captureContent ? reasoning : undefined);
+    if (isFiniteScore(score))
+      recordEvaluation(score, resolveCaptureContent(judgeHandler.captureContent) ? reasoning : undefined);
 
     return {
       score,

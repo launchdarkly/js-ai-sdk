@@ -20,6 +20,7 @@ import {
   parseTemplate,
   pickForwardedModelParameters,
   reportUsage,
+  resolveCaptureContent,
   type SpanMessage,
   type SpanMessagePart,
   setInputContentAttributes,
@@ -410,12 +411,14 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
 
 const MAX_STEPS = 10;
 
-export function createClaudeMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createClaudeMessagesHandler({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('claude-messages.createClaudeMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createClaudeMessagesHandlerInternal({ captureContent });
 }
 
-function createClaudeMessagesHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+function createClaudeMessagesHandlerInternal({
+  captureContent: requestedCapture,
+}: ContentCaptureOptions = {}): ProviderHandler {
   const anthropic = new Anthropic();
 
   async function runToolLoop(
@@ -426,6 +429,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
     parentContext: Context,
     runUsage: RawRunUsage,
   ) {
+    const captureContent = resolveCaptureContent(requestedCapture);
     const { tools, executableTools } = config.tools
       ? buildTools(config.tools, toolHandlers)
       : { tools: [], executableTools: new Map() };
@@ -525,6 +529,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      const captureContent = resolveCaptureContent(requestedCapture);
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, 'anthropic', config.model.name);
@@ -567,6 +572,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = resolveCaptureContent(requestedCapture);
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, 'anthropic', config.model.name);
@@ -707,7 +713,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
         endSpanOnce(span, endedSpans, true);
       }
     },
-    captureContent,
+    requestedCapture,
   );
 }
 

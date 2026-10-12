@@ -14,6 +14,7 @@ import {
   type ProviderHandler,
   parseTemplate,
   reportUsage,
+  resolveCaptureContent,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -246,7 +247,8 @@ async function buildAgent(
   structuredOutput = true,
 ) {
   const system = instructions(config, variables);
-  const { tools, definitions } = buildTools(config.tools, toolHandlers, parentSpan, options.captureContent ?? false);
+  const captureContent = resolveCaptureContent(options.captureContent);
+  const { tools, definitions } = buildTools(config.tools, toolHandlers, parentSpan, captureContent);
   const output =
     structuredOutput && config.outputFormat
       ? Output.object({ schema: jsonSchema(normalizeOutputSchema(config.outputFormat)) })
@@ -269,11 +271,11 @@ export function createVercelAgentsHandler(options: VercelAgentsOptions = {}): Pr
 
 /** `createVercelAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createVercelAgentsHandlerInternal(options: VercelAgentsOptions = {}): ProviderHandler {
-  const { captureContent = false } = options;
   return createHandlerInternal(
     ['*', 'agent'],
-    async (configRep, userInput = '', toolHandlers = {}, variables = {}, history) =>
-      trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (rootSpan) => {
+    async (configRep, userInput = '', toolHandlers = {}, variables = {}, history) => {
+      const captureContent = resolveCaptureContent(options.captureContent);
+      return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (rootSpan) => {
         rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
         setLdSpanAttributes(rootSpan, variables);
@@ -313,8 +315,10 @@ export function createVercelAgentsHandlerInternal(options: VercelAgentsOptions =
           failSpan(rootSpan, error);
           throw error;
         }
-      }),
+      });
+    },
     async function* streamHandler(configRep, userInput = '', toolHandlers = {}, variables = {}, history) {
+      const captureContent = resolveCaptureContent(options.captureContent);
       const rootSpan = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
@@ -378,7 +382,7 @@ export function createVercelAgentsHandlerInternal(options: VercelAgentsOptions =
         if (!rootEnded) rootSpan.end();
       }
     },
-    captureContent,
+    options.captureContent,
   );
 }
 

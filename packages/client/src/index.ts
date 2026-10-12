@@ -49,6 +49,8 @@ export {
 } from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';
 export { registerAiSdkPackage } from './sdk-info.js';
+export type { SDKOptions } from './sdk-options.js';
+export { configure, resolveCaptureContent } from './sdk-options.js';
 export { reportUsage } from './sdk-usage.js';
 export { makeNodeTrackData, makeRunTrackData } from './tracking.js';
 export type {

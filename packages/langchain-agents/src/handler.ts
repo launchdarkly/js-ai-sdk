@@ -21,6 +21,7 @@ import {
   type ProviderHandler,
   parseTemplate,
   reportUsage,
+  resolveCaptureContent,
   type SpanUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
@@ -393,7 +394,7 @@ export function createLangChainAgentsHandler(
 /** `createLangChainAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createLangChainAgentsHandlerInternal(
   llm?: LangChainModelSource,
-  { captureContent = false }: ContentCaptureOptions = {},
+  { captureContent: requestedCapture }: ContentCaptureOptions = {},
 ): ProviderHandler {
   return createHandlerInternal(
     ['*', 'agent'],
@@ -404,6 +405,7 @@ export function createLangChainAgentsHandlerInternal(
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      const captureContent = resolveCaptureContent(requestedCapture);
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, servingProvider(config), config.model.name, 'langchain');
@@ -477,6 +479,7 @@ export function createLangChainAgentsHandlerInternal(
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = resolveCaptureContent(requestedCapture);
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, servingProvider(config), config.model.name, 'langchain');
@@ -560,7 +563,7 @@ export function createLangChainAgentsHandlerInternal(
         endSpanOnce(span, endedSpans, true);
       }
     },
-    captureContent,
+    requestedCapture,
   );
 }
 

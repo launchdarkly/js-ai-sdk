@@ -143,6 +143,20 @@ cp .env.example .env
 # Fill in LD_SDK_KEY and the API key for your provider
 ```
 
+### Process defaults
+
+Call `configure` once at process startup. It sets defaults for every later call in the process. Do not call it from request data.
+
+```ts
+import { configure } from '@launchdarkly/ai-node';
+
+configure({ captureContent: true });
+```
+
+Handlers and convenience wrappers that omit `captureContent` inherit that default when they run, including handlers constructed before `configure`. Pass `true` or `false` on a handler or wrapper to override it for that call. An explicit `false` wins over a process default of `true`. Until you call `configure`, the default is `false`. `shutdown()` restores that built-in default.
+
+`configure` accepts an options object so later process-wide settings can be added beside `captureContent`.
+
 ### 3. Call a model
 
 #### 3a. Convenience functions

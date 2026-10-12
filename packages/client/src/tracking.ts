@@ -1,4 +1,5 @@
 import { getClient } from './lifecycle.js';
+import { noteAiInvocation } from './sdk-options.js';
 import type {
   AiConfigRep,
   GraphNode,
@@ -182,6 +183,7 @@ export const executeAndTrack = async ({
   graphKey?: string;
   history?: Message[];
 }): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData }> => {
+  noteAiInvocation();
   const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
   const trackedToolHandlers = wrapToolHandlers(toolHandlers, userContext, trackData);
@@ -253,6 +255,7 @@ export async function* executeAndStream({
   graphKey?: string;
   history?: Message[];
 }): AsyncGenerator<ExecuteStreamEvent> {
+  noteAiInvocation();
   const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
   const trackedToolHandlers = wrapToolHandlers(toolHandlers, userContext, trackData);

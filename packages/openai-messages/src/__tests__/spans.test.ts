@@ -31,6 +31,7 @@ vi.mock('openai', () => ({
   },
 }));
 
+import { configure, shutdown } from '@launchdarkly/ai-server';
 import { createOpenAIHandler } from '../handler.js';
 
 const exporter = new InMemorySpanExporter();
@@ -93,9 +94,36 @@ describe('openai-messages span tree against a real tracer', () => {
     await provider.shutdown();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     exporter.reset();
+    await shutdown();
+  });
+
+  it('leaves captureContent unset so a later configure() is visible', () => {
+    expect(createOpenAIHandler().captureContent).toBeUndefined();
+    expect(createOpenAIHandler({ captureContent: false }).captureContent).toBe(false);
+    expect(createOpenAIHandler({ captureContent: true }).captureContent).toBe(true);
+  });
+
+  it('inherits captureContent from configure() when the handler omits it', async () => {
+    const handler = createOpenAIHandler();
+    configure({ captureContent: true });
+    mockResponsesCreate.mockResolvedValue(finalResponse('Hello!'));
+
+    await handler(baseConfig as never, 'q');
+
+    expect(String(root()?.attributes['gen_ai.output.messages'])).toContain('Hello!');
+  });
+
+  it('lets an explicit false override a process default of true', async () => {
+    configure({ captureContent: true });
+    mockResponsesCreate.mockResolvedValue(finalResponse('SECRET'));
+
+    await createOpenAIHandler({ captureContent: false })(baseConfig as never, 'q');
+
+    expect(root()?.attributes['gen_ai.output.messages']).toBeUndefined();
+    expect(root()?.attributes['gen_ai.input.messages']).toBeUndefined();
   });
 
   it('nests the chat span under the invoke_agent root', async () => {

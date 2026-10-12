@@ -6,6 +6,7 @@ import {
   type LDContext,
   makeRunTrackData,
   reportUsage,
+  resolveCaptureContent,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -102,7 +103,7 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
   reportUsage('vercel-messages.vercelEvaluate', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   assertQuestions(options.questions);
   const { config, meta } = await resolveConfig(configKey, context);
-  const captureContent = options.captureContent ?? false;
+  const captureContent = resolveCaptureContent(options.captureContent);
   const trackData = makeRunTrackData({ configKey, config, meta });
   const model = await resolveModel(config, options);
   const startTime = Date.now();

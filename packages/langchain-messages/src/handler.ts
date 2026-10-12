@@ -23,6 +23,7 @@ import {
   type ProviderHandler,
   parseTemplate,
   reportUsage,
+  resolveCaptureContent,
   type SpanUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
@@ -338,7 +339,7 @@ export function createLangChainHandler(
 
 function createLangChainHandlerInternal(
   llm?: LangChainModelSource,
-  { captureContent = false }: ContentCaptureOptions = {},
+  { captureContent: requestedCapture }: ContentCaptureOptions = {},
 ): ProviderHandler {
   const MAX_STEPS = 10;
 
@@ -351,6 +352,7 @@ function createLangChainHandlerInternal(
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      const captureContent = resolveCaptureContent(requestedCapture);
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, servingProvider(config), config.model.name, 'langchain');
@@ -529,6 +531,7 @@ function createLangChainHandlerInternal(
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = resolveCaptureContent(requestedCapture);
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, servingProvider(config), config.model.name, 'langchain');
@@ -735,7 +738,7 @@ function createLangChainHandlerInternal(
         endSpanOnce(span, endedSpans, true);
       }
     },
-    captureContent,
+    requestedCapture,
   );
 }
 

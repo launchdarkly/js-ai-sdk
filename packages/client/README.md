@@ -55,7 +55,11 @@ Call `initClient()` explicitly when you want to:
 - Fail fast at boot if `LD_SDK_KEY` is missing
 
 ```ts
-import { initClient, shutdown, waitForTelemetry, shutdownTelemetry } from '@launchdarkly/ai-server';
+import { configure, initClient, shutdown, waitForTelemetry, shutdownTelemetry } from '@launchdarkly/ai-server';
+
+// Once, at process startup. Handlers that omit captureContent inherit it.
+// Do not call configure from request data.
+configure({ captureContent: true });
 
 // Standard Node.js path — auto-discovers @launchdarkly/node-server-sdk.
 // Returns the initialized LDClientInterface for further use if needed.
@@ -79,6 +83,7 @@ await shutdown();
 
 | Export | Description |
 |---|---|
+| `configure(options)` | Set process-wide defaults. Call once at startup. `shutdown()` restores the built-in defaults. |
 | `initClient(options?)` | Auto-discover and initialize `@launchdarkly/node-server-sdk`. Optional — the first AI API call triggers lazy init when `LD_SDK_KEY` is set. Returns `Promise<LDClientInterface>`. |
 | `initClient(client, options?)` | **BYOC overload** — accept a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk` or any edge runtime). Skips SDK auto-discovery. |
 | `getClient()` | Return the initialized `LDClientInterface`. Throws if `initClient` has not completed. |

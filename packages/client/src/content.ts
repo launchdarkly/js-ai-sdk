@@ -52,9 +52,12 @@ export interface ContentCaptureOptions {
   /**
    * Put prompts, model output, tool arguments and tool results on the emitted spans.
    *
-   * Defaults to `false`. Conversation content is PII, so a run emits only metadata — models, token
-   * counts, timings, tool names — until a caller asks for more. Turning this on sends the text of
-   * every request and response to whatever OTel endpoint the SDK is configured with.
+   * Omit it to use the process default from `configure`, which is `false` until a
+   * process calls `configure({ captureContent: true })`. Pass `true` or `false` to
+   * override that default for this handler. Conversation content is PII, so a run
+   * emits only metadata — models, token counts, timings, tool names — until capture
+   * is on. Turning this on sends the text of every request and response to whatever
+   * OTel endpoint the SDK is configured with.
    */
   captureContent?: boolean;
 }

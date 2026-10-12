@@ -17,6 +17,7 @@ import {
   type ProviderHandler,
   parseTemplate,
   reportUsage,
+  resolveCaptureContent,
   type SpanMessage,
   type SpanMessagePart,
   type SpanUsage,
@@ -595,14 +596,14 @@ function promptToSpanMessages(prompt: string | OpenAIInputItem[]): SpanMessage[]
   }));
 }
 
-export function createOpenAIAgentHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createOpenAIAgentHandler({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('openai-agents.createOpenAIAgentHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createOpenAIAgentHandlerInternal({ captureContent });
 }
 
 /** `createOpenAIAgentHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createOpenAIAgentHandlerInternal({
-  captureContent = false,
+  captureContent: requestedCapture,
 }: ContentCaptureOptions = {}): ProviderHandler {
   return createHandlerInternal(
     ['OpenAI', 'agent'],
@@ -613,6 +614,7 @@ export function createOpenAIAgentHandlerInternal({
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      const captureContent = resolveCaptureContent(requestedCapture);
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, 'openai', config.model.name);
@@ -672,6 +674,7 @@ export function createOpenAIAgentHandlerInternal({
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = resolveCaptureContent(requestedCapture);
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, 'openai', config.model.name);
@@ -770,7 +773,7 @@ export function createOpenAIAgentHandlerInternal({
         endSpanOnce(span, endedSpans, true);
       }
     },
-    captureContent,
+    requestedCapture,
   );
 }
 
