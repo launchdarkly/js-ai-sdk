@@ -1,4 +1,5 @@
 import type { GraphDefinition, GraphEdge, GraphNode } from '@launchdarkly/ai-server';
+import { SpanStatusCode } from '@opentelemetry/api';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -11,6 +12,7 @@ const mockTrack = vi.fn();
 
 const mockGraphSpan = vi.hoisted(() => ({
   setAttribute: vi.fn(),
+  addEvent: vi.fn(),
   setStatus: vi.fn(),
   recordException: vi.fn(),
   end: vi.fn(),
@@ -42,6 +44,17 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   return {
     ...actual,
     getClient: () => ({ track: mockTrack }),
+    // The real `tryGetEnvironmentId` reads the LD client's feature store, which no unit test has.
+    // Stub the environment id onto the two track-data builders so the adapter's wiring can be
+    // asserted here; the lookup itself is covered in the client package's own tests.
+    makeGraphTrackData: (graphKey: string, runId: string) => ({
+      ...actual.makeGraphTrackData(graphKey, runId),
+      environmentId: 'env-123',
+    }),
+    makeNodeTrackData: (node: any, graphKey: string, runId: string) => ({
+      ...actual.makeNodeTrackData(node, graphKey, runId),
+      environmentId: 'env-123',
+    }),
   };
 });
 
@@ -239,6 +252,78 @@ describe('toClaudeAgents', () => {
       expect.anything(),
       expect.anything(),
     );
+  });
+
+  it('tags the graph span with the run identity so LaunchDarkly can link the trace to the config', async () => {
+    const def = makeGraphDef();
+    await toClaudeAgents(Promise.resolve(def), { context: { kind: 'user', key: 'user-1' } }).invoke('hello');
+    expect(mockGraphSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.operation.type', 'gen_ai');
+    expect(mockGraphSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.config.key', 'test-graph');
+    expect(mockGraphSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.key', 'test-graph');
+    expect(mockGraphSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.run.id', expect.any(String));
+    expect(mockGraphSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.variation.key', expect.any(String));
+    expect(mockGraphSpan.setAttribute).toHaveBeenCalledWith('context.contextKeys.user', 'user-1');
+    expect(mockGraphSpan.addEvent).toHaveBeenCalledWith('feature_flag', {
+      'feature_flag.key': 'test-graph',
+      'feature_flag.provider.name': 'LaunchDarkly',
+      'feature_flag.set.id': 'env-123',
+      'feature_flag.context.id': 'user-1',
+      'feature_flag.contextKeys': '{"user":"user-1"}',
+    });
+  });
+
+  it('keys the graph-level events to the graph, not the root node', async () => {
+    await toClaudeAgents(Promise.resolve(makeGraphDef()), { context: { kind: 'user', key: 'user-1' } }).invoke('hello');
+    const graphEvents = mockTrack.mock.calls.filter((c: unknown[]) =>
+      ['$ld:ai:graph:invocation_success', '$ld:ai:graph:duration:total', '$ld:ai:graph:total_tokens'].includes(
+        c[0] as string,
+      ),
+    );
+    expect(graphEvents).toHaveLength(3);
+    for (const call of graphEvents) {
+      expect(call[2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+    }
+  });
+
+  it('keys invocation_failure to the graph, not the root node', async () => {
+    mockQuery.mockImplementation(async function* () {
+      throw new Error('boom');
+    });
+    await expect(
+      toClaudeAgents(Promise.resolve(makeGraphDef()), { context: { kind: 'user', key: 'user-1' } }).invoke('hello'),
+    ).rejects.toThrow('boom');
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+  });
+
+  it('records a sub-agent build error on the graph span, tracks it as a failure, and ends the span once', async () => {
+    const def = makeGraphDef({
+      reverseTraverse: async () => {
+        throw new Error('setup boom');
+      },
+    });
+    await expect(
+      toClaudeAgents(Promise.resolve(def), { context: { kind: 'user', key: 'user-1' } }).invoke('hello'),
+    ).rejects.toThrow('setup boom');
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockGraphSpan.end).toHaveBeenCalledTimes(1);
+    expect(mockGraphSpan.recordException).toHaveBeenCalledTimes(1);
+    expect(mockGraphSpan.recordException).toHaveBeenCalledWith(expect.any(Error));
+    expect(mockGraphSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR, message: 'setup boom' });
+    expect(mockGraphSpan.setStatus).not.toHaveBeenCalledWith({ code: SpanStatusCode.OK });
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+  });
+
+  it('puts the environment id on every node and graph tracking event', async () => {
+    const def = makeGraphDef();
+    await toClaudeAgents(Promise.resolve(def), { context: { kind: 'user', key: 'user-1' } }).invoke('hello');
+    expect(mockTrack).toHaveBeenCalled();
+    for (const call of mockTrack.mock.calls) {
+      expect(call[2]).toEqual(expect.objectContaining({ environmentId: 'env-123' }));
+    }
   });
 
   // T9: invocation_failure tracking

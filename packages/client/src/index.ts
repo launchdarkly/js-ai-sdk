@@ -50,7 +50,7 @@ export {
 export { compose, globalRegistry, Registry } from './registry.js';
 export { registerAiSdkPackage } from './sdk-info.js';
 export { reportUsage } from './sdk-usage.js';
-export { makeNodeTrackData, makeRunTrackData } from './tracking.js';
+export { makeGraphTrackData, makeNodeTrackData, makeRunTrackData } from './tracking.js';
 export type {
   ConfigArgs,
   ConfigMessage,

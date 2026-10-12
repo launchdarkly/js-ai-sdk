@@ -336,6 +336,19 @@ describe('graph().invoke()', () => {
     expect(eventNames).toContain('$ld:ai:graph:duration:total');
   });
 
+  it('puts the environment id on graph-level events', async () => {
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({
+      track: mockTrack,
+      variation: mockVariation,
+      _featureStore: { getInitMetaData: () => ({ environmentId: 'env-abc' }) },
+    });
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+    await graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext);
+    const graphCall = mockTrack.mock.calls.find((c: any[]) => c[0] === '$ld:ai:graph:invocation_success');
+    expect(graphCall?.[2]).toEqual(expect.objectContaining({ environmentId: 'env-abc' }));
+  });
+
   it('tracks $ld:ai:graph:node once per visited node on entry', async () => {
     setupTwoNodeGraph();
     const handler = makeHandler();
@@ -571,6 +584,48 @@ describe('graph() conversation id', () => {
     const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
     expect(graphSpan).toBeDefined();
     expect(graphSpan?.attributes[GEN_AI_CONVERSATION_ID]).toBe('thread-graph-stream');
+  });
+
+  it.each([
+    'invoke',
+    'stream',
+  ] as const)('tags the launchdarkly.graph span with the graph identity on %s', async (mode) => {
+    setupTwoNodeGraph();
+    const g = graph('graph-flag', { handlers: [makeStreamingHandler(['ok'])] });
+    if (mode === 'invoke') await g.invoke('hi', mockContext);
+    else await collectStream(g.stream('hi', mockContext));
+
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
+    expect(graphSpan?.attributes['launchdarkly.operation.type']).toBe('gen_ai');
+    expect(graphSpan?.attributes['launchdarkly.config.key']).toBe('graph-flag');
+    expect(graphSpan?.attributes['launchdarkly.graph.key']).toBe('graph-flag');
+
+    const success = mockTrack.mock.calls.find((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_success');
+    expect(graphSpan?.attributes['launchdarkly.run.id']).toBe(success?.[2].runId);
+    expect(graphSpan?.attributes['launchdarkly.variation.key']).toBe(success?.[2].variationKey);
+
+    const flagEvents = graphSpan?.events.filter((e) => e.name === 'feature_flag') ?? [];
+    expect(flagEvents).toHaveLength(1);
+    expect(flagEvents[0].attributes?.['feature_flag.key']).toBe('graph-flag');
+  });
+
+  it('gives each invocation with the same context its own run id', async () => {
+    setupTwoNodeGraph();
+    const g = graph('graph-flag', { handlers: [makeStreamingHandler(['ok'])] });
+    await g.invoke('hi', mockContext);
+    await collectStream(g.stream('hi', mockContext));
+
+    const runIds = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === 'launchdarkly.graph')
+      .map((s) => s.attributes['launchdarkly.run.id']);
+    expect(runIds).toHaveLength(2);
+    expect(runIds[0]).not.toBe(runIds[1]);
+
+    const successRunIds = mockTrack.mock.calls
+      .filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_success')
+      .map((c: unknown[]) => (c[2] as { runId: string }).runId);
+    expect(successRunIds).toEqual(runIds);
   });
 
   it('nests handler spans under launchdarkly.graph on the stream path (single trace)', async () => {
