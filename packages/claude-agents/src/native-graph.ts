@@ -17,7 +17,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
-import { buildPrompt, buildQueryPrompt, buildToolMCP, partitionTools } from './handler.js';
+import { assertRunSucceeded, buildPrompt, buildQueryPrompt, buildToolMCP, partitionTools } from './handler.js';
 import { buildModelParameterQueryOptions } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
@@ -126,7 +126,11 @@ const runQuery = async (
       ...(systemPrompt ? { systemPrompt } : {}),
     },
   })) {
-    if ('result' in message) {
+    // On `type`, not `'result' in message`: an error-subtype result has no `result` field, so that
+    // gate let a failed node answer with an empty string, and an API failure answered with its
+    // error text. Throwing fails the graph at the root, and fails the tool call at a sub-agent.
+    if (message.type === 'result') {
+      assertRunSucceeded(message);
       output = message.result;
       rawUsage = (message.usage as Record<string, unknown>) ?? {};
     }
