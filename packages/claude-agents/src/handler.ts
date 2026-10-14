@@ -1,4 +1,11 @@
-import { createSdkMcpServer, type HookInput, query, type SDKUserMessage, tool } from '@anthropic-ai/claude-agent-sdk';
+import {
+  createSdkMcpServer,
+  type HookInput,
+  query,
+  type SDKUserMessage,
+  type SettingSource,
+  tool,
+} from '@anthropic-ai/claude-agent-sdk';
 import {
   type AiConfigRep,
   addCachedTokensToInput,
@@ -923,15 +930,45 @@ function buildQueryOptions(
   };
 }
 
-export function createClaudeAgentsHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+/**
+ * Options for the Claude Agents handler factory.
+ *
+ * `cwd` and `settingSources` configure the host process the Agent SDK starts, not the model, so
+ * they come from the application and never from a config: `model.parameters` cannot set or
+ * override either. Each one given is passed to every `query()` call unchanged. One not given is
+ * not sent, which leaves the Agent SDK default: the process's working directory, and every
+ * settings source (`user`, `project`, `local`) — including that host's plugins, skills, hooks
+ * and permission rules. Pass `settingSources: []` to isolate a run from them.
+ */
+type ClaudeAgentsHostOptions = {
+  /** Working directory for the Claude Code process. Defaults to `process.cwd()`. */
+  cwd?: string;
+  /** Which filesystem settings sources the CLI loads. Omitted, it loads all of them; `[]` loads none. */
+  settingSources?: SettingSource[];
+};
+
+/** The host options given, and only those: an option not given is not sent (an empty list is). */
+function hostQueryOptions({ cwd, settingSources }: ClaudeAgentsHostOptions): Record<string, unknown> {
+  return {
+    ...(cwd !== undefined && { cwd }),
+    ...(settingSources !== undefined && { settingSources }),
+  };
+}
+
+export function createClaudeAgentsHandler(
+  options: ContentCaptureOptions & ClaudeAgentsHostOptions = {},
+): ProviderHandler {
   reportUsage('claude-agents.createClaudeAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  return createClaudeAgentsHandlerInternal({ captureContent });
+  return createClaudeAgentsHandlerInternal(options);
 }
 
 /** `createClaudeAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createClaudeAgentsHandlerInternal({
   captureContent = false,
-}: ContentCaptureOptions = {}): ProviderHandler {
+  ...host
+}: ContentCaptureOptions & ClaudeAgentsHostOptions = {}): ProviderHandler {
+  // Trusted, so spread with the handler's own options, after `model.parameters`.
+  const hostOptions = hostQueryOptions(host);
   return createHandlerInternal(
     ['Anthropic', 'agent'],
     async (
@@ -1004,6 +1041,7 @@ export function createClaudeAgentsHandlerInternal({
               toolMCP,
               toolTelemetry?.hooks,
               buildModelParameterQueryOptions(config.model.parameters),
+              hostOptions,
             ),
           )) {
             recordConversationId(span, message);
@@ -1131,7 +1169,7 @@ export function createClaudeAgentsHandlerInternal({
             toolMCP,
             toolTelemetry?.hooks,
             buildModelParameterQueryOptions(config.model.parameters),
-            { includePartialMessages: true },
+            { ...hostOptions, includePartialMessages: true },
           ),
         )) {
           recordConversationId(span, message);
