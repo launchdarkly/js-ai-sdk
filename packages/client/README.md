@@ -40,8 +40,8 @@ No code changes are required — `initClient()` detects the packages at runtime 
 | Variable | Required | Description |
 |---|---|---|
 | `LD_SDK_KEY` | Yes | LaunchDarkly server-side SDK key |
-| `LD_BASE_URI` | No | Override the LaunchDarkly polling base URI (e.g. for staging) |
-| `LD_STREAM_URI` | No | Override the streaming URI |
+| `LD_BASE_URI` | No | Override the LaunchDarkly polling base URI (e.g. for staging). `FDv2SkillStore` reads it too when given no URI option |
+| `LD_STREAM_URI` | No | Override the streaming URI. `FDv2SkillStore` reads it too when given no URI option |
 | `LD_EVENTS_URI` | No | Override the events URI |
 | `LD_SERVICE_NAME` | No | OTel `service.name` resource attribute (default: `nodejs-sdk`) |
 | `LD_ENVIRONMENT` | No | `deployment.environment` resource attribute attached to telemetry |
@@ -436,7 +436,7 @@ try {
 
 **The SDK key goes only where you pointed it.** `baseUri` and `streamUri` must be `https://` (plain `http://` is allowed only to a loopback host, for a local test double). Redirects are never followed, so a 3xx stops delivery instead of forwarding the key to the `Location` host.
 
-**Polling and streaming have separate hosts.** By default `/sdk/poll` goes to `https://sdk.launchdarkly.com` and `/sdk/stream` to `https://stream.launchdarkly.com`. Pass `baseUri` alone to use one host for both, or `streamUri` as well to set them independently.
+**Polling and streaming have separate hosts.** By default `/sdk/poll` goes to `https://sdk.launchdarkly.com` and `/sdk/stream` to `https://stream.launchdarkly.com`. Pass `baseUri` alone to use one host for both, or `streamUri` as well to set them independently. With neither option, the store reads `LD_BASE_URI` and `LD_STREAM_URI` in their place, once, when it is constructed, the same variables `initClient()` reads. So a process pointed at a staging or private instance by its environment gets its skills from there too. `LD_BASE_URI` alone moves both endpoints, as `baseUri` alone does. That differs from `initClient()`, where flag streaming stays on its default host unless `LD_STREAM_URI` is set.
 
 **Streaming is the default, and it is what makes revocation fast.** A `delete-object` reaches a live stream in seconds; with `mode: 'poll'` it arrives within one `pollIntervalSeconds` (default 30). With `watchSkills('*', …)`, a revoked skill's `SKILL.md` leaves the disk without a restart. With an explicit list such as `skillRefs(config)` it does not: a requested skill the store no longer holds stays in the requested set as an `error` action and is not pruned, and the watcher listens only to the skill store, not to flag changes, so unpinning a skill from a config is not seen either. Re-run `writeSkills` with a fresh list for those. During an outage the store keeps serving its last content, and `writeSkills`' default `onUnavailable: 'keep'` leaves managed files alone, so an outage does not read as "everything was revoked".
 
