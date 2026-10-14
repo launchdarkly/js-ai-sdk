@@ -199,7 +199,11 @@ describe('package manifests', () => {
     expect(manifest.types).toBe('dist/index.d.ts');
   });
 
-  it.each(['client', 'ai-node'])('%s declares the experimental subpath with both conditions', (pkg) => {
+  it.each([
+    'client',
+    'ai-node',
+    'claude-agents',
+  ])('%s declares the experimental subpath with both conditions', (pkg) => {
     const manifest = JSON.parse(readFileSync(join(repoRoot, 'packages', pkg, 'package.json'), 'utf8'));
 
     expect(manifest.exports['./experimental']).toEqual({
