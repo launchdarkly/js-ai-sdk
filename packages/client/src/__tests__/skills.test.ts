@@ -382,6 +382,7 @@ const ROOT_VALUES = [
   'langChainFinishReasons',
   'langChainSpanMessages',
   'langChainSpanUsage',
+  'makeGraphTrackData',
   'makeNodeTrackData',
   'makeRunTrackData',
   'normalizeModelParameters',
