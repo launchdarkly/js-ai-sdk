@@ -913,6 +913,12 @@ function buildQueryOptions(
   /** Options this handler sets for itself, e.g. `includePartialMessages` on the streaming
    * path. Trusted, so these are spread LAST and win over everything. */
   internalOptions?: Record<string, unknown>,
+  /**
+   * Built-ins the handler itself turns on, after the config's native tools: `Skill`, when the
+   * skills integration materialized skills for this run. `tools` only, never `allowedTools`:
+   * the Agent SDK's `skills` option is what enables the Skill tool.
+   */
+  extraBuiltins: string[] = [],
 ) {
   const allAllowedTools = [...mcpAllowedTools, ...nativeToolNames];
   return {
@@ -920,7 +926,7 @@ function buildQueryOptions(
     options: {
       ...modelParameters,
       model: config.model.name,
-      tools: nativeToolNames.length > 0 ? nativeToolNames : [],
+      tools: [...nativeToolNames, ...extraBuiltins],
       allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
       mcpServers: toolMCP ? { [TOOL_MCP_NAME]: toolMCP } : undefined,
       hooks,
@@ -947,6 +953,26 @@ type ClaudeAgentsHostOptions = {
   settingSources?: SettingSource[];
 };
 
+/**
+ * What a per-invoke preparation adds to one run. Package-internal: the experimental skills
+ * integration is the only producer, and core names nothing experimental (TESTING.md §0.3).
+ */
+export type QueryPreparation = {
+  /** Extra `query()` options, spread with the handler's own, after `model.parameters`. */
+  options: Record<string, unknown>;
+  /** Built-in tool names appended to the config's native tools. */
+  extraBuiltins: string[];
+  /** Runs once when the run ends, however it ends. Must not throw. */
+  cleanup(): Promise<void>;
+};
+
+/**
+ * Called at the start of every invoke and stream, inside the run's span, so a throw fails the
+ * run like any other error. `undefined` means nothing to add, and the run is exactly the core
+ * handler's.
+ */
+export type PrepareQuery = (config: AiConfigRep) => Promise<QueryPreparation | undefined>;
+
 /** The host options given, and only those: an option not given is not sent (an empty list is). */
 function hostQueryOptions({ cwd, settingSources }: ClaudeAgentsHostOptions): Record<string, unknown> {
   return {
@@ -963,10 +989,11 @@ export function createClaudeAgentsHandler(
 }
 
 /** `createClaudeAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
-export function createClaudeAgentsHandlerInternal({
-  captureContent = false,
-  ...host
-}: ContentCaptureOptions & ClaudeAgentsHostOptions = {}): ProviderHandler {
+export function createClaudeAgentsHandlerInternal(
+  { captureContent = false, ...host }: ContentCaptureOptions & ClaudeAgentsHostOptions = {},
+  /** Package-internal hooks; never part of the public factory's options. */
+  { prepare }: { prepare?: PrepareQuery } = {},
+): ProviderHandler {
   // Trusted, so spread with the handler's own options, after `model.parameters`.
   const hostOptions = hostQueryOptions(host);
   return createHandlerInternal(
@@ -1020,12 +1047,15 @@ export function createClaudeAgentsHandlerInternal({
         // Set wherever the root's usage is written, so the failure path can tell whether the CLI
         // already reported an authoritative run-level total and must not be overwritten.
         let rootUsageWritten = false;
+        let prepared: QueryPreparation | undefined;
         try {
+          prepared = await prepare?.(config);
+          const extraBuiltins = prepared?.extraBuiltins ?? [];
           const toolMCP =
             Object.keys(userConfigTools).length > 0 ? await buildToolMCP(userConfigTools, toolHandlers) : undefined;
           const mcpAllowedTools = Object.keys(userConfigTools).map((n) => MCP_TOOL_PREFIX + n);
           toolTelemetry =
-            nativeToolNames.length > 0 || mcpAllowedTools.length > 0
+            nativeToolNames.length > 0 || mcpAllowedTools.length > 0 || extraBuiltins.length > 0
               ? buildToolHooks(nativeToolMap, parentContext, captureContent)
               : undefined;
 
@@ -1041,7 +1071,8 @@ export function createClaudeAgentsHandlerInternal({
               toolMCP,
               toolTelemetry?.hooks,
               buildModelParameterQueryOptions(config.model.parameters),
-              hostOptions,
+              { ...hostOptions, ...prepared?.options },
+              extraBuiltins,
             ),
           )) {
             recordConversationId(span, message);
@@ -1100,6 +1131,8 @@ export function createClaudeAgentsHandlerInternal({
           }
           failSpan(span, err);
           throw err;
+        } finally {
+          await prepared?.cleanup();
         }
       });
     },
@@ -1148,12 +1181,15 @@ export function createClaudeAgentsHandlerInternal({
       // Set wherever the root's usage is written, so the failure and abandonment paths can tell
       // whether the CLI already reported an authoritative run-level total.
       let rootUsageWritten = false;
+      let prepared: QueryPreparation | undefined;
       try {
+        prepared = await prepare?.(config);
+        const extraBuiltins = prepared?.extraBuiltins ?? [];
         const toolMCP =
           Object.keys(userConfigTools).length > 0 ? await buildToolMCP(userConfigTools, toolHandlers) : undefined;
         const mcpAllowedTools = Object.keys(userConfigTools).map((n) => MCP_TOOL_PREFIX + n);
         toolTelemetry =
-          nativeToolNames.length > 0 || mcpAllowedTools.length > 0
+          nativeToolNames.length > 0 || mcpAllowedTools.length > 0 || extraBuiltins.length > 0
             ? buildToolHooks(nativeToolMap, parentContext, captureContent)
             : undefined;
 
@@ -1169,7 +1205,8 @@ export function createClaudeAgentsHandlerInternal({
             toolMCP,
             toolTelemetry?.hooks,
             buildModelParameterQueryOptions(config.model.parameters),
-            { ...hostOptions, includePartialMessages: true },
+            { ...hostOptions, ...prepared?.options, includePartialMessages: true },
+            extraBuiltins,
           ),
         )) {
           recordConversationId(span, message);
@@ -1248,6 +1285,8 @@ export function createClaudeAgentsHandlerInternal({
           }
         }
         endSpanOnce(span, endedSpans, true);
+        // Last, after the span tree is closed: the run is over however it ended.
+        await prepared?.cleanup();
       }
     },
     captureContent,

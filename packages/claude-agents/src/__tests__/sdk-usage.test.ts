@@ -9,6 +9,7 @@ import {
   LD_AI_PACKAGE_NAME as AI_SDK_NAME,
   LD_AI_PACKAGE_VERSION as AI_SDK_VERSION,
 } from '../../../client/src/version.js';
+import { createClaudeAgentsSkillsHandler } from '../experimental.js';
 import { claudeGraph } from '../graph.js';
 import { claudeAgents, createClaudeAgentsHandler } from '../handler.js';
 import { toClaudeAgents } from '../native-graph.js';
@@ -78,6 +79,14 @@ describe('§3.27 claude-agents helper usage', () => {
       'claude-agents.createClaudeAgentsHandler',
       () => {
         createClaudeAgentsHandler();
+        return Promise.resolve();
+      },
+    ],
+    // The experimental factory reports its own ID and not the core factory's.
+    [
+      'experimental.createClaudeAgentsSkillsHandler',
+      () => {
+        createClaudeAgentsSkillsHandler();
         return Promise.resolve();
       },
     ],
