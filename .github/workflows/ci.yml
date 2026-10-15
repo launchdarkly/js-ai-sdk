@@ -89,6 +89,28 @@ jobs:
       - name: Package consistency (sherif)
         run: yarn lint:pkg
 
+  # ─── Dependency audit ───────────────────────────────────────────────────────
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Audit runtime dependencies
+        run: make audit
+
   # ─── Type check ─────────────────────────────────────────────────────────────
   typecheck:
     name: Type check
