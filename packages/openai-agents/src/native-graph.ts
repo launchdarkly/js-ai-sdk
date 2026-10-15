@@ -48,6 +48,8 @@ const buildNodeTools = (node: GraphNode, toolHandlers: Record<string, ToolHandle
       strict: false,
       // biome-ignore lint/suspicious/noExplicitAny: OpenAI Agents SDK tool parameters type does not accept Record<string, unknown>
       parameters: toolConfig.parameters as any,
+      // null, not undefined: the SDK default feeds a tool error back to the model; the spec (TESTING.md §1.4) says it must propagate.
+      errorFunction: null,
       execute: async (args) => {
         const handler = toolHandlers[name];
         if (!handler || (handler instanceof Object && 'id' in handler)) {

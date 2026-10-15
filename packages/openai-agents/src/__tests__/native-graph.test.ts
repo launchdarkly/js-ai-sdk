@@ -181,6 +181,16 @@ describe('toOpenAIAgents', () => {
 
   // ── Topology translation ──────────────────────────────────────────────────
 
+  it('tool handler error propagates through the real SDK tool() rather than reaching the model', async () => {
+    const { tool: realTool, RunContext } = await vi.importActual<typeof import('@openai/agents')>('@openai/agents');
+    const graph = makeTwoNodeGraph();
+    (graph.root.config as any).tools = { search: { name: 'search', type: 'function', parameters: { type: 'object' } } };
+    const search = vi.fn().mockRejectedValue(new Error('tool exploded'));
+    await toOpenAIAgents(Promise.resolve(graph), { toolHandlers: { search } }).invoke('hi');
+    const sdkTool = realTool(mockTool.mock.calls[0][0]) as any;
+    await expect(sdkTool.invoke(new RunContext({}), '{}')).rejects.toThrow('tool exploded');
+  });
+
   it('creates one Agent per node in a two-node graph', async () => {
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
     expect(mockAgentConstructor).toHaveBeenCalledTimes(2);
