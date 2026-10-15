@@ -397,6 +397,11 @@ export type LDVariationMeta = {
     modelVersion?: number;
 };
 
+// Warning: (ae-internal-missing-underscore) The name "makeGraphTrackData" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export const makeGraphTrackData: (graphKey: string, runId: string) => TrackData;
+
 // @public
 export const makeNodeTrackData: (node: GraphNode, graphKey: string, runId: string) => TrackData;
 
