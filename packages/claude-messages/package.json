@@ -1,6 +1,6 @@
 {
   "name": "@launchdarkly/ai-claude-messages",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "license": "Apache-2.0",
   "author": "LaunchDarkly <team@launchdarkly.com>",
   "description": "Anthropic Messages API provider for @launchdarkly/ai-server",
@@ -51,7 +51,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.103.0",
-    "@launchdarkly/ai-server": "^0.4.0",
+    "@launchdarkly/ai-server": "^0.4.1",
     "@opentelemetry/api": "^1.9.1"
   },
   "devDependencies": {
