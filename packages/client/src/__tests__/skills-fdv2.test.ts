@@ -2304,8 +2304,8 @@ describe('failure handling', () => {
     store.start();
     expect(await waitUntil(() => store.failed !== null)).toBe(true);
     expect(store.failed).toContain('403');
-    expect(store.failed).toContain('opt-in');
-    expect(consoleErrors()).toContain('opt-in');
+    expect(store.failed).toContain('proxy');
+    expect(consoleErrors()).toContain('proxy');
   });
 
   it('stops on 401', async () => {
