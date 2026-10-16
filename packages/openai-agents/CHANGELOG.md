@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-openai-agents-0.4.0...@launchdarkly/ai-openai-agents-0.4.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **AIC-3586:** propagate tool handler errors instead of sending them to the model ([#139](https://github.com/launchdarkly/js-ai-sdk/issues/139)) ([1f31e85](https://github.com/launchdarkly/js-ai-sdk/commit/1f31e853f04aa7a60f4f6ad82f29762042d78bd4))
+* give native graph spans their LaunchDarkly identity ([#101](https://github.com/launchdarkly/js-ai-sdk/issues/101)) ([4d97cfa](https://github.com/launchdarkly/js-ai-sdk/commit/4d97cfa4f81564f5389728dbd3e2d418e2f44f27))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.4.0 to ^0.4.1
+
 ## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-openai-agents-0.3.0...@launchdarkly/ai-openai-agents-0.4.0) (2026-10-09)
 
 

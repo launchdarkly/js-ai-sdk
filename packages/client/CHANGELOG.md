@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.4.0...@launchdarkly/ai-server-0.4.1) (2026-10-16)
+
+
+### Experimental
+
+* **skills:** Correct the HTTP 403 advice now that server-side FDv2 is available to every account ([#141](https://github.com/launchdarkly/js-ai-sdk/issues/141)) ([5b7b732](https://github.com/launchdarkly/js-ai-sdk/commit/5b7b732c726dd701a84f7480848e71bfc1d50ff4))
+
+
+### Bug Fixes
+
+* **AIC-3541:** accept a node-server-sdk client in initClient() without a cast ([#128](https://github.com/launchdarkly/js-ai-sdk/issues/128)) ([5819449](https://github.com/launchdarkly/js-ai-sdk/commit/58194493ebcea036115563ed2c2eda5aea303edd))
+* give native graph spans their LaunchDarkly identity ([#101](https://github.com/launchdarkly/js-ai-sdk/issues/101)) ([4d97cfa](https://github.com/launchdarkly/js-ai-sdk/commit/4d97cfa4f81564f5389728dbd3e2d418e2f44f27))
+
 ## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.3.0...@launchdarkly/ai-server-0.4.0) (2026-10-09)
 
 
