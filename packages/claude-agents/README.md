@@ -34,6 +34,28 @@ console.log(result.response);
 await shutdown();
 ```
 
+### Handler options
+
+`createClaudeAgentsHandler(options?)` accepts:
+
+| Option | Default | Description |
+|---|---|---|
+| `captureContent` | `false` | Put prompts, model output, and tool arguments and results on the emitted spans. |
+| `cwd` | `process.cwd()` | Working directory for the Claude Code process the Agent SDK starts. |
+| `settingSources` | every source | Which Claude Code settings sources to load: `'user'` (`~/.claude/settings.json`), `'project'` (`.claude/settings.json`, and `CLAUDE.md`), `'local'` (`.claude/settings.local.json`). `[]` loads none. |
+
+These configure the host process, not the model, so only your application can set them. A flag's model parameters can't set or override either one.
+
+> **By default a run loads the host's own Claude Code settings.** With `settingSources` unset, the Claude Code process loads the user, project and local settings of the machine it runs on, including their plugins, skills, hooks and permission rules. To run an agent from its LaunchDarkly config alone, isolate it:
+>
+> ```ts
+> createClaudeAgentsHandler({ settingSources: [] });
+> ```
+
+### Built-in tools
+
+A run has no Claude Code built-in tools (`Read`, `Bash`, and the rest) unless its config attaches them. Attach one by mapping a tool key to its exported sentinel, such as `ClaudeRead` or `ClaudeBash`, in `toolHandlers`. Tools you define in the flag config are always available to the model through the handler's MCP server, whatever built-ins are attached.
+
 ### Convenience wrapper
 
 ```ts

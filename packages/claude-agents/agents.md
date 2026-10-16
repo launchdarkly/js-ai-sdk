@@ -32,7 +32,7 @@ That means the LaunchDarkly flag variation must have `provider.name === "Anthrop
 
 ```ts
 // Factory — returns a ProviderHandler with providesFor attached
-export function createClaudeAgentsHandler(): ProviderHandler
+export function createClaudeAgentsHandler(options?: { captureContent?: boolean; cwd?: string; settingSources?: SettingSource[] }): ProviderHandler
 
 // Convenience wrapper — identical to config({ ...options, key: configKey, handler: createClaudeAgentsHandler() }).invoke(userInput, context)
 export const claudeAgents: (configKey: string, userInput: string, context: LDContext, options?: Omit<ConfigArgs, 'handler' | 'key'>) => Promise<ProviderResponse>
@@ -100,6 +100,12 @@ Tools are delivered via an in-process MCP server, not as raw JSON schema defs. T
 6. Allowed tools are prefixed: `mcp__tool-mcp__<toolName>`.
 
 If `config.tools` is absent, `toolMCP` and `allowedTools` are both `undefined`.
+
+**`tools` is always sent, and it is `[]` when the config attaches no `NativeTool`.** The explicit empty list switches every Claude Code built-in off. Omitting the key would leave the Agent SDK default, the full built-in set, on every run, and the read-only tools in it need no permission. A config turns a built-in on by attaching its sentinel (`ClaudeRead`, `ClaudeBash`, …); user-defined tools go through the MCP server and are not governed by `tools`.
+
+### 2a. Host options (`cwd`, `settingSources`)
+
+`createClaudeAgentsHandler({ cwd, settingSources })` takes two trusted, app-supplied options and passes each one given to every `query()` call, blocking and streaming. They are spread with the handler's own options, after `model.parameters`, and `model-parameters.ts` already drops both from a config, so a config can neither set nor override them. An option not given is not sent (`settingSources: []` is sent as `[]`): the CLI then runs in `process.cwd()` and loads **every** settings source, including the host's own plugins, skills, hooks and permission rules. That default is unchanged on purpose; the README tells applications to pass `settingSources: []` to isolate a run. The convenience wrappers and the native graph adapter do not take these options.
 
 ### 3. Agentic Loop
 
