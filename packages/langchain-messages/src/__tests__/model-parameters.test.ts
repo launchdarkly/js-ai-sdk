@@ -18,116 +18,125 @@ describe('modelConstructorParameters', () => {
     ).toEqual({});
   });
 
-  it('forwards ChatOpenAI fields under their constructor names', () => {
+  // The cross-SDK LangChain lists (TESTING.md §1.12), each key with a well-formed value. Every
+  // removed key is in NEVER_FORWARDED_PARAMETERS, which is mixed in so the result proves it is gone.
+  it('forwards exactly the canonical ChatOpenAI keys, under their constructor names', () => {
     expect(
       modelConstructorParameters(
         {
-          temperature: 0.2,
-          max_tokens: 100,
-          max_completion_tokens: 200,
-          top_p: 0.9,
+          ...NEVER_FORWARDED_PARAMETERS,
           frequency_penalty: 0.1,
-          presence_penalty: 0.2,
-          n: 2,
           logit_bias: { '50256': -100 },
           logprobs: true,
-          top_logprobs: 3,
-          stop: ['END'],
-          stream_usage: true,
-          reasoning: { effort: 'low' },
-          verbosity: 'low',
+          max_completion_tokens: 200,
+          max_tokens: 100,
+          n: 2,
+          presence_penalty: 0.2,
           service_tier: 'flex',
-          prompt_cache_key: 'k',
-          use_responses_api: true,
-          user: 'u-1',
-          tags: ['t'],
-          metadata: { a: 1 },
+          stop: ['END'],
+          stop_sequences: ['STOP'],
+          temperature: 0.2,
+          top_logprobs: 3,
+          top_p: 0.9,
+          verbosity: 'low',
         },
         'openai',
       ),
     ).toEqual({
-      temperature: 0.2,
-      maxTokens: 100,
-      maxCompletionTokens: 200,
-      topP: 0.9,
       frequencyPenalty: 0.1,
-      presencePenalty: 0.2,
-      n: 2,
       logitBias: { '50256': -100 },
       logprobs: true,
-      topLogprobs: 3,
-      stop: ['END'],
-      streamUsage: true,
-      reasoning: { effort: 'low' },
-      verbosity: 'low',
+      maxCompletionTokens: 200,
+      maxTokens: 100,
+      n: 2,
+      presencePenalty: 0.2,
       // ChatOpenAI reads this one field in snake_case.
       service_tier: 'flex',
-      promptCacheKey: 'k',
-      useResponsesApi: true,
-      user: 'u-1',
-      tags: ['t'],
-      metadata: { a: 1 },
+      stop: ['END'],
+      stopSequences: ['STOP'],
+      temperature: 0.2,
+      topLogprobs: 3,
+      topP: 0.9,
+      verbosity: 'low',
     });
   });
 
-  it('forwards ChatAnthropic fields, keeps nested Messages API shapes, and folds effort into outputConfig', () => {
+  it('forwards exactly the canonical ChatAnthropic keys, keeps nested Messages API shapes, and folds effort into outputConfig', () => {
     expect(
       modelConstructorParameters(
         {
-          temperature: 0.2,
-          max_tokens: 100,
-          top_k: 40,
-          top_p: 0.9,
-          stop_sequences: ['END'],
-          thinking: { type: 'enabled', budget_tokens: 1024 },
-          context_management: { edits: [{ type: 'clear_tool_uses_20250919' }] },
-          inference_geo: 'us',
+          ...NEVER_FORWARDED_PARAMETERS,
           betas: ['context-1m-2025-08-07'],
           effort: 'low',
+          max_tokens: 100,
+          output_config: { format: { type: 'json_schema', schema: {} } },
+          stop_sequences: ['END'],
+          temperature: 0.2,
+          thinking: { type: 'enabled', budget_tokens: 1024 },
+          top_k: 40,
+          top_p: 0.9,
         },
         'anthropic',
       ),
     ).toEqual({
-      temperature: 0.2,
+      betas: ['context-1m-2025-08-07'],
       maxTokens: 100,
+      // ChatAnthropic sends these to the Messages API as written, so they stay snake_case.
+      outputConfig: { effort: 'low', format: { type: 'json_schema', schema: {} } },
+      stopSequences: ['END'],
+      temperature: 0.2,
+      thinking: { type: 'enabled', budget_tokens: 1024 },
       topK: 40,
       topP: 0.9,
-      stopSequences: ['END'],
-      // ChatAnthropic sends these to the Messages API as written, so they stay snake_case.
-      thinking: { type: 'enabled', budget_tokens: 1024 },
-      contextManagement: { edits: [{ type: 'clear_tool_uses_20250919' }] },
-      inferenceGeo: 'us',
-      betas: ['context-1m-2025-08-07'],
-      outputConfig: { effort: 'low' },
     });
     expect(modelConstructorParameters({ effort: 'low', output_config: { effort: 'high' } }, 'anthropic')).toEqual({
       outputConfig: { effort: 'high' },
     });
   });
 
-  it('forwards ChatBedrockConverse fields under their constructor names', () => {
+  it('maps ChatAnthropic max_tokens_to_sample to maxTokens and stop to stopSequences; the primary names win', () => {
+    expect(modelConstructorParameters({ max_tokens_to_sample: 50, stop: ['A'] }, 'anthropic')).toEqual({
+      maxTokens: 50,
+      stopSequences: ['A'],
+    });
+    expect(
+      modelConstructorParameters(
+        { max_tokens_to_sample: 50, max_tokens: 60, stop: ['A'], stop_sequences: ['B'] },
+        'anthropic',
+      ),
+    ).toEqual({ maxTokens: 60, stopSequences: ['B'] });
+  });
+
+  it('forwards exactly the canonical ChatBedrockConverse keys, under their constructor names', () => {
     expect(
       modelConstructorParameters(
         {
-          temperature: 0.2,
+          ...NEVER_FORWARDED_PARAMETERS,
           max_tokens: 100,
-          top_p: 0.9,
-          guardrail_config: { guardrailIdentifier: 'g', guardrailVersion: '1' },
           performance_config: { latency: 'optimized' },
           service_tier: 'priority',
-          supports_tool_choice_values: ['auto'],
+          temperature: 0.2,
+          top_p: 0.9,
           application_inference_profile: 'arn:smuggled',
         },
         'bedrock',
       ),
     ).toEqual({
-      temperature: 0.2,
       maxTokens: 100,
-      topP: 0.9,
-      guardrailConfig: { guardrailIdentifier: 'g', guardrailVersion: '1' },
       performanceConfig: { latency: 'optimized' },
       serviceTier: 'priority',
-      supportsToolChoiceValues: ['auto'],
+      temperature: 0.2,
+      topP: 0.9,
     });
+  });
+
+  it.each([
+    ['anthropic', 'thinking', 'enabled'],
+    ['anthropic', 'thinking', { budget_tokens: 1024 }],
+    ['anthropic', 'output_config', 'high'],
+    ['openai', 'logit_bias', [1, 2]],
+    ['bedrock', 'performance_config', 'optimized'],
+  ] as const)('drops a malformed nested value for %s: %s = %j', (modelClass, key, value) => {
+    expect(modelConstructorParameters({ [key]: value, temperature: 0.1 }, modelClass)).toEqual({ temperature: 0.1 });
   });
 });

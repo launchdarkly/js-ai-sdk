@@ -271,56 +271,80 @@ describe('createOpenAIAgentHandler', () => {
     expect(mockRun.mock.calls[0][2]).toBeUndefined();
   });
 
-  it('forwards every allowed ModelSettings field under its SDK name and shape', async () => {
+  // The OpenAI Agents list in the cross-SDK spec (TESTING.md §1.12), each key with a well-formed
+  // value, plus keys that are not on it.
+  const CANONICAL_PARAMETERS = {
+    frequency_penalty: 0.1,
+    max_tokens: 256,
+    max_turns: 4,
+    parallel_tool_calls: false,
+    presence_penalty: 0.2,
+    reasoning: { effort: 'low', summary: 'auto', extra_key: 'dropped' },
+    temperature: 0.4,
+    text: { format: { type: 'text' } },
+    tool_choice: 'auto',
+    top_p: 0.9,
+    verbosity: 'low',
+  };
+  const REMOVED_PARAMETERS = {
+    context_management: [{ type: 'compaction', compact_threshold: 1000 }],
+    prompt_cache_retention: '24h',
+    store: false,
+    truncation: 'auto',
+    retry: { maxRetries: 5 },
+    provider_data: { extra_headers: { Authorization: 'Bearer ATTACKER' } },
+  };
+  const EXPECTED_MODEL_SETTINGS = {
+    frequencyPenalty: 0.1,
+    maxTokens: 256,
+    parallelToolCalls: false,
+    presencePenalty: 0.2,
+    reasoning: { effort: 'low', summary: 'auto' },
+    temperature: 0.4,
+    text: { verbosity: 'low' },
+    toolChoice: 'auto',
+    topP: 0.9,
+  };
+
+  it('forwards exactly the canonical keys, under their SDK names and shapes', async () => {
     mockRun.mockResolvedValue(mockRunResult());
     const config = {
       ...baseConfig,
-      model: {
-        ...baseConfig.model,
-        parameters: {
-          temperature: 0.4,
-          top_p: 0.9,
-          frequency_penalty: 0.1,
-          presence_penalty: 0.2,
-          tool_choice: 'auto',
-          parallel_tool_calls: false,
-          truncation: 'auto',
-          max_tokens: 256,
-          store: false,
-          prompt_cache_retention: '24h',
-          reasoning: { effort: 'low', summary: 'auto', extra_key: 'dropped' },
-          verbosity: 'low',
-          context_management: [
-            { type: 'compaction', compact_threshold: 1000, extra_key: 'dropped' },
-            { type: 'compaction', compactThreshold: 2000 },
-            { compact_threshold: 3000 },
-            'not-an-entry',
-          ],
-          retry: { maxRetries: 5 },
-          provider_data: { extra_headers: { Authorization: 'Bearer ATTACKER' } },
-        },
-      },
+      model: { ...baseConfig.model, parameters: { ...CANONICAL_PARAMETERS, ...REMOVED_PARAMETERS } },
     };
     await createOpenAIAgentHandler()(config as any, 'q');
-    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({
-      temperature: 0.4,
-      topP: 0.9,
-      frequencyPenalty: 0.1,
-      presencePenalty: 0.2,
-      toolChoice: 'auto',
-      parallelToolCalls: false,
-      truncation: 'auto',
-      maxTokens: 256,
-      store: false,
-      promptCacheRetention: '24h',
-      reasoning: { effort: 'low', summary: 'auto' },
-      text: { verbosity: 'low' },
-      // Entries are rebuilt as { type, compactThreshold }; ones without a type are dropped.
-      contextManagement: [
-        { type: 'compaction', compactThreshold: 1000 },
-        { type: 'compaction', compactThreshold: 2000 },
-      ],
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual(EXPECTED_MODEL_SETTINGS);
+    expect(mockRun.mock.calls[0][2]).toEqual({ maxTurns: 4 });
+  });
+
+  it('forwards exactly the canonical keys on the streaming path, the same as invoke', async () => {
+    mockRun.mockResolvedValue({
+      [Symbol.asyncIterator]: async function* () {},
+      state: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+      finalOutput: '',
     });
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { ...CANONICAL_PARAMETERS, ...REMOVED_PARAMETERS } },
+    };
+    for await (const _e of createOpenAIAgentHandler().stream?.(config as any, 'q', {}, {}) ?? []) {
+      // drain
+    }
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual(EXPECTED_MODEL_SETTINGS);
+    expect(mockRun.mock.calls[0][2]).toMatchObject({ maxTurns: 4 });
+  });
+
+  it.each([
+    ['reasoning', 'low'],
+    ['reasoning', { other: 1 }],
+    ['text', 'low'],
+    ['text', { format: { type: 'text' } }],
+    ['tool_choice', { type: 'function', name: 'f' }],
+  ])('drops a malformed %s (%j)', async (key, value) => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { [key]: value, temperature: 0.1 } } };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ temperature: 0.1 });
   });
 
   it('prefers an explicit text.verbosity over a top-level verbosity', async () => {
