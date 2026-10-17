@@ -1,0 +1,34 @@
+service: ld-ai-canary
+frameworkVersion: '3'
+
+# Serverless 3's schema predates nodejs22.x; CloudFormation accepts it.
+configValidationMode: warn
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  region: ${env:AWS_REGION, 'us-east-1'}
+  stage: ${opt:stage, 'local'}
+  memorySize: 512
+  timeout: 30
+  logRetentionInDays: 1
+  architecture: x86_64
+  stackTags:
+    owner: launchdarkly-ai-sdk
+    purpose: js-ai-sdk-release-canary
+    ephemeral: 'true'
+
+plugins:
+  - serverless-webpack
+
+custom:
+  webpack:
+    webpackConfig: webpack.config.cjs
+    includeModules: true
+    packager: npm
+
+functions:
+  capability:
+    name: ld-ai-canary-${sls:stage}
+    handler: handler.handler
+    description: Loads the published LaunchDarkly AI packages and reports what resolved.
