@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: 'npm'
+    # Yarn workspace root: one yarn.lock covers every packages/* workspace.
+    directory: '/'
+    schedule:
+      interval: 'daily'
+    cooldown:
+      default-days: 7
+  - package-ecosystem: 'github-actions'
+    # '/' covers .github/workflows only; the composite actions pin their own actions.
+    directories:
+      - '/'
+      - '/.github/actions/*'
+    schedule:
+      interval: 'weekly'
+    cooldown:
+      default-days: 7
