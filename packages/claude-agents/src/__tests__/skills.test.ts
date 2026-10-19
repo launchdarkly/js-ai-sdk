@@ -145,6 +145,16 @@ describe('routing and options', () => {
     expect(seen[0].options.cwd).toBe('/srv/app');
     expect(seen[0].options.settingSources).toEqual([]);
   });
+
+  it('loads the same settings sources as the core handler when skills are enabled', async () => {
+    store.put(rawSkill('a', 1));
+    const seen: Seen[] = [];
+    mockQuery.mockImplementation(recordingQuery(seen));
+    await handlerFor()(withSkills([{ key: 'a', version: 1 }]) as any, 'q');
+    await createClaudeAgentsHandler()(withSkills([{ key: 'a', version: 1 }]) as any, 'q');
+    expect(seen[0].options.settingSources).toEqual([]);
+    expect(seen[0].options.settingSources).toEqual(seen[1].options.settingSources);
+  });
 });
 
 describe('entry points', () => {
