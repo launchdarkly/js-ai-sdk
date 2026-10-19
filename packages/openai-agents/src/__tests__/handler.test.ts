@@ -417,6 +417,21 @@ describe('createOpenAIAgentHandler', () => {
     await expect(toolObj.execute({})).rejects.toThrow('tool exploded');
   });
 
+  it('tool handler error propagates through the real SDK tool() rather than reaching the model', async () => {
+    // The mock above calls `execute` directly, which skips the SDK's error wrapper; build the real tool.
+    const { tool: realTool, RunContext } = await vi.importActual<typeof import('@openai/agents')>('@openai/agents');
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      tools: { search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } } },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q', {
+      search: vi.fn().mockRejectedValue(new Error('tool exploded')),
+    });
+    const sdkTool = realTool(mockTool.mock.calls[0][0]) as any;
+    await expect(sdkTool.invoke(new RunContext({}), '{}')).rejects.toThrow('tool exploded');
+  });
+
   it('does not call tool() when config.tools is absent, even if toolHandlers is non-empty', async () => {
     mockRun.mockResolvedValue(mockRunResult());
     await createOpenAIAgentHandler()(baseConfig as any, 'q', { search: vi.fn() });
