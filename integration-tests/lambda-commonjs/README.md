@@ -89,7 +89,9 @@ The job stays skipped until these repository variables exist.
 | `AWS_LAMBDA_CANARY_REGION` | Optional. The default is `us-east-1`. |
 
 The trust policy of the role must allow `token.actions.githubusercontent.com`.
-Limit `sub` to `repo:launchdarkly/js-ai-sdk:*`.
+Limit `sub` to `repo:launchdarkly/js-ai-sdk:ref:refs/heads/main`.
+The release push runs from `main`, and you start a canary dispatch from `main` too.
+A wider `sub` lets a workflow on any branch assume the role.
 Set `aud` to `https://github.com/launchdarkly`.
 
 The role needs these permissions. Scope each one to the `ld-ai-canary-*` resources.
@@ -103,8 +105,16 @@ The role needs these permissions. Scope each one to the `ld-ai-canary-*` resourc
   `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `InvokeFunction`, `ListVersionsByFunction`,
   `TagResource`
 - `logs:CreateLogGroup`, `DeleteLogGroup`, `DescribeLogGroups`, `PutRetentionPolicy`
-- `iam:CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `PutRolePolicy`, `DeleteRolePolicy`,
-  `AttachRolePolicy`, `DetachRolePolicy` for the execution role of the function
+- `iam:CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `PutRolePolicy`, `DeleteRolePolicy`
+  for the execution role of the function
+
+The generated stack puts inline `Policies` on the execution role only.
+So the role needs no `iam:AttachRolePolicy` and no `iam:DetachRolePolicy`.
+
+The `iam:CreateRole` and `iam:PutRolePolicy` actions need an `iam:PermissionsBoundary` condition.
+That condition stops the role from granting itself more rights than the boundary allows.
+The fixture reads the boundary from `LD_AI_CANARY_PERMISSIONS_BOUNDARY`.
+Set that variable to the same boundary policy ARN that the condition names.
 
 ### When the canary fails
 
@@ -114,9 +124,13 @@ That is the AIC-3370 bug again.
 Run the local dry run above with the published versions.
 Then invoke the generated bundle directly.
 
+The `serverless-webpack` plugin deletes `.webpack/` after it writes the zip.
+So you unzip the package first, and then you load `handler.js` from there.
+
 ```bash
 cd integration-tests/lambda-commonjs/.canary/app
-node -e "require('./.webpack/service/handler.js').handler().then(console.log, console.error)"
+unzip -o .serverless/ld-ai-canary.zip -d .unzipped
+node -e "require('./.unzipped/handler.js').handler().then(console.log, console.error)"
 ```
 
 The cleanup step always runs. The step prints an error when it cannot delete the stack.

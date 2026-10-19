@@ -13,6 +13,9 @@ provider:
   timeout: 30
   logRetentionInDays: 1
   architecture: x86_64
+  iam:
+    role:
+      permissionsBoundary: ${env:LD_AI_CANARY_PERMISSIONS_BOUNDARY, null}
   stackTags:
     owner: launchdarkly-ai-sdk
     purpose: js-ai-sdk-release-canary
