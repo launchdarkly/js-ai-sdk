@@ -36,9 +36,12 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/skills-fdv2.ts` | Agent Skills delivery transport — the FDv2 protocol, the wire-key/`version` translation, the held object set, and `FDv2SkillStore`. Sits **below** the store seam; imports `skills-core` only, and nothing imports it |
 | `src/skills-watch.ts` | Agent Skills eager re-reconcile — `watchSkills` / `SkillWatcher`, wiring the store's change listener to `writeSkills`. Sits **above** `skills-fs` and modifies none of it |
 | `src/skills-fs.ts` | `writeSkills` — the manifest format, on-disk filenames, and reconcile semantics |
-| `src/evaluations.ts` | Evaluations from Code (stub) — `initEvaluations`, `EvaluationsModule`, `run()` options and result types, `EvaluationsError` |
-| `src/evaluations-tools.ts` | Evaluations from Code (stub) — `EvalTool` |
-| `src/evaluations-criteria.ts` | Evaluations from Code (stub) — `Judge`, `Scorer`, `Criterion` |
+| `src/evaluations.ts` | Evaluations from Code — `initEvaluations`, `EvaluationsModule.run()` and its argument validation and orchestration, the public option and result types |
+| `src/evaluations-api.ts` | Evaluations from Code — the retrying management API client, its injectable `Transport` seam, `EvaluationsError`, and the strict-JSON check |
+| `src/evaluations-runner.ts` | Evaluations from Code — the management API operations, row rendering, handler config, the generation phase, event payloads and flushing, and summary parsing |
+| `src/evaluations-tools.ts` | Evaluations from Code — `EvalTool` (inline and library), tool validation, and `tools.get()` |
+| `src/evaluations-criteria.ts` | Evaluations from Code — `Judge`, `Scorer`, `Criterion`. The evaluation phase that runs them is not implemented yet: a run with criteria throws before creating any record |
+| `src/trajectory.ts` | Tool-call trajectory capture — `TrajectoryRecorder`, one per evaluation row. Capture only; rendering for a judge comes with the evaluation phase |
 | `src/safe-fs.ts` | Symlink-refusing filesystem primitives. Knows nothing about skills; owns the single interceptable rename and unlink call sites |
 | `src/index.ts` | Public barrel — the package root, and the only surface handler packages import from |
 | `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Agent Skills and Evaluations from Code are exported here and only here |

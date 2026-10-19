@@ -42,10 +42,10 @@ export type Criterion = Judge | Scorer;
 // @public
 export type DatasetRow = {
     rowIndex: number;
-    input?: string;
-    expectedOutput?: string;
+    input: string | null;
+    expectedOutput: string | null;
     variables: Record<string, unknown>;
-    metadata?: Record<string, unknown>;
+    metadata: Record<string, unknown> | null;
 };
 
 // @public
@@ -62,6 +62,7 @@ export class EvalTool {
     readonly description: string;
     readonly implementation: EvalToolImplementation;
     readonly key: string;
+    readonly projectKey: string | undefined;
     readonly schema: Readonly<Record<string, unknown>>;
     readonly source: 'library' | 'inline';
     readonly version: number | undefined;
@@ -74,15 +75,18 @@ export type EvalToolImplementation = Function | NativeTool;
 
 // @public
 export class EvaluationsError extends Error {
-    constructor(message: string);
+    constructor(message: string, options?: {
+        cause?: unknown;
+    });
 }
 
 // @public
 export class EvaluationsModule {
     // @internal
-    constructor(projectKey: string);
+    constructor(internalsArg: unknown);
     readonly projectKey: string;
-    run(_options: RunOptions): Promise<EvalRunResult>;
+    run(options: RunOptions): Promise<EvalRunResult>;
+    readonly sdkKey: string | undefined;
     readonly tools: ToolsClient;
 }
 
@@ -153,7 +157,7 @@ export function getSkillResult(key: string, options?: {
 export function getSkills(refs: ReadonlyArray<SkillReference | string>): Promise<Skill[]>;
 
 // @public
-export function initEvaluations(_options?: InitEvaluationsOptions): EvaluationsModule;
+export function initEvaluations(options?: InitEvaluationsOptions): EvaluationsModule;
 
 // @public
 export type InitEvaluationsOptions = {
@@ -412,8 +416,8 @@ export type WriteSkillsOptions = {
 
 // Warnings were encountered during analysis:
 //
-// temp/dts/evaluations.d.ts:73:5 - (ae-forgotten-export) The symbol "ConfigMessage" needs to be exported by the entry point experimental.d.ts
-// temp/dts/evaluations.d.ts:114:5 - (ae-forgotten-export) The symbol "ProviderHandler" needs to be exported by the entry point experimental.d.ts
+// temp/dts/evaluations.d.ts:52:5 - (ae-forgotten-export) The symbol "ConfigMessage" needs to be exported by the entry point experimental.d.ts
+// temp/dts/evaluations.d.ts:96:5 - (ae-forgotten-export) The symbol "ProviderHandler" needs to be exported by the entry point experimental.d.ts
 // temp/dts/skills-fdv2.d.ts:454:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point experimental.d.ts
 
 // (No @packageDocumentation comment for this package)
