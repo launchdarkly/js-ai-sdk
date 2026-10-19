@@ -965,23 +965,29 @@ function buildQueryOptions(
  *
  * `cwd` and `settingSources` configure the host process the Agent SDK starts, not the model, so
  * they come from the application and never from a config: `model.parameters` cannot set or
- * override either. Each one given is passed to every `query()` call unchanged. One not given is
- * not sent, which leaves the Agent SDK default: the process's working directory, and every
- * settings source (`user`, `project`, `local`) — including that host's plugins, skills, hooks
- * and permission rules. Pass `settingSources: []` to isolate a run from them.
+ * override either. Each one given is passed to every `query()` call unchanged.
+ *
+ * Host settings load only when the application opts in. `settingSources` not given sends `[]`,
+ * because the Agent SDK's own default loads every source (`user`, `project`, `local`),
+ * including that host's plugins, skills, hooks, permission rules and `CLAUDE.md`. Pass the
+ * sources to load them, e.g. `['user', 'project', 'local']` for all. `cwd` not given is not
+ * sent, which leaves the process's working directory.
  */
 type ClaudeAgentsHostOptions = {
   /** Working directory for the Claude Code process. Defaults to `process.cwd()`. */
   cwd?: string;
-  /** Which filesystem settings sources the CLI loads. Omitted, it loads all of them; `[]` loads none. */
+  /**
+   * Which filesystem settings sources the CLI loads. Defaults to `[]`: none. The Agent SDK still
+   * reads the managed-settings policy tier, which no option turns off.
+   */
   settingSources?: SettingSource[];
 };
 
-/** The host options given, and only those: an option not given is not sent (an empty list is). */
+/** The host options for `query()`: `settingSources` always, `[]` unless given; `cwd` only if given. */
 function hostQueryOptions({ cwd, settingSources }: ClaudeAgentsHostOptions): Record<string, unknown> {
   return {
     ...(cwd !== undefined && { cwd }),
-    ...(settingSources !== undefined && { settingSources }),
+    settingSources: settingSources ?? [],
   };
 }
 

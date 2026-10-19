@@ -263,7 +263,8 @@ describe('createClaudeAgentsHandler', () => {
     const { options } = mockQuery.mock.calls[0][0];
     // mcpServers and hooks are set by the handler itself; the deep check proves neither carries
     // the config's value.
-    expectNoNeverForwardedValue(options, ['mcpServers', 'hooks']);
+    // `settingSources` is handler-owned: always sent, `[]` unless the application gives sources.
+    expectNoNeverForwardedValue(options, ['mcpServers', 'hooks', 'settingSources']);
   });
 
   it('never forwards them on the streaming path either', async () => {
@@ -273,7 +274,8 @@ describe('createClaudeAgentsHandler', () => {
     const config = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
     await collectStream(createClaudeAgentsHandler().stream?.(config as any, 'q', {}, {}));
     const { options } = mockQuery.mock.calls[0][0];
-    expectNoNeverForwardedValue(options, ['mcpServers', 'hooks']);
+    // `settingSources` is handler-owned: always sent, `[]` unless the application gives sources.
+    expectNoNeverForwardedValue(options, ['mcpServers', 'hooks', 'settingSources']);
   });
 
   it('forwards every allowed key under the Claude Agent SDK name and shape', async () => {
@@ -1075,10 +1077,16 @@ describe('createClaudeAgentsHandler — host options and built-in tool set', () 
       expect(options.settingSources).toEqual(['project']);
     });
 
-    it('sends neither key when neither option is given', async () => {
+    it('sends settingSources: [] and no cwd when neither option is given', async () => {
       const options = await queryOptions(createClaudeAgentsHandler(), path);
       expect(Object.hasOwn(options, 'cwd')).toBe(false);
-      expect(Object.hasOwn(options, 'settingSources')).toBe(false);
+      expect(options.settingSources).toEqual([]);
+    });
+
+    it('loads host settings only when the application opts in', async () => {
+      const all = ['user', 'project', 'local'] as const;
+      const options = await queryOptions(createClaudeAgentsHandler({ settingSources: [...all] }), path);
+      expect(options.settingSources).toEqual([...all]);
     });
 
     it('forwards settingSources: [] as an empty list', async () => {
@@ -1102,9 +1110,11 @@ describe('createClaudeAgentsHandler — host options and built-in tool set', () 
         },
       };
       const fromConfig = await queryOptions(createClaudeAgentsHandler(), path, config);
-      for (const key of ['cwd', 'settingSources', 'plugins', 'skills']) {
+      for (const key of ['cwd', 'plugins', 'skills']) {
         expect(fromConfig[key]).toBeUndefined();
       }
+      // The handler's own default, not the config's `['user']`.
+      expect(fromConfig.settingSources).toEqual([]);
       const overridden = await queryOptions(createClaudeAgentsHandler({ cwd: '/srv/app' }), path, config);
       expect(overridden.cwd).toBe('/srv/app');
     });

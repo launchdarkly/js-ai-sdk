@@ -42,15 +42,17 @@ await shutdown();
 |---|---|---|
 | `captureContent` | `false` | Put prompts, model output, and tool arguments and results on the emitted spans. |
 | `cwd` | `process.cwd()` | Working directory for the Claude Code process the Agent SDK starts. |
-| `settingSources` | every source | Which Claude Code settings sources to load: `'user'` (`~/.claude/settings.json`), `'project'` (`.claude/settings.json`, and `CLAUDE.md`), `'local'` (`.claude/settings.local.json`). `[]` loads none. |
+| `settingSources` | `[]` (none) | Which Claude Code settings sources to load: `'user'` (`~/.claude/settings.json`), `'project'` (`.claude/settings.json`, and `CLAUDE.md`), `'local'` (`.claude/settings.local.json`). |
 
 These configure the host process, not the model, so only your application can set them. A flag's model parameters can't set or override either one.
 
-> **By default a run loads the host's own Claude Code settings.** With `settingSources` unset, the Claude Code process loads the user, project and local settings of the machine it runs on, including their plugins, skills, hooks and permission rules. To run an agent from its LaunchDarkly config alone, isolate it:
+> **A run loads none of the host's Claude Code settings unless you opt in.** The Claude Agent SDK's own default loads the user, project and local settings of the machine it runs on, including their plugins, skills, hooks, permission rules and `CLAUDE.md`. This handler sends `settingSources: []` instead, so an agent runs from its LaunchDarkly config alone. To load host settings, name the sources:
 >
 > ```ts
-> createClaudeAgentsHandler({ settingSources: [] });
+> createClaudeAgentsHandler({ settingSources: ['user', 'project', 'local'] });
 > ```
+>
+> The Agent SDK still reads the managed-settings policy tier (managed settings files and MDM) whatever you pass.
 
 ### Built-in tools
 

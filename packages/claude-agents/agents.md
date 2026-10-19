@@ -105,7 +105,7 @@ If `config.tools` is absent, `toolMCP` and `allowedTools` are both `undefined`.
 
 ### 2a. Host options (`cwd`, `settingSources`)
 
-`createClaudeAgentsHandler({ cwd, settingSources })` takes two trusted, app-supplied options and passes each one given to every `query()` call, blocking and streaming. They are spread with the handler's own options, after `model.parameters`, and `model-parameters.ts` already drops both from a config, so a config can neither set nor override them. An option not given is not sent (`settingSources: []` is sent as `[]`): the CLI then runs in `process.cwd()` and loads **every** settings source, including the host's own plugins, skills, hooks and permission rules. That default is unchanged on purpose; the README tells applications to pass `settingSources: []` to isolate a run. The convenience wrappers and the native graph adapter do not take these options.
+`createClaudeAgentsHandler({ cwd, settingSources })` takes two trusted, app-supplied options and passes them to every `query()` call, blocking and streaming. They are spread with the handler's own options, after `model.parameters`, and `model-parameters.ts` already drops both from a config, so a config can neither set nor override them. **`settingSources` is always sent, `[]` unless the application gives sources**: the Agent SDK's own default loads every source, which put the host's plugins, skills, hooks, permission rules and `CLAUDE.md` into every run (AIC-3584). `[]` still lets the SDK read the managed-settings policy tier. `cwd` is sent only when given. The convenience wrappers and the native graph adapter don't take these options.
 
 ### 3. Agentic Loop
 
