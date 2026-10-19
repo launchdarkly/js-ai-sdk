@@ -7,8 +7,9 @@
  * them without changing any handler package. A judge is the consumer: it can
  * only grade tool use it is shown.
  *
- * Only capture lives here. Rendering a trajectory for a judge's
- * `message_history` is added with the evaluation phase.
+ * A rendered trajectory reaches a judge only inside `message_history`
+ * (`buildMessageHistory`). It is never an event field. Capture runs in the
+ * evaluations runner today; the online tracked path does not capture yet.
  */
 
 import { NativeTool, type ToolHandlerFn } from './types.js';
@@ -128,4 +129,70 @@ function settle(call: TrajectoryCall, outcome: { result?: unknown; error?: unkno
   } else if (outcome.result !== undefined && outcome.result !== null) {
     call.result = outcome.result;
   }
+}
+
+/** The longest rendered argument bag or result. Longer values are cut and marked. */
+export const TRAJECTORY_MAX_VALUE_CHARS = 2000;
+
+const TRUNCATION_SUFFIX = '… (truncated)';
+
+function truncate(text: string): string {
+  if (text.length <= TRAJECTORY_MAX_VALUE_CHARS) return text;
+  return text.slice(0, Math.max(TRAJECTORY_MAX_VALUE_CHARS - TRUNCATION_SUFFIX.length, 0)) + TRUNCATION_SUFFIX;
+}
+
+/** JSON with object keys sorted, so a rendering is deterministic. Non-ASCII is left as is: a model reads it. */
+function sortedJson(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, item: unknown) => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return item;
+    return Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  });
+}
+
+/** An absent value renders as nothing, not as `null`: a tool that returned nothing did not return a null. */
+function renderValue(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return truncate(value);
+  let rendered: string | undefined;
+  try {
+    rendered = sortedJson(value);
+  } catch {
+    // Recording only observes: a value that cannot be serialized must not fail a call that succeeded.
+    rendered = undefined;
+  }
+  if (rendered === undefined) {
+    try {
+      rendered = String(value);
+    } catch {
+      rendered = '<unrenderable value>';
+    }
+  }
+  return truncate(rendered);
+}
+
+/**
+ * Render a recorder's trajectory as the text a judge reads: the tools that
+ * were available, then each call in call-start order with its arguments and
+ * its result or error. `''` when the unit had no observable tools, so the
+ * judge history gains no block at all. A unit that had tools and called none
+ * says so, because that is what a tool-selection judge most needs to know.
+ */
+export function renderTrajectory(recorder: TrajectoryRecorder): string {
+  const { available, calls, droppedCalls } = recorder;
+  if (!available.length && !calls.length) return '';
+  const lines: string[] = [];
+  if (available.length) lines.push(`Tools available: ${available.join(', ')}`);
+  if (!calls.length) {
+    lines.push('No tool calls were made while producing the response.');
+    return lines.join('\n');
+  }
+  lines.push('Tool calls made while producing the response, in order:');
+  calls.forEach((call, index) => {
+    lines.push(`${index + 1}. ${call.key}`);
+    lines.push(`   arguments: ${renderValue(call.args)}`);
+    if (call.error !== undefined) lines.push(`   error: ${renderValue(call.error)}`);
+    else lines.push(`   result: ${renderValue(call.result)}`);
+  });
+  if (droppedCalls > 0) lines.push(`(${droppedCalls} further tool call(s) were made but not recorded.)`);
+  return lines.join('\n');
 }

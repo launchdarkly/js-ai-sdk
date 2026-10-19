@@ -161,6 +161,28 @@ export function makeModule(api: FakeApi, internals: Partial<EvaluationsModuleInt
   });
 }
 
+/** What judge resolution (flag delivery) serves for a judge key: an enabled messages-mode judge. */
+export function servedJudge(
+  config: Record<string, unknown> = {},
+  meta: Record<string, unknown> = {},
+): { config: Record<string, unknown>; meta: Record<string, unknown> } {
+  return {
+    config: {
+      provider: { name: 'OpenAI' },
+      model: { name: 'gpt-4o' },
+      messages: [{ role: 'system', content: 'Rate {{response_to_evaluate}} against {{expected_output}}.' }],
+      ...config,
+    },
+    meta: { enabled: true, mode: 'judge', variationKey: 'judge-v1', version: 7, ...meta },
+  };
+}
+
+/** A judge's reply, as a handler returns it. */
+export const judgeReply = (score: unknown = 0.8, reasoning: unknown = 'Looks right.') => ({
+  output: JSON.stringify({ score, reasoning }),
+  usage: { input_tokens: 3, output_tokens: 4 },
+});
+
 export const completion = (extra: Record<string, unknown> = {}) => ({
   provider: 'OpenAI',
   model: 'gpt-4o',

@@ -1,4 +1,5 @@
 import { withJudgeEvaluation } from './conversation.js';
+import { buildMessageHistory } from './judge-scoring.js';
 import { extractVariation, getClient } from './lifecycle.js';
 import { reportUsage } from './sdk-usage.js';
 import { executeAndTrack } from './tracking.js';
@@ -43,12 +44,7 @@ const resolveJudge = async (
   }
 };
 
-export const FORMATTING_INSTRUCTIONS = [
-  'Your response MUST be in valid JSON format with the following structure:',
-  '{ "score": <number, 0-1>, "reasoning": <string> }',
-  'The output must be valid, parseable JSON. Do not include additional tags, comments, formatting, or newlines.',
-  'It should be returned in a format that is immediately parseable by a JSON parsing function. Do not include ```json tags.',
-].join('\n');
+export { FORMATTING_INSTRUCTIONS } from './judge-scoring.js';
 
 /**
  * Runs any judges configured on `config.judgeConfiguration` against the produced
@@ -186,7 +182,7 @@ export const runJudges = async ({
 
     const effectiveJudgeConfig = collapseMessages ? collapseMessagesToInstructions(judgeConfig) : judgeConfig;
 
-    const messageHistory = [userInput, llmResponse, FORMATTING_INSTRUCTIONS].filter(Boolean).join('\n\n');
+    const messageHistory = buildMessageHistory({ userInput, output: llmResponse });
 
     // `executeAndTrack` stays outside the `try`, as it was before judge evaluations existed: a
     // provider/auth/network failure must reject out of `runJudges` rather than be swallowed and
@@ -238,7 +234,7 @@ export const runJudges = async ({
           throw new Error('Invalid JSON');
         }
 
-        const { score, reasoning } = parsed;
+        const { score, reasoning } = parsed as { score: number; reasoning: string };
         judgeResults[judge.key] = { usage, response: reasoning, score };
         // The reasoning reaches telemetry only when the judge's own handler captures content.
         // It is model prose about the user's conversation, so it follows the content gate.
@@ -394,7 +390,7 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
 
   const effectiveConfig = collapseMessages ? collapseMessagesToInstructions(judgeConfig) : judgeConfig;
 
-  const messageHistory = [actualOutput, FORMATTING_INSTRUCTIONS].join('\n\n');
+  const messageHistory = buildMessageHistory({ output: actualOutput });
 
   return withJudgeEvaluation(configKey, async (recordEvaluation) => {
     const { usage, response: rawResponse } = await executeAndTrack({
@@ -446,7 +442,7 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
     const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
     if (!parsed) return null;
 
-    const { score, reasoning } = parsed;
+    const { score, reasoning } = parsed as { score: number; reasoning: string };
     if (isFiniteScore(score)) recordEvaluation(score, judgeHandler.captureContent ? reasoning : undefined);
 
     return {

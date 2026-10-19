@@ -285,7 +285,7 @@ export class Scorer {
 }
 
 // @public
-export type ScorerFn = (row: DatasetRow, output: unknown) => number | boolean | Promise<number | boolean>;
+export type ScorerFn = (row: DatasetRow, output: unknown) => number | Promise<number>;
 
 // @public
 export function setSkillStore(store: SkillStore | null | undefined): void;
@@ -416,8 +416,8 @@ export type WriteSkillsOptions = {
 
 // Warnings were encountered during analysis:
 //
-// temp/dts/evaluations.d.ts:52:5 - (ae-forgotten-export) The symbol "ConfigMessage" needs to be exported by the entry point experimental.d.ts
-// temp/dts/evaluations.d.ts:96:5 - (ae-forgotten-export) The symbol "ProviderHandler" needs to be exported by the entry point experimental.d.ts
+// temp/dts/evaluations.d.ts:53:5 - (ae-forgotten-export) The symbol "ConfigMessage" needs to be exported by the entry point experimental.d.ts
+// temp/dts/evaluations.d.ts:97:5 - (ae-forgotten-export) The symbol "ProviderHandler" needs to be exported by the entry point experimental.d.ts
 // temp/dts/skills-fdv2.d.ts:454:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point experimental.d.ts
 
 // (No @packageDocumentation comment for this package)

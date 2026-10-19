@@ -40,8 +40,10 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/evaluations-api.ts` | Evaluations from Code — the retrying management API client, its injectable `Transport` seam, `EvaluationsError`, and the strict-JSON check |
 | `src/evaluations-runner.ts` | Evaluations from Code — the management API operations, row rendering, handler config, the generation phase, event payloads and flushing, and summary parsing |
 | `src/evaluations-tools.ts` | Evaluations from Code — `EvalTool` (inline and library), tool validation, and `tools.get()` |
-| `src/evaluations-criteria.ts` | Evaluations from Code — `Judge`, `Scorer`, `Criterion`. The evaluation phase that runs them is not implemented yet: a run with criteria throws before creating any record |
-| `src/trajectory.ts` | Tool-call trajectory capture — `TrajectoryRecorder`, one per evaluation row. Capture only; rendering for a judge comes with the evaluation phase |
+| `src/evaluations-criteria.ts` | Evaluations from Code — `Judge`, `Scorer`, `Criterion`, validated where constructed, and the `criteria` entries pinned on the create body |
+| `src/evaluations-scoring.ts` | Evaluations from Code — the evaluation phase: judge resolution and handler selection, judge and scorer invocation, criterion event payloads |
+| `src/judge-scoring.ts` | The judge contract every judge path shares: `FORMATTING_INSTRUCTIONS`, the one `message_history` builder, and `{score, reasoning}` parsing. `judges.ts` and the evaluations harness both use it, so the paths cannot drift |
+| `src/trajectory.ts` | Tool-call trajectory capture and rendering — `TrajectoryRecorder` (one per evaluation row) and `renderTrajectory`, the text a judge reads in `message_history`. The online tracked path does not capture yet |
 | `src/safe-fs.ts` | Symlink-refusing filesystem primitives. Knows nothing about skills; owns the single interceptable rename and unlink call sites |
 | `src/index.ts` | Public barrel — the package root, and the only surface handler packages import from |
 | `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Agent Skills and Evaluations from Code are exported here and only here |

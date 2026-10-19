@@ -185,7 +185,7 @@ describe('reasonFromAnswer', () => {
 
 describe('FORMATTING_INSTRUCTIONS', () => {
   it('matches the copy the client appends to judge prompts', () => {
-    const judges = readFileSync(new URL('../../../client/src/judges.ts', import.meta.url), 'utf8');
-    for (const line of FORMATTING_INSTRUCTIONS.split('\n')) expect(judges).toContain(`'${line}'`);
+    const scoring = readFileSync(new URL('../../../client/src/judge-scoring.ts', import.meta.url), 'utf8');
+    for (const line of FORMATTING_INSTRUCTIONS.split('\n')) expect(scoring).toContain(`'${line}'`);
   });
 });

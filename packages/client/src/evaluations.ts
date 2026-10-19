@@ -9,8 +9,9 @@
  * local scorers. Results reach LaunchDarkly only as SDK events; LaunchDarkly
  * rules on each row and the run summary reports the outcome.
  *
- * The evaluation phase is not implemented yet: a run whose criteria are not
- * empty throws {@link EvaluationsError} before it creates any record.
+ * Every argument, judge and handler is checked before any record is created.
+ * After records exist, a failing row or criterion is reported as an `ERROR`
+ * result rather than thrown.
  */
 
 import {
@@ -25,7 +26,7 @@ import {
   type Transport,
   UI_BASE_URI,
 } from './evaluations-api.js';
-import type { Criterion } from './evaluations-criteria.js';
+import { type Criterion, Judge, validateCriteria } from './evaluations-criteria.js';
 import {
   buildHandlerConfig,
   cancelEvaluationRun,
@@ -57,6 +58,7 @@ import {
   variationJudgeKeys,
   variationToolVersions,
 } from './evaluations-runner.js';
+import { CRITERION_EVENT_NAME, criterionPayload, resolveJudges, scoreRows } from './evaluations-scoring.js';
 import {
   type EvalTool,
   LibraryToolsClient,
@@ -432,12 +434,6 @@ function mergeGeneration(base: VariationGeneration, overrides: Record<string, un
   return merged as VariationGeneration;
 }
 
-function criteriaNotSupported(detail: string): EvaluationsError {
-  return new EvaluationsError(
-    `Evaluation criteria are not supported yet: this version runs the generation phase only. ${detail}`,
-  );
-}
-
 // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a misconfigured run must be visible
 const warn = (message: string) => console.warn(`[LaunchDarkly] ${message}`);
 
@@ -550,20 +546,30 @@ export class EvaluationsModule {
       }
     }
 
-    if (criteria !== undefined && criteria.length > 0) {
-      throw criteriaNotSupported('Omit criteria, or pass criteria: [].');
-    }
+    if (criteria !== undefined) validateCriteria(criteria);
 
     // ---- The event client, before any management API request. ----
     const client = await this.resolveClient();
+    let variationJudges: string[] = [];
 
     // ---- AI Config reads, each check as soon as its input arrives. ----
     if (aiConfig !== undefined) {
-      const resolved = await this.resolveAiConfig(aiConfig, generationArg ?? {}, pool, tools, runTools, criteria);
+      const resolved = await this.resolveAiConfig(aiConfig, generationArg ?? {}, pool, tools, runTools);
       generation = resolved.generation;
       handler = resolved.handler;
+      variationJudges = resolved.judgeKeys;
     }
     if (!generation || !handler) throw new EvaluationsError('generation could not be resolved');
+
+    // ---- Criteria: the caller's, or else the variation's judges with default thresholds. ----
+    const runCriteria: readonly Criterion[] = criteria ?? variationJudges.map((judgeKey) => new Judge(judgeKey));
+    validateCriteria(runCriteria);
+    // Flag delivery, not the management API: no request, and before any record exists.
+    const judges = await resolveJudges(
+      this.projectKey,
+      runCriteria.filter((criterion): criterion is Judge => criterion instanceof Judge),
+      pool,
+    );
 
     // ---- Dataset, then the records. ----
     let datasetRef: DatasetRef;
@@ -575,7 +581,7 @@ export class EvaluationsModule {
       datasetRef = {};
       rows = inlineRows.map((row) => renderRow(row.rowIdx, row));
     }
-    const evaluation = await createEvaluation(this.api, this.projectKey, key, generation, runTools);
+    const evaluation = await createEvaluation(this.api, this.projectKey, key, generation, runTools, runCriteria);
     const run = await createEvaluationRun(this.api, this.projectKey, evaluation.id, datasetRef.id);
     if (inlineRows !== undefined) {
       // Every batch must land before the first event: the run starts with a
@@ -601,16 +607,40 @@ export class EvaluationsModule {
     const results = await generateRows(rows, handler, config, toolHandlerMap(runTools), concurrency);
     const ids = { projectKey: this.projectKey, evaluation, run, dataset: datasetRef };
     const sink = new EventSink(client, this.flushBound);
+    const context = eventContext(ids);
     try {
-      const context = eventContext(ids);
       for (const result of results) await sink.track(GENERATION_EVENT_NAME, context, generationPayload(ids, result));
+
+      // ---- Evaluation phase: after every row has generated, so phases never overlap. ----
+      if (runCriteria.length) {
+        await sink.flush();
+        const scored = await scoreRows(results, runCriteria, judges, concurrency);
+        for (const result of scored) {
+          // One event that fails to build or track must not cost the others.
+          // It does cost its row, which LaunchDarkly cannot account for.
+          try {
+            await sink.track(CRITERION_EVENT_NAME, context, criterionPayload(ids, result));
+          } catch (err) {
+            warn(
+              `Failed to emit the criterion event for row ${result.rowIndex}, criterion ` +
+                `'${result.criterion instanceof Judge ? result.criterion.key : result.criterion.name}': ${errorMessage(err)}`,
+            );
+          }
+        }
+      }
     } finally {
       // Events already queued must reach LaunchDarkly even when a later step fails.
       await sink.flush();
     }
 
     // ---- Summary. ----
-    const summary = await this.pollSummary(evaluation.id, run.id, pollIntervalSeconds, pollTimeoutSeconds);
+    const summary = await this.pollSummary(
+      evaluation.id,
+      run.id,
+      pollIntervalSeconds,
+      pollTimeoutSeconds,
+      runCriteria.length,
+    );
     return {
       passed: summary.errorRows === 0 && summary.failedRows === 0 && summary.pendingRows === 0,
       url:
@@ -631,8 +661,7 @@ export class EvaluationsModule {
     pool: readonly ProviderHandler[],
     toolsArg: readonly EvalTool[] | undefined,
     runTools: readonly EvalTool[],
-    criteria: readonly Criterion[] | undefined,
-  ): Promise<{ generation: ResolvedGeneration; handler: ProviderHandler }> {
+  ): Promise<{ generation: ResolvedGeneration; handler: ProviderHandler; judgeKeys: string[] }> {
     const label = `'${aiConfig.key}'/'${aiConfig.variation}'`;
 
     const configMode = await fetchAiConfigMode(this.api, this.projectKey, aiConfig.key);
@@ -687,16 +716,12 @@ export class EvaluationsModule {
       }
     }
 
-    // The variation's judges are the default criteria.
-    const judgeKeys = variationJudgeKeys(variation);
-    if (criteria === undefined && judgeKeys.length) {
-      throw criteriaNotSupported(
-        `AI Config variation ${label} attaches judges ${judgeKeys.map((k) => `'${k}'`).join(', ')}. ` +
-          'Pass criteria: [] to run it without them.',
-      );
-    }
-
-    return { generation: { ...(merged as Omit<ResolvedGeneration, 'mode'>), provider, model, mode }, handler };
+    return {
+      generation: { ...(merged as Omit<ResolvedGeneration, 'mode'>), provider, model, mode },
+      handler,
+      // The variation's judges are the default criteria.
+      judgeKeys: variationJudgeKeys(variation),
+    };
   }
 
   /** The SDK client that carries results. Resolved before any record is created. */
@@ -724,13 +749,14 @@ export class EvaluationsModule {
     runId: string,
     intervalSeconds: number,
     timeoutSeconds: number,
+    criteriaCount: number,
   ): Promise<RunSummary> {
     const deadline = performance.now() + timeoutSeconds * 1000;
     for (;;) {
       const summary = await fetchSummary(this.api, this.projectKey, evaluationId, runId);
       if (isTerminalSummary(summary)) return summary;
       const remainingSeconds = (deadline - performance.now()) / 1000;
-      if (remainingSeconds <= 0) throw summaryTimeoutError(runId, timeoutSeconds, summary, 0);
+      if (remainingSeconds <= 0) throw summaryTimeoutError(runId, timeoutSeconds, summary, criteriaCount);
       await this.sleep(Math.min(intervalSeconds, remainingSeconds));
     }
   }

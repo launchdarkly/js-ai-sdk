@@ -29,11 +29,12 @@ import {
   routeInlineRun,
   type StubClient,
   SUMMARY_PATH,
+  servedJudge,
   stubClient,
   stubHandler,
 } from './evaluations-fakes.js';
 
-const lifecycle = vi.hoisted(() => ({ client: undefined as unknown, init: vi.fn() }));
+const lifecycle = vi.hoisted(() => ({ client: undefined as unknown, init: vi.fn(), resolve: vi.fn() }));
 
 vi.mock('../lifecycle.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lifecycle.js')>()),
@@ -42,6 +43,8 @@ vi.mock('../lifecycle.js', async (importOriginal) => ({
     return lifecycle.client;
   },
   initClient: (...args: unknown[]) => lifecycle.init(...args),
+  // The judge resolution seam: flag delivery, stubbed.
+  extractVariation: (...args: unknown[]) => lifecycle.resolve(...args),
 }));
 
 let client: StubClient;
@@ -51,6 +54,8 @@ beforeEach(() => {
   client = stubClient();
   lifecycle.client = client;
   lifecycle.init.mockReset();
+  lifecycle.resolve.mockReset();
+  lifecycle.resolve.mockImplementation(async () => servedJudge());
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -558,16 +563,34 @@ describe('aiConfig source', () => {
   describe('variation judges', () => {
     const judged = { judgeConfiguration: { judges: [{ judgeConfigKey: 'accuracy' }] } };
 
-    it('become the default criteria, which this version cannot run', async () => {
+    it('become the default criteria, with default thresholds', async () => {
       const api = routeAi(new FakeApi(), 'completion', judged);
-      await expect(makeModule(api).run(aiRun({ criteria: undefined }))).rejects.toThrow(/'accuracy'.*criteria: \[\]/);
+      await makeModule(api).run(aiRun({ criteria: undefined }));
+      expect(lifecycle.resolve).toHaveBeenCalledWith('accuracy', expect.anything());
+      const body = api.calls.find((call) => call.path === EVALUATION_PATH)?.body as { criteria: unknown };
+      expect(body.criteria).toEqual([
+        {
+          criterionType: 'accuracy',
+          kind: 'judge',
+          judgeKey: 'accuracy',
+          options: { threshold: 0.5, passRateThreshold: 0.95 },
+        },
+      ]);
+    });
+
+    it('fail the run when one cannot be resolved and criteria is omitted', async () => {
+      lifecycle.resolve.mockRejectedValue(new Error('Variation accuracy is not enabled'));
+      const api = routeAi(new FakeApi(), 'completion', judged);
+      await expect(makeModule(api).run(aiRun({ criteria: undefined }))).rejects.toThrow(/'accuracy'/);
       expect(api.calls.some((call) => call.method === 'POST')).toBe(false);
     });
 
-    it('are replaced by criteria: []', async () => {
+    it('are replaced by criteria: [], and never resolved', async () => {
+      lifecycle.resolve.mockRejectedValue(new Error('must not be resolved'));
       const api = routeAi(new FakeApi(), 'completion', judged);
       await makeModule(api).run(aiRun({ criteria: [] }));
       expect(api.sequence).toContain(`POST ${RUN_PATH}`);
+      expect(lifecycle.resolve).not.toHaveBeenCalled();
     });
   });
 });

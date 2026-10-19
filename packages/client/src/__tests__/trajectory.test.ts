@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { TRAJECTORY_MAX_CALLS, TrajectoryRecorder } from '../trajectory.js';
+import {
+  renderTrajectory,
+  TRAJECTORY_MAX_CALLS,
+  TRAJECTORY_MAX_VALUE_CHARS,
+  TrajectoryRecorder,
+} from '../trajectory.js';
 import { NativeTool } from '../types.js';
 
 type Fn = (...args: unknown[]) => unknown;
@@ -90,5 +95,80 @@ describe('TrajectoryRecorder', () => {
     await Promise.all([(toolsA.echo as Fn)('a1'), (toolsB.echo as Fn)('b1'), (toolsA.echo as Fn)('a2')]);
     expect(a.calls.map((call) => call.result)).toEqual(['a1', 'a2']);
     expect(b.calls.map((call) => call.result)).toEqual(['b1']);
+  });
+});
+
+describe('renderTrajectory', () => {
+  it('renders nothing for a unit with no observable tools', () => {
+    const recorder = new TrajectoryRecorder();
+    recorder.wrap({ search: new NativeTool(Symbol('s'), 'WebSearch') });
+    expect(renderTrajectory(recorder)).toBe('');
+  });
+
+  it('says so when tools were available and none was called', () => {
+    const recorder = new TrajectoryRecorder();
+    recorder.wrap({ lookup: () => 1, refund: () => 2 });
+    expect(renderTrajectory(recorder)).toBe(
+      'Tools available: lookup, refund\nNo tool calls were made while producing the response.',
+    );
+  });
+
+  it('numbers each call with its arguments and its result or error', () => {
+    const recorder = new TrajectoryRecorder();
+    const tools = recorder.wrap({
+      lookup: (args: unknown) => ({ status: 'shipped', id: (args as { id: string }).id }),
+      refund: () => {
+        throw new Error('not allowed');
+      },
+    });
+    (tools.lookup as Fn)({ id: 'A-17' });
+    expect(() => (tools.refund as Fn)({ amount: 5 })).toThrow();
+    expect(renderTrajectory(recorder)).toBe(
+      [
+        'Tools available: lookup, refund',
+        'Tool calls made while producing the response, in order:',
+        '1. lookup',
+        '   arguments: {"id":"A-17"}',
+        '   result: {"id":"A-17","status":"shipped"}',
+        '2. refund',
+        '   arguments: {"amount":5}',
+        '   error: not allowed',
+      ].join('\n'),
+    );
+  });
+
+  it('renders an absent value as nothing, not null', () => {
+    const recorder = new TrajectoryRecorder();
+    const tools = recorder.wrap({ ping: () => undefined });
+    (tools.ping as Fn)();
+    const text = renderTrajectory(recorder);
+    expect(text).toContain('   arguments: \n');
+    expect(text.endsWith('   result: ')).toBe(true);
+    expect(text).not.toContain('null');
+  });
+
+  it('keeps non-ASCII characters unescaped', () => {
+    const recorder = new TrajectoryRecorder();
+    const tools = recorder.wrap({ city: () => ({ name: 'café 東京' }) });
+    (tools.city as Fn)();
+    const text = renderTrajectory(recorder);
+    expect(text).toContain('café 東京');
+    expect(text).not.toContain('\\u');
+  });
+
+  it('marks a value cut at the length bound', () => {
+    const recorder = new TrajectoryRecorder();
+    const tools = recorder.wrap({ dump: () => 'x'.repeat(5000) });
+    (tools.dump as Fn)();
+    const result = renderTrajectory(recorder).split('   result: ')[1];
+    expect(result).toHaveLength(TRAJECTORY_MAX_VALUE_CHARS);
+    expect(result.endsWith('(truncated)')).toBe(true);
+  });
+
+  it('counts calls past the cap', () => {
+    const recorder = new TrajectoryRecorder();
+    const tools = recorder.wrap({ tick: () => 1 });
+    for (let i = 0; i < TRAJECTORY_MAX_CALLS + 2; i++) (tools.tick as Fn)();
+    expect(renderTrajectory(recorder).endsWith('(2 further tool call(s) were made but not recorded.)')).toBe(true);
   });
 });

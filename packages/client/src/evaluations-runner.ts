@@ -17,6 +17,7 @@ import {
   requireString,
   segment,
 } from './evaluations-api.js';
+import { type Criterion, criterionWire } from './evaluations-criteria.js';
 import { createBodyTools, type EvalTool, handlerConfigTools } from './evaluations-tools.js';
 import { TrajectoryRecorder } from './trajectory.js';
 import type {
@@ -319,6 +320,7 @@ export async function createEvaluation(
   key: string,
   generation: ResolvedGeneration,
   tools: readonly EvalTool[],
+  criteria: readonly Criterion[] = [],
 ): Promise<EvaluationRef> {
   // The mode selects the handler and validates the prompt only; it is not sent.
   const body: Record<string, unknown> = {
@@ -334,6 +336,8 @@ export async function createEvaluation(
   }
   if (generation.promptSnippets !== undefined) body.promptSnippets = generation.promptSnippets;
   if (tools.length) body.tools = createBodyTools(tools);
+  // Pinned on the evaluation: ingest drops a result for a criterion not configured there.
+  if (criteria.length) body.criteria = criteria.map(criterionWire);
 
   const raw = requireObject(await api.post(`projects/${segment(projectKey)}/evaluations`, body), 'evaluation');
   const id = requireString(raw, 'id', 'evaluation');
@@ -501,7 +505,7 @@ export function buildHandlerConfig(generation: ResolvedGeneration, tools: readon
 }
 
 /** Run `fn` over `items` with at most `limit` in flight, keeping input order in the results. */
-async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+export async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
   const worker = async () => {

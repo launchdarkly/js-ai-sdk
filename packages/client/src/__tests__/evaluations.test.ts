@@ -11,12 +11,14 @@ import {
   FakeApi,
   makeModule,
   PROJECT,
+  routeHostedRun,
+  servedJudge,
   stubClient,
   stubHandler,
   throwingTransport,
 } from './evaluations-fakes.js';
 
-const lifecycle = vi.hoisted(() => ({ client: undefined as unknown, init: vi.fn() }));
+const lifecycle = vi.hoisted(() => ({ client: undefined as unknown, init: vi.fn(), resolve: vi.fn() }));
 
 vi.mock('../lifecycle.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lifecycle.js')>()),
@@ -25,11 +27,15 @@ vi.mock('../lifecycle.js', async (importOriginal) => ({
     return lifecycle.client;
   },
   initClient: (...args: unknown[]) => lifecycle.init(...args),
+  // The judge resolution seam: flag delivery, stubbed.
+  extractVariation: (...args: unknown[]) => lifecycle.resolve(...args),
 }));
 
 beforeEach(() => {
   lifecycle.client = undefined;
   lifecycle.init.mockReset();
+  lifecycle.resolve.mockReset();
+  lifecycle.resolve.mockImplementation(async () => servedJudge());
   for (const name of ['LD_PROJECT_KEY', 'LD_API_TOKEN', 'LD_SDK_KEY']) vi.stubEnv(name, '');
 });
 
@@ -125,6 +131,38 @@ describe('criterion references', () => {
       threshold: 1.0,
       passRateThreshold: 0.95,
       successDirection: 'higher_is_better',
+    });
+  });
+
+  it('rejects a blank judge key and a blank scorer name', () => {
+    expect(() => new Judge(' ')).toThrow(/judge key must not be blank/);
+    expect(() => new Scorer('', () => 1)).toThrow(/scorer name must not be blank/);
+  });
+
+  it('rejects a scorer fn that is not callable', () => {
+    expect(() => new Scorer('exact', 'nope' as never)).toThrow(/'exact' fn must be callable/);
+  });
+
+  it('rejects an unknown success direction', () => {
+    expect(() => new Scorer('exact', () => 1, { successDirection: 'up' as never })).toThrow(/successDirection/);
+  });
+
+  describe.each(['threshold', 'passRateThreshold'])('%s', (field) => {
+    it.each([
+      -0.5,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ])('rejects %d on a judge and a scorer, naming the field', (value) => {
+      expect(() => new Judge('accuracy', { [field]: value })).toThrow(new RegExp(`^${field} must be a finite number`));
+      expect(() => new Scorer('exact', () => 1, { [field]: value })).toThrow(
+        new RegExp(`^${field} must be a finite number`),
+      );
+    });
+
+    it.each([0, 1])('accepts %d', (value) => {
+      expect(new Judge('accuracy', { [field]: value })[field as 'threshold']).toBe(value);
     });
   });
 
@@ -348,9 +386,18 @@ describe('run() argument validation', () => {
     });
 
     it('accepts a prompt with neither field in both modes', async () => {
-      const options = base({ generation: completion({ messages: undefined }), criteria: [new Judge('j')] });
-      // Reaches the criteria check, which comes after the prompt checks.
-      await rejects(options, /criteria are not supported yet/);
+      const messages = routeHostedRun(new FakeApi());
+      await makeModule(messages).run(base({ generation: completion({ messages: undefined }), pollIntervalSeconds: 0 }));
+      expect(messages.sequence).toContain('POST projects/proj/evaluations');
+      const agent = routeHostedRun(new FakeApi());
+      await makeModule(agent).run(
+        base({
+          handler: stubHandler('OpenAI', 'agent'),
+          generation: completion({ mode: 'agent', messages: undefined }),
+          pollIntervalSeconds: 0,
+        }),
+      );
+      expect(agent.sequence).toContain('POST projects/proj/evaluations');
     });
   });
 
@@ -459,8 +506,25 @@ describe('run() argument validation', () => {
     });
   });
 
-  it('rejects criteria while the evaluation phase is not implemented', async () => {
-    await rejects(base({ criteria: [new Judge('accuracy')] }), /criteria are not supported yet/);
+  describe('criteria', () => {
+    it('rejects a judge key and a scorer name that collide, naming the duplicate', async () => {
+      await rejects(base({ criteria: [new Judge('accuracy'), new Scorer('accuracy', () => 1)] }), /'accuracy'/);
+    });
+
+    it('rejects identities that collide only by case', async () => {
+      await rejects(
+        base({ criteria: [new Judge('Accuracy'), new Scorer('accuracy', () => 1)] }),
+        /Duplicate.*'accuracy'/,
+      );
+    });
+
+    it('rejects an entry that is not a Judge or a Scorer', async () => {
+      await rejects(base({ criteria: [{ key: 'accuracy' }] }), /must be a Judge or a Scorer/);
+    });
+
+    it('rejects criteria that is not an array', async () => {
+      await rejects(base({ criteria: new Judge('accuracy') }), /criteria must be an array/);
+    });
   });
 
   describe('aiConfig', () => {
