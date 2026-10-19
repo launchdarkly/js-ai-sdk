@@ -109,7 +109,7 @@ function makeGraphDef(overrides: Partial<GraphDefinition> = {}): GraphDefinition
 
 function makeResultMessage(result = 'done', usage = { input_tokens: 1, output_tokens: 2 }) {
   return async function* () {
-    yield { result, usage };
+    yield { type: 'result', subtype: 'success', result, usage };
   };
 }
 
@@ -347,6 +347,59 @@ describe('toClaudeAgents', () => {
     );
   });
 
+  // Measured against Agent SDK 0.3.220: an Anthropic API failure arrives as a `success` result with
+  // `is_error` set and the error text in `result`. The adapter used to return that text as the answer.
+  const apiErrorRun = async function* () {
+    yield {
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      api_error_status: 400,
+      result: 'Credit balance is too low',
+      usage: { input_tokens: 0, output_tokens: 0 },
+    };
+  };
+
+  it('fails the graph when the root result reports an API error', async () => {
+    const def = makeGraphDef();
+    mockQuery.mockImplementation(apiErrorRun);
+
+    await expect(
+      toClaudeAgents(Promise.resolve(def), { context: { kind: 'user', key: 'user-1' } }).invoke('hello'),
+    ).rejects.toThrow(/Credit balance is too low/);
+
+    const events = mockTrack.mock.calls.map((c: unknown[]) => c[0]);
+    expect(events).toContain('$ld:ai:graph:invocation_failure');
+    expect(events).not.toContain('$ld:ai:graph:invocation_success');
+  });
+
+  it('fails the graph when the root result has an error subtype', async () => {
+    const def = makeGraphDef();
+    mockQuery.mockImplementation(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'error_max_turns',
+        is_error: true,
+        errors: ['turn limit reached'],
+        usage: { input_tokens: 5, output_tokens: 1 },
+      };
+    });
+
+    await expect(toClaudeAgents(Promise.resolve(def)).invoke('hello')).rejects.toThrow(
+      /error_max_turns.*turn limit reached/,
+    );
+  });
+
+  it('fails a sub-agent tool call whose run reports an API error', async () => {
+    const def = makeGraphDef();
+    await toClaudeAgents(Promise.resolve(def)).invoke('hello');
+
+    mockQuery.mockImplementation(apiErrorRun);
+    const toolExecutor = mockTool.mock.calls[0][3] as (args: { input: string }) => Promise<unknown>;
+
+    await expect(toolExecutor({ input: 'subtask' })).rejects.toThrow(/Credit balance is too low/);
+  });
+
   // T10: system prompt forwarding from node instructions
   it('forwards config.instructions as systemPrompt to root query', async () => {
     const def = makeGraphDef();
@@ -398,7 +451,7 @@ describe('toClaudeAgents', () => {
     let capturedHooks: { PreToolUse?: Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }> } | undefined;
     mockQuery.mockImplementation(async function* (queryArgs: { options?: { hooks?: typeof capturedHooks } }) {
       capturedHooks = queryArgs.options?.hooks;
-      yield { result: 'ok', usage: { input_tokens: 1, output_tokens: 1 } };
+      yield { type: 'result', subtype: 'success', result: 'ok', usage: { input_tokens: 1, output_tokens: 1 } };
     });
 
     await toClaudeAgents(Promise.resolve(def), {
