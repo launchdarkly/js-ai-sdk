@@ -90,6 +90,35 @@ const errorResultMessage = () => ({
   usage: { input_tokens: 40000, output_tokens: 500 },
 });
 
+// Measured against Agent SDK 0.3.220 with a rejected key, and the same for a key without credits: an
+// API failure does not fail the run. The CLI emits a synthetic assistant message whose `model` is the
+// literal `<synthetic>` and whose content is the error text, then a result that says `success` but
+// sets `is_error`. The CLI emits the same kind of synthetic message after a response stops at
+// `max_output_tokens`, and that run can still succeed.
+const zeroUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+const syntheticMessage = (text = 'Credit balance is too low', requestId = 'req_synthetic') => ({
+  type: 'assistant',
+  session_id: 'sess-1',
+  request_id: requestId,
+  parent_tool_use_id: null,
+  error: 'billing_error',
+  message: {
+    model: '<synthetic>',
+    role: 'assistant',
+    stop_reason: 'stop_sequence',
+    usage: zeroUsage,
+    content: [{ type: 'text', text }],
+  },
+});
+const apiErrorResultMessage = (text = 'Credit balance is too low') => ({
+  type: 'result' as const,
+  subtype: 'success' as const,
+  is_error: true,
+  api_error_status: 400,
+  result: text,
+  usage: zeroUsage,
+});
+
 /**
  * Replays the SDK's PreToolUse → PostToolUse sequence for one tool call.
  *
@@ -796,6 +825,81 @@ describe('claude-agents span tree against a real tracer', () => {
     expect(root()?.status.code).toBe(2); // ERROR, not OK
     expect(attrs['gen_ai.usage.input_tokens']).toBe(40000); // the spend is still reported
     expect(attrs['gen_ai.usage.output_tokens']).toBe(500);
+  });
+
+  it('fails the run when the result reports an API error under the success subtype', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield initMessage();
+      yield syntheticMessage();
+      yield apiErrorResultMessage();
+    });
+
+    await expect(createClaudeAgentsHandler({ captureContent: true })(baseConfig as never, 'q')).rejects.toThrow(
+      /400.*Credit balance is too low/,
+    );
+
+    // The synthetic message is not a model response, so it gets no `chat` span.
+    expect(spans().map((s) => s.name)).toEqual(['invoke_agent']);
+    expect(root()?.status.code).toBe(2); // ERROR, not OK
+    expect(root()?.events.find((e) => e.name === 'exception')?.attributes?.['exception.message']).toMatch(
+      /Credit balance is too low/,
+    );
+    // The error text is not model output.
+    expect(root()?.attributes['gen_ai.output.messages']).toBeUndefined();
+  });
+
+  it('fails a streamed run when the result reports an API error, yielding no done event', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield initMessage();
+      yield syntheticMessage();
+      yield apiErrorResultMessage();
+    });
+
+    const events: unknown[] = [];
+    const run = async () => {
+      const gen = createClaudeAgentsHandler({ captureContent: true }).stream?.(baseConfig as never, 'q', {}, {});
+      for await (const event of gen as AsyncGenerator<unknown>) events.push(event);
+    };
+
+    await expect(run()).rejects.toThrow(/400.*Credit balance is too low/);
+    expect(events).toEqual([]);
+    expect(spans().map((s) => s.name)).toEqual(['invoke_agent']);
+    expect(root()?.status.code).toBe(2);
+    expect(root()?.attributes['gen_ai.output.messages']).toBeUndefined();
+  });
+
+  it('treats a success result with is_error false as a successful run', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield assistantMessage();
+      yield { ...resultMessage('fine'), is_error: false };
+    });
+
+    const result = await createClaudeAgentsHandler()(baseConfig as never, 'q');
+
+    expect(result.output).toBe('fine');
+    expect(root()?.status.code).toBe(1); // OK
+  });
+
+  // A synthetic message can share the real response's `request_id`, so grouping on it would append
+  // the error text to that response's output.
+  it('leaves a synthetic message out of every chat span when the run recovers from it', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield assistantMessage(10, 2, 'req_1', [{ type: 'text', text: 'first half' }]);
+      yield syntheticMessage('API Error: output token maximum', 'req_1');
+      yield toolResultMessage();
+      yield assistantMessage(12, 3, 'req_2', [{ type: 'text', text: 'second half' }]);
+      yield resultMessage('second half');
+    });
+
+    const result = await createClaudeAgentsHandler({ captureContent: true })(baseConfig as never, 'q');
+
+    expect(result.output).toBe('second half');
+    const chats = named('chat ');
+    expect(chats.map((s) => s.name)).toEqual(['chat claude-opus-4-5', 'chat claude-opus-4-5']);
+    for (const chat of chats) {
+      expect(String(chat.attributes['gen_ai.output.messages'])).not.toContain('output token maximum');
+      expect(String(chat.attributes['gen_ai.input.messages'])).not.toContain('output token maximum');
+    }
   });
 
   it('carries the run-level token totals on the invoke_agent root, not only on the children', async () => {
