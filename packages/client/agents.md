@@ -36,9 +36,12 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/skills-fdv2.ts` | Agent Skills delivery transport — the FDv2 protocol, the wire-key/`version` translation, the held object set, and `FDv2SkillStore`. Sits **below** the store seam; imports `skills-core` only, and nothing imports it |
 | `src/skills-watch.ts` | Agent Skills eager re-reconcile — `watchSkills` / `SkillWatcher`, wiring the store's change listener to `writeSkills`. Sits **above** `skills-fs` and modifies none of it |
 | `src/skills-fs.ts` | `writeSkills` — the manifest format, on-disk filenames, and reconcile semantics |
+| `src/evaluations.ts` | Evaluations from Code (stub) — `initEvaluations`, `EvaluationsModule`, `run()` options and result types, `EvaluationsError` |
+| `src/evaluations-tools.ts` | Evaluations from Code (stub) — `EvalTool` |
+| `src/evaluations-criteria.ts` | Evaluations from Code (stub) — `Judge`, `Scorer`, `Criterion` |
 | `src/safe-fs.ts` | Symlink-refusing filesystem primitives. Knows nothing about skills; owns the single interceptable rename and unlink call sites |
 | `src/index.ts` | Public barrel — the package root, and the only surface handler packages import from |
-| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Agent Skills is exported here and only here |
+| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Agent Skills and Evaluations from Code are exported here and only here |
 
 The Agent Skills module dependencies run **one way only**:
 
@@ -286,6 +289,28 @@ export type {
   SkillStore,
 } from './types.js';
 export { createSkill, createSkillOutcome, createSkillReference } from './types.js';
+
+export type {
+  AIConfig,
+  DatasetRow,
+  EvalRunResult,
+  GenerationConfig,
+  GenerationMode,
+  GenerationOverrides,
+  InitEvaluationsOptions,
+  InlineDatasetRow,
+  RunOptions,
+  RunSummary,
+  ToolsClient,
+  Transport,
+  TransportRequest,
+  TransportResponse,
+} from './evaluations.js';
+export { EvaluationsError, EvaluationsModule, initEvaluations } from './evaluations.js';
+export type { Criterion, ScorerFn, SuccessDirection } from './evaluations-criteria.js';
+export { Judge, Scorer } from './evaluations-criteria.js';
+export type { EvalToolImplementation } from './evaluations-tools.js';
+export { EvalTool } from './evaluations-tools.js';
 ```
 
 The stage rules (shared spec §0.3), which every change here must keep:
