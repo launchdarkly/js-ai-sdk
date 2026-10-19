@@ -1,10 +1,23 @@
 /**
  * Evaluations from Code — the criteria each generated output is scored against.
  *
- * Stub: the types are in place, but nothing is validated yet.
+ * Stub: references take their defaults, but nothing is validated yet.
  */
 
 import type { DatasetRow } from './evaluations.js';
+
+/** A judge's row threshold when its reference sets none. */
+const DEFAULT_JUDGE_THRESHOLD = 0.5;
+
+/** A scorer's row threshold when its reference sets none: a row passes only on a perfect score. */
+const DEFAULT_SCORER_THRESHOLD = 1.0;
+
+/**
+ * The share of rows that must pass when a reference sets none, for both
+ * criterion kinds. The request always carries both thresholds, so the client
+ * fills in its own defaults rather than relying on a server-side one.
+ */
+const DEFAULT_PASS_RATE_THRESHOLD = 0.95;
 
 /** Which way a scorer's score points. */
 export type SuccessDirection = 'higher_is_better' | 'lower_is_better';
@@ -31,9 +44,9 @@ export class Judge {
   /** Key of the judge's AI Config in LaunchDarkly. */
   readonly key: string;
   /** Score from 0 to 1 a row must reach to pass. Defaults to `0.5`. */
-  readonly threshold?: number;
-  /** Fraction of rows, from 0 to 1, that must pass for the criterion to pass. */
-  readonly passRateThreshold?: number;
+  readonly threshold: number;
+  /** Fraction of rows, from 0 to 1, that must pass for the criterion to pass. Defaults to `0.95`. */
+  readonly passRateThreshold: number;
   /** Reference material the judge scores the output against. */
   readonly groundTruthContext?: string;
 
@@ -48,8 +61,8 @@ export class Judge {
     options: { threshold?: number; passRateThreshold?: number; groundTruthContext?: string } = {},
   ) {
     this.key = key;
-    this.threshold = options.threshold;
-    this.passRateThreshold = options.passRateThreshold;
+    this.threshold = options.threshold ?? DEFAULT_JUDGE_THRESHOLD;
+    this.passRateThreshold = options.passRateThreshold ?? DEFAULT_PASS_RATE_THRESHOLD;
     this.groundTruthContext = options.groundTruthContext;
   }
 }
@@ -80,11 +93,11 @@ export class Scorer {
   /** The scoring function, called with `(row, output)`. */
   readonly fn: ScorerFn;
   /** Score from 0 to 1 a row must reach to pass. Defaults to `1.0`. */
-  readonly threshold?: number;
-  /** Fraction of rows, from 0 to 1, that must pass for the criterion to pass. */
-  readonly passRateThreshold?: number;
+  readonly threshold: number;
+  /** Fraction of rows, from 0 to 1, that must pass for the criterion to pass. Defaults to `0.95`. */
+  readonly passRateThreshold: number;
   /** Which way the score points. Defaults to `'higher_is_better'`. */
-  readonly successDirection?: SuccessDirection;
+  readonly successDirection: SuccessDirection;
 
   /**
    * Define a local scorer.
@@ -100,9 +113,9 @@ export class Scorer {
   ) {
     this.name = name;
     this.fn = fn;
-    this.threshold = options.threshold;
-    this.passRateThreshold = options.passRateThreshold;
-    this.successDirection = options.successDirection;
+    this.threshold = options.threshold ?? DEFAULT_SCORER_THRESHOLD;
+    this.passRateThreshold = options.passRateThreshold ?? DEFAULT_PASS_RATE_THRESHOLD;
+    this.successDirection = options.successDirection ?? 'higher_is_better';
   }
 }
 

@@ -191,8 +191,8 @@ export class Judge {
     });
     readonly groundTruthContext?: string;
     readonly key: string;
-    readonly passRateThreshold?: number;
-    readonly threshold?: number;
+    readonly passRateThreshold: number;
+    readonly threshold: number;
 }
 
 // @public
@@ -275,9 +275,9 @@ export class Scorer {
     });
     readonly fn: ScorerFn;
     readonly name: string;
-    readonly passRateThreshold?: number;
-    readonly successDirection?: SuccessDirection;
-    readonly threshold?: number;
+    readonly passRateThreshold: number;
+    readonly successDirection: SuccessDirection;
+    readonly threshold: number;
 }
 
 // @public

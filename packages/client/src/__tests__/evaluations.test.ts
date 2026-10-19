@@ -33,6 +33,29 @@ describe('evaluations stubs', () => {
     expect(tool.description).toBe('');
   });
 
+  it('a Judge defaults its thresholds', () => {
+    expect(new Judge('accuracy')).toMatchObject({ threshold: 0.5, passRateThreshold: 0.95 });
+  });
+
+  it('a Scorer defaults its thresholds and success direction', () => {
+    expect(new Scorer('exact', () => true)).toMatchObject({
+      threshold: 1.0,
+      passRateThreshold: 0.95,
+      successDirection: 'higher_is_better',
+    });
+  });
+
+  it('supplied values override the defaults, including 0', () => {
+    expect(new Judge('accuracy', { threshold: 0, passRateThreshold: 0.8 })).toMatchObject({
+      threshold: 0,
+      passRateThreshold: 0.8,
+    });
+    expect(new Scorer('hits', () => 0, { threshold: 0.2, successDirection: 'lower_is_better' })).toMatchObject({
+      threshold: 0.2,
+      successDirection: 'lower_is_better',
+    });
+  });
+
   it('Judge and Scorer keep their fields', () => {
     expect(new Judge('accuracy', { threshold: 0.7 })).toMatchObject({ key: 'accuracy', threshold: 0.7 });
     expect(new Scorer('exact', () => true).name).toBe('exact');
