@@ -401,6 +401,7 @@ jobs:
         run: node integration-tests/lambda-commonjs/canary.mjs build --package --stage="$CANARY_STAGE"
 
       - name: Configure AWS credentials
+        id: aws-credentials
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           audience: 'https://github.com/launchdarkly'
@@ -427,8 +428,10 @@ jobs:
           cat response.json
           node integration-tests/lambda-commonjs/canary.mjs assert --response=response.json
 
+      # A failed build stops before the credentials step. Then no AWS resource exists,
+      # and the cleanup has no credentials to delete one.
       - name: Remove the ephemeral Lambda
-        if: always()
+        if: always() && steps.aws-credentials.outcome == 'success'
         run: |
           set -uo pipefail
           status=0
