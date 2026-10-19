@@ -7,7 +7,13 @@
 
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { generateRows, generationPayload, type RowResult, SUMMARY_POLL_DEFAULTS } from '../evaluations-runner.js';
+import {
+  generateRows,
+  generationPayload,
+  pythonFloat,
+  type RowResult,
+  SUMMARY_POLL_DEFAULTS,
+} from '../evaluations-runner.js';
 import { EvalTool, type RunOptions } from '../experimental.js';
 import { NativeTool } from '../types.js';
 import {
@@ -931,6 +937,107 @@ describe('generation events', () => {
       dataset: { id: 'd', key: 'k' },
     };
     expect(generationPayload(ids, result).errorMessage).toBe('Unknown error');
+  });
+
+  describe('pythonFloat', () => {
+    // Each value with the text Python's json.dumps writes for it.
+    it.each([
+      [1, '1.0'],
+      [-2, '-2.0'],
+      [0.1, '0.1'],
+      [-0, '-0.0'],
+      [0, '0.0'],
+      [1e16, '1e+16'],
+      [1e15, '1000000000000000.0'],
+      [123456789012345, '123456789012345.0'],
+      [1.5e16, '1.5e+16'],
+      [1e-4, '0.0001'],
+      [1e-5, '1e-05'],
+      [0.000123, '0.000123'],
+      [1e21, '1e+21'],
+      [1.5e300, '1.5e+300'],
+      [5e-324, '5e-324'],
+      [2 ** 53, '9007199254740992.0'],
+      [1 / 3, '0.3333333333333333'],
+      [-1e-7, '-1e-07'],
+      [12.5, '12.5'],
+      [1e100, '1e+100'],
+      [Number.NaN, 'NaN'],
+      [Number.POSITIVE_INFINITY, 'Infinity'],
+      [Number.NEGATIVE_INFINITY, '-Infinity'],
+    ])('writes %d as %s', (value, text) => {
+      expect(pythonFloat(value)).toBe(text);
+    });
+  });
+
+  describe('contentHash', () => {
+    const ids = {
+      projectKey: 'p',
+      evaluation: { id: 'e', key: 'k', version: 1 },
+      run: { id: 'r', evaluationId: 'e', state: 'S' },
+      dataset: { id: 'd', key: 'k' },
+    };
+    const rowResult = (fields: Partial<RowResult>) =>
+      ({
+        row: { rowIndex: 0 },
+        status: 'COMPLETE',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        generatedAt: '2026-01-01T00:00:01.000Z',
+        latencyMs: 1000,
+        ...fields,
+      }) as RowResult;
+
+    // Reference values from Python: sha256(json.dumps(generated, sort_keys=True, separators=(",", ":"))).
+    it.each([
+      [
+        'a completed row with non-ASCII output and usage',
+        rowResult({ output: 'café 東京 😀', usage: { input_tokens: 1, output_tokens: 2 } }),
+        'ec554441eaad49733ecd22ab582ffd31493d34bbdd9a99b56012091780bc5a2a',
+      ],
+      [
+        'an errored row',
+        rowResult({ status: 'ERROR', error: { code: 5001, message: 'handler raised: boom' } }),
+        '04e26552bf66f7afa68ba6307c9f9c162abd2bbd963cb7e42d9dcea337152848',
+      ],
+      [
+        'a structured output with no usage, its number as a float',
+        rowResult({ output: { b: 1, a: [true, null, 'x'] } }),
+        '0ba60718922eb0cbeff99d5aa267c94bccef106a4cd8e3145c4e170ce7b396b1',
+      ],
+    ])('matches the Python SDK for %s', (_name, result, hash) => {
+      expect(generationPayload(ids, result).contentHash).toBe(hash);
+    });
+
+    it('writes numbers in output as Python floats, and usage counts as integers', () => {
+      const result = rowResult({
+        output: { score: 1, p: 0.1, tiny: 1e-5, big: 1e16, list: [3, -0, 2.5e-7] },
+        usage: { input_tokens: 7, output_tokens: 9 },
+      });
+      // {"error":null,"output":{"big":1e+16,"list":[3.0,-0.0,2.5e-07],"p":0.1,"score":1.0,"tiny":1e-05},...}
+      expect(generationPayload(ids, result).contentHash).toBe(
+        '682983638bddcf429edbe5313b8c305523b957c204bc1dbf0c0b2a47e5d14b45',
+      );
+    });
+
+    it('covers what was generated, not when or for which row', () => {
+      const a = generationPayload(ids, rowResult({ output: 'same' }));
+      const b = generationPayload(
+        { ...ids, run: { ...ids.run, id: 'other' } },
+        rowResult({ output: 'same', row: { rowIndex: 4 } as RowResult['row'], latencyMs: 5, startedAt: 'x' }),
+      );
+      const c = generationPayload(ids, rowResult({ output: 'different' }));
+      expect(a.contentHash).toBe(b.contentHash);
+      expect(a.contentHash).not.toBe(c.contentHash);
+    });
+
+    it('is on every generation event', async () => {
+      const handler = stubHandler('OpenAI', 'messages', async (_config, input) => {
+        if (input === 'question 1') throw new Error('nope');
+        return { output: 'ok' };
+      });
+      await makeModule(routeHostedRun(new FakeApi(), [datasetRow(0), datasetRow(1)])).run(hosted({ handler }));
+      for (const event of generationEvents()) expect(event.data.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    });
   });
 
   it('omits datasetId and datasetKey on an inline run, including from the eventId identity', async () => {

@@ -563,16 +563,48 @@ export function generateRows(
 // ---------------------------------------------------------------------------
 
 /** JSON with object keys sorted at every level: the canonical form `eventId` hashes. */
-export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+export function canonicalJson(value: unknown, formatNumber: (n: number) => string = JSON.stringify): string {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item, formatNumber)).join(',')}]`;
   if (isPlainObject(value)) {
     const entries = Object.keys(value)
       .sort()
       .filter((key) => value[key] !== undefined)
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`);
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key], formatNumber)}`);
     return `{${entries.join(',')}}`;
   }
+  if (typeof value === 'number') return formatNumber(value);
   return JSON.stringify(value);
+}
+
+/**
+ * Format a number as Python's `json.dumps` writes a float: the shortest
+ * round-trip digits, as `repr(float)` gives them. Whole numbers keep `.0`,
+ * scientific notation is used below 1e-4 and from 1e16 with an exponent of at
+ * least two digits, `-0.0` keeps its sign, and non-finite values are written
+ * `NaN`, `Infinity` and `-Infinity`.
+ *
+ * JavaScript has one number type, so a value cannot say whether it was an int
+ * or a float in another language. Every number this formats is written as a
+ * float.
+ */
+export function pythonFloat(value: number): string {
+  if (Number.isNaN(value)) return 'NaN';
+  if (value === Number.POSITIVE_INFINITY) return 'Infinity';
+  if (value === Number.NEGATIVE_INFINITY) return '-Infinity';
+  const sign = value < 0 || Object.is(value, -0) ? '-' : '';
+  // toExponential() with no argument gives the shortest round-trip digits.
+  const [mantissa, exponentText] = Math.abs(value).toExponential().split('e');
+  const digits = mantissa.replace('.', '');
+  const exponent = Number(exponentText);
+  if (exponent < -4 || exponent >= 16) {
+    const fraction = digits.length > 1 ? `.${digits.slice(1)}` : '';
+    const magnitude = String(Math.abs(exponent)).padStart(2, '0');
+    return `${sign}${digits[0]}${fraction}e${exponent < 0 ? '-' : '+'}${magnitude}`;
+  }
+  if (exponent < 0) return `${sign}0.${'0'.repeat(-exponent - 1)}${digits}`;
+  const whole = digits.slice(0, exponent + 1).padEnd(exponent + 1, '0');
+  const fraction = digits.slice(exponent + 1) || '0';
+  return `${sign}${whole}.${fraction}`;
 }
 
 export const eventIdFor = (identity: Record<string, unknown>): string =>
@@ -637,9 +669,11 @@ export function rowIdentity({ projectKey, evaluation, run, dataset }: RunIdentit
  */
 export function generationPayload(ids: RunIdentity, result: RowResult): Record<string, unknown> {
   const identity = rowIdentity(ids, result.row.rowIndex);
+  const generated = generatedContent(result);
   const payload: Record<string, unknown> = {
     ...identity,
     eventId: eventIdFor(identity),
+    contentHash: contentHashFor(generated),
     emittedAt: new Date().toISOString(),
     evaluationKey: ids.evaluation.key,
     evaluationVersion: ids.evaluation.version,
@@ -649,14 +683,68 @@ export function generationPayload(ids: RunIdentity, result: RowResult): Record<s
     latencyMs: result.latencyMs,
   };
   if (ids.dataset.key !== undefined) payload.datasetKey = ids.dataset.key;
-  if (result.output !== undefined && result.output !== null) payload.output = result.output;
-  if (result.status === 'ERROR') {
-    payload.error = result.error;
-    payload.errorMessage = result.error?.message || 'Unknown error';
-  }
+  if (generated.output !== null) payload.output = generated.output;
+  if (generated.error !== null) payload.error = generated.error;
+  if (generated.errorMessage !== undefined) payload.errorMessage = generated.errorMessage;
+  if (generated.usage !== undefined) payload.usage = generated.usage;
+  return payload;
+}
+
+/** What a row generated: the fields `contentHash` covers, as the event carries them. */
+type GeneratedContent = {
+  status: RowResult['status'];
+  output: unknown;
+  error: RowResult['error'] | null;
+  errorMessage?: string;
+  usage?: { inputTokens: number; outputTokens: number };
+};
+
+function generatedContent(result: RowResult): GeneratedContent {
+  // `output` and `error` are always present, as null when absent: the hash
+  // covers them that way in every language.
+  const generated: GeneratedContent = {
+    status: result.status,
+    output: result.output ?? null,
+    error: result.error ?? null,
+  };
+  if (result.status === 'ERROR') generated.errorMessage = result.error?.message || 'Unknown error';
   if (result.usage) {
     const usage = parseUsage(result.usage);
-    payload.usage = { inputTokens: usage.input, outputTokens: usage.output };
+    generated.usage = { inputTokens: usage.input, outputTokens: usage.output };
   }
-  return payload;
+  return generated;
+}
+
+/**
+ * Escape every non-ASCII UTF-16 code unit as `\uXXXX`, as Python's
+ * `json.dumps` does by default, so the same content hashes the same in every
+ * language. An astral character becomes its surrogate pair in both.
+ */
+function asciiJson(json: string): string {
+  let out = '';
+  for (let i = 0; i < json.length; i++) {
+    const code = json.charCodeAt(i);
+    out += code > 0x7f ? `\\u${code.toString(16).padStart(4, '0')}` : json[i];
+  }
+  return out;
+}
+
+/**
+ * SHA-256 of what a row generated, serialized as the Python SDK serializes it:
+ * canonical JSON with non-ASCII escaped. A JavaScript number cannot say
+ * whether it is an int or a float, so numbers in `output` are written as
+ * Python floats. `usage` counts and the error code are integers in both
+ * languages, so they are written as integers.
+ */
+export function contentHashFor(generated: GeneratedContent): string {
+  const entries = Object.keys(generated)
+    .sort()
+    .filter((key) => generated[key as keyof GeneratedContent] !== undefined)
+    .map((key) => {
+      const value = generated[key as keyof GeneratedContent];
+      return `${JSON.stringify(key)}:${canonicalJson(value, key === 'output' ? pythonFloat : undefined)}`;
+    });
+  return createHash('sha256')
+    .update(asciiJson(`{${entries.join(',')}}`))
+    .digest('hex');
 }
