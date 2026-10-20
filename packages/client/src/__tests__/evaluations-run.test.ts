@@ -286,6 +286,19 @@ describe('evaluation create body', () => {
     ]);
   });
 
+  it.each([
+    ['the response name', { name: 'from-name', label: 'from-label' }, 'from-name'],
+    ['the response label when there is no name', { label: 'from-label' }, 'from-label'],
+    ['the caller key when the response has neither', {}, 'eval-key'],
+  ])('takes evaluationKey from %s', async (_name, fields, expected) => {
+    const api = routeHostedRun(new FakeApi()).on('POST', EVALUATION_PATH, {
+      status: 201,
+      body: { id: 'ev-1', version: 3, ...fields },
+    });
+    await makeModule(api).run(hosted());
+    expect(generationEvents()[0].data.evaluationKey).toBe(expected);
+  });
+
   it('requires a version in the response', async () => {
     const api = routeHostedRun(new FakeApi()).on('POST', EVALUATION_PATH, { body: { id: 'ev-1' } });
     await expect(makeModule(api).run(hosted())).rejects.toThrow(/'version'/);

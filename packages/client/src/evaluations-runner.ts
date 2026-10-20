@@ -345,7 +345,8 @@ export async function createEvaluation(
   if (!Number.isInteger(raw.version)) {
     throw new EvaluationsError("LaunchDarkly evaluation response is missing integer field 'version'");
   }
-  return { id, key: typeof raw.name === 'string' ? raw.name : key, version: raw.version as number };
+  const responseKey = typeof raw.name === 'string' ? raw.name : typeof raw.label === 'string' ? raw.label : key;
+  return { id, key: responseKey, version: raw.version as number };
 }
 
 export async function createEvaluationRun(
