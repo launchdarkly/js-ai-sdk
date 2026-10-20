@@ -69,6 +69,7 @@ import {
 } from './evaluations-tools.js';
 import { getClient, initClient } from './lifecycle.js';
 import { findHandler } from './registry.js';
+import { reportUsage } from './sdk-usage.js';
 import type { ConfigMessage, LDClientInterface, ProviderHandler } from './types.js';
 import { normalizeMode } from './utils.js';
 
@@ -239,6 +240,8 @@ const canEmitEvents = (client: LDClientInterface | undefined): boolean =>
  * only as SDK events, so a run without one could never complete.
  */
 export function initEvaluations(options: InitEvaluationsOptions = {}): EvaluationsModule {
+  // The `experimental.` prefix stands in for a package name; the event's package is the core client.
+  reportUsage('experimental.initEvaluations');
   const projectKey = explicit(options.projectKey) ?? env('LD_PROJECT_KEY');
   if (!projectKey) {
     throw new EvaluationsError(

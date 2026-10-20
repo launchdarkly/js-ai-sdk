@@ -9,6 +9,7 @@ vi.mock('@launchdarkly/node-server-sdk', () => ({
 }));
 
 import { config } from '../client.js';
+import { initEvaluations } from '../evaluations.js';
 import { graph, resolveGraph } from '../graph.js';
 import { buildJudgeTasks, runJudge } from '../judges.js';
 import { initClient, inspectConfig, shutdown } from '../lifecycle.js';
@@ -162,6 +163,16 @@ const rows: Array<[string, () => Promise<void>]> = [
   ['client.inspectConfig', () => settle(inspectConfig('k', ctx))],
   ['client.runJudge', () => settle(runJudge({} as JudgeTask, []))],
   ['client.buildJudgeTasks', () => settle(buildJudgeTasks(judgeArgs()))],
+  [
+    'experimental.initEvaluations',
+    () => {
+      // Throws on missing credentials; the report is the first statement, so it still lands.
+      try {
+        initEvaluations({ projectKey: 'p', apiKey: 't', sdkKey: 's' });
+      } catch {}
+      return Promise.resolve();
+    },
+  ],
   [
     'client.createHandler',
     () => {

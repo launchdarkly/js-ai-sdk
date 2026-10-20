@@ -21,6 +21,8 @@
     "lint:fix": "biome lint --write .",
     "code:check": "biome check .",
     "code:fix": "biome check --write .",
+    "api:surface": "node scripts/api-surface.mjs",
+    "test:api-surface": "node --test scripts/api-surface.test.mjs",
     "lint:pkg": "sherif",
     "lint:pkg:fix": "sherif -f",
     "size": "sh -c 'cd packages/$0 && npm pack --dry-run 2>&1 | grep \"npm notice package size\"'",
