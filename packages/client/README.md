@@ -237,6 +237,8 @@ if (!result.enabled) {
 
 > **Experimental.** Agent Skills is published from the `@launchdarkly/ai-server/experimental` entry point and is not exported from the package root. Its names may change in a minor release, so pin the version you test against and read the changelog before upgrading. Import every name in this section from `@launchdarkly/ai-server/experimental` (or `@launchdarkly/ai-node/experimental` if you install `@launchdarkly/ai-node`).
 
+> **Requires `@launchdarkly/ai-server` 0.4.0 or later.** Earlier versions do not include Agent Skills. If you install `@launchdarkly/ai-node`, use 0.3.0 or later, which depends on `@launchdarkly/ai-server` 0.4.0 or later.
+
 Agent Skills are versioned `SKILL.md` documents managed in LaunchDarkly and attached to AI Config variations by reference. This package tells you which skills a config references, retrieves their content, and writes them to `<root>/<key>/SKILL.md`, where agent runtimes such as the Claude Agent SDK discover them.
 
 **Everything below goes through a `SkillStore`.** None is configured by default, so the accessors throw an actionable error until you set one. Use `InMemorySkillStore` for local development, tests, and bring-your-own-content, and `FDv2SkillStore` to receive content from LaunchDarkly — see [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly).
