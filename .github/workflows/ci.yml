@@ -124,6 +124,15 @@ jobs:
       - name: Check client API reports
         run: yarn workspace @launchdarkly/ai-server api:check
 
+      # Fails when an entry point exports a name its approved list in
+      # api-surface/ does not allow, or stops exporting an unmarked one. Runs
+      # after api:check, which guarantees the reports it reads are current.
+      - name: Test the API surface check
+        run: yarn test:api-surface
+
+      - name: Check exports against the approved API surface
+        run: yarn api:surface
+
   # ─── Test ───────────────────────────────────────────────────────────────────
   test:
     name: Tests

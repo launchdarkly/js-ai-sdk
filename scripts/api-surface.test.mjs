@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { compare, main, parseList, reportNames } from './api-surface.mjs';
+import { compare, main, parseList, reportNames, usageRows } from './api-surface.mjs';
 
 const REPORT = `## API Report File for "x"
 
@@ -108,5 +108,43 @@ describe('unreadable lists', () => {
     const code = main({ listDir: dir, log: { error: (m) => errors.push(m), log: () => {} } });
     assert.equal(code, 1);
     assert.match(errors.join('\n'), /has no names/);
+  });
+});
+
+describe('usageRows', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'api-surface-'));
+  writeFileSync(
+    join(dir, 'pkg.txt'),
+    'config  usage=client.config.invoke,client.config.stream\nplain\n+ upcoming  usage=client.upcoming\n- leaving  usage=client.leaving\n',
+  );
+  const config = () => {};
+  const leaving = () => {};
+
+  it('gives one row per usage ID, with the export the name refers to', () => {
+    const rows = usageRows('pkg.txt', { config, leaving }, { listDir: dir });
+    assert.deepEqual(
+      rows.map(({ id, name }) => [id, name]),
+      [
+        ['client.config.invoke', 'config'],
+        ['client.config.stream', 'config'],
+        ['client.leaving', 'leaving'],
+      ],
+    );
+    assert.equal(rows[0].fn, config);
+  });
+
+  it('skips a marked name that is not exported, and keeps an unmarked one so its test fails', () => {
+    const rows = usageRows('pkg.txt', {}, { listDir: dir });
+    assert.deepEqual(
+      rows.map(({ id, fn }) => [id, fn]),
+      [
+        ['client.config.invoke', undefined],
+        ['client.config.stream', undefined],
+      ],
+    );
+  });
+
+  it('throws on a missing list', () => {
+    assert.throws(() => usageRows('absent.txt', {}, { listDir: dir }), /the list is missing/);
   });
 });

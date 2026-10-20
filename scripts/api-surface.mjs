@@ -38,7 +38,7 @@ export const ENTRY_POINTS = [
   { list: 'ai-server.experimental.txt', report: 'packages/client/etc/ai-server-experimental.api.md' },
 ];
 
-const LINE = /^(?<mark>[-+] )?(?<name>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)(?: {2}usage=\S+)?(?: {2}# .+)?$/;
+const LINE = /^(?<mark>[-+] )?(?<name>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)(?: {2}usage=(?<usage>\S+))?(?: {2}# .+)?$/;
 
 const EXPORT = /^export (?:declare )?(?:abstract )?(?:class|function|type|interface|const|enum|namespace|let|var) ([A-Za-z_][A-Za-z0-9_]*)/gm;
 
@@ -57,6 +57,34 @@ export function parseList(text, file) {
   });
   if (names.size === 0) throw new Error(`${file}: the list has no names`);
   return names;
+}
+
+/** The directory the lists are read from: `API_SURFACE_DIR`, else `api-surface/` at the repository root. */
+export function listDirectory(listDir = process.env.API_SURFACE_DIR) {
+  return resolve(ROOT, listDir ?? 'api-surface');
+}
+
+/**
+ * The usage-test rows of one entry point (§3.27): one per usage ID a name on
+ * its list reports, with the function the entry point exports under that
+ * name. A marked name (`+` or `-`) that is not exported is skipped, since the
+ * list allows it to be absent. An unmarked name is always a row, so a missing
+ * export fails the test that calls it. Throws when the list cannot be read.
+ */
+export function usageRows(listFile, entryPoint, { listDir } = {}) {
+  const path = join(listDirectory(listDir), listFile);
+  if (!existsSync(path)) throw new Error(`${path}: the list is missing`);
+  const text = readFileSync(path, 'utf8');
+  parseList(text, listFile);
+  const rows = [];
+  for (const line of text.split('\n')) {
+    const match = LINE.exec(line);
+    if (!match?.groups.usage) continue;
+    const { name, mark } = match.groups;
+    if (mark && !(name in entryPoint)) continue;
+    for (const id of match.groups.usage.split(',')) rows.push({ id, name, fn: entryPoint[name] });
+  }
+  return rows;
 }
 
 /** Every name an API Extractor report says the entry point exports, type-only names included. */
@@ -90,7 +118,7 @@ export function compare(file, list, exported, { strict = false } = {}) {
 
 /** Run every entry point. Returns the process exit code. */
 export function main({ listDir = process.env.API_SURFACE_DIR, strict = process.env.API_SURFACE_STRICT === '1', log = console } = {}) {
-  const dir = resolve(ROOT, listDir ?? 'api-surface');
+  const dir = listDirectory(listDir);
   let failed = false;
   for (const { list: listFile, report } of ENTRY_POINTS) {
     const listPath = join(dir, listFile);
