@@ -352,6 +352,7 @@ jobs:
         && !contains(needs.*.result, 'failure')
         && !contains(needs.*.result, 'cancelled')
         && vars.AWS_LAMBDA_CANARY_ROLE_ARN != ''
+        && vars.AWS_LAMBDA_CANARY_PERMISSIONS_BOUNDARY != ''
         && (github.event_name != 'workflow_dispatch' || inputs.canary_versions != '')
         && (github.event_name == 'workflow_dispatch'
           || needs.release-please.outputs.package-client-released == 'true'
@@ -435,10 +436,7 @@ jobs:
         run: |
           set -uo pipefail
           status=0
-          app_dir=integration-tests/lambda-commonjs/.canary/app
-          if [ -d "$app_dir" ]; then
-            (cd "$app_dir" && npx serverless remove --stage "$CANARY_STAGE") || status=1
-          fi
+          (cd integration-tests/lambda-commonjs/.canary/app && npx serverless remove --stage "$CANARY_STAGE") || status=1
           log_group="/aws/lambda/ld-ai-canary-$CANARY_STAGE"
           if ! delete_output=$(aws logs delete-log-group --log-group-name "$log_group" 2>&1); then
             # Stack removal already deletes the log group, so a missing group is a success.

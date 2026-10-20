@@ -86,6 +86,7 @@ The job stays skipped until these repository variables exist.
 | Variable | Purpose |
 | --- | --- |
 | `AWS_LAMBDA_CANARY_ROLE_ARN` | The role that the job assumes. The job is skipped while this variable is empty. |
+| `AWS_LAMBDA_CANARY_PERMISSIONS_BOUNDARY` | The boundary policy ARN. It must match the ARN in the role's `iam:PermissionsBoundary` condition. The job is skipped while this variable is empty. |
 | `AWS_LAMBDA_CANARY_REGION` | Optional. The default is `us-east-1`. |
 
 The trust policy of the role must allow `token.actions.githubusercontent.com`.
@@ -113,8 +114,9 @@ So the role needs no `iam:AttachRolePolicy` and no `iam:DetachRolePolicy`.
 
 The `iam:CreateRole` and `iam:PutRolePolicy` actions need an `iam:PermissionsBoundary` condition.
 That condition stops the role from granting itself more rights than the boundary allows.
-The fixture reads the boundary from `LD_AI_CANARY_PERMISSIONS_BOUNDARY`.
-Set that variable to the same boundary policy ARN that the condition names.
+The workflow passes `vars.AWS_LAMBDA_CANARY_PERMISSIONS_BOUNDARY` to the fixture.
+The fixture reads it as `LD_AI_CANARY_PERMISSIONS_BOUNDARY`.
+Set that repository variable to the same boundary policy ARN that the condition names.
 
 ### When the canary fails
 
