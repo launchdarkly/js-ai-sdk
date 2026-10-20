@@ -19,6 +19,7 @@ export {
   setToolCallContentAttributes,
   setToolDefinitionAttributes,
   textMessage,
+  toolResultString,
   toSemconvFinishReason,
 } from './content.js';
 export {

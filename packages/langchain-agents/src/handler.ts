@@ -31,6 +31,7 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { createAgent } from 'langchain';
@@ -307,7 +308,7 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
       tool(
         async (args: Record<string, unknown>) => {
           const result = await (toolHandlers[name] as (...args: unknown[]) => unknown)(args);
-          return String(result);
+          return toolResultString(result);
         },
         {
           name,

@@ -405,6 +405,7 @@ const ROOT_VALUES = [
   'shutdown',
   'shutdownTelemetry',
   'textMessage',
+  'toolResultString',
   'toSemconvFinishReason',
   'waitForTelemetry',
   'withConversationId',

@@ -33,6 +33,7 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { type LangChainModelClass, modelConstructorParameters } from './model-parameters.js';
@@ -495,7 +496,7 @@ function createLangChainHandlerInternal(
                   setToolCallContentAttributes(toolSpan, captureContent, { result });
                   toolSpan.setStatus({ code: SpanStatusCode.OK });
                   toolSpan.end();
-                  return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: String(result) });
+                  return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: toolResultString(result) });
                 } catch (err) {
                   failSpan(toolSpan, err);
                   throw err;
@@ -699,7 +700,7 @@ function createLangChainHandlerInternal(
                 setToolCallContentAttributes(toolSpan, captureContent, { result });
                 toolSpan.setStatus({ code: SpanStatusCode.OK });
                 toolSpan.end();
-                return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: String(result) });
+                return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: toolResultString(result) });
               } catch (err) {
                 failSpan(toolSpan, err);
                 throw err;
