@@ -98,6 +98,12 @@ export type InitEvaluationsOptions = {
   baseUri?: string;
   /** LaunchDarkly UI host used for run links. Default `LD_UI_BASE_URI`, then `https://app.launchdarkly.com`. */
   uiBaseUri?: string;
+  /**
+   * Log each result event as it is queued, with its `emittedAt` timestamp and
+   * `eventId`, through `console.info`. Use it to compare when the SDK emitted
+   * an event with when LaunchDarkly received it. Default `false`.
+   */
+  logEvents?: boolean;
   /** Management API transport. Defaults to one built on `fetch`. */
   transport?: Transport;
 };
@@ -259,6 +265,7 @@ export function initEvaluations(options: InitEvaluationsOptions = {}): Evaluatio
     projectKey,
     sdkKey,
     uiBaseUri: explicit(options.uiBaseUri) ?? env('LD_UI_BASE_URI') ?? DEFAULT_UI_BASE_URI,
+    logEvents: options.logEvents === true,
     api: {
       apiKey,
       baseUri: explicit(options.baseUri) ?? env('LD_API_BASE_URI') ?? DEFAULT_BASE_URI,
@@ -455,6 +462,9 @@ function mergeGeneration(base: VariationGeneration, overrides: Record<string, un
 // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a misconfigured run must be visible
 const warn = (message: string) => console.warn(`[LaunchDarkly] ${message}`);
 
+// biome-ignore lint/suspicious/noConsole: opt-in event log, enabled by the caller with `logEvents`
+const info = (message: string) => console.info(`[LaunchDarkly] ${message}`);
+
 // ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
@@ -466,6 +476,8 @@ export type EvaluationsModuleInternals = {
   api: LDApiClientOptions;
   /** UI host for run links. Default {@link DEFAULT_UI_BASE_URI}. */
   uiBaseUri?: string;
+  /** Log each queued event with its `emittedAt` and `eventId`. */
+  logEvents?: boolean;
   /** Events tracked between flushes. Default 500. */
   flushBound?: number;
   /** Waits between summary polls. */
@@ -485,6 +497,7 @@ export class EvaluationsModule {
 
   private readonly api: LDApiClient;
   private readonly flushBound: number;
+  private readonly logEvents: boolean;
   private readonly sleep: (seconds: number) => Promise<void>;
 
   /**
@@ -500,6 +513,7 @@ export class EvaluationsModule {
     this.api = new LDApiClient(internals.api);
     this.tools = new LibraryToolsClient(this.api, this.projectKey);
     this.flushBound = internals.flushBound ?? DEFAULT_FLUSH_BOUND;
+    this.logEvents = internals.logEvents === true;
     this.sleep = internals.sleep ?? sleepSeconds;
   }
 
@@ -629,7 +643,7 @@ export class EvaluationsModule {
     const config = buildHandlerConfig(generation, runTools);
     const results = await generateRows(rows, handler, config, toolHandlerMap(runTools), concurrency);
     const ids = { projectKey: this.projectKey, evaluation, run, dataset: datasetRef };
-    const sink = new EventSink(client, this.flushBound);
+    const sink = new EventSink(client, this.flushBound, this.logEvents ? info : undefined);
     const context = eventContext(ids);
     try {
       for (const result of results) await sink.track(GENERATION_EVENT_NAME, context, generationPayload(ids, result));

@@ -1106,6 +1106,36 @@ describe('generation events', () => {
   });
 });
 
+describe('event logging', () => {
+  it('is off by default', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      await makeModule(routeHostedRun(new FakeApi())).run(hosted());
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('logs each queued event with its emittedAt and eventId when enabled', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      await makeModule(routeHostedRun(new FakeApi(), [datasetRow(0), datasetRow(1)]), { logEvents: true }).run(
+        hosted(),
+      );
+      const events = generationEvents();
+      expect(info.mock.calls.map(([line]) => line)).toEqual(
+        events.map(
+          (event) =>
+            `[LaunchDarkly] $ld:ai:offline-evals:generation emittedAt=${event.data.emittedAt} eventId=${event.data.eventId}`,
+        ),
+      );
+    } finally {
+      info.mockRestore();
+    }
+  });
+});
+
 describe('flushing', () => {
   it('flushes once, after every event and before the first summary poll, awaiting the flush', async () => {
     const api = routeHostedRun(new FakeApi(), [datasetRow(0), datasetRow(1)]);

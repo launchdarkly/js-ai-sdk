@@ -617,6 +617,10 @@ export const eventIdFor = (identity: Record<string, unknown>): string =>
 /**
  * Tracks events and flushes whenever `bound` have been tracked since the last
  * flush, so the SDK's event buffer never overflows (overflow is silent).
+ *
+ * With `log`, each queued event is reported with its `emittedAt` and
+ * `eventId`, so the time the SDK emitted an event can be compared with the
+ * time LaunchDarkly received it.
  */
 export class EventSink {
   private sinceFlush = 0;
@@ -624,10 +628,12 @@ export class EventSink {
   constructor(
     private readonly client: LDClientInterface,
     private readonly bound: number,
+    private readonly log?: (line: string) => void,
   ) {}
 
   async track(name: string, context: Record<string, unknown>, payload: Record<string, unknown>): Promise<void> {
     this.client.track(name, context as never, payload, 1);
+    this.log?.(`${name} emittedAt=${payload.emittedAt} eventId=${payload.eventId}`);
     this.sinceFlush++;
     if (this.sinceFlush >= this.bound) await this.flush();
   }

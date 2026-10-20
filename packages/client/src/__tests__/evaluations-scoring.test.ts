@@ -731,6 +731,20 @@ describe('phase sequencing', () => {
     expect(client.tracked.some((e) => e.name === GENERATION)).toBe(true);
   });
 
+  it('logs criterion events too when logging is enabled', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      await makeModule(routeHostedRun(new FakeApi()), { logEvents: true }).run(run());
+      const [event] = criterionEvents();
+      expect(info).toHaveBeenCalledWith(
+        `[LaunchDarkly] ${CRITERION} emittedAt=${event.data.emittedAt} eventId=${event.data.eventId}`,
+      );
+      expect(info).toHaveBeenCalledTimes(2);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it('states the criteria count when the summary times out', async () => {
     const api = routeHostedRun(new FakeApi()).on('GET', SUMMARY_PATH, {
       body: { statusCounts: { total: 1, pending: 1 } },

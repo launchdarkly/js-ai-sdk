@@ -160,6 +160,20 @@ describe('initEvaluations', () => {
       expect(runUrl.startsWith('http://localhost:3000/projects/')).toBe(true);
     });
 
+    it('pass logEvents through to the run', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      try {
+        await hostsUsed({ logEvents: true });
+        expect(info).toHaveBeenCalledWith(
+          expect.stringMatching(
+            /^\[LaunchDarkly\] \$ld:ai:offline-evals:generation emittedAt=\S+Z eventId=[0-9a-f]{64}$/,
+          ),
+        );
+      } finally {
+        info.mockRestore();
+      }
+    });
+
     it('treat blank values as unset', async () => {
       vi.stubEnv('LD_API_BASE_URI', '  ');
       const { apiUrls, runUrl } = await hostsUsed({ uiBaseUri: ' ' });
