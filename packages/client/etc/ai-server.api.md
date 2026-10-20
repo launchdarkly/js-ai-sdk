@@ -339,6 +339,8 @@ export type JudgeTask = {
     judgeConfig: AiConfigRep;
     judgeMeta: LDVariationMeta;
     actualOutput: string;
+    userInput?: string;
+    trajectory?: string;
     userContext: LDContext;
     variables?: Record<string, unknown>;
     judgeProvider: string | undefined;
@@ -346,7 +348,6 @@ export type JudgeTask = {
     collapseMessages: boolean;
     evaluationMetricKey?: string;
     parentTrackData: TrackData;
-    userInput?: string;
 };
 
 // @public

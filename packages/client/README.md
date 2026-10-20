@@ -134,6 +134,8 @@ const result3 = await caller.invoke('Can you give me an example?', { kind: 'user
 await shutdown();
 ```
 
+**Judges see the tool calls.** A judge attached to the config is shown, in `{{message_history}}`, the user input, then the tools the config offered and every call the handler made to them, then the response, then the format instructions. That lets a rubric grade how the answer was reached, not only the text. Only the config's own tools are listed, not the rest of a registry, and a `NativeTool` is left out because the provider runs it where the SDK cannot see it. A config with no tools gets the history it had before. With `skipJudges: true`, each `JudgeTask` carries `userInput` and the rendered `trajectory`, so `runJudge` shows a deferred judge the same history. In a graph, each node's judge sees that node's calls; a `graphJudge` sees none, because it grades the answer of the whole run.
+
 ### `graph(key, options)`
 
 Runs a multi-agent workflow defined in a LaunchDarkly agent graph flag. The SDK uses a **model-driven router**: it starts at the root node, presents outgoing edges as handoff choices to the model, and follows whichever edge the model selects — threading both the original user request and the previous node's response into each subsequent node. The loop terminates when the model produces a final answer, a leaf is reached, a cycle is detected, or the step cap is hit.

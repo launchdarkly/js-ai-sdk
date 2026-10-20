@@ -43,7 +43,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/evaluations-criteria.ts` | Evaluations from Code — `Judge`, `Scorer`, `Criterion`, validated where constructed, and the `criteria` entries pinned on the create body |
 | `src/evaluations-scoring.ts` | Evaluations from Code — the evaluation phase: judge resolution and handler selection, judge and scorer invocation, criterion event payloads |
 | `src/judge-scoring.ts` | The judge contract every judge path shares: `FORMATTING_INSTRUCTIONS`, the one `message_history` builder, and `{score, reasoning}` parsing. `judges.ts` and the evaluations harness both use it, so the paths cannot drift |
-| `src/trajectory.ts` | Tool-call trajectory capture and rendering — `TrajectoryRecorder` (one per evaluation row) and `renderTrajectory`, the text a judge reads in `message_history`. The online tracked path does not capture yet |
+| `src/trajectory.ts` | Tool-call trajectory capture and rendering — `TrajectoryRecorder` (one per online invocation in `tracking.ts`, one per evaluation row offline), `exposedToolKeys`, and `renderTrajectory`, the text a judge reads in `message_history`. `HANDOFF_TOOL_PREFIX` is defined here once and used by `tracking.ts` and `graph.ts` |
 | `src/safe-fs.ts` | Symlink-refusing filesystem primitives. Knows nothing about skills; owns the single interceptable rename and unlink call sites |
 | `src/index.ts` | Public barrel — the package root, and the only surface handler packages import from |
 | `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Agent Skills and Evaluations from Code are exported here and only here |
@@ -394,7 +394,7 @@ Handlers may return any of these — the client normalizes them before emitting 
       - Calls `handler(config, userInput, toolHandlers, variables, history)`
       - On success: emits `$ld:ai:generation:success` + token tracks
       - On error: emits `$ld:ai:generation:error` then re-throws
-3. If `judgeConfiguration.judges` is present, runs each judge handler (sampled by `samplingRate`) against the primary response, tracks `evaluationMetricKey`, and emits a `gen_ai.evaluation.result` span event on the judge's `invoke_agent` span (`gen_ai.evaluation.name` / `.score.value` / `.explanation`).
+3. If `judgeConfiguration.judges` is present, runs each judge handler (its `message_history` carries the invocation's rendered tool-call trajectory, recorded inside the `$ld:ai:tool_call` wrapper) (sampled by `samplingRate`) against the primary response, tracks `evaluationMetricKey`, and emits a `gen_ai.evaluation.result` span event on the judge's `invoke_agent` span (`gen_ai.evaluation.name` / `.score.value` / `.explanation`).
 4. Returns `ProviderResponse`: `{ response: string, usage: { input, output, total }, trackData: TrackData, judgeResults?: Record<string, JudgeCallResult>, judgeTasks?: JudgeTask[] }`. `judgeResults` is populated when `skipJudges` is `false` (default) and judges ran; `judgeTasks` is populated when `skipJudges: true`.
 
 ---

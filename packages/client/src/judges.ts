@@ -116,6 +116,7 @@ export const runJudges = async ({
   baseTrackData,
   toolHandlers: _toolHandlers,
   graphKey,
+  trajectory,
 }: {
   config: AiConfigRep;
   userContext: LDContext;
@@ -124,6 +125,8 @@ export const runJudges = async ({
   handlers?: ProviderHandler[];
   userInput?: string;
   llmResponse: string;
+  /** The invocation's rendered tool-call trajectory. Omitted for a graph-level judge, which grades no single node. */
+  trajectory?: string;
   baseTrackData: TrackData;
   toolHandlers?: Record<string, ToolHandlerFn | NativeTool>;
   graphKey?: string;
@@ -182,7 +185,7 @@ export const runJudges = async ({
 
     const effectiveJudgeConfig = collapseMessages ? collapseMessagesToInstructions(judgeConfig) : judgeConfig;
 
-    const messageHistory = buildMessageHistory({ userInput, output: llmResponse });
+    const messageHistory = buildMessageHistory({ userInput, trajectory, output: llmResponse });
 
     // `executeAndTrack` stays outside the `try`, as it was before judge evaluations existed: a
     // provider/auth/network failure must reject out of `runJudges` rather than be swallowed and
@@ -266,6 +269,8 @@ type BuildJudgeTasksArgs = {
   llmResponse: string;
   baseTrackData: TrackData;
   userInput?: string;
+  /** The originating invocation's rendered tool-call trajectory, carried on each task. */
+  trajectory?: string;
 };
 
 /**
@@ -299,6 +304,7 @@ export const buildJudgeTasksInternal = async ({
   llmResponse,
   baseTrackData,
   userInput,
+  trajectory,
 }: BuildJudgeTasksArgs): Promise<JudgeTask[]> => {
   const judges = config.judgeConfiguration?.judges ?? [];
   const hasActiveJudge = judges.some((j: { samplingRate: number }) => j.samplingRate > 0);
@@ -339,13 +345,14 @@ export const buildJudgeTasksInternal = async ({
       judgeConfig,
       judgeMeta,
       actualOutput: llmResponse,
+      userInput,
+      trajectory,
       userContext,
       judgeProvider,
       judgeMode,
       collapseMessages,
       evaluationMetricKey: judgeConfig.evaluationMetricKey,
       parentTrackData: baseTrackData,
-      userInput,
     });
   }
 
@@ -371,6 +378,8 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
     judgeConfig,
     judgeMeta,
     actualOutput,
+    userInput,
+    trajectory,
     userContext,
     variables,
     judgeProvider,
@@ -378,7 +387,6 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
     collapseMessages,
     parentTrackData,
     configKey,
-    userInput,
   } = task;
 
   const exactMatch = handlerFor(handlers, judgeProvider, judgeMode);
@@ -390,7 +398,8 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
 
   const effectiveConfig = collapseMessages ? collapseMessagesToInstructions(judgeConfig) : judgeConfig;
 
-  const messageHistory = buildMessageHistory({ output: actualOutput });
+  // The same history the inline path builds: input, trajectory, output.
+  const messageHistory = buildMessageHistory({ userInput, trajectory, output: actualOutput });
 
   return withJudgeEvaluation(configKey, async (recordEvaluation) => {
     const { usage, response: rawResponse } = await executeAndTrack({

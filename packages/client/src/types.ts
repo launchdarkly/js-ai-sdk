@@ -590,6 +590,17 @@ export type JudgeTask = {
   judgeMeta: VariationMeta;
   /** The LLM response to evaluate. */
   actualOutput: string;
+  /**
+   * The user input of the originating invocation, shown to the judge before the
+   * response. A TypeSafe judge reads this as Jev's `input` field.
+   */
+  userInput?: string;
+  /**
+   * The originating invocation's rendered tool-call trajectory, shown to the
+   * judge between the input and the response. A string, so the task survives
+   * structured clone. `''` when the invocation had no tools.
+   */
+  trajectory?: string;
   /** The LaunchDarkly context from the originating invocation. */
   userContext: LDContext;
   /** Optional template variables to pass to the judge handler. */
@@ -612,11 +623,6 @@ export type JudgeTask = {
    * originating request.
    */
   parentTrackData: TrackData;
-  /**
-   * The input that produced `actualOutput`. A TypeSafe judge reads this as
-   * Jev's `input` field.
-   */
-  userInput?: string;
 };
 
 /**

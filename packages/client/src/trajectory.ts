@@ -8,8 +8,9 @@
  * only grade tool use it is shown.
  *
  * A rendered trajectory reaches a judge only inside `message_history`
- * (`buildMessageHistory`). It is never an event field. Capture runs in the
- * evaluations runner today; the online tracked path does not capture yet.
+ * (`buildMessageHistory`). It is never an event field. Two places capture: the
+ * online tracked path (`executeAndTrack` / `executeAndStream`), one recorder
+ * per invocation, and the evaluations runner, one recorder per row.
  */
 
 import { NativeTool, type ToolHandlerFn } from './types.js';
@@ -18,7 +19,22 @@ import { NativeTool, type ToolHandlerFn } from './types.js';
 export const TRAJECTORY_MAX_CALLS = 50;
 
 /** Router-injected handoff tools. Passed through, never recorded or described. */
-const HANDOFF_TOOL_PREFIX = '__handoff_';
+export const HANDOFF_TOOL_PREFIX = '__handoff_';
+
+/**
+ * The tool keys a config offered the model, in declaration order: the
+ * available list of an online trajectory. Leaves out a routed graph node's
+ * synthetic handoff tools and native tools, which the provider runs where no
+ * wrapper can observe them, so listing them would read as unused.
+ */
+export function exposedToolKeys(
+  config: { tools?: Record<string, unknown> } | undefined,
+  tools: ToolMap | undefined,
+): string[] {
+  return Object.keys(config?.tools ?? {}).filter(
+    (key) => !key.startsWith(HANDOFF_TOOL_PREFIX) && !(tools?.[key] instanceof NativeTool),
+  );
+}
 
 /** One recorded tool call. `args` is the single argument, or the argument list when there are several. */
 export type TrajectoryCall = {
@@ -58,22 +74,36 @@ export class TrajectoryRecorder {
    * the same keys. A wrapped tool returns and throws exactly what the original
    * does, and keeps its calling convention: a sync tool stays sync, and a
    * returned promise is handed back as a promise that records on settlement.
+   *
+   * `exposed` is the tool keys the config actually offered the model. Pass it
+   * when the map can be wider than the config, as online, where a registry's
+   * tools are merged in: describing those would let a judge penalise an agent
+   * for ignoring a tool it was never offered. They become the available list,
+   * and only they are recorded. Without it, every callable is in scope, which
+   * is the offline case.
    */
-  wrap(tools: ToolMap): ToolMap {
+  wrap(tools: ToolMap, exposed?: readonly string[]): ToolMap {
     const wrapped: ToolMap = {};
+    // Rebuilt, so wrapping again cannot list a tool twice.
+    this.available.length = 0;
     for (const [key, implementation] of Object.entries(tools)) {
       if (
         implementation instanceof NativeTool ||
         typeof implementation !== 'function' ||
-        key.startsWith(HANDOFF_TOOL_PREFIX)
+        key.startsWith(HANDOFF_TOOL_PREFIX) ||
+        (exposed !== undefined && !exposed.includes(key))
       ) {
-        // A native tool runs inside the provider, where no wrapper sees it.
+        // Provider-executed, not callable, synthetic routing, or never offered
+        // to the model: passed through untouched.
         wrapped[key] = implementation;
         continue;
       }
-      this.available.push(key);
+      if (exposed === undefined) this.available.push(key);
       wrapped[key] = this.wrapOne(key, implementation as (...args: unknown[]) => unknown) as ToolHandlerFn;
     }
+    // A tool the config offers but no implementation backs could still be
+    // called by the model, so it is available even though it cannot be observed.
+    if (exposed !== undefined) this.available.push(...exposed);
     return wrapped;
   }
 

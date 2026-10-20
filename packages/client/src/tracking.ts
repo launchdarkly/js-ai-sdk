@@ -1,4 +1,5 @@
 import { getClient } from './lifecycle.js';
+import { exposedToolKeys, HANDOFF_TOOL_PREFIX, renderTrajectory, TrajectoryRecorder } from './trajectory.js';
 import type {
   AiConfigRep,
   GraphNode,
@@ -23,6 +24,8 @@ export type ExecuteStreamDoneEvent = {
   response: string;
   usage: TokenUsage;
   trackData: TrackData;
+  /** The invocation's rendered tool-call trajectory, for its judges' `message_history`. `''` with no tools. */
+  trajectory: string;
 };
 
 export type ExecuteStreamEvent = { type: 'chunk'; text: string } | ExecuteStreamDoneEvent;
@@ -58,7 +61,7 @@ export const wrapToolHandlers = (
         (...args: unknown[]) => {
           // Synthetic handoff tools (graph routing) are not real tool calls;
           // they must not pollute `$ld:ai:tool_call` metrics.
-          if (!name.startsWith('__handoff_')) {
+          if (!name.startsWith(HANDOFF_TOOL_PREFIX)) {
             getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolKey: name }, 1);
           }
           return (fn as (...args: unknown[]) => unknown)(...args);
@@ -67,6 +70,27 @@ export const wrapToolHandlers = (
     }),
   );
 };
+
+/**
+ * Wraps the tool map for one invocation: trajectory recording inside the
+ * `$ld:ai:tool_call` wrapper, on the original map. That order matters. The
+ * tracking wrapper turns a `NativeTool` into a callable stub that returns
+ * nothing, so recording outside it would show a judge a native call with an
+ * empty result; inside it, the recorder still sees the tool as native and
+ * skips it. Neither wrapper disables the other.
+ */
+function instrumentTools(
+  config: AiConfigRep,
+  toolHandlers: Record<string, ToolHandlerFn | NativeTool> | undefined,
+  userContext: LDContext,
+  trackData: TrackData,
+): { tools: Record<string, ToolHandlerFn>; recorder: TrajectoryRecorder } {
+  // One recorder per invocation: invocations run concurrently against one map.
+  const recorder = new TrajectoryRecorder();
+  if (!toolHandlers) return { tools: {}, recorder };
+  const recorded = recorder.wrap(toolHandlers, exposedToolKeys(config, toolHandlers));
+  return { tools: wrapToolHandlers(recorded, userContext, trackData), recorder };
+}
 
 /**
  * Copies the pinned model-config identity (`modelKey`, `modelVersion`) from a
@@ -211,10 +235,10 @@ export const executeAndTrack = async ({
   variables?: Record<string, unknown>;
   graphKey?: string;
   history?: Message[];
-}): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData }> => {
+}): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData; trajectory: string }> => {
   const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
-  const trackedToolHandlers = wrapToolHandlers(toolHandlers, userContext, trackData);
+  const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
 
   const startTime = Date.now();
   let response: Awaited<ReturnType<ProviderHandler>>;
@@ -247,7 +271,14 @@ export const executeAndTrack = async ({
   if (usage.output > 0) getClient().track('$ld:ai:tokens:output', userContext, trackData, usage.output);
 
   const rawOutput = response.output;
-  return { usage, response: rawOutput !== undefined && rawOutput !== null ? rawOutput : '', trackData };
+  return {
+    usage,
+    response: rawOutput !== undefined && rawOutput !== null ? rawOutput : '',
+    trackData,
+    // Rendered, not structural: `message_history` is the only consumer, and a
+    // JudgeTask must survive structured clone.
+    trajectory: renderTrajectory(recorder),
+  };
 };
 
 /**
@@ -285,7 +316,7 @@ export async function* executeAndStream({
 }): AsyncGenerator<ExecuteStreamEvent> {
   const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
-  const trackedToolHandlers = wrapToolHandlers(toolHandlers, userContext, trackData);
+  const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
   const mergedVariables = { ...variables, ldContext: { ...userContext }, __ld: trackData };
 
   const startTime = Date.now();
@@ -328,5 +359,5 @@ export async function* executeAndStream({
   if (usage.input > 0) getClient().track('$ld:ai:tokens:input', userContext, trackData, usage.input);
   if (usage.output > 0) getClient().track('$ld:ai:tokens:output', userContext, trackData, usage.output);
 
-  yield { type: 'done', response: fullText, usage, trackData };
+  yield { type: 'done', response: fullText, usage, trackData, trajectory: renderTrajectory(recorder) };
 }

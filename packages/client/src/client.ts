@@ -82,6 +82,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       response: rawResponse,
       usage: llmUsage,
       trackData: baseTrackData,
+      trajectory,
     } = await executeAndTrack({
       configKey: key,
       config: aiConfig,
@@ -107,6 +108,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
         llmResponse: llmResponseStr,
         baseTrackData,
         userInput,
+        trajectory,
       });
       return {
         response: parsedResponse as T,
@@ -125,6 +127,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       llmResponse: llmResponseStr,
       baseTrackData,
       toolHandlers: resolvedTools,
+      trajectory,
     });
 
     return {
@@ -193,6 +196,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
             llmResponse: doneEvent.response,
             baseTrackData: doneEvent.trackData,
             toolHandlers: resolvedTools,
+            trajectory: doneEvent.trajectory,
           });
       yield {
         type: 'done',
