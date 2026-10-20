@@ -16,6 +16,8 @@
 
 import {
   assertStrictJson,
+  DEFAULT_BASE_URI,
+  DEFAULT_UI_BASE_URI,
   EvaluationsError,
   errorMessage,
   isPlainObject,
@@ -24,7 +26,6 @@ import {
   segment,
   sleepSeconds,
   type Transport,
-  UI_BASE_URI,
 } from './evaluations-api.js';
 import { type Criterion, Judge, validateCriteria } from './evaluations-criteria.js';
 import {
@@ -89,6 +90,14 @@ export type InitEvaluationsOptions = {
    * May be omitted only when a client is already initialized with `initClient`.
    */
   sdkKey?: string;
+  /**
+   * Management API host. Default `LD_API_BASE_URI`, then
+   * `https://app.launchdarkly.com`. Separate from the SDK's own `LD_BASE_URI`,
+   * which points at event delivery, not the management API.
+   */
+  baseUri?: string;
+  /** LaunchDarkly UI host used for run links. Default `LD_UI_BASE_URI`, then `https://app.launchdarkly.com`. */
+  uiBaseUri?: string;
   /** Management API transport. Defaults to one built on `fetch`. */
   transport?: Transport;
 };
@@ -246,7 +255,16 @@ export function initEvaluations(options: InitEvaluationsOptions = {}): Evaluatio
         'environment variable, pass sdkKey to initEvaluations(), or initialize a client first with initClient(client).',
     );
   }
-  return new EvaluationsModule({ projectKey, sdkKey, api: { apiKey, transport: options.transport } });
+  return new EvaluationsModule({
+    projectKey,
+    sdkKey,
+    uiBaseUri: explicit(options.uiBaseUri) ?? env('LD_UI_BASE_URI') ?? DEFAULT_UI_BASE_URI,
+    api: {
+      apiKey,
+      baseUri: explicit(options.baseUri) ?? env('LD_API_BASE_URI') ?? DEFAULT_BASE_URI,
+      transport: options.transport,
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +464,8 @@ export type EvaluationsModuleInternals = {
   projectKey: string;
   sdkKey: string | undefined;
   api: LDApiClientOptions;
+  /** UI host for run links. Default {@link DEFAULT_UI_BASE_URI}. */
+  uiBaseUri?: string;
   /** Events tracked between flushes. Default 500. */
   flushBound?: number;
   /** Waits between summary polls. */
@@ -460,6 +480,8 @@ export class EvaluationsModule {
   readonly tools: ToolsClient;
   /** SDK key whose client carries results to LaunchDarkly. `undefined` when an initialized client is reused. */
   readonly sdkKey: string | undefined;
+  /** LaunchDarkly UI host used for run links. */
+  readonly uiBaseUri: string;
 
   private readonly api: LDApiClient;
   private readonly flushBound: number;
@@ -474,6 +496,7 @@ export class EvaluationsModule {
     const internals = internalsArg as EvaluationsModuleInternals;
     this.projectKey = internals.projectKey;
     this.sdkKey = internals.sdkKey;
+    this.uiBaseUri = (internals.uiBaseUri ?? DEFAULT_UI_BASE_URI).replace(/\/+$/, '');
     this.api = new LDApiClient(internals.api);
     this.tools = new LibraryToolsClient(this.api, this.projectKey);
     this.flushBound = internals.flushBound ?? DEFAULT_FLUSH_BOUND;
@@ -644,7 +667,7 @@ export class EvaluationsModule {
     return {
       passed: summary.errorRows === 0 && summary.failedRows === 0 && summary.pendingRows === 0,
       url:
-        `${UI_BASE_URI}/projects/${segment(this.projectKey)}/ai/evaluations/${segment(evaluation.id)}` +
+        `${this.uiBaseUri}/projects/${segment(this.projectKey)}/ai/evaluations/${segment(evaluation.id)}` +
         `/runs/${segment(run.id)}`,
       runId: run.id,
       summary,

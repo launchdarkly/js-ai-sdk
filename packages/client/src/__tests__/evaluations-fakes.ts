@@ -10,7 +10,8 @@ import type { Transport, TransportRequest, TransportResponse } from '../evaluati
 import type { ProviderHandler } from '../types.js';
 import { createHandlerInternal } from '../utils.js';
 
-const API_ROOT = 'https://app.launchdarkly.com/api/v2/';
+/** Everything up to and including `/api/v2/`, whatever host the client was given. */
+const API_ROOT = /^.*?\/api\/v2\//;
 
 export type Call = {
   method: string;

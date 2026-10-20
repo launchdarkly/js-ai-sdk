@@ -6,11 +6,11 @@
  * the network with a recording fake.
  */
 
-/** The fixed management API host. Deliberately not configurable. */
-export const MANAGEMENT_API_BASE_URI = 'https://app.launchdarkly.com';
+/** The default management API host. Override with `baseUri` or `LD_API_BASE_URI`. */
+export const DEFAULT_BASE_URI = 'https://app.launchdarkly.com';
 
-/** The fixed UI host for run links. Deliberately not configurable. */
-export const UI_BASE_URI = 'https://app.launchdarkly.com';
+/** The default UI host for run links. Override with `uiBaseUri` or `LD_UI_BASE_URI`. */
+export const DEFAULT_UI_BASE_URI = 'https://app.launchdarkly.com';
 
 const API_VERSION = '20240415';
 const USER_AGENT = 'launchdarkly-ai-evaluations-javascript';
@@ -73,6 +73,8 @@ export const fetchTransport: Transport = async ({ method, url, headers, body, ti
 
 export type LDApiClientOptions = {
   apiKey: string;
+  /** Management API host. Default {@link DEFAULT_BASE_URI}. */
+  baseUri?: string;
   transport?: Transport;
   timeoutMs?: number;
   /** Retries after the first attempt. */
@@ -96,6 +98,7 @@ export const sleepSeconds = (seconds: number): Promise<void> =>
 /** Minimal retrying client for the LaunchDarkly public management API. */
 export class LDApiClient {
   private readonly apiKey: string;
+  private readonly baseUri: string;
   private readonly transport: Transport;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
@@ -104,6 +107,7 @@ export class LDApiClient {
 
   constructor(options: LDApiClientOptions) {
     this.apiKey = options.apiKey;
+    this.baseUri = (options.baseUri ?? DEFAULT_BASE_URI).replace(/\/+$/, '');
     this.transport = options.transport ?? fetchTransport;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxRetries = Math.max(0, options.maxRetries ?? DEFAULT_MAX_RETRIES);
@@ -112,7 +116,7 @@ export class LDApiClient {
   }
 
   urlFor(path: string, params?: Record<string, string | number | undefined>): string {
-    const url = `${MANAGEMENT_API_BASE_URI}/api/v2/${path.replace(/^\/+/, '')}`;
+    const url = `${this.baseUri}/api/v2/${path.replace(/^\/+/, '')}`;
     const query = new URLSearchParams();
     for (const [name, value] of Object.entries(params ?? {})) {
       if (value !== undefined) query.append(name, String(value));

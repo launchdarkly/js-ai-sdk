@@ -115,6 +115,58 @@ describe('initEvaluations', () => {
     lifecycle.client = { track: () => {} };
     expect(() => init({ projectKey: 'p', apiKey: 't' })).toThrow(/LD_SDK_KEY/);
   });
+
+  describe('hosts', () => {
+    const keys = { projectKey: PROJECT, apiKey: 't', sdkKey: 's' };
+
+    async function hostsUsed(options: Parameters<typeof initEvaluations>[0] = {}) {
+      lifecycle.client = stubClient();
+      const api = routeHostedRun(new FakeApi());
+      const evals = initEvaluations({ ...keys, transport: api.transport, ...options });
+      const result = await evals.run({
+        key: 'eval-key',
+        dataset: 'ds',
+        handler: stubHandler(),
+        generation: completion(),
+        pollIntervalSeconds: 0,
+      });
+      return { apiUrls: api.calls.map((call) => call.url), runUrl: result.url, evals };
+    }
+
+    it('default to app.launchdarkly.com, ignoring the SDK event host LD_BASE_URI', async () => {
+      vi.stubEnv('LD_BASE_URI', 'https://events.example.com');
+      const { apiUrls, runUrl } = await hostsUsed();
+      expect(apiUrls.every((url) => url.startsWith('https://app.launchdarkly.com/api/v2/'))).toBe(true);
+      expect(runUrl).toBe(`https://app.launchdarkly.com/projects/${PROJECT}/ai/evaluations/ev-1/runs/run-1`);
+    });
+
+    it('read LD_API_BASE_URI and LD_UI_BASE_URI', async () => {
+      vi.stubEnv('LD_API_BASE_URI', 'https://api.example.com');
+      vi.stubEnv('LD_UI_BASE_URI', 'https://ui.example.com/');
+      const { apiUrls, runUrl, evals } = await hostsUsed();
+      expect(apiUrls.every((url) => url.startsWith('https://api.example.com/api/v2/'))).toBe(true);
+      expect(runUrl).toBe(`https://ui.example.com/projects/${PROJECT}/ai/evaluations/ev-1/runs/run-1`);
+      expect(evals.uiBaseUri).toBe('https://ui.example.com');
+    });
+
+    it('prefer the options over the environment', async () => {
+      vi.stubEnv('LD_API_BASE_URI', 'https://api.example.com');
+      vi.stubEnv('LD_UI_BASE_URI', 'https://ui.example.com');
+      const { apiUrls, runUrl } = await hostsUsed({
+        baseUri: 'http://localhost:8080',
+        uiBaseUri: 'http://localhost:3000',
+      });
+      expect(apiUrls.every((url) => url.startsWith('http://localhost:8080/api/v2/'))).toBe(true);
+      expect(runUrl.startsWith('http://localhost:3000/projects/')).toBe(true);
+    });
+
+    it('treat blank values as unset', async () => {
+      vi.stubEnv('LD_API_BASE_URI', '  ');
+      const { apiUrls, runUrl } = await hostsUsed({ uiBaseUri: ' ' });
+      expect(apiUrls[0].startsWith('https://app.launchdarkly.com/api/v2/')).toBe(true);
+      expect(runUrl.startsWith('https://app.launchdarkly.com/projects/')).toBe(true);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -42,12 +42,16 @@ describe('management API client: request shape', () => {
     expect(post.body).toEqual({ x: 1 });
   });
 
-  it('always targets the fixed management host, whatever LD_BASE_URI says', async () => {
-    vi.stubEnv('LD_BASE_URI', 'https://relay.example.com');
-    vi.stubEnv('LD_API_BASE_URI', 'https://other.example.com');
+  it('defaults to app.launchdarkly.com', async () => {
     const api = new FakeApi().on('GET', 'a', { body: {} });
     await client(api).ld.get('a');
-    expect(api.calls[0].url.startsWith('https://app.launchdarkly.com/')).toBe(true);
+    expect(api.calls[0].url).toBe('https://app.launchdarkly.com/api/v2/a');
+  });
+
+  it('targets the host it is given, without a trailing slash', async () => {
+    const api = new FakeApi().on('GET', 'a', { body: {} });
+    await new LDApiClient({ apiKey: 't', baseUri: 'http://localhost:8080/', transport: api.transport }).get('a');
+    expect(api.calls[0].url).toBe('http://localhost:8080/api/v2/a');
   });
 });
 
