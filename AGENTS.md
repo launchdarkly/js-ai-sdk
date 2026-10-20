@@ -366,7 +366,7 @@ A resolved agent graph returned by `resolveGraph()`. Exposes topology accessors 
 | `runNode(node, input?, opts?)` | Executes a single node through the tracked `config().invoke()` path. |
 | `route(node, input?, opts?)` | Executes a node, presenting outgoing edges as handoff choices; returns the response plus the chosen `next` node. |
 | `traverse(fn, ctx?)` | Walks root → leaves (BFS order), awaiting each visitor. |
-| `reverseTraverse(fn, ctx?)` | Walks leaves → root (reverse BFS), awaiting each visitor. |
+| `reverseTraverse(fn, ctx?)` | Walks children before parents (post-order from the root, each node once, root last), awaiting each visitor. |
 
 #### `GraphOptions`
 

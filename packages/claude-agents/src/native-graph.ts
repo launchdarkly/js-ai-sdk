@@ -250,7 +250,16 @@ export const toClaudeAgents = (
           if (node.key === def.root?.key) return;
 
           const nodeKey = sanitizeName(node.key);
-          const childSubAgentTools = node.edges.map((e) => subAgentToolCtx[e.targetKey]).filter(Boolean);
+          const childSubAgentTools = node.edges.flatMap((e) => {
+            const childTool = subAgentToolCtx[e.targetKey];
+            // The root is never a tool, so only an edge back to the root or into a cycle lands here.
+            if (!childTool) {
+              // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a dropped edge must be visible
+              console.warn(`[LaunchDarkly] Dropping cyclic edge "${node.key}" -> "${e.targetKey}"`);
+              return [];
+            }
+            return [childTool];
+          });
 
           // Create a tool that wraps query() (or def.runNode for non-Anthropic) for this node.
           // The Claude SDK tool() takes a raw Zod shape (Record<string, ZodType>),
