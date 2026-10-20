@@ -73,7 +73,6 @@ import { reportUsage } from './sdk-usage.js';
 import type { ConfigMessage, LDClientInterface, ProviderHandler } from './types.js';
 import { normalizeMode } from './utils.js';
 
-export type { Transport, TransportRequest, TransportResponse } from './evaluations-api.js';
 export { EvaluationsError } from './evaluations-api.js';
 
 // ---------------------------------------------------------------------------
@@ -94,9 +93,10 @@ export type InitEvaluationsOptions = {
   /**
    * Management API host. Default `LD_API_BASE_URI`, then
    * `https://app.launchdarkly.com`. Separate from the SDK's own `LD_BASE_URI`,
-   * which points at event delivery, not the management API.
+   * which points at event delivery, not the management API. Not `baseUri`:
+   * on `initClient` that name is the flag-delivery host.
    */
-  baseUri?: string;
+  apiBaseUri?: string;
   /** LaunchDarkly UI host used for run links. Default `LD_UI_BASE_URI`, then `https://app.launchdarkly.com`. */
   uiBaseUri?: string;
   /**
@@ -205,8 +205,6 @@ export type EvalRunResult = {
   summary: RunSummary;
 };
 
-export type { ToolsClient } from './evaluations-tools.js';
-
 // ---------------------------------------------------------------------------
 // Initialization
 // ---------------------------------------------------------------------------
@@ -271,7 +269,7 @@ export function initEvaluations(options: InitEvaluationsOptions = {}): Evaluatio
     logEvents: options.logEvents === true,
     api: {
       apiKey,
-      baseUri: explicit(options.baseUri) ?? env('LD_API_BASE_URI') ?? DEFAULT_BASE_URI,
+      baseUri: explicit(options.apiBaseUri) ?? env('LD_API_BASE_URI') ?? DEFAULT_BASE_URI,
       transport: options.transport,
     },
   });

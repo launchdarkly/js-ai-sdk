@@ -6,7 +6,7 @@
  * the network with a recording fake.
  */
 
-/** The default management API host. Override with `baseUri` or `LD_API_BASE_URI`. */
+/** The default management API host. Override with `apiBaseUri` on `initEvaluations` or `LD_API_BASE_URI`. */
 export const DEFAULT_BASE_URI = 'https://app.launchdarkly.com';
 
 /** The default UI host for run links. Override with `uiBaseUri` or `LD_UI_BASE_URI`. */

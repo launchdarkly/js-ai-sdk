@@ -153,11 +153,18 @@ describe('initEvaluations', () => {
       vi.stubEnv('LD_API_BASE_URI', 'https://api.example.com');
       vi.stubEnv('LD_UI_BASE_URI', 'https://ui.example.com');
       const { apiUrls, runUrl } = await hostsUsed({
-        baseUri: 'http://localhost:8080',
+        apiBaseUri: 'http://localhost:8080',
         uiBaseUri: 'http://localhost:3000',
       });
       expect(apiUrls.every((url) => url.startsWith('http://localhost:8080/api/v2/'))).toBe(true);
       expect(runUrl.startsWith('http://localhost:3000/projects/')).toBe(true);
+    });
+
+    it('do not derive the UI host from LD_API_BASE_URI', async () => {
+      vi.stubEnv('LD_API_BASE_URI', 'https://api.example.com');
+      const { apiUrls, runUrl } = await hostsUsed();
+      expect(apiUrls.every((url) => url.startsWith('https://api.example.com/api/v2/'))).toBe(true);
+      expect(runUrl.startsWith('https://app.launchdarkly.com/projects/')).toBe(true);
     });
 
     it('pass logEvents through to the run', async () => {
@@ -177,6 +184,13 @@ describe('initEvaluations', () => {
     it('treat blank values as unset', async () => {
       vi.stubEnv('LD_API_BASE_URI', '  ');
       const { apiUrls, runUrl } = await hostsUsed({ uiBaseUri: ' ' });
+      expect(apiUrls[0].startsWith('https://app.launchdarkly.com/api/v2/')).toBe(true);
+      expect(runUrl.startsWith('https://app.launchdarkly.com/projects/')).toBe(true);
+    });
+
+    it('treat blank options and blank environment values alike', async () => {
+      vi.stubEnv('LD_UI_BASE_URI', '  ');
+      const { apiUrls, runUrl } = await hostsUsed({ apiBaseUri: ' ' });
       expect(apiUrls[0].startsWith('https://app.launchdarkly.com/api/v2/')).toBe(true);
       expect(runUrl.startsWith('https://app.launchdarkly.com/projects/')).toBe(true);
     });

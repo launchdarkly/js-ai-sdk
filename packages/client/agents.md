@@ -306,15 +306,10 @@ export type {
   InlineDatasetRow,
   RunOptions,
   RunSummary,
-  ToolsClient,
-  Transport,
-  TransportRequest,
-  TransportResponse,
 } from './evaluations.js';
 export { EvaluationsError, EvaluationsModule, initEvaluations } from './evaluations.js';
-export type { Criterion, ScorerFn, SuccessDirection } from './evaluations-criteria.js';
+export type { Criterion } from './evaluations-criteria.js';
 export { Judge, Scorer } from './evaluations-criteria.js';
-export type { EvalToolImplementation } from './evaluations-tools.js';
 export { EvalTool } from './evaluations-tools.js';
 ```
 

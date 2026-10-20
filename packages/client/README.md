@@ -632,7 +632,7 @@ process.exit(result.passed ? 0 : 1);
 | `projectKey` | `LD_PROJECT_KEY` | Project that holds the evaluations, datasets and tools |
 | `apiKey` | `LD_API_TOKEN` | Management API access token |
 | `sdkKey` | `LD_SDK_KEY` | SDK key for the client that sends result events. Ignored, with a warning, when a client is already initialized |
-| `baseUri` | `LD_API_BASE_URI` | Management API host (default `https://app.launchdarkly.com`). Separate from `LD_BASE_URI`, which points at event delivery |
+| `apiBaseUri` | `LD_API_BASE_URI` | Management API host (default `https://app.launchdarkly.com`). Separate from `LD_BASE_URI`, which points at event delivery |
 | `uiBaseUri` | `LD_UI_BASE_URI` | Host for the run link in the result (default `https://app.launchdarkly.com`). Set it for a non-production instance, or its links point at production |
 | `logEvents` | — | Log each result event with its `emittedAt` and `eventId` through `console.info` (default `false`) |
 | `transport` | — | Replaces the `fetch`-based management API transport, for tests |

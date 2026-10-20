@@ -60,6 +60,7 @@ export type EvalRunResult = {
 export class EvalTool {
     constructor(key: string, implementation: EvalToolImplementation, schema: Record<string, unknown>, description?: string);
     readonly description: string;
+    // Warning: (ae-forgotten-export) The symbol "EvalToolImplementation" needs to be exported by the entry point experimental.d.ts
     readonly implementation: EvalToolImplementation;
     readonly key: string;
     readonly projectKey: string | undefined;
@@ -67,11 +68,6 @@ export class EvalTool {
     readonly source: 'library' | 'inline';
     readonly version: number | undefined;
 }
-
-// Warning: (ae-forgotten-export) The symbol "NativeTool" needs to be exported by the entry point experimental.d.ts
-//
-// @public
-export type EvalToolImplementation = Function | NativeTool;
 
 // @public
 export class EvaluationsError extends Error {
@@ -87,6 +83,7 @@ export class EvaluationsModule {
     readonly projectKey: string;
     run(options: RunOptions): Promise<EvalRunResult>;
     readonly sdkKey: string | undefined;
+    // Warning: (ae-forgotten-export) The symbol "ToolsClient" needs to be exported by the entry point experimental.d.ts
     readonly tools: ToolsClient;
     readonly uiBaseUri: string;
 }
@@ -165,7 +162,7 @@ export type InitEvaluationsOptions = {
     projectKey?: string;
     apiKey?: string;
     sdkKey?: string;
-    baseUri?: string;
+    apiBaseUri?: string;
     uiBaseUri?: string;
     logEvents?: boolean;
     transport?: Transport;
@@ -281,15 +278,14 @@ export class Scorer {
         passRateThreshold?: number;
         successDirection?: SuccessDirection;
     });
+    // Warning: (ae-forgotten-export) The symbol "ScorerFn" needs to be exported by the entry point experimental.d.ts
     readonly fn: ScorerFn;
     readonly name: string;
     readonly passRateThreshold: number;
+    // Warning: (ae-forgotten-export) The symbol "SuccessDirection" needs to be exported by the entry point experimental.d.ts
     readonly successDirection: SuccessDirection;
     readonly threshold: number;
 }
-
-// @public
-export type ScorerFn = (row: DatasetRow, output: unknown) => number | Promise<number>;
 
 // @public
 export function setSkillStore(store: SkillStore | null | undefined): void;
@@ -368,35 +364,6 @@ export type StoreDiagnostics = {
 };
 
 // @public
-export type SuccessDirection = 'higher_is_better' | 'lower_is_better';
-
-// @public
-export interface ToolsClient {
-    get(key: string, options: {
-        implementation: EvalToolImplementation;
-    }): Promise<EvalTool>;
-}
-
-// @public
-export type Transport = (request: TransportRequest) => Promise<TransportResponse>;
-
-// @public
-export type TransportRequest = {
-    method: string;
-    url: string;
-    headers: Record<string, string>;
-    body?: string;
-    timeoutMs: number;
-};
-
-// @public
-export type TransportResponse = {
-    status: number;
-    body: string;
-    headers: Record<string, string>;
-};
-
-// @public
 export function watchSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options?: WatchSkillsOptions): Promise<{
     report: ReconcileReport;
     watcher: SkillWatcher;
@@ -420,6 +387,7 @@ export type WriteSkillsOptions = {
 
 // Warnings were encountered during analysis:
 //
+// temp/dts/evaluations.d.ts:48:5 - (ae-forgotten-export) The symbol "Transport" needs to be exported by the entry point experimental.d.ts
 // temp/dts/evaluations.d.ts:67:5 - (ae-forgotten-export) The symbol "ConfigMessage" needs to be exported by the entry point experimental.d.ts
 // temp/dts/evaluations.d.ts:111:5 - (ae-forgotten-export) The symbol "ProviderHandler" needs to be exported by the entry point experimental.d.ts
 // temp/dts/skills-fdv2.d.ts:454:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point experimental.d.ts
