@@ -172,7 +172,7 @@ describe('toAdkAgents', () => {
     const startSpan = vi.fn(() => span);
     const spy = vi.spyOn(trace, 'getTracer').mockReturnValue({ startSpan } as never);
     await toAdkAgents(graphDef() as never).call('hi', { context: { kind: 'user', key: 'user-1' } });
-    expect(startSpan).toHaveBeenCalledWith('ld.ai.graph');
+    expect(startSpan).toHaveBeenCalledWith('launchdarkly.graph');
     const events = track.mock.calls.map((call) => call[0]);
     expect(events).toEqual(
       expect.arrayContaining([
