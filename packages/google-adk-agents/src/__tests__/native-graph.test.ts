@@ -173,6 +173,8 @@ describe('toAdkAgents', () => {
     const spy = vi.spyOn(trace, 'getTracer').mockReturnValue({ startSpan } as never);
     await toAdkAgents(graphDef() as never).call('hi', { context: { kind: 'user', key: 'user-1' } });
     expect(startSpan).toHaveBeenCalledWith('launchdarkly.graph');
+    expect(span.setAttribute).toHaveBeenCalledWith('launchdarkly.config.key', 'graph-flag');
+    expect(span.setAttribute).toHaveBeenCalledWith('launchdarkly.run.id', expect.any(String));
     const events = track.mock.calls.map((call) => call[0]);
     expect(events).toEqual(
       expect.arrayContaining([

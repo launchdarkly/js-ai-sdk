@@ -2,7 +2,14 @@
  * Compiles a LaunchDarkly agent graph into an ADK workflow.
  */
 import { FunctionTool, InMemoryRunner, isFinalResponse, LlmAgent, START, Workflow } from '@google/adk';
-import { getClient, makeGraphTrackData, makeNodeTrackData, parseTemplate, reportUsage } from '@launchdarkly/ai-server';
+import {
+  getClient,
+  makeGraphTrackData,
+  makeNodeTrackData,
+  parseTemplate,
+  reportUsage,
+  setLdSpanAttributes,
+} from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { historyContents } from './handler.js';
 import { usageCounts } from './spans.js';
@@ -57,15 +64,16 @@ export function toAdkAgents(definition: AdkGraphDefinition, options: AdkGraphOpt
       span.setAttribute('launchdarkly.graph.key', definition.key);
       const started = Date.now();
       const runId = crypto.randomUUID();
-      const handoff: { target?: string } = {};
-      const agents = buildAgents(definition, callOptions.variables ?? {}, options.toolHandlers ?? {}, handoff);
-      const rootAgent = agents.get(definition.root.key);
-      new Workflow({ name: 'graph', edges: [[START, rootAgent as never]] });
-
       const path: string[] = [];
       const usage = { input: 0, output: 0, total: 0 };
       let response = '';
       try {
+        setLdSpanAttributes(span, { __ld: makeGraphTrackData(definition.key, runId), ldContext });
+        const handoff: { target?: string } = {};
+        const agents = buildAgents(definition, callOptions.variables ?? {}, options.toolHandlers ?? {}, handoff);
+        const rootAgent = agents.get(definition.root.key);
+        new Workflow({ name: 'graph', edges: [[START, rootAgent as never]] });
+
         let current: AdkGraphNode | null = definition.root;
         const seen = new Set<string>();
         let history = callOptions.history;
