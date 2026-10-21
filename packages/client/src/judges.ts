@@ -438,7 +438,8 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
         eventKey: first.eventKey,
         results,
         metrics,
-        trackData: { ...omitModelStamps(parentTrackData), ...trackData, judgeConfigKey: firstKey },
+        // The score belongs to the evaluated config. Each metric carries its own judgeConfigKey.
+        trackData: { ...parentTrackData, judgeConfigKey: firstKey },
       };
     }
 

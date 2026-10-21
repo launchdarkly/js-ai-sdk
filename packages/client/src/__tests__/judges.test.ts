@@ -538,6 +538,11 @@ describe('typesafe judge results', () => {
   });
 
   it('returns every label from runJudge and a metric for each eventKey', async () => {
+    mockExecuteAndTrack.mockResolvedValue({
+      usage,
+      response: payload,
+      trackData: { runId: 'judge-run', modelKey: 'judge-model', configKey: 'jev-judge' },
+    });
     const handler: ProviderHandler = vi.fn();
     handler.providesFor = ['TypeSafe', 'messages'];
     const result = await runJudge(
@@ -578,5 +583,10 @@ describe('typesafe judge results', () => {
       },
       { eventKey: '$ld:ai:judge:jev:migration', score: 0.9, judgeConfigKey: 'jev-judge.migration' },
     ]);
+    // The judge run's own identity must not replace the evaluated config.
+    expect(result?.trackData).toEqual({
+      ...baseTrackData,
+      judgeConfigKey: 'jev-judge.migration_intent',
+    });
   });
 });
