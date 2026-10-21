@@ -826,7 +826,7 @@ export type GraphDefinition = {
   /** Walk root -> leaves (deepest last), awaiting each visitor result. */
   // biome-ignore lint/suspicious/noExplicitAny: T = any default keeps existing call-sites working without type annotations
   traverse: <T = any>(fn: TraverseVisitor<T>, ctx?: Record<string, unknown>) => Promise<T | undefined>;
-  /** Walk leaves -> root (root last), awaiting each visitor result. */
+  /** Walk children before parents (each node once, root last), awaiting each visitor result. */
   // biome-ignore lint/suspicious/noExplicitAny: T = any default keeps existing call-sites working without type annotations
   reverseTraverse: <T = any>(fn: TraverseVisitor<T>, ctx?: Record<string, unknown>) => Promise<T | undefined>;
 };

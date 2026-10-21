@@ -11,6 +11,8 @@
     { "path": "packages/langchain-messages/tsconfig.ref.json" },
     { "path": "packages/langchain-agents/tsconfig.ref.json" },
     { "path": "packages/vercel-messages/tsconfig.ref.json" },
-    { "path": "packages/vercel-agents/tsconfig.ref.json" }
+    { "path": "packages/vercel-agents/tsconfig.ref.json" },
+    { "path": "packages/litellm-messages/tsconfig.ref.json" },
+    { "path": "packages/litellm-agents/tsconfig.ref.json" }
   ]
 }

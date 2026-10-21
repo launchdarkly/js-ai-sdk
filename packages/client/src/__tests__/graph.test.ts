@@ -288,6 +288,34 @@ describe('resolveGraph()', () => {
     expect(visited[0]).toBe('leaf-node');
     expect(visited[visited.length - 1]).toBe('root-node');
   });
+
+  function setupGraph(edges: Record<string, string[]>) {
+    mockVariation.mockResolvedValue({
+      root: 'root',
+      edges: Object.fromEntries(Object.entries(edges).map(([k, ts]) => [k, ts.map((t) => ({ key: t }))])),
+    });
+    mockExtractVariation.mockImplementation(async () => ({ config: makeAgentConfig(), meta: makeMeta() }));
+  }
+
+  it('reverseTraverse visits every child before its parent on uneven depths', async () => {
+    setupGraph({ root: ['P'], P: ['T1', 'Q'], Q: ['T2'] });
+    const def = await resolveGraph('graph-flag', { context: mockContext });
+    const visited: string[] = [];
+    await def.reverseTraverse(async (node) => {
+      visited.push(node.key);
+    });
+    expect(visited).toEqual(['T1', 'T2', 'Q', 'P', 'root']);
+  });
+
+  it('reverseTraverse visits each node exactly once in a cycle', async () => {
+    setupGraph({ root: ['A'], A: ['B'], B: ['A', 'T'] });
+    const def = await resolveGraph('graph-flag', { context: mockContext });
+    const visited: string[] = [];
+    await def.reverseTraverse(async (node) => {
+      visited.push(node.key);
+    });
+    expect(visited).toEqual(['T', 'B', 'A', 'root']);
+  });
 });
 
 // ─── graph().invoke() ───────────────────────────────────────────────────────────

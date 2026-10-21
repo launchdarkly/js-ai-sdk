@@ -444,7 +444,8 @@ describe('runJudge result trackData', () => {
     vi.clearAllMocks();
   });
 
-  it('does not inherit the parent modelKey/modelVersion when the judge trackData has none', async () => {
+  it('returns the evaluated (parent) config identity, identical to the inline track payload', async () => {
+    // The judge's own trackData differs on every identity key; none of it may leak into the result.
     mockExecuteAndTrack.mockResolvedValue({
       usage: { input: 1, output: 1, total: 2 },
       response: '{"score":0.9,"reasoning":"good"}',
@@ -452,37 +453,34 @@ describe('runJudge result trackData', () => {
         runId: 'judge-run',
         configKey: 'judge-key',
         variationKey: 'j1',
-        version: 1,
-        modelName: 'claude',
-        providerName: 'Anthropic',
-      },
-    });
-    const result = await runJudge(makeTask(parentTrackData), [makeHandler()]);
-    expect(result).not.toBeNull();
-    expect('modelKey' in result!.trackData).toBe(false);
-    expect('modelVersion' in result!.trackData).toBe(false);
-    expect(result!.trackData.judgeConfigKey).toBe('judge-key');
-    expect(result!.trackData.graphKey).toBe('g1');
-  });
-
-  it('keeps the judge own modelKey/modelVersion over the parent values', async () => {
-    mockExecuteAndTrack.mockResolvedValue({
-      usage: { input: 1, output: 1, total: 2 },
-      response: '{"score":0.9,"reasoning":"good"}',
-      trackData: {
-        runId: 'judge-run',
-        configKey: 'judge-key',
-        variationKey: 'j1',
-        version: 1,
+        version: 3,
         modelName: 'claude',
         providerName: 'Anthropic',
         modelKey: 'judge-model',
         modelVersion: 2,
       },
     });
+    mockExtractVariation.mockResolvedValue({ config: mockJudgeConfig, meta: mockJudgeMeta });
+    const track = vi.fn();
+    mockGetClient.mockReturnValue({ track });
+
+    await runJudges({
+      config: {
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'Be helpful.',
+        judgeConfiguration: { judges: [{ key: 'judge-key', samplingRate: 1 }] },
+      },
+      userContext: mockContext,
+      handler: makeHandler(),
+      llmResponse: 'response',
+      baseTrackData: parentTrackData,
+    });
+    const inlineTrackData = track.mock.calls[0][2];
+
     const result = await runJudge(makeTask(parentTrackData), [makeHandler()]);
-    expect(result!.trackData.modelKey).toBe('judge-model');
-    expect(result!.trackData.modelVersion).toBe(2);
+    expect(result!.trackData).toEqual({ ...parentTrackData, judgeConfigKey: 'judge-key' });
+    expect(result!.trackData).toEqual(inlineTrackData);
   });
 
   it('returns null for a provider outside the only scoped handler list', async () => {

@@ -544,34 +544,17 @@ const buildGraph = async (
   ): Promise<T | undefined> => {
     if (!rootNode) return undefined;
 
-    const terminals = terminalNodes();
-    if (terminals.length === 0) return undefined;
-
+    // Post-order DFS: every child is visited before its parent, each node once, root last.
     const visited = new Set<string>();
-    let frontier: string[] = terminals.map((n) => n.key);
-    let iterations = 0;
+    const visit = async (nodeKey: string): Promise<void> => {
+      if (visited.has(nodeKey)) return;
+      visited.add(nodeKey);
+      for (const child of getChildNodes(nodeKey)) await visit(child.key);
+      const node = nodes.get(nodeKey);
+      if (node) ctx[nodeKey] = await fn(node, ctx);
+    };
 
-    while (frontier.length > 0 && iterations < MAX_TRAVERSAL_DEPTH) {
-      iterations += 1;
-      const next: string[] = [];
-      for (const nodeKey of frontier) {
-        if (visited.has(nodeKey)) continue;
-        visited.add(nodeKey);
-
-        // Defer the root: it is always visited last in a reverse traversal.
-        if (nodeKey === rootNode.key) continue;
-
-        const node = nodes.get(nodeKey);
-        if (node) ctx[nodeKey] = await fn(node, ctx);
-
-        for (const parent of getParentNodes(nodeKey)) {
-          if (!visited.has(parent.key)) next.push(parent.key);
-        }
-      }
-      frontier = next;
-    }
-
-    ctx[rootNode.key] = await fn(rootNode, ctx);
+    await visit(rootNode.key);
     return ctx[rootNode.key] as T | undefined;
   };
 
