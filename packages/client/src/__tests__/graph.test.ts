@@ -402,17 +402,47 @@ describe('graph().invoke()', () => {
     expect(handoffCall?.[2]).toMatchObject({ sourceKey: 'root-node', targetKey: 'leaf-node' });
   });
 
-  it('resolves node variations only once per graph() instance across multiple invoke() invocations', async () => {
+  it('resolves node variations again on every invoke() of the same graph() instance', async () => {
     setupTwoNodeGraph();
     const handler = makeHandler();
     const g = graph('graph-flag', { handlers: [handler] });
     await g.invoke('first', mockContext);
     const callCountAfterFirst = mockExtractVariation.mock.calls.length;
     await g.invoke('second', mockContext);
-    const callCountAfterSecond = mockExtractVariation.mock.calls.length;
-    // Variations for graph nodes should only be resolved once (at graph() construction),
-    // not again on the second .invoke() invocation.
-    expect(callCountAfterSecond).toBe(callCountAfterFirst);
+    expect(mockExtractVariation.mock.calls.length).toBe(callCountAfterFirst * 2);
+  });
+
+  it('picks up a node flag change on the next invoke() with the same context', async () => {
+    mockVariation.mockResolvedValue({ root: 'only-node', edges: {} });
+    mockExtractVariation.mockResolvedValue({ config: makeAgentConfig('v1'), meta: makeMeta() });
+    const handler = makeHandler();
+    const g = graph('graph-flag', { handlers: [handler] });
+    await g.invoke('first', mockContext);
+    mockExtractVariation.mockResolvedValue({ config: makeAgentConfig('v2'), meta: makeMeta() });
+    await g.invoke('second', mockContext);
+    const lastConfig = (handler as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as { instructions: string };
+    expect(lastConfig.instructions).toBe('v2');
+  });
+
+  it('stops a reused graph() instance once the graph flag is disabled', async () => {
+    setupTwoNodeGraph();
+    const g = graph('graph-flag', { handlers: [makeHandler()] });
+    await g.invoke('first', mockContext);
+    mockVariation.mockResolvedValue({ someOtherField: 'value' });
+    await expect(g.invoke('second', mockContext)).rejects.toThrow(/disabled/i);
+    await expect(collectStream(g.stream('third', mockContext))).rejects.toThrow(/disabled/i);
+  });
+
+  it('does not reuse a failed resolution: the next invoke() succeeds once the variation recovers', async () => {
+    mockVariation.mockResolvedValue({ root: 'only-node', edges: {} });
+    mockExtractVariation.mockRejectedValueOnce(new Error('transient'));
+    mockExtractVariation.mockResolvedValue({ config: makeAgentConfig('ok'), meta: makeMeta() });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const g = graph('graph-flag', { handlers: [makeHandler()] });
+    await expect(g.invoke('first', mockContext)).rejects.toThrow(/disabled/i);
+    const result = await g.invoke('second', mockContext);
+    expect(result.response).toBeDefined();
+    consoleSpy.mockRestore();
   });
 
   it('does not leak variables from a prior call when the same context is reused', async () => {

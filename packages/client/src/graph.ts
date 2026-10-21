@@ -655,20 +655,6 @@ export const graph = (key: string, options: GraphOptions): GraphCaller => {
  * call {@link graph}.
  */
 export const graphInternal = (key: string, options: GraphOptions): GraphCaller => {
-  // Resolution is cached per context reference so multiple invoke()/stream()
-  // invocations with the same context do not re-evaluate all node configurations from LD.
-  type BuiltGraph = Awaited<ReturnType<typeof buildGraph>>;
-  const nodeCache = new WeakMap<LDContext, Promise<BuiltGraph>>();
-
-  const resolveBuilt = async (context: LDContext, resolvedOptions: GraphOptions): Promise<BuiltGraph> => {
-    let buildPromise = nodeCache.get(context);
-    if (!buildPromise) {
-      buildPromise = buildGraph(key, context, resolvedOptions);
-      nodeCache.set(context, buildPromise);
-    }
-    return buildPromise;
-  };
-
   const invoke = async (
     input: string | undefined,
     context: LDContext,
@@ -687,12 +673,8 @@ export const graphInternal = (key: string, options: GraphOptions): GraphCaller =
       );
     }
 
-    const { def } = await resolveBuilt(context, resolvedOptions);
-    if (!def.enabled) {
-      throw new Error(`Agent graph "${key}" is disabled`);
-    }
-
-    // Same walk as stream(). Events are discarded; the done payload is the blocking result.
+    // Same walk as stream(), which resolves the graph and throws if it is disabled. Events are
+    // discarded; the done payload is the blocking result.
     let done: Extract<GraphStreamEvent, { type: 'done' }> | undefined;
     for await (const event of stream(input, context, variables, history)) {
       if (event.type === 'done') done = event;
@@ -742,13 +724,12 @@ export const graphInternal = (key: string, options: GraphOptions): GraphCaller =
       );
     }
 
-    const { def, graphTrackData: builtTrackData, streamRoute } = await resolveBuilt(context, resolvedOptions);
+    const { def, graphTrackData: builtTrackData, streamRoute } = await buildGraph(key, context, resolvedOptions);
     if (!def.enabled) {
       throw new Error(`Agent graph "${key}" is disabled`);
     }
 
-    // The built graph is cached per context, so each invocation mints its own run id for the
-    // span and every graph event it emits.
+    // Each invocation mints its own run id for the span and every graph event it emits.
     const graphTrackData: TrackData = { ...builtTrackData, runId: crypto.randomUUID() };
 
     const span = trace.getTracer('@launchdarkly/ai-server').startSpan('launchdarkly.graph', undefined, callerContext);
