@@ -451,8 +451,8 @@ function mergeGeneration(base: VariationGeneration, overrides: Record<string, un
   }
   for (const [field, value] of Object.entries(overrides)) {
     if (value === undefined) continue;
-    if (field === 'parameters' && isPlainObject(value)) {
-      merged.parameters = { ...(isPlainObject(merged.parameters) ? merged.parameters : {}), ...value };
+    if ((field === 'parameters' || field === 'promptSnippets') && isPlainObject(value)) {
+      merged[field] = { ...(isPlainObject(merged[field]) ? merged[field] : {}), ...value };
     } else {
       merged[field] = value;
     }

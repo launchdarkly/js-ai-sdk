@@ -240,6 +240,14 @@ export function variationGeneration(
   } else if (instructions) {
     generation.instructions = instructions;
   }
+  if (isPlainObject(variation.promptSnippets)) {
+    const snippets = Object.fromEntries(
+      Object.entries(variation.promptSnippets).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string',
+      ),
+    );
+    if (Object.keys(snippets).length) generation.promptSnippets = snippets;
+  }
   if (isPlainObject(variation.outputFormat)) generation.outputFormat = { ...variation.outputFormat };
   return generation;
 }

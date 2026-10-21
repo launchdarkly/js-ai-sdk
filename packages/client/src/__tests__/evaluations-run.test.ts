@@ -408,6 +408,18 @@ describe('aiConfig source', () => {
     expect(JSON.stringify(config)).not.toContain('old');
   });
 
+  it("resolves the variation's prompt snippets, with overrides merged over them by key", async () => {
+    const api = routeAi(new FakeApi(), 'completion', {
+      messages: [{ role: 'system', content: 'Be {{snippet.tone}} and {{snippet.length}}.' }],
+      promptSnippets: { tone: 'calm', length: 'brief', ignored: 7 },
+    });
+    const handler = stubHandler();
+    await makeModule(api).run(aiRun({ handler, generation: { promptSnippets: { length: 'thorough' } } }));
+    expect(configSeen(handler).messages).toEqual([{ role: 'system', content: 'Be calm and thorough.' }]);
+    const body = api.calls.find((call) => call.path === EVALUATION_PATH)?.body as { promptSnippets: unknown };
+    expect(body.promptSnippets).toEqual({ tone: 'calm', length: 'thorough' });
+  });
+
   it('skips the model config read when none is linked, and takes the provider from the overrides', async () => {
     const api = routeAi(new FakeApi(), 'completion', {
       modelConfigKey: '',
