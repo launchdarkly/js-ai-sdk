@@ -168,7 +168,13 @@ describe('toAdkAgents', () => {
 
   it('emits graph telemetry when a context is present', async () => {
     const { trace } = await import('@opentelemetry/api');
-    const span = { setAttribute: vi.fn(), setStatus: vi.fn(), end: vi.fn(), recordException: vi.fn() };
+    const span = {
+      setAttribute: vi.fn(),
+      setStatus: vi.fn(),
+      end: vi.fn(),
+      recordException: vi.fn(),
+      addEvent: vi.fn(),
+    };
     const startSpan = vi.fn(() => span);
     const spy = vi.spyOn(trace, 'getTracer').mockReturnValue({ startSpan } as never);
     await toAdkAgents(graphDef() as never).call('hi', { context: { kind: 'user', key: 'user-1' } });
@@ -205,7 +211,13 @@ describe('toAdkAgents', () => {
 
   it('tracks invocation failure and ends the span when the runner throws', async () => {
     const { trace } = await import('@opentelemetry/api');
-    const span = { setAttribute: vi.fn(), setStatus: vi.fn(), end: vi.fn(), recordException: vi.fn() };
+    const span = {
+      setAttribute: vi.fn(),
+      setStatus: vi.fn(),
+      end: vi.fn(),
+      recordException: vi.fn(),
+      addEvent: vi.fn(),
+    };
     const spy = vi.spyOn(trace, 'getTracer').mockReturnValue({ startSpan: () => span } as never);
     created.explode = new Error('runner broke');
     await expect(
