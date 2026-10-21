@@ -16,7 +16,6 @@ const FORWARDED_MODEL_SETTINGS_KEYS = [
   'parallelToolCalls',
   'presencePenalty',
   'reasoning',
-  'store',
   'temperature',
   'text',
   'toolChoice',
@@ -30,11 +29,17 @@ const FORWARDED_MODEL_SETTINGS_KEYS = [
  *   SDK's transport overrides (`extraHeaders`, `extraBody`, `extraQuery`), so a config could
  *   replace the request's headers (including authorization) or body.
  * - `retry` is client retry policy, not a model setting.
- * - `contextManagement`, `promptCacheRetention` and `truncation` are outside the LiteLLM allowlist
- *   shared with the Python SDK; `contextManagement` and `truncation` are Responses API settings that
- *   the Chat Completions model the proxy is reached through never sends.
+ * - `store` and `promptCacheRetention` are data retention, not generation settings.
+ * - `contextManagement` and `truncation` are Responses API settings that the Chat Completions
+ *   model the proxy is reached through never sends.
  */
-type ExcludedModelSettingsKeys = 'contextManagement' | 'promptCacheRetention' | 'providerData' | 'retry' | 'truncation';
+type ExcludedModelSettingsKeys =
+  | 'contextManagement'
+  | 'promptCacheRetention'
+  | 'providerData'
+  | 'retry'
+  | 'store'
+  | 'truncation';
 // If the Agents SDK adds a ModelSettings field and it is not classified above as forwarded or
 // excluded, this type resolves to something other than `never` and the assignment below fails to
 // compile, naming the unclassified key.

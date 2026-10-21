@@ -277,6 +277,21 @@ describe('createLiteLLMAgentsHandler', () => {
     });
   });
 
+  it('drops data retention settings', async () => {
+    mockRun.mockResolvedValue(result());
+    await createLiteLLMAgentsHandler({ client: {} as never })(
+      {
+        ...baseConfig,
+        model: {
+          name: 'proxy-alias',
+          parameters: { store: true, prompt_cache_retention: '24h', temperature: 0.2 },
+        },
+      } as never,
+      'q',
+    );
+    expect(agentArgs[0].modelSettings).toEqual({ temperature: 0.2 });
+  });
+
   it.each([
     ['max_turns', 7],
     ['maxTurns', 9],
