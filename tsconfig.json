@@ -4,6 +4,8 @@
     { "path": "packages/client/tsconfig.ref.json" },
     { "path": "packages/ai-node/tsconfig.ref.json" },
     { "path": "packages/ai-otel/tsconfig.ref.json" },
+    { "path": "packages/bedrock-agents/tsconfig.ref.json" },
+    { "path": "packages/bedrock-messages/tsconfig.ref.json" },
     { "path": "packages/claude-agents/tsconfig.ref.json" },
     { "path": "packages/claude-messages/tsconfig.ref.json" },
     { "path": "packages/openai-agents/tsconfig.ref.json" },

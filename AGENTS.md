@@ -148,7 +148,7 @@ graph TD
 
 - **Tier 0 — Core** (`@launchdarkly/ai-server`): The foundation. Owns all LaunchDarkly integration, telemetry orchestration, shared data types, and the primary entry points (`config()`, `graph()`, `resolveGraph()`). Has no dependency on any other `@launchdarkly/ai-server` package.
 - **Tier 0 — Convenience wrapper** (`@launchdarkly/ai-node`): A pure barrel that re-exports everything from `@launchdarkly/ai-server` and carries `@launchdarkly/node-server-sdk` as a hard dependency. No new logic — intended as the default install for Node.js applications so consumers do not need to manage the `node-server-sdk` peer dependency themselves.
-- **Tier 1 — Handler packages** (`@launchdarkly/ai-claude-*`, `@launchdarkly/ai-openai-*`, `@launchdarkly/ai-langchain-*`, `@launchdarkly/ai-vercel-*`, `@launchdarkly/ai-litellm-*`, …): Each wraps a specific AI provider SDK. Depends on `@launchdarkly/ai-server` for shared types and utilities. Must not depend on other Tier 1 packages.
+- **Tier 1 — Handler packages** (`@launchdarkly/ai-claude-*`, `@launchdarkly/ai-openai-*`, `@launchdarkly/ai-langchain-*`, `@launchdarkly/ai-vercel-*`, `@launchdarkly/ai-litellm-*`, `@launchdarkly/ai-bedrock-*`, …): Each wraps a specific AI provider SDK. Depends on `@launchdarkly/ai-server` for shared types and utilities. Must not depend on other Tier 1 packages.
 - **Tier 2 — Consumer applications** (e.g. `main.ts`, downstream projects): Imports from one or more handler packages and either `@launchdarkly/ai-node` (standard Node.js) or `@launchdarkly/ai-server` (edge/custom runtime). Owns tool implementations and orchestration logic. No `@launchdarkly/ai` package should ever depend on Tier 2 code.
 
 ### Rules
