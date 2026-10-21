@@ -147,8 +147,6 @@ export const NEVER_FORWARDED_KEYS = [
   'modalities',
   'output_version',
   'outputVersion',
-  'prompt_cache_key',
-  'promptCacheKey',
   'prompt_cache_retention',
   'promptCacheRetention',
   'reasoning',
