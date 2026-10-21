@@ -1,5 +1,6 @@
 import { withJudgeEvaluation } from './conversation.js';
 import { extractVariation, getClient } from './lifecycle.js';
+import { reportUsage } from './sdk-usage.js';
 import { executeAndTrack } from './tracking.js';
 import type {
   AiConfigRep,
@@ -11,6 +12,7 @@ import type {
   ProviderResponse,
   ToolHandlerFn,
   TrackData,
+  VariationMeta,
 } from './types.js';
 import {
   collapseMessagesToInstructions,
@@ -18,6 +20,33 @@ import {
   omitModelStamps,
   parseJSONWithPossibleFences,
 } from './utils.js';
+
+/**
+ * Resolves a judge's own AI Config, returning `null` instead of throwing when it
+ * cannot be resolved.
+ *
+ * Judges grade a response that has already been produced, so by the time one runs
+ * the provider call is finished and billed. Letting a judge's own config failure
+ * propagate would throw that response away — the caller pays for a completion and
+ * receives an exception. The most common cause is benign and deliberate: someone
+ * toggles a judge's AI Config off in LaunchDarkly, which makes `extractVariation`
+ * throw for every request the judge is attached to.
+ *
+ * So a judge that cannot be resolved is skipped and logged, matching how this file
+ * already treats a judge with no compatible handler.
+ */
+const resolveJudge = async (
+  key: string,
+  userContext: LDContext,
+): Promise<{ config: AiConfigRep; meta: VariationMeta } | null> => {
+  try {
+    return await extractVariation(key, userContext);
+  } catch (err) {
+    // biome-ignore lint/suspicious/noConsole: judges are non-fatal; say why one was skipped
+    console.error(`Judge '${key}' skipped:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+};
 
 export const FORMATTING_INSTRUCTIONS = [
   'Your response MUST be in valid JSON format with the following structure:',
@@ -72,7 +101,9 @@ export const runJudges = async ({
   for (const judge of judges) {
     if (Math.random() >= judge.samplingRate) continue;
 
-    const { config: judgeConfig, meta: judgeMeta } = await extractVariation(judge.key, userContext);
+    const resolved = await resolveJudge(judge.key, userContext);
+    if (!resolved) continue;
+    const { config: judgeConfig, meta: judgeMeta } = resolved;
 
     const judgeProvider = judgeConfig.provider?.name;
     const judgeMode = normalizeMode(judgeMeta.mode);
@@ -170,6 +201,15 @@ export const runJudges = async ({
   return judgeResults;
 };
 
+type BuildJudgeTasksArgs = {
+  config: AiConfigRep;
+  userContext: LDContext;
+  handler: ProviderHandler;
+  handlers?: ProviderHandler[];
+  llmResponse: string;
+  baseTrackData: TrackData;
+};
+
 /**
  * Resolves all judges configured on `config.judgeConfiguration` into
  * serialisable {@link JudgeTask} objects without executing any AI calls.
@@ -182,21 +222,25 @@ export const runJudges = async ({
  *   causes them to be skipped are excluded from the array.
  * - Returns an empty array when no active judges are configured.
  */
-export const buildJudgeTasks = async ({
+export const buildJudgeTasks = async (args: BuildJudgeTasksArgs): Promise<JudgeTask[]> => {
+  reportUsage('client.buildJudgeTasks');
+  return buildJudgeTasksInternal(args);
+};
+
+/**
+ * {@link buildJudgeTasks} without the `$ld:ai:sdk:usage` report. `config().invoke`
+ * with `skipJudges` calls this.
+ *
+ * @internal
+ */
+export const buildJudgeTasksInternal = async ({
   config,
   userContext,
   handler,
   handlers,
   llmResponse,
   baseTrackData,
-}: {
-  config: AiConfigRep;
-  userContext: LDContext;
-  handler: ProviderHandler;
-  handlers?: ProviderHandler[];
-  llmResponse: string;
-  baseTrackData: TrackData;
-}): Promise<JudgeTask[]> => {
+}: BuildJudgeTasksArgs): Promise<JudgeTask[]> => {
   const judges = config.judgeConfiguration?.judges ?? [];
   const hasActiveJudge = judges.some((j: { samplingRate: number }) => j.samplingRate > 0);
   if (judges.length === 0 || !hasActiveJudge) return [];
@@ -206,7 +250,9 @@ export const buildJudgeTasks = async ({
   for (const judge of judges) {
     if (Math.random() >= judge.samplingRate) continue;
 
-    const { config: judgeConfig, meta: judgeMeta } = await extractVariation(judge.key, userContext);
+    const resolved = await resolveJudge(judge.key, userContext);
+    if (!resolved) continue;
+    const { config: judgeConfig, meta: judgeMeta } = resolved;
 
     const judgeProvider = judgeConfig.provider?.name;
     const judgeMode = normalizeMode(judgeMeta.mode);
@@ -265,6 +311,7 @@ export const buildJudgeTasks = async ({
  * parsed as `{ score, reasoning }`.
  */
 export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Promise<JudgeRunResult | null> => {
+  reportUsage('client.runJudge');
   const {
     judgeConfig,
     judgeMeta,

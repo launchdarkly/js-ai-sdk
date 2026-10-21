@@ -120,6 +120,57 @@ describe('parseAiConfig', () => {
     });
     expect(result.success).toBe(true);
   });
+
+  // ── `skills` array validation ──────────────────────────────────────────────
+  //
+  // Fail closed: a malformed reference makes the whole config malformed, because
+  // an SDK that silently dropped a bad reference would materialize a partial
+  // skill set without telling anyone.
+
+  describe('skills', () => {
+    // Agent Skills is experimental, so a malformed `skills` field must not fail
+    // a core config call (TESTING.md §0.3). The field is passed through
+    // unvalidated, and `skillRefs` rejects it where the references are used
+    // (see skills.test.ts).
+    const valid = { ...base, instructions: 'You are helpful.' };
+
+    it('accepts a config with no skills field', () => {
+      expect(parseAiConfig(valid).success).toBe(true);
+    });
+
+    it('passes valid entries through unmodified', () => {
+      const skills = [
+        { key: 'pdf-extraction', version: 2 },
+        { key: 'a1', version: 1 },
+      ];
+      const result = parseAiConfig({ ...valid, skills });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.skills).toEqual(skills);
+    });
+
+    it.each([
+      ['null', null],
+      ['a string', 'pdf-extraction'],
+      ['an object', { key: 'pdf-extraction', version: 1 }],
+      ['a bare string entry', ['pdf-extraction']],
+      ['an absent key', [{ version: 1 }]],
+      ['an uppercase key', [{ key: 'Evil', version: 1 }]],
+      ['a traversal key', [{ key: '../evil', version: 1 }]],
+      ['version 0', [{ key: 'a', version: 0 }]],
+      ['an absent version', [{ key: 'a' }]],
+      [
+        'one bad entry among good ones',
+        [
+          { key: 'good', version: 1 },
+          { key: 'My_Skill', version: 1 },
+        ],
+      ],
+    ])('does not fail the parse for a malformed skills field: %s', (_label, skills) => {
+      const result = parseAiConfig({ ...valid, skills });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.skills).toEqual(skills);
+    });
+  });
 });
 
 describe('GraphTopologySchema', () => {

@@ -7,6 +7,7 @@ import * as conversation from './examples/conversation';
 import * as googleAdkAgents from './examples/google-adk-agents';
 import * as graph from './examples/graph';
 import * as graphHistory from './examples/graph-history';
+import * as graphStreaming from './examples/graph-streaming';
 import * as history from './examples/history';
 import * as judge from './examples/judge';
 import * as langchain from './examples/langchain';
@@ -15,10 +16,15 @@ import * as langchainMessages from './examples/langchain-messages';
 import * as langchainThinking from './examples/langchain-thinking';
 import * as nativeGraph from './examples/native-graph';
 import * as nativeGraphLangchain from './examples/native-graph-langchain';
+import * as nativeGraphVercel from './examples/native-graph-vercel';
 import * as openaiAgents from './examples/openai-agents';
 import * as openaiMessages from './examples/openai-messages';
 import * as openaiOnly from './examples/openai-only';
 import * as streaming from './examples/streaming';
+import * as vercelAgents from './examples/vercel-agents';
+import * as vercelDirect from './examples/vercel-direct';
+import * as vercelEvaluate from './examples/vercel-evaluate';
+import * as vercelMessages from './examples/vercel-messages';
 
 type Example =
   | 'agent'
@@ -27,6 +33,7 @@ type Example =
   | 'google-adk-agents'
   | 'graph'
   | 'graph-history'
+  | 'graph-streaming'
   | 'conversation'
   | 'history'
   | 'judge'
@@ -36,10 +43,15 @@ type Example =
   | 'langchain-thinking'
   | 'native-graph'
   | 'native-graph-langchain'
+  | 'native-graph-vercel'
   | 'openai-agents'
   | 'openai-messages'
   | 'openai-only'
-  | 'streaming';
+  | 'streaming'
+  | 'vercel-agents'
+  | 'vercel-direct'
+  | 'vercel-evaluate'
+  | 'vercel-messages';
 
 const EXAMPLES: Record<Example, { run: (key: string, userInput: string) => Promise<void> }> = {
   agent: agent,
@@ -49,6 +61,7 @@ const EXAMPLES: Record<Example, { run: (key: string, userInput: string) => Promi
   'google-adk-agents': googleAdkAgents,
   graph: graph,
   'graph-history': graphHistory,
+  'graph-streaming': graphStreaming,
   history: history,
   judge: judge,
   langchain: langchain,
@@ -57,10 +70,15 @@ const EXAMPLES: Record<Example, { run: (key: string, userInput: string) => Promi
   'langchain-thinking': langchainThinking,
   'native-graph': nativeGraph,
   'native-graph-langchain': nativeGraphLangchain,
+  'native-graph-vercel': nativeGraphVercel,
   'openai-agents': openaiAgents,
   'openai-messages': openaiMessages,
   'openai-only': openaiOnly,
   streaming: streaming,
+  'vercel-agents': vercelAgents,
+  'vercel-direct': vercelDirect,
+  'vercel-evaluate': vercelEvaluate,
+  'vercel-messages': vercelMessages,
 };
 
 function parseArgs(): { example: Example; key: string; userInput: string } {

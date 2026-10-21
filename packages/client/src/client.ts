@@ -1,7 +1,8 @@
 import { bindConversationId } from './conversation.js';
-import { buildJudgeTasks, runJudges } from './judges.js';
+import { buildJudgeTasksInternal, runJudges } from './judges.js';
 import { extractVariation } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
+import { reportUsage } from './sdk-usage.js';
 import { type ExecuteStreamDoneEvent, executeAndStream, executeAndTrack } from './tracking.js';
 import type {
   AiConfigRep,
@@ -54,7 +55,15 @@ function selectHandler(
   throw new Error(`Handler for provider ${provider} with mode ${normalizedMode} not found`);
 }
 
-export const config = ({ key, handler, toolHandlers, registry, skipJudges = false }: ConfigArgs) => {
+/**
+ * {@link config} without the `$ld:ai:sdk:usage` report: the returned `invoke`
+ * and `stream` do not report. Package wrappers call this so a wrapper call
+ * reports only the wrapper's own helper.
+ *
+ * @internal Exported for the LaunchDarkly handler packages; applications should
+ * call {@link config}.
+ */
+export const configInternal = ({ key, handler, toolHandlers, registry, skipJudges = false }: ConfigArgs) => {
   const normalizeHandlers = (): ProviderHandler[] | undefined => {
     if (handler === undefined) return undefined;
     return Array.isArray(handler) ? handler : [handler];
@@ -93,7 +102,7 @@ export const config = ({ key, handler, toolHandlers, registry, skipJudges = fals
     const llmResponseStr = typeof parsedResponse === 'string' ? parsedResponse : JSON.stringify(parsedResponse);
 
     if (skipJudges) {
-      const judgeTasks = await buildJudgeTasks({
+      const judgeTasks = await buildJudgeTasksInternal({
         config: aiConfig,
         userContext: context,
         handler: resolvedHandler,
@@ -194,6 +203,33 @@ export const config = ({ key, handler, toolHandlers, registry, skipJudges = fals
         judgeResults: Object.keys(judgeResults).length > 0 ? judgeResults : undefined,
       };
     }
+  }
+
+  return { invoke, stream };
+};
+
+export const config = (args: ConfigArgs) => {
+  const inner = configInternal(args);
+
+  async function invoke<T = string>(
+    userInput: string | undefined,
+    context: LDContext,
+    variables?: Record<string, unknown>,
+    history?: Message[],
+  ): Promise<ProviderResponse<T>> {
+    reportUsage('client.config.invoke');
+    return inner.invoke<T>(userInput, context, variables, history);
+  }
+
+  /** Reports at call time, before any iteration; the internal stream binds the conversation id. */
+  function stream(
+    userInput: string | undefined,
+    context: LDContext,
+    variables?: Record<string, unknown>,
+    history?: Message[],
+  ): AsyncGenerator<StreamEvent> {
+    reportUsage('client.config.stream');
+    return inner.stream(userInput, context, variables, history);
   }
 
   return { invoke, stream };

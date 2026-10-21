@@ -103,15 +103,24 @@ If `config.tools` is absent, `toolMCP` and `allowedTools` are both `undefined`.
 
 ### 3. Agentic Loop
 
-The claude-agent-sdk handles the loop internally. The handler iterates the `query()` async generator and waits for a message with a `result` key — that is the final text output. Token usage is read from `message.usage`.
+The claude-agent-sdk handles the loop internally. The handler iterates the `query()` async generator and waits for the message whose `type` is `'result'` — its `result` field is the final text output. Token usage is read from `message.usage`.
 
 ```ts
 for await (const message of query({ prompt, options: { ... } })) {
-  if ('result' in message) {
+  if (message.type === 'result') {
+    assertRunSucceeded(message); // throws on a failed run
     // done — extract output and usage
   }
 }
 ```
+
+Gate on `type`, never on `'result' in message`: an error-subtype result (`error_max_turns`,
+`error_during_execution`, ...) has no `result` field, so a key-presence gate lets a failed run
+through. A `success` subtype is not enough either. When an Anthropic API call fails (bad key, no
+credits, rate limit after retries), the CLI ends the run with `subtype: 'success'`, `is_error: true`,
+`api_error_status` set, and the error text in `result`. `assertRunSucceeded` throws on either shape,
+so the caller tracks `$ld:ai:generation:error` instead of being handed the error text as the
+model's answer. The native graph adapter applies the same check to every node's run.
 
 ### 4. Telemetry
 
@@ -137,6 +146,13 @@ measured against Agent SDK 0.3.220 rather than assumed:
    `user` message — carrying the tool results the next call is sent — and a `system`
    `init` mark local work finishing. That is a whitelist, so a subtype added by a
    future CLI is inert rather than silently collapsing the timings.
+4. **Some `assistant` messages are not responses at all.** The CLI writes its own
+   message, with `model` set to the literal `<synthetic>`, when an API call fails
+   and after a response stops at `max_output_tokens`. Its content is the CLI's
+   error text and its usage is zero. It gets no `chat` span and never joins the
+   conversation a later span reports. It can share the real response's
+   `request_id`, so grouping on that alone would append the error text to the real
+   response's output.
 
 A response's window therefore runs from the last local work to that response's
 **first** message. The API had already returned every block by then, so extending

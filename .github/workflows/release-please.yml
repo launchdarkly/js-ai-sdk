@@ -33,6 +33,8 @@ on:
           - packages/openai-messages
           - packages/langchain-agents
           - packages/langchain-messages
+          - packages/vercel-agents
+          - packages/vercel-messages
       prerelease:
         description: 'Is this a prerelease. If so, then the latest tag will not be updated in npm.'
         type: boolean
@@ -68,6 +70,10 @@ jobs:
       package-langchain-agents-tag-name: ${{ steps.release.outputs['packages/langchain-agents--tag_name'] }}
       package-langchain-messages-released: ${{ steps.release.outputs['packages/langchain-messages--release_created'] }}
       package-langchain-messages-tag-name: ${{ steps.release.outputs['packages/langchain-messages--tag_name'] }}
+      package-vercel-agents-released: ${{ steps.release.outputs['packages/vercel-agents--release_created'] }}
+      package-vercel-agents-tag-name: ${{ steps.release.outputs['packages/vercel-agents--tag_name'] }}
+      package-vercel-messages-released: ${{ steps.release.outputs['packages/vercel-messages--release_created'] }}
+      package-vercel-messages-tag-name: ${{ steps.release.outputs['packages/vercel-messages--tag_name'] }}
     steps:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
@@ -296,6 +302,56 @@ jobs:
       - uses: ./.github/actions/publish
         with:
           workspace_path: packages/langchain-messages
+          prerelease: 'false'
+          dry_run: 'false'
+
+  release-vercel-agents:
+    runs-on: ubuntu-latest
+    needs: ['release-please']
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    if: ${{ needs.release-please.outputs.package-vercel-agents-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: packages/vercel-agents
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: 'packages/vercel-agents/*.tgz'
+      - uses: ./.github/actions/setup-release-node
+      - uses: ./.github/actions/publish
+        with:
+          workspace_path: packages/vercel-agents
+          prerelease: 'false'
+          dry_run: 'false'
+
+  release-vercel-messages:
+    runs-on: ubuntu-latest
+    needs: ['release-please']
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    if: ${{ needs.release-please.outputs.package-vercel-messages-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: packages/vercel-messages
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: 'packages/vercel-messages/*.tgz'
+      - uses: ./.github/actions/setup-release-node
+      - uses: ./.github/actions/publish
+        with:
+          workspace_path: packages/vercel-messages
           prerelease: 'false'
           dry_run: 'false'
 

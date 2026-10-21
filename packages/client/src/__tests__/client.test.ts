@@ -276,7 +276,7 @@ describe('config() — single handler', () => {
     expect(result.response).toBe('{"name":"Alice"}');
   });
 
-  it('returns raw string when outputFormat is set but output cannot be parsed as JSON (§3.10 best-effort)', async () => {
+  it('returns raw string when outputFormat is set but output cannot be parsed as JSON (best-effort)', async () => {
     const outputFormat = { type: 'object', properties: { name: { type: 'string' } } };
     (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
       config: { ...mockConfig, outputFormat },
@@ -759,6 +759,24 @@ describe('invoke() judgeTasks via buildJudgeTasks', () => {
     const handler = makeHandler();
     const { judgeTasks } = await config({ key: 'flag', handler, skipJudges: true }).invoke('q', mockContext);
     expect(judgeTasks).toEqual([]);
+  });
+
+  it('omits a disabled judge from judgeTasks and still returns the response', async () => {
+    // Only the judge's config is unresolvable; the main config resolves normally.
+    (extractVariation as ReturnType<typeof vi.fn>).mockImplementation(async (k: string) => {
+      if (k === 'judge-flag') throw new Error('Variation judge-flag is not enabled');
+      return { config: mainConfigWithJudge, meta: mockMeta };
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const handler = makeHandler();
+    const { response, judgeTasks } = await config({ key: 'flag', handler, skipJudges: true }).invoke('q', mockContext);
+
+    expect(judgeTasks).toEqual([]);
+    // The response the caller already paid for survives the judge's failure.
+    expect(response).toBe('hello');
+
+    consoleError.mockRestore();
   });
 });
 

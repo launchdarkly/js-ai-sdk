@@ -94,10 +94,22 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   return {
     ...actual,
     getClient: vi.fn().mockReturnValue({ track: mockTrack }),
+    // The real `tryGetEnvironmentId` reads the LD client's feature store, which no unit test has.
+    // Stub the environment id onto the two track-data builders so the adapter's wiring can be
+    // asserted here; the lookup itself is covered in the client package's own tests.
+    makeGraphTrackData: (graphKey: string, runId: string) => ({
+      ...actual.makeGraphTrackData(graphKey, runId),
+      environmentId: 'env-123',
+    }),
+    makeNodeTrackData: (node: any, graphKey: string, runId: string) => ({
+      ...actual.makeNodeTrackData(node, graphKey, runId),
+      environmentId: 'env-123',
+    }),
   };
 });
 
 import { toLangGraph } from '../native-graph.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -178,13 +190,35 @@ describe('toLangGraph', () => {
     expect(registeredNames).toContain('leaf');
   });
 
-  it('spreads model.parameters into the default ChatOpenAI constructor', async () => {
+  // ChatOpenAI only reads camelCase, so the graph's default model factory camelizes the
+  // snake_case bag the UI writes, then narrows it to ChatOpenAI's allowlist.
+  it('spreads model.parameters into the default ChatOpenAI constructor, camelized', async () => {
     const root = makeNode('root', '', []);
     root.config.model.parameters = { temperature: 0.2, max_tokens: 512 };
     const def = makeGraphDef([root], {}, 'root');
     MockChatOpenAI.mockClear();
     await toLangGraph(Promise.resolve(def)).invoke('hi');
-    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, max_tokens: 512, model: 'gpt-4o' });
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
+  });
+
+  it('leaves camelCase model.parameters keys unchanged for the default ChatOpenAI constructor', async () => {
+    const root = makeNode('root', '', []);
+    root.config.model.parameters = { temperature: 0.2, maxTokens: 512 };
+    const def = makeGraphDef([root], {}, 'root');
+    MockChatOpenAI.mockClear();
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
+  });
+
+  it('never passes credentials or connection settings to the default ChatOpenAI constructor', async () => {
+    const root = makeNode('root', '', []);
+    root.config.model.parameters = { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 };
+    const def = makeGraphDef([root], {}, 'root');
+    MockChatOpenAI.mockClear();
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+    const args = MockChatOpenAI.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(args).toEqual({ temperature: 0.3, model: 'gpt-4o' });
+    expectNoNeverForwardedValue(args);
   });
 
   it('wires the root node from START', async () => {
@@ -320,6 +354,35 @@ describe('toLangGraph', () => {
     const def = makeGraphDef([root], {}, 'root');
     await toLangGraph(Promise.resolve(def), { context: ctx }).invoke('hi');
     expect(mockTrack).toHaveBeenCalledWith('$ld:ai:graph:invocation_success', ctx, expect.anything(), 1);
+    expect(mockTrack).not.toHaveBeenCalledWith(
+      '$ld:ai:graph:path',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('emits $ld:ai:graph:node when the node function runs', async () => {
+    const ctx = { kind: 'user' as const, key: 'u1' };
+    const mockModel = {
+      invoke: vi.fn().mockResolvedValue(new AIMessage({ content: 'ok' })),
+      bindTools: vi.fn().mockReturnThis(),
+    };
+    const root = makeNode('root', 'instructions', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { context: ctx, modelFactory: () => mockModel }).invoke('hi');
+    const nodeFn = mockAddNode.mock.calls.find((c: unknown[]) => c[0] === 'root')?.[1] as
+      | ((state: { messages: unknown[] }) => Promise<unknown>)
+      | undefined;
+    expect(nodeFn).toBeTypeOf('function');
+    mockTrack.mockClear();
+    await nodeFn?.({ messages: [] });
+    expect(mockTrack).toHaveBeenCalledWith(
+      '$ld:ai:graph:node',
+      ctx,
+      expect.objectContaining({ nodeKey: 'root', index: 0 }),
+      1,
+    );
   });
 
   it('emits $ld:ai:graph:duration:total on success', async () => {
@@ -328,6 +391,70 @@ describe('toLangGraph', () => {
     const def = makeGraphDef([root], {}, 'root');
     await toLangGraph(Promise.resolve(def), { context: ctx }).invoke('hi');
     expect(mockTrack).toHaveBeenCalledWith('$ld:ai:graph:duration:total', ctx, expect.anything(), expect.any(Number));
+  });
+
+  it('tags the graph span with the run identity so LaunchDarkly can link the trace to the config', async () => {
+    const ctx = { kind: 'user' as const, key: 'u1' };
+    const root = makeNode('root', '', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { context: ctx }).invoke('hi');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.operation.type', 'gen_ai');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.config.key', 'test-graph');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.key', 'test-graph');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.run.id', expect.any(String));
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.variation.key', expect.any(String));
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('context.contextKeys.user', 'u1');
+    expect(mockSpan.addEvent).toHaveBeenCalledWith('feature_flag', {
+      'feature_flag.key': 'test-graph',
+      'feature_flag.provider.name': 'LaunchDarkly',
+      'feature_flag.set.id': 'env-123',
+      'feature_flag.context.id': 'u1',
+      'feature_flag.contextKeys': '{"user":"u1"}',
+    });
+  });
+
+  it('keys the graph-level events to the graph, not the root node', async () => {
+    const def = makeGraphDef([makeNode('root', '', [])], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { context: { kind: 'user', key: 'u1' } }).invoke('hi');
+    const graphEvents = mockTrack.mock.calls.filter((c: unknown[]) =>
+      ['$ld:ai:graph:invocation_success', '$ld:ai:graph:duration:total', '$ld:ai:graph:total_tokens'].includes(
+        c[0] as string,
+      ),
+    );
+    expect(graphEvents).toHaveLength(3);
+    for (const call of graphEvents) {
+      expect(call[2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+    }
+  });
+
+  it('keys invocation_failure to the graph, not the root node', async () => {
+    mockCompiledInvoke.mockRejectedValue(new Error('boom'));
+    const def = makeGraphDef([makeNode('root', '', [])], {}, 'root');
+    await expect(
+      toLangGraph(Promise.resolve(def), { context: { kind: 'user', key: 'u1' } }).invoke('hi'),
+    ).rejects.toThrow('boom');
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+  });
+
+  it('puts the environment id on every node and graph tracking event', async () => {
+    const ctx = { kind: 'user' as const, key: 'u1' };
+    const mockModel = {
+      invoke: vi.fn().mockResolvedValue(new AIMessage({ content: 'ok' })),
+      bindTools: vi.fn().mockReturnThis(),
+    };
+    const root = makeNode('root', 'instructions', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { context: ctx, modelFactory: () => mockModel }).invoke('hi');
+    const nodeFn = mockAddNode.mock.calls.find((c: unknown[]) => c[0] === 'root')?.[1] as
+      | ((state: { messages: unknown[] }) => Promise<unknown>)
+      | undefined;
+    await nodeFn?.({ messages: [] });
+    expect(mockTrack).toHaveBeenCalled();
+    for (const call of mockTrack.mock.calls) {
+      expect(call[2]).toEqual(expect.objectContaining({ environmentId: 'env-123' }));
+    }
   });
 
   it('emits $ld:ai:graph:invocation_failure when compiled.invoke throws', async () => {
@@ -341,11 +468,11 @@ describe('toLangGraph', () => {
 
   // ── OTel span ────────────────────────────────────────────────────────────────
 
-  it('sets ld.ai.graph.key span attribute', async () => {
+  it('sets launchdarkly.graph.key span attribute', async () => {
     const root = makeNode('root', '', []);
     const def = makeGraphDef([root], {}, 'root');
     await toLangGraph(Promise.resolve(def)).invoke('hi');
-    expect(mockSpan.setAttribute).toHaveBeenCalledWith('ld.ai.graph.key', 'test-graph');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.key', 'test-graph');
   });
 
   it('sets span status to OK on success', async () => {
@@ -363,6 +490,40 @@ describe('toLangGraph', () => {
     await expect(toLangGraph(Promise.resolve(def)).invoke('hi')).rejects.toThrow('boom');
     expect(mockSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
     expect(mockSpan.recordException).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('ends the span once on success so it gets exported', async () => {
+    const root = makeNode('root', '', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+    expect(mockSpan.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('ends the span once when compiled.invoke throws', async () => {
+    mockCompiledInvoke.mockRejectedValue(new Error('boom'));
+    const root = makeNode('root', '', []);
+    const def = makeGraphDef([root], {}, 'root');
+    await expect(toLangGraph(Promise.resolve(def)).invoke('hi')).rejects.toThrow('boom');
+    expect(mockSpan.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('records a compile error on the span, tracks it as a failure, and ends the span once', async () => {
+    mockCompile.mockImplementation(() => {
+      throw new Error('compile boom');
+    });
+    const def = makeGraphDef([makeNode('root', '', [])], {}, 'root');
+    await expect(
+      toLangGraph(Promise.resolve(def), { context: { kind: 'user', key: 'u1' } }).invoke('hi'),
+    ).rejects.toThrow('compile boom');
+    expect(mockCompiledInvoke).not.toHaveBeenCalled();
+    expect(mockSpan.end).toHaveBeenCalledTimes(1);
+    expect(mockSpan.recordException).toHaveBeenCalledTimes(1);
+    expect(mockSpan.recordException).toHaveBeenCalledWith(expect.any(Error));
+    expect(mockSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR, message: 'compile boom' });
+    expect(mockSpan.setStatus).not.toHaveBeenCalledWith({ code: SpanStatusCode.OK });
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
   });
 
   // ── Root null guard ──────────────────────────────────────────────────────────
@@ -559,11 +720,11 @@ describe('toLangGraph', () => {
 
   // ── OTel span attributes ─────────────────────────────────────────────────────
 
-  it('sets ld.ai.graph.path span attribute after traversal', async () => {
+  it('sets launchdarkly.graph.path span attribute after traversal', async () => {
     const root = makeNode('root', '', []);
     const def = makeGraphDef([root], {}, 'root');
     await toLangGraph(Promise.resolve(def)).invoke('hi');
-    expect(mockSpan.setAttribute).toHaveBeenCalledWith('ld.ai.graph.path', expect.any(String));
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.path', expect.any(String));
   });
 
   it('sets gen_ai.usage.* span attributes on success', async () => {

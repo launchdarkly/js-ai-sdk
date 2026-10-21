@@ -94,13 +94,14 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
     ...actual,
-    config: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
-    graph: mockGraph,
+    configInternal: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
+    graphInternal: mockGraph,
   };
 });
 
 import { openaiGraph } from '../graph.js';
 import { createOpenAIAgentHandler } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -227,6 +228,145 @@ describe('createOpenAIAgentHandler', () => {
     expect(mockAgentConstructor.mock.calls[0][0].instructions).toBe('From instructions.');
   });
 
+  // ── 1.2b model.parameters forwarding ─────────────────────────────────────────
+
+  it('forwards recognized model.parameters keys to Agent modelSettings', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { temperature: 0.4, topP: 0.9, maxTokens: 256, frequencyPenalty: 0.1, presencePenalty: 0.2 },
+      },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    expect(agentArgs.modelSettings).toEqual({
+      temperature: 0.4,
+      topP: 0.9,
+      maxTokens: 256,
+      frequencyPenalty: 0.1,
+      presencePenalty: 0.2,
+    });
+  });
+
+  it('drops model.parameters keys that are not ModelSettings fields', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { someUnknownKey: 'nope', anotherOne: 42, temperature: 0.1 } },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    expect(agentArgs.modelSettings).toEqual({ temperature: 0.1 });
+  });
+
+  it('never forwards request headers, body or query overrides, credentials or retry policy', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    expect(agentArgs.modelSettings).toBeUndefined();
+    expectNoNeverForwardedValue(agentArgs);
+    expect(mockRun.mock.calls[0][2]).toBeUndefined();
+  });
+
+  it('forwards every allowed ModelSettings field under its SDK name and shape', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          temperature: 0.4,
+          top_p: 0.9,
+          frequency_penalty: 0.1,
+          presence_penalty: 0.2,
+          tool_choice: 'auto',
+          parallel_tool_calls: false,
+          truncation: 'auto',
+          max_tokens: 256,
+          store: false,
+          prompt_cache_retention: '24h',
+          reasoning: { effort: 'low', summary: 'auto', extra_key: 'dropped' },
+          verbosity: 'low',
+          context_management: [
+            { type: 'compaction', compact_threshold: 1000, extra_key: 'dropped' },
+            { type: 'compaction', compactThreshold: 2000 },
+            { compact_threshold: 3000 },
+            'not-an-entry',
+          ],
+          retry: { maxRetries: 5 },
+          provider_data: { extra_headers: { Authorization: 'Bearer ATTACKER' } },
+        },
+      },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({
+      temperature: 0.4,
+      topP: 0.9,
+      frequencyPenalty: 0.1,
+      presencePenalty: 0.2,
+      toolChoice: 'auto',
+      parallelToolCalls: false,
+      truncation: 'auto',
+      maxTokens: 256,
+      store: false,
+      promptCacheRetention: '24h',
+      reasoning: { effort: 'low', summary: 'auto' },
+      text: { verbosity: 'low' },
+      // Entries are rebuilt as { type, compactThreshold }; ones without a type are dropped.
+      contextManagement: [
+        { type: 'compaction', compactThreshold: 1000 },
+        { type: 'compaction', compactThreshold: 2000 },
+      ],
+    });
+  });
+
+  it('prefers an explicit text.verbosity over a top-level verbosity', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { verbosity: 'low', text: { verbosity: 'high', format: 'x' } } },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ text: { verbosity: 'high' } });
+  });
+
+  it('does not set modelSettings or maxTurns when model.parameters is absent', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    await createOpenAIAgentHandler()(baseConfig as any, 'q');
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    expect(agentArgs.modelSettings).toBeUndefined();
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions).toBeUndefined();
+  });
+
+  it('forwards model.parameters.maxTurns to Runner.run options', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { maxTurns: 3 } } };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions).toEqual({ maxTurns: 3 });
+  });
+
+  // The LaunchDarkly UI writes model.parameters in snake_case (the wire name every provider
+  // client expects), but the Agents SDK's ModelSettings/Runner.run only read camelCase — so a
+  // config saved as `max_turns` / `top_p` must reach the Agents SDK as `maxTurns` / `topP`.
+  it('converts snake_case model.parameters keys to camelCase for modelSettings and Runner.run', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { max_turns: 4, top_p: 0.9, max_tokens: 256 } },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q');
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    // maxTurns is a Runner.run option, so it is not left in modelSettings.
+    expect(agentArgs.modelSettings).toEqual({ topP: 0.9, maxTokens: 256 });
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions).toEqual({ maxTurns: 4 });
+  });
+
   // ── 1.3 Tool conversion ─────────────────────────────────────────────────────
 
   it('creates agent tools when config.tools is present', async () => {
@@ -275,6 +415,21 @@ describe('createOpenAIAgentHandler', () => {
     await createOpenAIAgentHandler()(config as any, 'q', { search: vi.fn().mockRejectedValue(err) });
     const toolObj = mockTool.mock.results[0].value;
     await expect(toolObj.execute({})).rejects.toThrow('tool exploded');
+  });
+
+  it('tool handler error propagates through the real SDK tool() rather than reaching the model', async () => {
+    // The mock above calls `execute` directly, which skips the SDK's error wrapper; build the real tool.
+    const { tool: realTool, RunContext } = await vi.importActual<typeof import('@openai/agents')>('@openai/agents');
+    mockRun.mockResolvedValue(mockRunResult());
+    const config = {
+      ...baseConfig,
+      tools: { search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } } },
+    };
+    await createOpenAIAgentHandler()(config as any, 'q', {
+      search: vi.fn().mockRejectedValue(new Error('tool exploded')),
+    });
+    const sdkTool = realTool(mockTool.mock.calls[0][0]) as any;
+    await expect(sdkTool.invoke(new RunContext({}), '{}')).rejects.toThrow('tool exploded');
   });
 
   it('does not call tool() when config.tools is absent, even if toolHandlers is non-empty', async () => {
@@ -500,7 +655,7 @@ describe('createOpenAIAgentHandler', () => {
 
   it('openaiAgents calls config() with the correct handler and passes userInput + context', async () => {
     const { openaiAgents } = await import('../handler.js');
-    const { config } = await import('@launchdarkly/ai-server');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
     const mockInvoke = vi.fn().mockResolvedValue({ response: 'ok', usage: {} });
     (config as any).mockReturnValue({ invoke: mockInvoke });
     const ctx = { kind: 'user' as const, key: 'u' };
@@ -530,8 +685,8 @@ describe('createOpenAIAgentHandler', () => {
   it('yields chunk events from raw model text delta events', async () => {
     const streamedResult = {
       [Symbol.asyncIterator]: async function* () {
-        yield { type: 'raw_model_stream_event', data: { type: 'response.output_text.delta', delta: 'Hello' } };
-        yield { type: 'raw_model_stream_event', data: { type: 'response.output_text.delta', delta: ' world' } };
+        yield { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: 'Hello' } };
+        yield { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: ' world' } };
         yield { type: 'run_item_stream_event', item: {} };
       },
       state: { usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 } },
@@ -547,7 +702,7 @@ describe('createOpenAIAgentHandler', () => {
   it('yields a done event with correct usage', async () => {
     const streamedResult = {
       [Symbol.asyncIterator]: async function* () {
-        yield { type: 'raw_model_stream_event', data: { type: 'response.output_text.delta', delta: 'hi' } };
+        yield { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: 'hi' } };
       },
       state: { usage: { inputTokens: 4, outputTokens: 6, totalTokens: 10 } },
       finalOutput: 'hi',
@@ -558,6 +713,54 @@ describe('createOpenAIAgentHandler', () => {
     const done = events.at(-1) as any;
     expect(done.type).toBe('done');
     expect(done.usage).toMatchObject({ input_tokens: 4, output_tokens: 6 });
+  });
+
+  it('forwards model.parameters (modelSettings and maxTurns) on the streaming path', async () => {
+    const streamedResult = {
+      [Symbol.asyncIterator]: async function* () {},
+      state: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+      finalOutput: '',
+    };
+    mockRun.mockResolvedValue(streamedResult);
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { temperature: 0.5, maxTurns: 5, unknownKey: 'nope' } },
+    };
+    const handler = createOpenAIAgentHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    // `maxTurns` goes to Runner.run only; the unknown key is dropped.
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ temperature: 0.5 });
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions).toMatchObject({ maxTurns: 5 });
+  });
+
+  it('converts a snake_case max_turns to maxTurns on the streaming path', async () => {
+    const streamedResult = {
+      [Symbol.asyncIterator]: async function* () {},
+      state: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+      finalOutput: '',
+    };
+    mockRun.mockResolvedValue(streamedResult);
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_turns: 6, top_p: 0.8 } } };
+    const handler = createOpenAIAgentHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ topP: 0.8 });
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions).toMatchObject({ maxTurns: 6 });
+  });
+
+  it('does not set modelSettings or maxTurns on the streaming path when model.parameters is absent', async () => {
+    const streamedResult = {
+      [Symbol.asyncIterator]: async function* () {},
+      state: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+      finalOutput: '',
+    };
+    mockRun.mockResolvedValue(streamedResult);
+    const handler = createOpenAIAgentHandler();
+    await collectStream(handler.stream?.(baseConfig as any, 'q', {}, {}));
+    expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toBeUndefined();
+    const runOptions = mockRun.mock.calls[0][2];
+    expect(runOptions.maxTurns).toBeUndefined();
   });
 
   it('sets invoke_agent on the root and emits a chat span on streaming', async () => {

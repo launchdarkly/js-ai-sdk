@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-openai-messages-0.3.0...@launchdarkly/ai-openai-messages-0.4.0) (2026-10-09)
+
+
+### Features
+
+* **AIC-3495:** record which public helpers an application calls ([#115](https://github.com/launchdarkly/js-ai-sdk/issues/115)) ([aeb4019](https://github.com/launchdarkly/js-ai-sdk/commit/aeb40190b237bb75f788c4c925008c2a9a856ab4))
+* **build:** build the AI SDK like the other LaunchDarkly JS SDKs so CommonJS apps can load it (2/4) ([#77](https://github.com/launchdarkly/js-ai-sdk/issues/77)) ([2cda755](https://github.com/launchdarkly/js-ai-sdk/commit/2cda7551c8feb7e352040384befea2cd76cb5d94))
+* **openai-messages:** forward only Responses API keys from model.parameters ([5c51dc9](https://github.com/launchdarkly/js-ai-sdk/commit/5c51dc978a313c35578cb138aa61f7b59fd3a465))
+
+
+### Bug Fixes
+
+* **deps:** depend on the @launchdarkly/ai-server release each package needs ([#119](https://github.com/launchdarkly/js-ai-sdk/issues/119)) ([9c2a56b](https://github.com/launchdarkly/js-ai-sdk/commit/9c2a56b27a309515032758f64c9c2c7c21477f33))
+* **handlers:** camelize snake_case model.parameters for framework handlers ([75c6287](https://github.com/launchdarkly/js-ai-sdk/commit/75c6287ebdc4098df6722dfc76656b068e9a3985))
+* **langchain:** stop forwarding additionalModelRequestFields to ChatBedrockConverse ([f6268fd](https://github.com/launchdarkly/js-ai-sdk/commit/f6268fdc2c186efd68f91831afba8224974b6bee))
+* **openai-messages:** only exclude model.parameters keys that would break the handler ([39e342d](https://github.com/launchdarkly/js-ai-sdk/commit/39e342d88ab24e7dccd247e2fd41dbc61a518ec8))
+* pass AI Config model parameters through to every provider handler ([#73](https://github.com/launchdarkly/js-ai-sdk/issues/73)) ([993225f](https://github.com/launchdarkly/js-ai-sdk/commit/993225f3d1cb46016d5f2a21394d5dd505e27e4a))
+* **SEC-9507:** authorize message-handler tools from the active variation ([#90](https://github.com/launchdarkly/js-ai-sdk/issues/90)) ([c16fe93](https://github.com/launchdarkly/js-ai-sdk/commit/c16fe93e63beccf27a9e6de2bdc9816695fe0cef))
+* **telemetry:** report OpenAI tool arguments as an object, not a JSON string ([#68](https://github.com/launchdarkly/js-ai-sdk/issues/68)) ([d614791](https://github.com/launchdarkly/js-ai-sdk/commit/d614791799361ce2ad71f177f298bcc4e51bcf97))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.3.0 to ^0.4.0
+
 ## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-openai-messages-0.2.0...@launchdarkly/ai-openai-messages-0.3.0) (2026-09-18)
 
 

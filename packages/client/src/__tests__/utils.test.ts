@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  camelizeModelParameters,
   createHandler,
   normalizeMode,
+  normalizeModelParameters,
   numberOrZero,
   parseJSONWithPossibleFences,
   parseTemplate,
   parseUsage,
+  pickForwardedModelParameters,
   setLdSpanAttributes,
   setUsageSpanAttributes,
 } from '../utils.js';
@@ -619,5 +622,128 @@ describe('setUsageSpanAttributes', () => {
       'gen_ai.usage.prompt_tokens': 0,
       'gen_ai.usage.completion_tokens': 0,
     });
+  });
+});
+
+// ─── normalizeModelParameters ──────────────────────────────────────────────────
+
+describe('normalizeModelParameters', () => {
+  it('returns {} for undefined', () => {
+    expect(normalizeModelParameters(undefined)).toEqual({});
+  });
+
+  it('returns {} for null', () => {
+    expect(normalizeModelParameters(null)).toEqual({});
+  });
+
+  it('returns {} for a non-object value', () => {
+    expect(normalizeModelParameters('not an object')).toEqual({});
+  });
+
+  it('returns the object unchanged when it is a usable object', () => {
+    const parameters = { temperature: 0.7, thinking: { type: 'enabled' } };
+    expect(normalizeModelParameters(parameters)).toBe(parameters);
+  });
+
+  it('returns an empty array unchanged (arrays are objects)', () => {
+    expect(normalizeModelParameters([])).toEqual([]);
+  });
+});
+
+// ─── pickForwardedModelParameters ─────────────────────────────────────────────
+
+describe('pickForwardedModelParameters', () => {
+  it('returns {} when parameters is undefined', () => {
+    expect(pickForwardedModelParameters(undefined, ['temperature'])).toEqual({});
+  });
+
+  it('returns {} when parameters sets none of the allowed keys', () => {
+    expect(pickForwardedModelParameters({ made_up_key: 'nope' }, ['temperature'])).toEqual({});
+  });
+
+  it('picks only the keys present in both parameters and the allowlist', () => {
+    const parameters = { temperature: 0.5, top_p: 0.9, made_up_key: 'nope' };
+    expect(pickForwardedModelParameters(parameters, ['temperature', 'top_p'])).toEqual({
+      temperature: 0.5,
+      top_p: 0.9,
+    });
+  });
+
+  it('omits an allowed key whose value is undefined', () => {
+    const parameters = { temperature: undefined, top_p: 0.9 };
+    expect(pickForwardedModelParameters(parameters, ['temperature', 'top_p'])).toEqual({ top_p: 0.9 });
+  });
+});
+
+// ─── camelizeModelParameters ───────────────────────────────────────────────────
+
+describe('camelizeModelParameters', () => {
+  it('converts snake_case keys generated from the key itself', () => {
+    expect(
+      camelizeModelParameters({
+        max_turns: 3,
+        top_p: 0.9,
+        max_output_tokens: 512,
+        frequency_penalty: 0.2,
+      }),
+    ).toEqual({
+      maxTurns: 3,
+      topP: 0.9,
+      maxOutputTokens: 512,
+      frequencyPenalty: 0.2,
+    });
+  });
+
+  it('leaves keys with no underscore unchanged', () => {
+    expect(camelizeModelParameters({ temperature: 0.7, store: true, maxTurns: 3 })).toEqual({
+      temperature: 0.7,
+      store: true,
+      maxTurns: 3,
+    });
+  });
+
+  it('converts only top-level keys, leaving nested values untouched', () => {
+    const input = { max_turns: 3, thinking: { type: 'enabled', budget_tokens: 1024 } };
+    expect(camelizeModelParameters(input)).toEqual({
+      maxTurns: 3,
+      thinking: { type: 'enabled', budget_tokens: 1024 },
+    });
+  });
+
+  it('keeps the nested object reference unchanged (byte for byte)', () => {
+    const thinking = { type: 'enabled', budget_tokens: 1024 };
+    const result = camelizeModelParameters({ thinking });
+    expect(result.thinking).toBe(thinking);
+  });
+
+  it('prefers the snake_case spelling when both spellings are set, snake_case first', () => {
+    expect(camelizeModelParameters({ max_turns: 5, maxTurns: 1 })).toEqual({ maxTurns: 5 });
+  });
+
+  it('prefers the snake_case spelling when both spellings are set, camelCase first', () => {
+    expect(camelizeModelParameters({ maxTurns: 1, max_turns: 5 })).toEqual({ maxTurns: 5 });
+  });
+
+  it('leaves a key with a leading underscore unchanged', () => {
+    expect(camelizeModelParameters({ _foo: 1 })).toEqual({ _foo: 1 });
+  });
+
+  it('leaves a key with a trailing underscore unchanged', () => {
+    expect(camelizeModelParameters({ foo_: 1 })).toEqual({ foo_: 1 });
+  });
+
+  it('leaves a key with a doubled underscore unchanged', () => {
+    expect(camelizeModelParameters({ foo__bar: 1 })).toEqual({ foo__bar: 1 });
+  });
+
+  it('returns a new object and never mutates the input', () => {
+    const input = { max_turns: 3 };
+    const result = camelizeModelParameters(input);
+    expect(result).not.toBe(input);
+    expect(input).toEqual({ max_turns: 3 });
+  });
+
+  it('returns {} for an empty bag', () => {
+    expect(camelizeModelParameters({})).toEqual({});
   });
 });

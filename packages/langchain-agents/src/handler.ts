@@ -7,8 +7,9 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
-  createHandler,
+  type config,
+  configInternal,
+  createHandlerInternal,
   createRunUsage,
   endSpanOnce,
   type LDContext,
@@ -19,6 +20,7 @@ import {
   type Message,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
@@ -29,10 +31,13 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { createAgent } from 'langchain';
 import { toLangChainMessages } from './messages.js';
+import { type LangChainModelClass, modelConstructorParameters } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-langchain-agents';
 
@@ -259,12 +264,16 @@ export function buildSpanCallbacks(
 
 export type LangChainModelSource = BaseChatModel | ((config: AiConfigRep) => BaseChatModel | Promise<BaseChatModel>);
 
-function modelConstructorArgs(config: AiConfigRep, fallbackName: string): Record<string, unknown> {
-  const parameters = {
-    ...(config.model?.parameters && typeof config.model.parameters === 'object' ? config.model.parameters : {}),
+function modelConstructorArgs(
+  config: AiConfigRep,
+  fallbackName: string,
+  modelClass: LangChainModelClass,
+): Record<string, unknown> {
+  // Name from the config always wins; `model` is never on a forwarded-keys list anyway.
+  return {
+    ...modelConstructorParameters(config.model?.parameters, modelClass),
+    model: resolvedModelName(config, fallbackName),
   };
-  if ((config.provider?.name ?? '').toLowerCase() === 'bedrock') delete parameters.tools;
-  return { ...parameters, model: resolvedModelName(config, fallbackName) };
 }
 
 async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSource): Promise<BaseChatModel> {
@@ -274,8 +283,8 @@ async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSourc
   const provider = (invocation.provider?.name ?? '').toLowerCase();
   if (provider === 'anthropic') {
     const { ChatAnthropic } = await import('@langchain/anthropic');
-    // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
-    return new ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022') as any);
+    // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
+    return new ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022', 'anthropic') as any);
   }
   if (provider === 'bedrock') {
     // biome-ignore lint/suspicious/noExplicitAny: @langchain/aws loaded via dynamic import with no static types
@@ -285,11 +294,11 @@ async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSourc
     } catch {
       throw new Error('Using Bedrock models requires @langchain/aws. Install it with: npm install @langchain/aws');
     }
-    // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
-    return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '') as any);
+    // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
+    return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '', 'bedrock') as any);
   }
-  // biome-ignore lint/suspicious/noExplicitAny: parameter bag is caller-owned and not remapped
-  return new ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o') as any);
+  // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
+  return new ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o', 'openai') as any);
 }
 
 const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record<string, ToolHandlerFn>) =>
@@ -299,7 +308,7 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
       tool(
         async (args: Record<string, unknown>) => {
           const result = await (toolHandlers[name] as (...args: unknown[]) => unknown)(args);
-          return String(result);
+          return toolResultString(result);
         },
         {
           name,
@@ -376,9 +385,18 @@ const toToolDefinitions = (configTools: Record<string, Tool> | undefined): ToolD
 /** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
 export function createLangChainAgentsHandler(
   llm?: LangChainModelSource,
+  options: ContentCaptureOptions = {},
+): ProviderHandler {
+  reportUsage('langchain-agents.createLangChainAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createLangChainAgentsHandlerInternal(llm, options);
+}
+
+/** `createLangChainAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createLangChainAgentsHandlerInternal(
+  llm?: LangChainModelSource,
   { captureContent = false }: ContentCaptureOptions = {},
 ): ProviderHandler {
-  return createHandler(
+  return createHandlerInternal(
     ['*', 'agent'],
     async (
       config: AiConfigRep,
@@ -564,9 +582,11 @@ export const langchainAgents = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createLangChainAgentsHandler(undefined, { captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+) => {
+  reportUsage('langchain-agents.langchainAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createLangChainAgentsHandlerInternal(undefined, { captureContent }),
+  }).invoke(userInput, context, variables);
+};

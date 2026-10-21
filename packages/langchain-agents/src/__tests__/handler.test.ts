@@ -79,11 +79,12 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
     ...actual,
-    config: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
+    configInternal: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
   };
 });
 
 import { createLangChainAgentsHandler } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -510,7 +511,7 @@ describe('createLangChainAgentsHandler', () => {
 
   it('langchainAgents calls config() with the correct handler', async () => {
     const { langchainAgents } = await import('../handler.js');
-    const { config } = await import('@launchdarkly/ai-server');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
     const ctx = { kind: 'user' as const, key: 'u' };
     await langchainAgents('flag', 'hello', ctx, {} as any);
     expect(config).toHaveBeenCalledWith(
@@ -912,7 +913,7 @@ describe('langchainAgents — invoke() argument passthrough', () => {
       const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
       return {
         ...actual,
-        config: vi.fn().mockReturnValue({ invoke: mockInvoke }),
+        configInternal: vi.fn().mockReturnValue({ invoke: mockInvoke }),
       };
     });
     const { langchainAgents } = await import('../handler.js');
@@ -929,7 +930,7 @@ describe('langchainGraph', () => {
     const graphMock = vi.fn().mockReturnValue({ call: vi.fn() });
     vi.doMock('@launchdarkly/ai-server', async (importOriginal) => {
       const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
-      return { ...actual, graph: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
+      return { ...actual, graphInternal: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
     });
     const { langchainGraph } = await import('../graph.js');
     langchainGraph('graph-flag', {});
@@ -946,7 +947,7 @@ describe('langchainGraph', () => {
     const graphMock = vi.fn().mockReturnValue({ call: vi.fn() });
     vi.doMock('@launchdarkly/ai-server', async (importOriginal) => {
       const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
-      return { ...actual, graph: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
+      return { ...actual, graphInternal: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
     });
     const { langchainGraph } = await import('../graph.js');
     const toolHandlers = { search: vi.fn() };
@@ -960,11 +961,11 @@ describe('langchainGraph', () => {
     const handlerFactorySpy = vi.fn().mockReturnValue({ providesFor: ['*', 'agent'] });
     vi.doMock('@launchdarkly/ai-server', async (importOriginal) => {
       const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
-      return { ...actual, graph: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
+      return { ...actual, graphInternal: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
     });
     vi.doMock('../handler.js', async (importOriginal) => {
       const actual = await importOriginal<typeof import('../handler.js')>();
-      return { ...actual, createLangChainAgentsHandler: handlerFactorySpy };
+      return { ...actual, createLangChainAgentsHandlerInternal: handlerFactorySpy };
     });
     const { langchainGraph } = await import('../graph.js');
     const stubLlm = { invoke: vi.fn() } as any;
@@ -1003,7 +1004,10 @@ describe('model source', () => {
     expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: llm }));
   });
 
-  it('spreads model.parameters into the default OpenAI constructor', async () => {
+  // @langchain/openai's ChatOpenAI constructor only reads camelCase (`maxTokens`), so the
+  // snake_case bag the UI writes is camelized, then narrowed to ChatOpenAI's allowlist: `tools`
+  // is not a constructor field, so it is dropped.
+  it('passes allowlisted model.parameters to the default OpenAI constructor, camelized, and drops the rest', async () => {
     const constructed = { tag: 'default-openai' };
     MockChatOpenAI.mockImplementation(function MockChatOpenAI() {
       return constructed;
@@ -1015,11 +1019,44 @@ describe('model source', () => {
     await createLangChainAgentsHandler()(cfg as any, 'q');
     expect(MockChatOpenAI).toHaveBeenCalledWith({
       temperature: 0.2,
-      max_tokens: 512,
-      tools: ['openai-tool'],
+      maxTokens: 512,
       model: 'gpt-4o',
     });
     expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: constructed }));
+  });
+
+  it('camelCase model.parameters keys still pass through unchanged into the default constructor', async () => {
+    const constructed = { tag: 'default-openai-camel' };
+    MockChatOpenAI.mockImplementation(function MockChatOpenAI() {
+      return constructed;
+    });
+    const cfg = {
+      model: { name: 'gpt-4o', parameters: { temperature: 0.2, maxTokens: 512 } },
+      provider: { name: 'LangChain' },
+      instructions: 'Be helpful.',
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
+  });
+
+  it.each([
+    ['OpenAI', 'gpt-4o', MockChatOpenAI],
+    ['Anthropic', 'claude-sonnet-4-5', MockChatAnthropic],
+    ['Bedrock', 'anthropic.claude-sonnet-4-5', MockChatBedrockConverse],
+  ] as const)('never passes credentials or connection settings to the default %s constructor', async (provider, name, ctor) => {
+    ctor.mockClear();
+    ctor.mockImplementation(function MockChatModel() {
+      return {};
+    });
+    const cfg = {
+      provider: { name: provider },
+      model: { name, parameters: { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 } },
+      instructions: 'Be helpful.',
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    const args = ctor.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(args.temperature).toBe(0.3);
+    expectNoNeverForwardedValue(args);
   });
 
   it('spreads model.parameters into the default Anthropic constructor', async () => {
