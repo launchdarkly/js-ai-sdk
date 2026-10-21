@@ -249,6 +249,8 @@ function buildTools(configTools: Record<string, Tool>, handlers: Record<string, 
         description: definition.description ?? '',
         strict: false,
         parameters: definition.parameters,
+        // null, not undefined: the SDK default feeds a tool error back to the model; the spec (TESTING.md §1.4) says it must propagate.
+        errorFunction: null,
         execute: async (args: unknown) => {
           const handler = handlers[name] as unknown as (args: unknown) => unknown;
           return handler(args);

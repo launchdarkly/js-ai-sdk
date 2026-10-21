@@ -49,6 +49,8 @@ function buildTools(node: GraphNode, handlers: Record<string, ToolHandlerFn | Na
         description: definition.description ?? '',
         strict: false,
         parameters: definition.parameters,
+        // null, not undefined: the SDK default feeds a tool error back to the model; the spec (TESTING.md §1.4) says it must propagate.
+        errorFunction: null,
         execute: async (args: unknown) => (handlers[name] as unknown as (args: unknown) => unknown)(args),
       } as unknown as Parameters<typeof tool>[0]),
     );

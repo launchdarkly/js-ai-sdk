@@ -372,7 +372,7 @@ describe('createLiteLLMAgentsHandler', () => {
     await createLiteLLMAgentsHandler({ client: {} as never })(config as never, 'q', {
       search: vi.fn().mockRejectedValue(error),
     });
-    expect(mockTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'search' }));
+    expect(mockTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'search', errorFunction: null }));
     await expect(mockTool.mock.results[0].value.execute({ q: 'x' })).rejects.toThrow('tool failed');
   });
 

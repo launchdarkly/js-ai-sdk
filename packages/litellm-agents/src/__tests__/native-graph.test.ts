@@ -175,7 +175,7 @@ describe('toLiteLLMAgents', () => {
       client: {} as never,
       toolHandlers: { search },
     }).invoke('q');
-    expect(mockTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'search' }));
+    expect(mockTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'search', errorFunction: null }));
     await expect(mockTool.mock.results[0].value.execute({ query: 'x' })).resolves.toBe('found');
   });
 
