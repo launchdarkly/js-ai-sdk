@@ -483,6 +483,18 @@ describe('graph().invoke()', () => {
     expect(result.judgeResults).toEqual(judgeData);
   });
 
+  it('passes the graph handlers to the graphJudge, so its provider allowlist applies', async () => {
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+    await graph('graph-flag', { handlers: [handler], graphJudge: 'graph-judge' }).invoke('hi', mockContext);
+    const graphJudgeCall = (runJudges as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([args]) => args.config.judgeConfiguration?.judges?.[0]?.key === 'graph-judge',
+    );
+    expect(graphJudgeCall?.[0].handlers).toEqual([handler]);
+  });
+
   it('forwards history as the 4th invoke arg to the root handler only', async () => {
     setupTwoNodeGraph();
     const calls: Array<{ input: unknown; history: unknown }> = [];

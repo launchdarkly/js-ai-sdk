@@ -538,7 +538,7 @@ describe('createLangChainAgentsHandler', () => {
 
   it('forwards providers onto the handler and not to config()', async () => {
     const { langchainAgents } = await import('../handler.js');
-    const { config } = await import('@launchdarkly/ai-server');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
     const ctx = { kind: 'user' as const, key: 'u' };
     await langchainAgents('flag', 'hello', ctx, { providers: ['Bedrock'] } as any);
     expect(config).toHaveBeenCalledWith(
@@ -974,7 +974,7 @@ describe('langchainGraph', () => {
     const graphMock = vi.fn().mockReturnValue({ call: vi.fn() });
     vi.doMock('@launchdarkly/ai-server', async (importOriginal) => {
       const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
-      return { ...actual, graph: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
+      return { ...actual, graphInternal: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
     });
     const { langchainGraph } = await import('../graph.js');
     langchainGraph('graph-flag', { providers: ['Bedrock'] } as any);

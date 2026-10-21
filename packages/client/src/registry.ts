@@ -1,11 +1,15 @@
 import type { NativeTool, ProviderHandler, ToolHandlerFn } from './types.js';
 
-/** `providesFor` plus the allowlist as a set. Order and repeated names do not make a new identity. */
+/**
+ * `providesFor`, plus the allowlist as a set on a `'*'` handler. Order and repeated
+ * names do not make a new identity. Routing ignores the list on an exact handler,
+ * so it is not part of that handler's identity.
+ */
 function registrationKey(handler: ProviderHandler): string | undefined {
   if (!handler.providesFor) return undefined;
-  const base = `${handler.providesFor[0]}:${handler.providesFor[1]}`;
-  if (handler.providers === undefined) return base;
-  return `${base}:${[...new Set(handler.providers)].sort().join(',')}`;
+  const [provider, mode] = handler.providesFor;
+  if (provider !== '*' || handler.providers === undefined) return JSON.stringify([provider, mode]);
+  return JSON.stringify([provider, mode, [...new Set(handler.providers)].sort()]);
 }
 
 export class Registry {
@@ -21,13 +25,13 @@ export class Registry {
   register(config: { handlers?: ProviderHandler[]; tools?: Record<string, ToolHandlerFn | NativeTool> }): void {
     for (const handler of config.handlers ?? []) {
       const key = registrationKey(handler);
-      if (key) {
-        const existing = this.handlers.find((h) => registrationKey(h) === key);
-        if (existing) {
-          // biome-ignore lint/suspicious/noConsole: intentional warning for user misconfiguration
-          console.warn(`Multiple handlers registered for [${key}]. This may be unintended. The last one will be used.`);
-          this.handlers = this.handlers.filter((h) => registrationKey(h) !== key);
-        }
+      const index = key ? this.handlers.findIndex((h) => registrationKey(h) === key) : -1;
+      if (index !== -1) {
+        // biome-ignore lint/suspicious/noConsole: intentional warning for user misconfiguration
+        console.warn(`Multiple handlers registered for ${key}. This may be unintended. The last one will be used.`);
+        // In place, so a replacement keeps the registration order that breaks wildcard ties.
+        this.handlers[index] = handler;
+        continue;
       }
       this.handlers.push(handler);
     }

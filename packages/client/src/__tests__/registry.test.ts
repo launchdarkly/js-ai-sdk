@@ -99,6 +99,49 @@ describe('Registry', () => {
     }
   });
 
+  it('replaces a re-registered handler in its original slot', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = new Registry();
+      const bg = makeHandler('*', 'messages', ['Bedrock', 'Gemini']);
+      const ba = makeHandler('*', 'messages', ['Bedrock', 'Anthropic']);
+      const bgAgain = makeHandler('*', 'messages', ['Gemini', 'Bedrock']);
+      r.register({ handlers: [bg, ba] });
+      r.register({ handlers: [bgAgain] });
+      expect(r.handlers).toEqual([bgAgain, ba]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps a comma inside a provider name apart from two names', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = new Registry();
+      const joined = makeHandler('*', 'messages', ['a,b']);
+      const split = makeHandler('*', 'messages', ['a', 'b']);
+      r.register({ handlers: [joined, split] });
+      expect(r.handlers).toEqual([joined, split]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('ignores a provider list on an exact handler, so two exact handlers collide', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = new Registry();
+      const plain = makeHandler('OpenAI', 'messages');
+      const listed = makeHandler('OpenAI', 'messages', ['OpenAI']);
+      r.register({ handlers: [plain, listed] });
+      expect(r.handlers).toEqual([listed]);
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('always appends handlers without providesFor (no dedup)', () => {
     const r = new Registry();
     const h: ProviderHandler = async () => ({ output: '' });

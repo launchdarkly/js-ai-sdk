@@ -240,20 +240,48 @@ describe('createHandler', () => {
   });
 
   it('attaches a provider list', () => {
-    const handler = createHandler(['*', 'messages'], makeRawHandler() as any, undefined, false, [
-      'Bedrock',
-      'Anthropic',
-    ]);
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any, { providers: ['Bedrock', 'Anthropic'] });
     expect(handler.providesFor).toEqual(['*', 'messages']);
     expect(handler.providers).toEqual(['Bedrock', 'Anthropic']);
   });
 
+  it('takes stream and captureContent as options', () => {
+    const stream = vi.fn();
+    const handler = createHandler(['MyProvider', 'messages'], makeRawHandler() as any, {
+      stream: stream as any,
+      captureContent: true,
+    });
+    expect(handler.stream).toBe(stream);
+    expect(handler.captureContent).toBe(true);
+  });
+
+  it('drops repeated provider names, keeping first-seen order', () => {
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any, {
+      providers: ['Bedrock', 'Anthropic', 'Bedrock'],
+    });
+    expect(handler.providers).toEqual(['Bedrock', 'Anthropic']);
+  });
+
+  it('copies the provider list, so a later change to the caller array has no effect', () => {
+    const providers = ['Bedrock'];
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any, { providers });
+    providers.push('OpenAI');
+    expect(handler.providers).toEqual(['Bedrock']);
+    expect(Object.isFrozen(handler.providers)).toBe(true);
+  });
+
   it('rejects an empty provider list', () => {
-    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, undefined, false, [])).toThrow(/providers/i);
+    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, { providers: [] })).toThrow(/providers/i);
   });
 
   it('rejects a blank provider name', () => {
-    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, undefined, false, ['Bedrock', ''])).toThrow(
+    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, { providers: ['Bedrock', ''] })).toThrow(
+      /providers/i,
+    );
+  });
+
+  it('rejects a provider name with surrounding whitespace', () => {
+    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, { providers: [' Bedrock'] })).toThrow(
       /providers/i,
     );
   });

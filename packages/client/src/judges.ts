@@ -132,10 +132,11 @@ export const runJudges = async ({
 
     // Pick the handler matching the judge's own provider/mode. Priority:
     //   1. Exact provider + mode match
-    //   2. Wildcard provider (`*`) + same mode (e.g. LangChain agents handler)
+    //   2. Wildcard provider (`*`) + same mode (e.g. LangChain agents handler) whose
+    //      `providers` list, if any, contains the judge's provider; the shortest list wins
     //   3. Same provider, any mode (agent handler for the same provider)
-    //   4. Wildcard provider, any mode — agent-handler fallback for any provider
-    //   5. Parent node's handler, if it covers the same provider (or is a wildcard)
+    //   4. Wildcard provider, any mode, under the same `providers` rule — agent-handler fallback
+    //   5. Parent node's handler, if it names the provider or is a wildcard whose list allows it
     //   6. Skip — crossing providers would send the wrong model to an incompatible API.
     // When falling back to an agent-mode handler for a messages-mode judge config
     // (cases 2–5), messages are collapsed into a single instructions string so the

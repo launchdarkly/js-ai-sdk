@@ -437,7 +437,7 @@ const registry = new Registry({
 });
 ```
 
-`.register(config)` can be called multiple times to add more handlers or tools. Handler identity is `providesFor` plus the provider set: two wildcards of the same mode with different `providers` lists both stay registered, while the same set (order-independent; repeated names collapse) or two unscoped wildcards warn and the last registration wins. Duplicate tool names do the same.
+`.register(config)` can be called multiple times to add more handlers or tools. Handler identity is `providesFor` plus the provider set: two wildcards of the same mode with different `providers` lists both stay registered, while the same set (order-independent; repeated names collapse) or two unscoped wildcards warn and the last registration wins, taking the earlier one's place in the order. A `providers` list on an exact handler is not part of its identity. Duplicate tool names do the same.
 
 `globalRegistry` is a pre-constructed singleton `Registry` instance.
 
@@ -455,7 +455,7 @@ const combined = compose(globalRegistry, localRegistry);
 
 | Export | Description |
 |---|---|
-| `createHandler(providesFor, handler)` | Attaches `providesFor` metadata to a handler function and returns it as a `ProviderHandler`. This is the canonical way to build any handler — both package-internal factories and user-supplied custom handlers. See [Factory Function](#factory-function). |
+| `createHandler(providesFor, handler, options?)` | Attaches `providesFor` metadata to a handler function and returns it as a `ProviderHandler`. `options` is `{ stream?, captureContent?, providers? }`. This is the canonical way to build any handler — both package-internal factories and user-supplied custom handlers. See [Factory Function](#factory-function). |
 | `makeNodeTrackData(node, graphKey, runId)` | Builds the standard `TrackData` for a graph node event (including the `_ldMeta` model stamps). Native graph adapter packages must use this instead of building their own payload. |
 | `parseTemplate(template, variables)` | Replaces `{{variable}}` placeholders in a string. Supports dot-notation for nested values (e.g. `{{user.name}}`). Unrecognized placeholders are left as-is. |
 | `parseJSONWithPossibleFences(text)` | Parses a JSON string that may be wrapped in markdown code fences (` ```json ` or ` ``` `). Returns `null` if the text is not valid JSON. |
@@ -686,22 +686,24 @@ export function createMyProviderHandler(): ProviderHandler {
     async (config, userInput = '', toolHandlers = {}, variables = {}, history) => {
       // ... blocking implementation ...
     },
-    async function* streamHandler(config, userInput = '', toolHandlers = {}, variables = {}, history) {
-      const span = trace.getTracer('my-package').startSpan('my.stream');
-      try {
-        // ... stream from provider SDK ...
-        for await (const chunk of providerStream) {
-          yield { type: 'chunk', text: chunk.text };
+    {
+      stream: async function* streamHandler(config, userInput = '', toolHandlers = {}, variables = {}, history) {
+        const span = trace.getTracer('my-package').startSpan('my.stream');
+        try {
+          // ... stream from provider SDK ...
+          for await (const chunk of providerStream) {
+            yield { type: 'chunk', text: chunk.text };
+          }
+          yield { type: 'done', output: fullText, usage: { input_tokens: 10, output_tokens: 20 } };
+          span.setStatus({ code: SpanStatusCode.OK });
+        } catch (err) {
+          span.recordException(err as Error);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
+          throw err;
+        } finally {
+          span.end();
         }
-        yield { type: 'done', output: fullText, usage: { input_tokens: 10, output_tokens: 20 } };
-        span.setStatus({ code: SpanStatusCode.OK });
-      } catch (err) {
-        span.recordException(err as Error);
-        span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
-        throw err;
-      } finally {
-        span.end();
-      }
+      },
     },
   );
 }

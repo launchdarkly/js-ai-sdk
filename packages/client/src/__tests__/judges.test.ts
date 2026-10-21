@@ -243,6 +243,34 @@ describe('runJudges', () => {
     expect(mockExecuteAndTrack).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['Bedrock', true],
+    ['Anthropic', false],
+  ])('falls back to a Bedrock-scoped parent only for a listed provider (%s)', async (provider, runs) => {
+    const parent: ProviderHandler = vi.fn().mockResolvedValue({ output: '{"score":1,"reasoning":"ok"}', usage: {} });
+    parent.providesFor = ['*', 'messages'];
+    parent.providers = ['Bedrock'];
+    mockExtractVariation.mockResolvedValue({
+      config: { ...mockJudgeConfig, provider: { name: provider } },
+      meta: mockJudgeMeta,
+    });
+    await runJudges({
+      config: {
+        model: { name: 'm' },
+        provider: { name: 'Bedrock' },
+        instructions: 'Be helpful.',
+        judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
+      },
+      userContext: mockContext,
+      handler: parent,
+      handlers: [],
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+    expect(mockExecuteAndTrack).toHaveBeenCalledTimes(runs ? 1 : 0);
+  });
+
   it('skips a judge when no compatible handler is found (mismatched provider, no wildcard)', async () => {
     const openaiHandler = makeHandler(); // ['OpenAI', 'messages']
     mockExtractVariation.mockResolvedValue({
@@ -452,5 +480,14 @@ describe('runJudge result trackData', () => {
     const result = await runJudge(makeTask(parentTrackData), [makeHandler()]);
     expect(result!.trackData.modelKey).toBe('judge-model');
     expect(result!.trackData.modelVersion).toBe(2);
+  });
+
+  it('returns null for a provider outside the only scoped handler list', async () => {
+    const scoped: ProviderHandler = vi.fn();
+    scoped.providesFor = ['*', 'messages'];
+    scoped.providers = ['Bedrock'];
+    const task = { ...makeTask(parentTrackData), judgeProvider: 'Anthropic' } as JudgeTask;
+    expect(await runJudge(task, [scoped])).toBeNull();
+    expect(mockExecuteAndTrack).not.toHaveBeenCalled();
   });
 });

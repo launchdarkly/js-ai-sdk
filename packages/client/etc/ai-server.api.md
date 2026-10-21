@@ -126,15 +126,18 @@ export class ConversationIdSpanProcessor {
 }
 
 // Warning: (ae-forgotten-export) The symbol "HandlerInput" needs to be exported by the entry point index.d.ts
-// Warning: (ae-forgotten-export) The symbol "StreamHandlerInput" needs to be exported by the entry point index.d.ts
 //
 // @public
-export function createHandler(providesFor: [string, 'agent' | 'messages'], handler: HandlerInput, streamHandler?: StreamHandlerInput, captureContent?: boolean): ProviderHandler;
+export function createHandler(providesFor: [string, 'agent' | 'messages'], handler: HandlerInput, options?: {
+    stream?: StreamHandlerInput;
+    captureContent?: boolean;
+    providers?: readonly string[];
+}): ProviderHandler;
 
 // Warning: (ae-internal-missing-underscore) The name "createHandlerInternal" should be prefixed with an underscore because the declaration is marked as @internal
 //
 // @internal
-export function createHandlerInternal(providesFor: [string, 'agent' | 'messages'], handler: HandlerInput, streamHandler?: StreamHandlerInput, captureContent?: boolean): ProviderHandler;
+export function createHandlerInternal(providesFor: [string, 'agent' | 'messages'], handler: HandlerInput, streamHandler?: StreamHandlerInput, captureContent?: boolean, providers?: readonly string[]): ProviderHandler;
 
 // @public
 export function createRunUsage(): RunUsage;
@@ -465,6 +468,7 @@ export type ProviderHandler = ((config: AiConfigRep, userInput?: string, toolHan
     usage?: Record<string, unknown>;
 }>) & {
     providesFor?: [provider: string, type: 'agent' | 'messages'];
+    providers?: readonly string[];
     captureContent?: boolean;
     stream?: (config: AiConfigRep, userInput?: string, toolHandlers?: Record<string, any>, variables?: Record<string, unknown>, history?: Message[]) => AsyncGenerator<HandlerStreamEvent>;
 };
@@ -697,6 +701,7 @@ export function withConversationId<T>(id: string, fn: () => T): T;
 // Warnings were encountered during analysis:
 //
 // temp/dts/types.d.ts:370:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
+// temp/dts/utils.d.ts:38:5 - (ae-forgotten-export) The symbol "StreamHandlerInput" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 

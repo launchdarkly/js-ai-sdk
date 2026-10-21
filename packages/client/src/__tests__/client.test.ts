@@ -390,8 +390,23 @@ describe('config() — multi-handler routing', () => {
 
   it('rejects a scoped wildcard when the provider is not listed', async () => {
     const handler = scoped(['Bedrock'], 'from bedrock');
-    await expect(config({ key: 'flag', handler: [handler] }).invoke('q', mockContext)).rejects.toThrow(/OpenAI/);
+    await expect(config({ key: 'flag', handler: [handler] }).invoke('q', mockContext)).rejects.toThrow(
+      /^Handler for provider OpenAI not found$/,
+    );
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('prefers a scoped wildcard that lists the provider over an unscoped one', async () => {
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: { ...mockConfig, provider: { name: 'Bedrock' } },
+      meta: mockMeta,
+    });
+    const bedrock = scoped(['Bedrock'], 'bedrock');
+    const unscoped: ProviderHandler = vi.fn().mockResolvedValue({ output: 'any', usage: {} });
+    unscoped.providesFor = ['*', 'messages'];
+    const result = await config({ key: 'flag', handler: [unscoped, bedrock] }).invoke('q', mockContext);
+    expect(result.response).toBe('bedrock');
+    expect(unscoped).not.toHaveBeenCalled();
   });
 
   it('routes each provider to its own scoped wildcard', async () => {

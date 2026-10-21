@@ -755,7 +755,7 @@ describe('createLangChainHandler', () => {
 
   it('forwards providers onto the handler and not to config()', async () => {
     const { langchainMessages } = await import('../handler.js');
-    const { config } = await import('@launchdarkly/ai-server');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
     const ctx = { kind: 'user' as const, key: 'u' };
     (config as any).mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) });
     await langchainMessages('flag', 'hello', ctx, { providers: ['Bedrock'] } as any);
