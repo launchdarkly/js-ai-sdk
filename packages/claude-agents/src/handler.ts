@@ -40,6 +40,7 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
   toSemconvFinishReason,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
@@ -712,7 +713,7 @@ export const buildToolMCP = async (configTools: Record<string, Tool>, handlers: 
           throw new Error(`No handler registered for tool "${toolName}"`);
         }
         const result = await (handler as (...args: unknown[]) => unknown)(...args);
-        return { content: [{ type: 'text' as const, text: String(result) }] };
+        return { content: [{ type: 'text' as const, text: toolResultString(result) }] };
       },
     );
   });

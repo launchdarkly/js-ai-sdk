@@ -30,6 +30,7 @@ import {
   setUsageSpanAttributes,
   type Tool,
   type ToolDefinitionInput,
+  toolResultString,
   toSemconvFinishReason,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
@@ -504,7 +505,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
               setToolCallContentAttributes(toolSpan, captureContent, { result });
               toolSpan.setStatus({ code: SpanStatusCode.OK });
               toolSpan.end();
-              return { type: 'tool_result' as const, tool_use_id: toolUse.id, content: String(result) };
+              return { type: 'tool_result' as const, tool_use_id: toolUse.id, content: toolResultString(result) };
             } catch (err) {
               failSpan(toolSpan, err);
               throw err;
@@ -672,7 +673,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
                   setToolCallContentAttributes(toolSpan, captureContent, { result });
                   toolSpan.setStatus({ code: SpanStatusCode.OK });
                   toolSpan.end();
-                  return { type: 'tool_result' as const, tool_use_id: toolUse.id, content: String(result) };
+                  return { type: 'tool_result' as const, tool_use_id: toolUse.id, content: toolResultString(result) };
                 } catch (err) {
                   failSpan(toolSpan, err);
                   throw err;

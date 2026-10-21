@@ -29,6 +29,7 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
 } from '@launchdarkly/ai-server';
 import type {
   Model,
@@ -472,7 +473,7 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
         execute: async (args) => {
           const handler = toolHandlers[name] as (...args: unknown[]) => unknown;
           const result = await handler(args);
-          return String(result);
+          return toolResultString(result);
         },
       }),
     );

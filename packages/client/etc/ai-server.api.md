@@ -664,6 +664,9 @@ export interface ToolDefinitionInput {
 export type ToolHandlerFn = (...args: never) => unknown;
 
 // @public
+export function toolResultString(value: unknown): string;
+
+// @public
 export function toSemconvFinishReason(raw: string | null | undefined): string | undefined;
 
 // @public

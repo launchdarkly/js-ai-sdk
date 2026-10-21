@@ -29,6 +29,7 @@ import {
   setUsageSpanAttributes,
   type Tool,
   type ToolDefinitionInput,
+  toolResultString,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
@@ -560,7 +561,11 @@ function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureO
                   setToolCallContentAttributes(toolSpan, captureContent, { result });
                   toolSpan.setStatus({ code: SpanStatusCode.OK });
                   toolSpan.end();
-                  return { type: 'function_call_output' as const, call_id: tc.call_id, output: String(result) };
+                  return {
+                    type: 'function_call_output' as const,
+                    call_id: tc.call_id,
+                    output: toolResultString(result),
+                  };
                 } catch (err) {
                   failSpan(toolSpan, err);
                   throw err;
@@ -721,7 +726,7 @@ function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureO
                 setToolCallContentAttributes(toolSpan, captureContent, { result });
                 toolSpan.setStatus({ code: SpanStatusCode.OK });
                 toolSpan.end();
-                return { type: 'function_call_output' as const, call_id: tc.call_id, output: String(result) };
+                return { type: 'function_call_output' as const, call_id: tc.call_id, output: toolResultString(result) };
               } catch (err) {
                 failSpan(toolSpan, err);
                 throw err;

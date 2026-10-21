@@ -16,6 +16,7 @@ import {
   reportUsage,
   setLdSpanAttributes,
   type ToolHandlerFn,
+  toolResultString,
 } from '@launchdarkly/ai-server';
 import { Agent, handoff, Runner, tool } from '@openai/agents';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
@@ -57,7 +58,7 @@ const buildNodeTools = (node: GraphNode, toolHandlers: Record<string, ToolHandle
           return '';
         }
         const result = await (handler as (...args: unknown[]) => unknown)(args);
-        return String(result);
+        return toolResultString(result);
       },
     }),
   );
