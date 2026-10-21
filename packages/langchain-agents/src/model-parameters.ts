@@ -29,9 +29,11 @@ import {
  * into the request body as written), `prefixMessages` (prompt content), `model` / `modelName`
  * (the handler sets the model), the client internals `completions`, `responses`,
  * `__includeRawResponse` and `supportsStrictToolCalling`, and:
- * - `reasoning`, `useResponsesApi`: switch `ChatOpenAI` to the Responses API, which changes the
- *   response shape the handler reads. Reasoning control is not forwarded until both SDKs can set it
- *   without switching APIs.
+ * - `useResponsesApi`, `reasoning`: API-shape switches. `useResponsesApi` moves `ChatOpenAI` to
+ *   the Responses API, and so does a `reasoning` with a `summary`, which changes the response
+ *   shape the handler reads. The Python SDK forwards the Chat Completions `reasoning_effort`
+ *   instead; the TypeScript `ChatOpenAI` takes that only per call, so the spec marks it not
+ *   supported in TypeScript.
  * - `audio`, `modalities`: change the output type, not how text is generated.
  * - `promptCacheRetention`, `zdrEnabled`: data retention.
  * - `user`: identity and attribution.
