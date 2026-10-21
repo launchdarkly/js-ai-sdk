@@ -114,15 +114,45 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Nested values each model class reads as objects. A value of the wrong shape (not an object, or
- * a `thinking` without the `type` the Anthropic API requires) is dropped rather than passed on.
+ * The `thinking` variants the Anthropic Messages API takes (`ThinkingConfigParam`), each with its
+ * required and optional sub-keys besides `type`. `ChatAnthropic` sends `thinking` as written, so
+ * the same shapes as the Claude Messages handler apply.
+ */
+const ANTHROPIC_THINKING_SHAPES: Record<string, { required: ReadonlyArray<string>; optional: ReadonlyArray<string> }> =
+  {
+    enabled: { required: ['budget_tokens'], optional: ['display'] },
+    adaptive: { required: [], optional: ['display'] },
+    disabled: { required: [], optional: [] },
+  };
+
+/**
+ * `thinking` with only the sub-keys its `type` takes, or `undefined` when it is not an object,
+ * its `type` is missing or unknown, or a required sub-key is missing. The API rejects all of those.
+ */
+function toAnthropicThinking(value: unknown): Record<string, unknown> | undefined {
+  if (
+    !isPlainObject(value) ||
+    typeof value.type !== 'string' ||
+    !Object.hasOwn(ANTHROPIC_THINKING_SHAPES, value.type)
+  ) {
+    return undefined;
+  }
+  const { required, optional } = ANTHROPIC_THINKING_SHAPES[value.type];
+  if (required.some((key) => value[key] === undefined || value[key] === null)) return undefined;
+  const thinking: Record<string, unknown> = { type: value.type };
+  for (const key of [...required, ...optional]) {
+    if (value[key] !== undefined && value[key] !== null) thinking[key] = value[key];
+  }
+  return thinking;
+}
+
+/**
+ * Nested values each model class reads as objects. A value of the wrong shape is dropped rather
+ * than passed on.
  */
 const NESTED_SHAPE_CHECKS: Record<LangChainModelClass, Record<string, (value: unknown) => boolean>> = {
   openai: { logitBias: isPlainObject },
-  anthropic: {
-    outputConfig: isPlainObject,
-    thinking: (value) => isPlainObject(value) && typeof value.type === 'string',
-  },
+  anthropic: { outputConfig: isPlainObject },
   bedrock: { performanceConfig: isPlainObject },
 };
 
@@ -161,6 +191,11 @@ export function modelConstructorParameters(
   const picked = pickForwardedModelParameters(camelized, FORWARDED_KEYS[modelClass]);
   for (const [key, isWellFormed] of Object.entries(NESTED_SHAPE_CHECKS[modelClass])) {
     if (picked[key] !== undefined && !isWellFormed(picked[key])) delete picked[key];
+  }
+  if (modelClass === 'anthropic' && picked.thinking !== undefined) {
+    const thinking = toAnthropicThinking(picked.thinking);
+    if (thinking) picked.thinking = thinking;
+    else delete picked.thinking;
   }
   return picked;
 }

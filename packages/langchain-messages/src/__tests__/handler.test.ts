@@ -1461,12 +1461,15 @@ describe('model source', () => {
     const cfg = {
       ...parameterized,
       provider: { name: 'Anthropic' },
-      model: { name: 'claude-sonnet-4-5', parameters: { temperature: 0.1, thinking: { type: 'enabled' } } },
+      model: {
+        name: 'claude-sonnet-4-5',
+        parameters: { temperature: 0.1, thinking: { type: 'enabled', budget_tokens: 1024 } },
+      },
     };
     await createLangChainHandler()(cfg as any, 'q');
     expect(ChatAnthropic).toHaveBeenCalledWith({
       temperature: 0.1,
-      thinking: { type: 'enabled' },
+      thinking: { type: 'enabled', budget_tokens: 1024 },
       model: 'claude-sonnet-4-5',
     });
   });

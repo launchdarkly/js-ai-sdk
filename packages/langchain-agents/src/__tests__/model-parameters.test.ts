@@ -135,10 +135,26 @@ describe('modelConstructorParameters', () => {
   it.each([
     ['anthropic', 'thinking', 'enabled'],
     ['anthropic', 'thinking', { budget_tokens: 1024 }],
+    ['anthropic', 'thinking', { type: 'enabled' }],
+    ['anthropic', 'thinking', { type: 'on', budget_tokens: 1024 }],
     ['anthropic', 'output_config', 'high'],
     ['openai', 'logit_bias', [1, 2]],
     ['bedrock', 'performance_config', 'optimized'],
   ] as const)('drops a malformed nested value for %s: %s = %j', (modelClass, key, value) => {
     expect(modelConstructorParameters({ [key]: value, temperature: 0.1 }, modelClass)).toEqual({ temperature: 0.1 });
+  });
+
+  it.each([
+    [
+      { type: 'enabled', budget_tokens: 1024, x: 1 },
+      { type: 'enabled', budget_tokens: 1024 },
+    ],
+    [
+      { type: 'adaptive', display: 'omitted' },
+      { type: 'adaptive', display: 'omitted' },
+    ],
+    [{ type: 'disabled', budget_tokens: 1 }, { type: 'disabled' }],
+  ])('keeps only the sub-keys a known ChatAnthropic thinking type takes: %j', (thinking, expected) => {
+    expect(modelConstructorParameters({ thinking }, 'anthropic')).toEqual({ thinking: expected });
   });
 });
