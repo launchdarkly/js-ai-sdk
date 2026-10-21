@@ -17,6 +17,9 @@ const WORKSPACES = ['client', 'ai-node', 'ai-otel', 'openai-messages', 'langchai
 /** Pinned to the versions reported in AIC-3370. */
 const BUNDLER_DEPS = ['webpack@5.104.1', 'webpack-cli@6.0.1', 'webpack-node-externals@3.0.0'];
 
+/** Type-checks the consumer's imports (see `typecheck`). */
+const TYPESCRIPT_DEP = 'typescript@5.9.3';
+
 export type Variant = 'externalized' | 'allowlisted';
 
 /** Workspace name -> paths inside the tarball `npm publish` would upload. */
@@ -92,7 +95,7 @@ export function createConsumer(): string {
   );
   cpSync(join(here, 'fixture'), consumerDir, { recursive: true });
 
-  runOrThrow('npm', ['install', '--no-audit', '--no-fund', ...tarballs, ...BUNDLER_DEPS], consumerDir);
+  runOrThrow('npm', ['install', '--no-audit', '--no-fund', ...tarballs, ...BUNDLER_DEPS, TYPESCRIPT_DEP], consumerDir);
 
   return consumerDir;
 }
@@ -105,6 +108,42 @@ export function bundle(variant: Variant): RunResult {
 
 export function invoke(variant: Variant): RunResult {
   return run('node', ['invoke.cjs', `./dist-${variant}/handler.js`], consumerDir);
+}
+
+/** `moduleResolution` modes paired with the `module` setting each requires. */
+export const RESOLUTION_MODES = {
+  node10: 'commonjs',
+  node16: 'node16',
+  bundler: 'esnext',
+} as const;
+
+export type ResolutionMode = keyof typeof RESOLUTION_MODES;
+
+/**
+ * Type-checks `types.ts` against the installed tarballs' declarations. Runs the consumer's own
+ * `tsc` rather than `npx`, whose npm config warnings would land in stderr. `--listFiles` prints
+ * every file the program loaded, so a caller can check where each declaration came from.
+ */
+export function typecheck(mode: ResolutionMode): RunResult {
+  return run(
+    'node',
+    [
+      join('node_modules', 'typescript', 'bin', 'tsc'),
+      '--noEmit',
+      '--listFiles',
+      // Only the consumer's own `@types`, not those of every ancestor `node_modules`.
+      '--typeRoots',
+      join('node_modules', '@types'),
+      '--strict',
+      '--skipLibCheck',
+      '--module',
+      RESOLUTION_MODES[mode],
+      '--moduleResolution',
+      mode,
+      'types.ts',
+    ],
+    consumerDir,
+  );
 }
 
 /** Runs an unbundled entry point against the installed tarballs. */

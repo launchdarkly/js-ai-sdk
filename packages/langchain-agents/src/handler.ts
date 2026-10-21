@@ -7,8 +7,9 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
-  createHandler,
+  type config,
+  configInternal,
+  createHandlerInternal,
   createRunUsage,
   endSpanOnce,
   type LDContext,
@@ -19,6 +20,7 @@ import {
   type Message,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
@@ -29,11 +31,13 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { createAgent } from 'langchain';
 import { toLangChainMessages } from './messages.js';
 import { type LangChainModelClass, modelConstructorParameters } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-langchain-agents';
 
@@ -304,7 +308,7 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
       tool(
         async (args: Record<string, unknown>) => {
           const result = await (toolHandlers[name] as (...args: unknown[]) => unknown)(args);
-          return String(result);
+          return toolResultString(result);
         },
         {
           name,
@@ -381,9 +385,18 @@ const toToolDefinitions = (configTools: Record<string, Tool> | undefined): ToolD
 /** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
 export function createLangChainAgentsHandler(
   llm?: LangChainModelSource,
+  options: ContentCaptureOptions = {},
+): ProviderHandler {
+  reportUsage('langchain-agents.createLangChainAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createLangChainAgentsHandlerInternal(llm, options);
+}
+
+/** `createLangChainAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createLangChainAgentsHandlerInternal(
+  llm?: LangChainModelSource,
   { captureContent = false }: ContentCaptureOptions = {},
 ): ProviderHandler {
-  return createHandler(
+  return createHandlerInternal(
     ['*', 'agent'],
     async (
       config: AiConfigRep,
@@ -569,9 +582,11 @@ export const langchainAgents = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createLangChainAgentsHandler(undefined, { captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+) => {
+  reportUsage('langchain-agents.langchainAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createLangChainAgentsHandlerInternal(undefined, { captureContent }),
+  }).invoke(userInput, context, variables);
+};

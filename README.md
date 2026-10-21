@@ -558,7 +558,7 @@ When running inside `graph()`, every node's events carry the graph key, tool inv
 
 ### Optional peer dependencies
 
-The OpenTelemetry SDK packages are **optional peer dependencies** of `@launchdarkly/ai-server`, detected at runtime via dynamic import. `@launchdarkly/node-server-sdk` is an optional peer dependency of `@launchdarkly/ai-server` but a **hard dependency** of `@launchdarkly/ai-node`.
+The OpenTelemetry SDK packages are **optional peer dependencies** of `@launchdarkly/ai-server`, detected at runtime via dynamic import. Install `@launchdarkly/ai-otel` to get all of them in one step. `@launchdarkly/node-server-sdk` is an optional peer dependency of `@launchdarkly/ai-server` but a **hard dependency** of `@launchdarkly/ai-node`.
 
 **`@launchdarkly/node-server-sdk`:**
 - **Via `@launchdarkly/ai-node`:** Always present — `initClient(options?)` auto-discovers it with no extra configuration.
@@ -566,7 +566,7 @@ The OpenTelemetry SDK packages are **optional peer dependencies** of `@launchdar
 
 **OTel SDK packages** (`sdk-trace-node`, `exporter-trace-otlp-http`, etc.):
 - **If installed:** `initClient()` sets up a `NodeTracerProvider` with a GZIP-compressed OTLP HTTP exporter, `AsyncLocalStorageContextManager`, and W3C trace-context/baggage propagators — no code changes needed.
-- **If not installed:** `initClient()` emits a single `console.warn` with the install command and continues. Feature flags and AI calls work normally; spans become no-ops.
+- **If not installed:** `initClient()` emits a single `console.warn` with the install command (`npm install @launchdarkly/ai-otel`) and continues. Feature flags and AI calls work normally; spans become no-ops.
 
 See [§1. Install](#1-install) for the exact commands.
 

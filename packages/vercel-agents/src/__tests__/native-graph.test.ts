@@ -36,6 +36,7 @@ vi.mock('ai', () => ({
 const telemetryMocks = vi.hoisted(() => ({
   track: vi.fn(),
   span: {
+    addEvent: vi.fn(),
     end: vi.fn(),
     recordException: vi.fn(),
     setAttribute: vi.fn(),
@@ -49,6 +50,17 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   return {
     ...actual,
     getClient: vi.fn(() => ({ track: telemetryMocks.track })),
+    // The real `tryGetEnvironmentId` reads the LD client's feature store, which no unit test has.
+    // Stub the environment id onto the two track-data builders so the adapter's wiring can be
+    // asserted here; the lookup itself is covered in the client package's own tests.
+    makeGraphTrackData: (graphKey: string, runId: string) => ({
+      ...actual.makeGraphTrackData(graphKey, runId),
+      environmentId: 'env-123',
+    }),
+    makeNodeTrackData: (node: any, graphKey: string, runId: string) => ({
+      ...actual.makeNodeTrackData(node, graphKey, runId),
+      environmentId: 'env-123',
+    }),
     parseTemplate: (value: string) => value,
   };
 });
@@ -307,7 +319,64 @@ describe('toVercelAgents', () => {
         '$ld:ai:tokens:total',
       ]),
     );
+    expect(names).not.toContain('$ld:ai:graph:path');
     expect(telemetryMocks.track.mock.calls.every((call) => call[1] === context)).toBe(true);
+  });
+
+  it('tags the graph span with the run identity so LaunchDarkly can link the trace to the config', async () => {
+    await toVercelAgents(Promise.resolve(makeGraph() as any), { context } as any).invoke('start');
+    expect(telemetryMocks.span.setAttribute).toHaveBeenCalledWith('launchdarkly.operation.type', 'gen_ai');
+    expect(telemetryMocks.span.setAttribute).toHaveBeenCalledWith('launchdarkly.config.key', 'vercel-native-graph');
+    expect(telemetryMocks.span.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.key', 'vercel-native-graph');
+    expect(telemetryMocks.span.setAttribute).toHaveBeenCalledWith('launchdarkly.run.id', expect.any(String));
+    expect(telemetryMocks.span.setAttribute).toHaveBeenCalledWith('launchdarkly.variation.key', expect.any(String));
+    expect(telemetryMocks.span.setAttribute).toHaveBeenCalledWith('context.contextKeys.user', 'user-1');
+    expect(telemetryMocks.span.addEvent).toHaveBeenCalledWith('feature_flag', {
+      'feature_flag.key': 'vercel-native-graph',
+      'feature_flag.provider.name': 'LaunchDarkly',
+      'feature_flag.set.id': 'env-123',
+      'feature_flag.context.id': 'user-1',
+      'feature_flag.contextKeys': '{"user":"user-1"}',
+    });
+  });
+
+  it('keys the graph-level events to the graph, not the root node', async () => {
+    await toVercelAgents(Promise.resolve(makeGraph() as any), { context } as any).invoke('start');
+    const graphEvents = telemetryMocks.track.mock.calls.filter((c: unknown[]) =>
+      ['$ld:ai:graph:invocation_success', '$ld:ai:graph:duration:total', '$ld:ai:graph:total_tokens'].includes(
+        c[0] as string,
+      ),
+    );
+    expect(graphEvents).toHaveLength(3);
+    for (const call of graphEvents) {
+      expect(call[2]).toEqual(
+        expect.objectContaining({ configKey: 'vercel-native-graph', graphKey: 'vercel-native-graph' }),
+      );
+    }
+  });
+
+  it('keys invocation_failure to the graph, not the root node', async () => {
+    aiMocks.generateImplementation = async () => {
+      throw new Error('boom');
+    };
+    await expect(toVercelAgents(Promise.resolve(makeGraph() as any), { context } as any).invoke('hi')).rejects.toThrow(
+      'boom',
+    );
+    const failures = telemetryMocks.track.mock.calls.filter(
+      (c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure',
+    );
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(
+      expect.objectContaining({ configKey: 'vercel-native-graph', graphKey: 'vercel-native-graph' }),
+    );
+  });
+
+  it('puts the environment id on every node and graph tracking event', async () => {
+    await toVercelAgents(Promise.resolve(makeGraph() as any), { context } as any).invoke('start');
+    expect(telemetryMocks.track).toHaveBeenCalled();
+    for (const call of telemetryMocks.track.mock.calls) {
+      expect(call[2]).toEqual(expect.objectContaining({ environmentId: 'env-123' }));
+    }
   });
 
   it('emits no LaunchDarkly tracking without context', async () => {
@@ -327,6 +396,28 @@ describe('toVercelAgents', () => {
     expect(telemetryMocks.span.recordException).toHaveBeenCalledWith(error);
     expect(telemetryMocks.span.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
     expect(telemetryMocks.span.end).toHaveBeenCalledOnce();
+  });
+
+  it('records a setup error on the graph span, tracks it as a failure, and ends the span once', async () => {
+    const modelFactory = () => {
+      throw new Error('model boom');
+    };
+    await expect(
+      toVercelAgents(Promise.resolve(makeGraph() as any), { context, modelFactory } as any).invoke('hi'),
+    ).rejects.toThrow('model boom');
+    expect(aiMocks.agents).toHaveLength(0);
+    expect(telemetryMocks.span.end).toHaveBeenCalledOnce();
+    expect(telemetryMocks.span.recordException).toHaveBeenCalledOnce();
+    expect(telemetryMocks.span.recordException).toHaveBeenCalledWith(expect.any(Error));
+    expect(telemetryMocks.span.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR, message: 'model boom' });
+    expect(telemetryMocks.span.setStatus).not.toHaveBeenCalledWith({ code: SpanStatusCode.OK });
+    const failures = telemetryMocks.track.mock.calls.filter(
+      (c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure',
+    );
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(
+      expect.objectContaining({ configKey: 'vercel-native-graph', graphKey: 'vercel-native-graph' }),
+    );
   });
 
   it('ends the graph span when native generation is cancelled', async () => {

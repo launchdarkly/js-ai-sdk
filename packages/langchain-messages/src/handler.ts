@@ -5,8 +5,9 @@ import {
   type CanonicalTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
-  createHandler,
+  type config,
+  configInternal,
+  createHandlerInternal,
   createRunUsage,
   endSpanOnce,
   imageBlockToUrl,
@@ -21,6 +22,7 @@ import {
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
@@ -31,9 +33,11 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { type LangChainModelClass, modelConstructorParameters } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-langchain-messages';
 
@@ -327,11 +331,19 @@ const assistantOutput = (content: unknown, toolCalls: ReadonlyArray<unknown> | u
 /** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
 export function createLangChainHandler(
   llm?: LangChainModelSource,
+  options: ContentCaptureOptions = {},
+): ProviderHandler {
+  reportUsage('langchain-messages.createLangChainHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createLangChainHandlerInternal(llm, options);
+}
+
+function createLangChainHandlerInternal(
+  llm?: LangChainModelSource,
   { captureContent = false }: ContentCaptureOptions = {},
 ): ProviderHandler {
   const MAX_STEPS = 10;
 
-  return createHandler(
+  return createHandlerInternal(
     ['*', 'messages'],
     async (
       config: AiConfigRep,
@@ -484,7 +496,7 @@ export function createLangChainHandler(
                   setToolCallContentAttributes(toolSpan, captureContent, { result });
                   toolSpan.setStatus({ code: SpanStatusCode.OK });
                   toolSpan.end();
-                  return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: String(result) });
+                  return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: toolResultString(result) });
                 } catch (err) {
                   failSpan(toolSpan, err);
                   throw err;
@@ -688,7 +700,7 @@ export function createLangChainHandler(
                 setToolCallContentAttributes(toolSpan, captureContent, { result });
                 toolSpan.setStatus({ code: SpanStatusCode.OK });
                 toolSpan.end();
-                return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: String(result) });
+                return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: toolResultString(result) });
               } catch (err) {
                 failSpan(toolSpan, err);
                 throw err;
@@ -745,9 +757,11 @@ export const langchainMessages = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createLangChainHandler(undefined, { captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+) => {
+  reportUsage('langchain-messages.langchainMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createLangChainHandlerInternal(undefined, { captureContent }),
+  }).invoke(userInput, context, variables);
+};

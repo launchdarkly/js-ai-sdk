@@ -6,8 +6,9 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
-  createHandler,
+  type config,
+  configInternal,
+  createHandlerInternal,
   endSpanOnce,
   isContentBlocks,
   type LDContext,
@@ -18,6 +19,7 @@ import {
   type ProviderHandler,
   parseTemplate,
   pickForwardedModelParameters,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   setInputContentAttributes,
@@ -28,9 +30,11 @@ import {
   setUsageSpanAttributes,
   type Tool,
   type ToolDefinitionInput,
+  toolResultString,
   toSemconvFinishReason,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-claude-messages';
 
@@ -408,6 +412,11 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
 const MAX_STEPS = 10;
 
 export function createClaudeMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+  reportUsage('claude-messages.createClaudeMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createClaudeMessagesHandlerInternal({ captureContent });
+}
+
+function createClaudeMessagesHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   const anthropic = new Anthropic();
 
   async function runToolLoop(
@@ -496,7 +505,7 @@ export function createClaudeMessagesHandler({ captureContent = false }: ContentC
               setToolCallContentAttributes(toolSpan, captureContent, { result });
               toolSpan.setStatus({ code: SpanStatusCode.OK });
               toolSpan.end();
-              return { type: 'tool_result' as const, tool_use_id: toolUse.id, content: String(result) };
+              return { type: 'tool_result' as const, tool_use_id: toolUse.id, content: toolResultString(result) };
             } catch (err) {
               failSpan(toolSpan, err);
               throw err;
@@ -508,7 +517,7 @@ export function createClaudeMessagesHandler({ captureContent = false }: ContentC
     return { output, usage };
   }
 
-  return createHandler(
+  return createHandlerInternal(
     ['Anthropic', 'messages'],
     async (
       config: AiConfigRep,
@@ -664,7 +673,7 @@ export function createClaudeMessagesHandler({ captureContent = false }: ContentC
                   setToolCallContentAttributes(toolSpan, captureContent, { result });
                   toolSpan.setStatus({ code: SpanStatusCode.OK });
                   toolSpan.end();
-                  return { type: 'tool_result' as const, tool_use_id: toolUse.id, content: String(result) };
+                  return { type: 'tool_result' as const, tool_use_id: toolUse.id, content: toolResultString(result) };
                 } catch (err) {
                   failSpan(toolSpan, err);
                   throw err;
@@ -720,9 +729,11 @@ export const claudeMessages = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createClaudeMessagesHandler({ captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+) => {
+  reportUsage('claude-messages.claudeMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createClaudeMessagesHandlerInternal({ captureContent }),
+  }).invoke(userInput, context, variables);
+};

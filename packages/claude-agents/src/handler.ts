@@ -1,4 +1,12 @@
-import { createSdkMcpServer, type HookInput, query, type SDKUserMessage, tool } from '@anthropic-ai/claude-agent-sdk';
+import {
+  createSdkMcpServer,
+  type HookInput,
+  query,
+  type SDKResultMessage,
+  type SDKResultSuccess,
+  type SDKUserMessage,
+  tool,
+} from '@anthropic-ai/claude-agent-sdk';
 import {
   type AiConfigRep,
   addCachedTokensToInput,
@@ -6,9 +14,10 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
+  type config,
+  configInternal,
   contentToText,
-  createHandler,
+  createHandlerInternal,
   endSpanOnce,
   type LDContext,
   type Message,
@@ -17,6 +26,7 @@ import {
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   setConversationIdIfAbsent,
@@ -30,11 +40,13 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
   toSemconvFinishReason,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
 import { buildModelParameterQueryOptions } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TOOL_MCP_NAME = 'tool-mcp';
 const MCP_TOOL_PREFIX = `mcp__${TOOL_MCP_NAME}__`;
@@ -334,7 +346,10 @@ class InferenceSpans {
   /** Feed every message of the run, in order. */
   record(message: { type: string }): void {
     if (message.type === 'assistant') {
-      this.absorb(message as AssistantResponse);
+      // Not a model response, so no span, no turn in the conversation and no usage. It can share
+      // the real response's `request_id`, which would otherwise append the error text to that
+      // response's output.
+      if (!isSynthetic(message as AssistantResponse)) this.absorb(message as AssistantResponse);
       return;
     }
     if (message.type === 'user') this.absorbUserTurn(message as UserTurn);
@@ -530,16 +545,41 @@ function failSpan(span: Span, error: unknown, endedSpans?: Set<Span>): void {
 }
 
 /**
- * Builds the error for a non-success result message.
+ * Throws when a `result` message reports a failed run, and narrows it to a success otherwise.
  *
- * `SDKResultError` has no `result` field, so the old `'result' in message` gate never matched one:
- * the loop simply ended, the run was reported OK with zeroed usage, and the real token spend and
- * `errors` were discarded. A run that hit `error_max_turns` or `error_max_budget_usd` genuinely
- * failed and has to surface as a failure.
+ * Two shapes fail. A non-`success` subtype is `SDKResultError`, which has no `result` field, so the
+ * old `'result' in message` gate never matched one: the loop simply ended, the run was reported OK
+ * with zeroed usage, and the real token spend and `errors` were discarded. A run that hit
+ * `error_max_turns` or `error_max_budget_usd` genuinely failed and has to surface as a failure.
+ *
+ * The other is a `success` subtype with `is_error` set, which is how the CLI reports a failed
+ * Anthropic API call. Measured against Agent SDK 0.3.220 with a key that had no credits: the run
+ * ends `success`, `is_error: true`, `api_error_status` set, and the error text in `result` — so a
+ * caller was handed "Credit balance is too low" as the model's answer. `is_error` is the test the
+ * agent SDK applies itself; it raises after the result, but this handler stops reading first.
  */
-function resultError(subtype: string, errors: ReadonlyArray<string> | undefined): Error {
-  const detail = errors?.length ? `: ${errors.join('; ')}` : '';
-  return new Error(`Claude agent run ended with ${subtype}${detail}`);
+export function assertRunSucceeded(message: SDKResultMessage): asserts message is SDKResultSuccess {
+  if (message.subtype !== 'success') {
+    const detail = message.errors?.length ? `: ${message.errors.join('; ')}` : '';
+    throw new Error(`Claude agent run ended with ${message.subtype}${detail}`);
+  }
+  if (message.is_error !== true) return;
+  const status = typeof message.api_error_status === 'number' ? ` (HTTP ${message.api_error_status})` : '';
+  const detail = message.result ? `: ${message.result}` : '';
+  throw new Error(`Claude agent run ended with an error result${status}${detail}`);
+}
+
+/**
+ * Whether an assistant message is one the CLI wrote itself rather than one the model returned.
+ *
+ * Measured against Agent SDK 0.3.220: a failed API call surfaces as an assistant message whose
+ * `model` is the literal `<synthetic>`, whose content is the error text and whose usage is zero, and
+ * the CLI emits the same after a response stops at `max_output_tokens`. Keyed on `model` rather than
+ * on the message's `error` field because the latter is set on both, and only the run's `result`
+ * says whether the run failed.
+ */
+function isSynthetic(message: AssistantResponse): boolean {
+  return message.message?.model === '<synthetic>';
 }
 
 /**
@@ -673,7 +713,7 @@ export const buildToolMCP = async (configTools: Record<string, Tool>, handlers: 
           throw new Error(`No handler registered for tool "${toolName}"`);
         }
         const result = await (handler as (...args: unknown[]) => unknown)(...args);
-        return { content: [{ type: 'text' as const, text: String(result) }] };
+        return { content: [{ type: 'text' as const, text: toolResultString(result) }] };
       },
     );
   });
@@ -921,7 +961,15 @@ function buildQueryOptions(
 }
 
 export function createClaudeAgentsHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  return createHandler(
+  reportUsage('claude-agents.createClaudeAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createClaudeAgentsHandlerInternal({ captureContent });
+}
+
+/** `createClaudeAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createClaudeAgentsHandlerInternal({
+  captureContent = false,
+}: ContentCaptureOptions = {}): ProviderHandler {
+  return createHandlerInternal(
     ['Anthropic', 'agent'],
     async (
       config: AiConfigRep,
@@ -1007,9 +1055,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
               // The CLI's own run-level total is authoritative, so the catch below must not
               // overwrite it with the summed-per-response figure on the error-result path.
               rootUsageWritten = true;
-              if (message.subtype !== 'success') {
-                throw resultError(message.subtype, message.errors);
-              }
+              assertRunSucceeded(message);
               setOutputContentAttributes(span, captureContent, [
                 {
                   role: 'assistant',
@@ -1148,9 +1194,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
             finishRootSpan(span, config, rawUsage);
             // Authoritative: the paths below must not overwrite it with the per-response sum.
             rootUsageWritten = true;
-            if (message.subtype !== 'success') {
-              throw resultError(message.subtype, message.errors);
-            }
+            assertRunSucceeded(message);
             setOutputContentAttributes(span, captureContent, [
               // biome-ignore lint/suspicious/noExplicitAny: Claude SDK result field is not typed publicly
               { role: 'assistant', parts: [{ type: 'text', content: (message as any).result ?? fullOutput }] },
@@ -1222,9 +1266,11 @@ export const claudeAgents = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createClaudeAgentsHandler({ captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+) => {
+  reportUsage('claude-agents.claudeAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createClaudeAgentsHandlerInternal({ captureContent }),
+  }).invoke(userInput, context, variables);
+};

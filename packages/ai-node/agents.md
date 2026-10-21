@@ -21,6 +21,7 @@ For edge runtimes (Vercel, Cloudflare Workers, Deno, etc.) use `@launchdarkly/ai
 | File | Responsibility |
 |---|---|
 | `src/index.ts` | Single `export * from '@launchdarkly/ai-server'` — the entire public barrel |
+| `src/experimental.ts` | Single `export * from '@launchdarkly/ai-server/experimental'` — published as `@launchdarkly/ai-node/experimental`, so Node.js users reach experimental features (Agent Skills) without a direct `@launchdarkly/ai-server` dependency |
 
 ---
 
@@ -32,7 +33,7 @@ This package re-exports everything from `@launchdarkly/ai-server` and nothing el
 export * from '@launchdarkly/ai-server';
 ```
 
-Every symbol available from `@launchdarkly/ai-server` is available from `@launchdarkly/ai-node` under the same name. No additional symbols are added. When `@launchdarkly/ai-server` gains a new export, this package automatically picks it up.
+Every symbol available from `@launchdarkly/ai-server` is available from `@launchdarkly/ai-node` under the same name, and every symbol from `@launchdarkly/ai-server/experimental` is available from `@launchdarkly/ai-node/experimental`. No additional symbols are added. When `@launchdarkly/ai-server` gains a new export, this package automatically picks it up.
 
 ---
 

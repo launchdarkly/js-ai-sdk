@@ -53,7 +53,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
     ...actual,
-    config: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
+    configInternal: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
   };
 });
 
@@ -766,7 +766,7 @@ describe('createClaudeMessagesHandler', () => {
 
   it('claudeMessages calls config() with the correct handler and forwards args', async () => {
     const { claudeMessages } = await import('../handler.js');
-    const { config } = await import('@launchdarkly/ai-server');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
     const ctx = { kind: 'user' as const, key: 'u' };
     await claudeMessages('my-flag', 'hello', ctx, {} as any);
     expect(config).toHaveBeenCalledWith(

@@ -29,3 +29,5 @@ tmp/
 integration-tests/**/.staging/
 
 .claude/
+# API Extractor working files
+packages/client/temp/
