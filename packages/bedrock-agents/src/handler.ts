@@ -3,14 +3,15 @@ import {
   type AiConfigRep,
   addCachedTokensToInput,
   type ContentCaptureOptions,
-  config,
-  createHandler,
+  configInternal,
+  createHandlerInternal,
   endSpanOnce,
   type LDContext,
   type Message,
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   setInputContentAttributes,
@@ -36,6 +37,7 @@ import {
   type ModelStreamUpdateEvent,
   tool,
 } from '@strands-agents/sdk';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-bedrock-agents';
 
@@ -381,8 +383,14 @@ function finishRoot(root: Span, modelId: string, usage: RawUsage, output: string
 }
 
 export function createBedrockAgentsHandler(options: BedrockAgentsHandlerOptions = {}): ProviderHandler {
+  reportUsage('bedrock-agents.createBedrockAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createBedrockAgentsHandlerInternal(options);
+}
+
+/** @internal Builds the handler without reporting helper usage. */
+export function createBedrockAgentsHandlerInternal(options: BedrockAgentsHandlerOptions = {}): ProviderHandler {
   const captureContent = options.captureContent ?? false;
-  return createHandler(
+  return createHandlerInternal(
     ['Bedrock', 'agent'],
     async (config, userInput = '', toolHandlers = {}, variables = {}, history) =>
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (root) => {
@@ -488,13 +496,14 @@ export const bedrockAgents = (
     modelOptions: optionsForModel,
     variables,
     ...options
-  }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
+  }: Omit<Parameters<typeof configInternal>[0], 'handler' | 'key'> &
     BedrockAgentsHandlerOptions & { variables?: Record<string, unknown> } = {},
-) =>
-  config({
+) => {
+  reportUsage('bedrock-agents.bedrockAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
     ...options,
     key: configKey,
-    handler: createBedrockAgentsHandler({
+    handler: createBedrockAgentsHandlerInternal({
       captureContent,
       client,
       apiKey,
@@ -502,3 +511,4 @@ export const bedrockAgents = (
       modelOptions: optionsForModel,
     }),
   }).invoke(userInput, contextValue, variables);
+};

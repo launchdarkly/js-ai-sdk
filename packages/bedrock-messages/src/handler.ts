@@ -16,14 +16,15 @@ import {
   type AiConfigRep,
   addCachedTokensToInput,
   type ContentCaptureOptions,
-  config,
-  createHandler,
+  configInternal,
+  createHandlerInternal,
   endSpanOnce,
   type LDContext,
   type Message,
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   setInputContentAttributes,
@@ -38,6 +39,7 @@ import {
   toSemconvFinishReason,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-bedrock-messages';
 const MAX_STEPS = 10;
@@ -360,10 +362,16 @@ async function executeTools(
 }
 
 export function createBedrockMessagesHandler(options: BedrockMessagesHandlerOptions = {}): ProviderHandler {
+  reportUsage('bedrock-messages.createBedrockMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createBedrockMessagesHandlerInternal(options);
+}
+
+/** @internal Builds the handler without reporting helper usage. */
+export function createBedrockMessagesHandlerInternal(options: BedrockMessagesHandlerOptions = {}): ProviderHandler {
   const client = createClient(options);
   const captureContent = options.captureContent ?? false;
 
-  return createHandler(
+  return createHandlerInternal(
     ['Bedrock', 'messages'],
     async (config, userInput = '', toolHandlers = {}, variables = {}, history) =>
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (root) => {
@@ -533,11 +541,13 @@ export const bedrockMessages = (
     converseOptions,
     variables,
     ...options
-  }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
+  }: Omit<Parameters<typeof configInternal>[0], 'handler' | 'key'> &
     BedrockMessagesHandlerOptions & { variables?: Record<string, unknown> } = {},
-) =>
-  config({
+) => {
+  reportUsage('bedrock-messages.bedrockMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
     ...options,
     key: configKey,
-    handler: createBedrockMessagesHandler({ captureContent, client, apiKey, region, converseOptions }),
+    handler: createBedrockMessagesHandlerInternal({ captureContent, client, apiKey, region, converseOptions }),
   }).invoke(userInput, contextValue, variables);
+};
