@@ -252,7 +252,7 @@ describe('createLiteLLMAgentsHandler', () => {
     expect(agentArgs[0].modelSettings).toEqual({ maxTokens: 250, temperature: 0.1 });
   });
 
-  it('maps verbosity to text.verbosity and keeps only effort and summary under reasoning', async () => {
+  it('maps verbosity to text.verbosity and keeps only effort under reasoning', async () => {
     mockRun.mockResolvedValue(result());
     await createLiteLLMAgentsHandler({ client: {} as never })(
       {
@@ -272,7 +272,7 @@ describe('createLiteLLMAgentsHandler', () => {
       'q',
     );
     expect(agentArgs[0].modelSettings).toEqual({
-      reasoning: { effort: 'high', summary: 'auto' },
+      reasoning: { effort: 'high' },
       text: { verbosity: 'low' },
     });
   });

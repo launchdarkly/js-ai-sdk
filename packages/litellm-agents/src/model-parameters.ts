@@ -67,7 +67,8 @@ function pickNested(value: unknown, keys: ReadonlyArray<string>): Record<string,
  * `config.model.parameters` as the Agents SDK's `ModelSettings`: camelized, narrowed to
  * `FORWARDED_MODEL_SETTINGS_KEYS`, with nested values rebuilt in the shapes the SDK reads:
  *
- * - `reasoning` keeps `effort` and `summary`.
+ * - `reasoning` keeps `effort`, which the Chat Completions model sends as `reasoning_effort`. It has
+ *   no field for `summary` and drops it, so `summary` is not forwarded.
  * - `text` keeps `verbosity`. A top-level `verbosity` (the name the UI and the Python SDK use)
  *   becomes `text.verbosity`; an explicit `text.verbosity` wins.
  * - `toolChoice` is a string (`auto`, `required`, `none`, or a tool name); any other value is
@@ -82,7 +83,7 @@ export function buildModelSettings(
   const camelized = camelizeModelParameters(normalizeModelParameters(parameters));
   const settings = pickForwardedModelParameters(camelized, FORWARDED_MODEL_SETTINGS_KEYS);
 
-  const reasoning = pickNested(settings.reasoning, ['effort', 'summary']);
+  const reasoning = pickNested(settings.reasoning, ['effort']);
   if (reasoning) settings.reasoning = reasoning;
   else delete settings.reasoning;
 
