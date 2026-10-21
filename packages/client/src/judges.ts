@@ -1,5 +1,6 @@
 import { withJudgeEvaluation } from './conversation.js';
 import { extractVariation, getClient } from './lifecycle.js';
+import { reportUsage } from './sdk-usage.js';
 import { executeAndTrack } from './tracking.js';
 import type {
   AiConfigRep,
@@ -266,6 +267,16 @@ export const runJudges = async ({
   return judgeResults;
 };
 
+type BuildJudgeTasksArgs = {
+  config: AiConfigRep;
+  userContext: LDContext;
+  handler: ProviderHandler;
+  handlers?: ProviderHandler[];
+  llmResponse: string;
+  baseTrackData: TrackData;
+  userInput?: string;
+};
+
 /**
  * Resolves all judges configured on `config.judgeConfiguration` into
  * serialisable {@link JudgeTask} objects without executing any AI calls.
@@ -278,7 +289,18 @@ export const runJudges = async ({
  *   causes them to be skipped are excluded from the array.
  * - Returns an empty array when no active judges are configured.
  */
-export const buildJudgeTasks = async ({
+export const buildJudgeTasks = async (args: BuildJudgeTasksArgs): Promise<JudgeTask[]> => {
+  reportUsage('client.buildJudgeTasks');
+  return buildJudgeTasksInternal(args);
+};
+
+/**
+ * {@link buildJudgeTasks} without the `$ld:ai:sdk:usage` report. `config().invoke`
+ * with `skipJudges` calls this.
+ *
+ * @internal
+ */
+export const buildJudgeTasksInternal = async ({
   config,
   userContext,
   handler,
@@ -286,15 +308,7 @@ export const buildJudgeTasks = async ({
   llmResponse,
   baseTrackData,
   userInput,
-}: {
-  config: AiConfigRep;
-  userContext: LDContext;
-  handler: ProviderHandler;
-  handlers?: ProviderHandler[];
-  llmResponse: string;
-  baseTrackData: TrackData;
-  userInput?: string;
-}): Promise<JudgeTask[]> => {
+}: BuildJudgeTasksArgs): Promise<JudgeTask[]> => {
   const judges = config.judgeConfiguration?.judges ?? [];
   const hasActiveJudge = judges.some((j: { samplingRate: number }) => j.samplingRate > 0);
   if (judges.length === 0 || !hasActiveJudge) return [];
@@ -361,6 +375,7 @@ export const buildJudgeTasks = async ({
  * parsed as `{ score, reasoning }`.
  */
 export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Promise<JudgeRunResult | null> => {
+  reportUsage('client.runJudge');
   const {
     judgeConfig,
     judgeMeta,

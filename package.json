@@ -16,7 +16,7 @@
     "test:integration": "vitest run integration-tests/commonjs-webpack/commonjs-webpack.test.ts",
     "typecheck": "yarn workspaces run typecheck",
     "format": "biome format --write .",
-    "format:check": "biome format --check .",
+    "format:check": "biome format .",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "code:check": "biome check .",

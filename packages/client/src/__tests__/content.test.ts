@@ -8,6 +8,7 @@ import {
   setToolCallContentAttributes,
   setToolDefinitionAttributes,
   textMessage,
+  toolResultString,
   toSemconvFinishReason,
 } from '../content.js';
 
@@ -335,5 +336,23 @@ describe('toSemconvFinishReason', () => {
     expect(toSemconvFinishReason(undefined)).toBeUndefined();
     expect(toSemconvFinishReason(null)).toBeUndefined();
     expect(toSemconvFinishReason('')).toBeUndefined();
+  });
+});
+
+describe('toolResultString', () => {
+  it('passes a string through, maps null/undefined to empty, and JSON-encodes the rest', () => {
+    expect(toolResultString('plain')).toBe('plain');
+    expect(toolResultString(null)).toBe('');
+    expect(toolResultString(undefined)).toBe('');
+    expect(toolResultString({ temp: 72, city: 'Zürich' })).toBe('{"temp":72,"city":"Zürich"}');
+    expect(toolResultString([1, 'two'])).toBe('[1,"two"]');
+    expect(toolResultString(3)).toBe('3');
+  });
+
+  it('falls back to String() for a value JSON cannot encode', () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(toolResultString(cyclic)).toBe('[object Object]');
+    expect(toolResultString(10n)).toBe('10');
   });
 });

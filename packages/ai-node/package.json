@@ -1,9 +1,9 @@
 {
   "name": "@launchdarkly/ai-node",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "Apache-2.0",
   "author": "LaunchDarkly <team@launchdarkly.com>",
-  "description": "Node.js convenience wrapper for @launchdarkly/ai-server \u2014 bundles @launchdarkly/node-server-sdk so no peer dependency setup is required",
+  "description": "Node.js convenience wrapper for @launchdarkly/ai-server — bundles @launchdarkly/node-server-sdk so no peer dependency setup is required",
   "repository": {
     "type": "git",
     "url": "https://github.com/launchdarkly/js-ai-sdk.git",
@@ -27,6 +27,13 @@
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "experimental": [
+        "dist/experimental.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "import": {
@@ -36,6 +43,16 @@
       "require": {
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
+      }
+    },
+    "./experimental": {
+      "import": {
+        "types": "./dist/experimental.d.ts",
+        "default": "./dist/experimental.js"
+      },
+      "require": {
+        "types": "./dist/experimental.d.cts",
+        "default": "./dist/experimental.cjs"
       }
     }
   },
@@ -51,7 +68,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@launchdarkly/ai-server": "*",
+    "@launchdarkly/ai-server": "^0.4.0",
     "@launchdarkly/node-server-sdk": "^9.7.3"
   },
   "devDependencies": {

@@ -4,14 +4,16 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
-  createHandler,
+  type config,
+  configInternal,
+  createHandlerInternal,
   type LDContext,
   type Message,
   type MessageContent,
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -36,6 +38,7 @@ import {
 } from 'ai';
 import { gatewayModelId } from './model-id.js';
 import { buildModelParameterOptions } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-vercel-agents';
 const MAX_STEPS = 10;
@@ -260,8 +263,14 @@ async function buildAgent(
 }
 
 export function createVercelAgentsHandler(options: VercelAgentsOptions = {}): ProviderHandler {
+  reportUsage('vercel-agents.createVercelAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createVercelAgentsHandlerInternal(options);
+}
+
+/** `createVercelAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createVercelAgentsHandlerInternal(options: VercelAgentsOptions = {}): ProviderHandler {
   const { captureContent = false } = options;
-  return createHandler(
+  return createHandlerInternal(
     ['*', 'agent'],
     async (configRep, userInput = '', toolHandlers = {}, variables = {}, history) =>
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (rootSpan) => {
@@ -385,9 +394,11 @@ export const vercelAgents = (
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     VercelAgentsOptions & { variables?: Record<string, unknown> } = {},
-) =>
-  config({
+) => {
+  reportUsage('vercel-agents.vercelAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
     ...options,
     key: configKey,
-    handler: createVercelAgentsHandler({ captureContent, model, modelFactory }),
+    handler: createVercelAgentsHandlerInternal({ captureContent, model, modelFactory }),
   }).invoke(userInput, context, variables);
+};

@@ -4,9 +4,10 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
+  type config,
+  configInternal,
   contentToText,
-  createHandler,
+  createHandlerInternal,
   endSpanOnce,
   imageBlockToUrl,
   type LDContext,
@@ -15,6 +16,7 @@ import {
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   type SpanUsage,
@@ -27,6 +29,7 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
 } from '@launchdarkly/ai-server';
 import type {
   Model,
@@ -41,6 +44,7 @@ import { Agent, Runner, tool } from '@openai/agents';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { buildMaxTurns, buildModelSettings } from './model-parameters.js';
 import { buildOutputType } from './utils.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-openai-agents';
 
@@ -464,10 +468,12 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
         strict: false,
         // biome-ignore lint/suspicious/noExplicitAny: OpenAI Agents SDK tool parameters type does not accept Record<string, unknown>
         parameters: toolConfig.parameters as any,
+        // null, not undefined: the SDK default feeds a tool error back to the model; the spec (TESTING.md §1.4) says it must propagate.
+        errorFunction: null,
         execute: async (args) => {
           const handler = toolHandlers[name] as (...args: unknown[]) => unknown;
           const result = await handler(args);
-          return String(result);
+          return toolResultString(result);
         },
       }),
     );
@@ -593,7 +599,15 @@ function promptToSpanMessages(prompt: string | OpenAIInputItem[]): SpanMessage[]
 }
 
 export function createOpenAIAgentHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  return createHandler(
+  reportUsage('openai-agents.createOpenAIAgentHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createOpenAIAgentHandlerInternal({ captureContent });
+}
+
+/** `createOpenAIAgentHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createOpenAIAgentHandlerInternal({
+  captureContent = false,
+}: ContentCaptureOptions = {}): ProviderHandler {
+  return createHandlerInternal(
     ['OpenAI', 'agent'],
     async (
       config: AiConfigRep,
@@ -780,9 +794,11 @@ export const openaiAgents = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createOpenAIAgentHandler({ captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+) => {
+  reportUsage('openai-agents.openaiAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createOpenAIAgentHandlerInternal({ captureContent }),
+  }).invoke(userInput, context, variables);
+};
