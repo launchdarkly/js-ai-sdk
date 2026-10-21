@@ -14,12 +14,7 @@ import type {
   TrackData,
   VariationMeta,
 } from './types.js';
-import {
-  collapseMessagesToInstructions,
-  normalizeMode,
-  omitModelStamps,
-  parseJSONWithPossibleFences,
-} from './utils.js';
+import { collapseMessagesToInstructions, normalizeMode, parseJSONWithPossibleFences } from './utils.js';
 
 /**
  * Resolves a judge's own AI Config, returning `null` instead of throwing when it
@@ -341,11 +336,7 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
   const messageHistory = [actualOutput, FORMATTING_INSTRUCTIONS].join('\n\n');
 
   return withJudgeEvaluation(configKey, async (recordEvaluation) => {
-    const {
-      usage,
-      response: rawResponse,
-      trackData,
-    } = await executeAndTrack({
+    const { usage, response: rawResponse } = await executeAndTrack({
       configKey,
       config: effectiveConfig,
       meta: judgeMeta,
@@ -371,9 +362,8 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
       score,
       response: reasoning,
       usage,
-      // A judge without a pinned model config must not inherit the parent's
-      // modelKey / modelVersion; other parent-only keys (graphKey, ...) still carry over.
-      trackData: { ...omitModelStamps(parentTrackData), ...trackData, judgeConfigKey: configKey },
+      // The score belongs to the evaluated (parent) config, exactly as in the inline path.
+      trackData: { ...parentTrackData, judgeConfigKey: configKey },
     };
   });
 };
