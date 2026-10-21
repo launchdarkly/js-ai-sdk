@@ -40,6 +40,7 @@ on:
           - packages/langchain-messages
           - packages/vercel-agents
           - packages/vercel-messages
+          - packages/google-adk-agents
       prerelease:
         description: 'Is this a prerelease. If so, then the latest tag will not be updated in npm.'
         type: boolean
@@ -84,6 +85,8 @@ jobs:
       package-vercel-agents-tag-name: ${{ steps.release.outputs['packages/vercel-agents--tag_name'] }}
       package-vercel-messages-released: ${{ steps.release.outputs['packages/vercel-messages--release_created'] }}
       package-vercel-messages-tag-name: ${{ steps.release.outputs['packages/vercel-messages--tag_name'] }}
+      package-google-adk-agents-released: ${{ steps.release.outputs['packages/google-adk-agents--release_created'] }}
+      package-google-adk-agents-tag-name: ${{ steps.release.outputs['packages/google-adk-agents--tag_name'] }}
     steps:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
@@ -362,6 +365,31 @@ jobs:
       - uses: ./.github/actions/publish
         with:
           workspace_path: packages/vercel-messages
+          prerelease: 'false'
+          dry_run: 'false'
+
+  release-google-adk-agents:
+    runs-on: ubuntu-latest
+    needs: ['release-please']
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    if: ${{ needs.release-please.outputs.package-google-adk-agents-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci
+      - uses: ./.github/actions/build
+        with:
+          workspace_path: packages/google-adk-agents
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: 'packages/google-adk-agents/*.tgz'
+      - uses: ./.github/actions/setup-release-node
+      - uses: ./.github/actions/publish
+        with:
+          workspace_path: packages/google-adk-agents
           prerelease: 'false'
           dry_run: 'false'
 

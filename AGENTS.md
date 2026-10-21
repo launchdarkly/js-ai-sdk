@@ -430,7 +430,7 @@ Requires `handlers` (either in `options` or via `options.registry`) to be set. F
 
 Resolves an agent graph's topology and node configs without executing it. The returned `GraphDefinition` carries `.enabled`; callers should branch on it before traversing. The `options` object extends `GraphOptions` with a required `context: LDContext`.
 
-This is the entrypoint that framework-native runners (`toClaudeAgents`, `toOpenAIAgents`, `toLangGraph`, `toLiteLLMAgents`) use to build their own execution structure.
+This is the entrypoint that framework-native runners (`toClaudeAgents`, `toOpenAIAgents`, `toLangGraph`, `toLiteLLMAgents`, `toAdkAgents`) use to build their own execution structure.
 
 ### `Registry` / `globalRegistry` / `compose`
 
@@ -725,7 +725,7 @@ xxx(configKey: string, userInput: string, context: LDContext, options?: Omit<Con
 
 For example, `claudeAgents(configKey, userInput, context, options)` is equivalent to `config({ ...options, key: configKey, handler: createClaudeAgentsHandler() }).invoke(userInput, context)`.
 
-The naming convention matches the package suffix: `claudeAgents`, `claudeMessages`, `openaiAgents`, `openaiMessages`, `langchainAgents`, `langchainMessages`, `vercelAgents`, `vercelMessages`.
+The naming convention matches the package suffix: `claudeAgents`, `claudeMessages`, `openaiAgents`, `openaiMessages`, `langchainAgents`, `langchainMessages`, `vercelAgents`, `vercelMessages`, `googleAdkAgents`.
 
 This is a convenience only — it is not required and must not contain any logic beyond wiring the handler.
 
@@ -739,7 +739,7 @@ xxxGraph(key, options) => { invoke(input, context, variables?): Promise<Provider
 
 For example, `claudeGraph(key, options)` is equivalent to `graph(key, { ...options, handlers: [createClaudeAgentsHandler()] })`.
 
-Naming convention: `claudeGraph`, `openaiGraph`, `langchainGraph`, `vercelGraph`, `litellmGraph`.
+Naming convention: `claudeGraph`, `openaiGraph`, `langchainGraph`, `vercelGraph`, `litellmGraph`, `googleAdkGraph`.
 
 ### Native Graph Adapter (optional)
 
@@ -751,6 +751,7 @@ Current adapters:
 - `toLangGraph(def, options)` — exported from `@launchdarkly/ai-langchain-agents`
 - `toVercelAgents(def, options)` — exported from `@launchdarkly/ai-vercel-agents`
 - `toLiteLLMAgents(def, options)` — exported from `@launchdarkly/ai-litellm-agents`
+- `toAdkAgents(def, options)` — exported from `@launchdarkly/ai-google-adk-agents`
 
 ---
 
