@@ -953,14 +953,14 @@ describe('langchainAgents — invoke() argument passthrough', () => {
 // ─── langchainGraph ───────────────────────────────────────────────────────────
 
 describe('langchainGraph', () => {
-  it('pre-binds the LangChain agent handler into graph()', async () => {
+  it('pre-binds the LangChain agent handler into graph() when options are omitted', async () => {
     const graphMock = vi.fn().mockReturnValue({ call: vi.fn() });
     vi.doMock('@launchdarkly/ai-server', async (importOriginal) => {
       const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
       return { ...actual, graphInternal: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
     });
     const { langchainGraph } = await import('../graph.js');
-    langchainGraph('graph-flag', {});
+    langchainGraph('graph-flag');
     expect(graphMock).toHaveBeenCalledWith(
       'graph-flag',
       expect.objectContaining({

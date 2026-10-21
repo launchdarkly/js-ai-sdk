@@ -10,7 +10,7 @@ import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
  */
 export const langchainGraph = (
   key: string,
-  options: Omit<GraphOptions, 'handlers'> & { providers?: readonly string[] },
+  options: Omit<GraphOptions, 'handlers'> & { providers?: readonly string[] } = {},
   llm?: BaseChatModel,
 ) => {
   reportUsage('langchain-agents.langchainGraph', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
