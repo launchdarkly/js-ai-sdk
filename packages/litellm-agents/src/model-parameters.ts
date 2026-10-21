@@ -70,6 +70,8 @@ function pickNested(value: unknown, keys: ReadonlyArray<string>): Record<string,
  * - `reasoning` keeps `effort` and `summary`.
  * - `text` keeps `verbosity`. A top-level `verbosity` (the name the UI and the Python SDK use)
  *   becomes `text.verbosity`; an explicit `text.verbosity` wins.
+ * - `toolChoice` is a string (`auto`, `required`, `none`, or a tool name); any other value is
+ *   dropped.
  *
  * `max_turns` is not a `ModelSettings` field; see `buildMaxTurns`. A config that sets none of
  * these produces `undefined`, so the Agent is constructed exactly as it always has been.
@@ -89,6 +91,8 @@ export function buildModelSettings(
   ]);
   if (text) settings.text = text;
   else delete settings.text;
+
+  if (settings.toolChoice !== undefined && typeof settings.toolChoice !== 'string') delete settings.toolChoice;
 
   return Object.keys(settings).length > 0 ? (settings as ModelSettings) : undefined;
 }

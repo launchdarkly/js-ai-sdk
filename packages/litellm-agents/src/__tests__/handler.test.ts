@@ -277,6 +277,21 @@ describe('createLiteLLMAgentsHandler', () => {
     });
   });
 
+  it.each([
+    ['auto', { temperature: 0.2, toolChoice: 'auto' }],
+    [{ type: 'function', name: 'f' }, { temperature: 0.2 }],
+  ])('forwards tool_choice %j only as a string', async (toolChoice, expected) => {
+    mockRun.mockResolvedValue(result());
+    await createLiteLLMAgentsHandler({ client: {} as never })(
+      {
+        ...baseConfig,
+        model: { name: 'proxy-alias', parameters: { tool_choice: toolChoice, temperature: 0.2 } },
+      } as never,
+      'q',
+    );
+    expect(agentArgs[0].modelSettings).toEqual(expected);
+  });
+
   it('drops data retention settings', async () => {
     mockRun.mockResolvedValue(result());
     await createLiteLLMAgentsHandler({ client: {} as never })(
