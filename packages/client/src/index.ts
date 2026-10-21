@@ -8,7 +8,7 @@ import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 registerAiSdkPackage(LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
 
 export type { AiConfigRep } from './client.js';
-export { config } from './client.js';
+export { config, configInternal } from './client.js';
 export type { ContentCaptureOptions, SpanMessage, SpanMessagePart, ToolDefinitionInput } from './content.js';
 export {
   langChainContentText,
@@ -19,6 +19,7 @@ export {
   setToolCallContentAttributes,
   setToolDefinitionAttributes,
   textMessage,
+  toolResultString,
   toSemconvFinishReason,
 } from './content.js';
 export {
@@ -26,7 +27,7 @@ export {
   setConversationIdIfAbsent,
   withConversationId,
 } from './conversation.js';
-export { graph, resolveGraph } from './graph.js';
+export { graph, graphInternal, resolveGraph } from './graph.js';
 export type { CanonicalTurn, ConfigTurn } from './history.js';
 export {
   anyMultimodal,
@@ -38,10 +39,19 @@ export {
 } from './history.js';
 export { buildJudgeTasks, runJudge } from './judges.js';
 export type { InspectConfigResult } from './lifecycle.js';
-export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
+export {
+  getClient,
+  initClient,
+  inspectConfig,
+  inspectConfigInternal,
+  shutdown,
+  shutdownTelemetry,
+  waitForTelemetry,
+} from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';
 export { registerAiSdkPackage } from './sdk-info.js';
-export { makeNodeTrackData, makeRunTrackData } from './tracking.js';
+export { reportUsage } from './sdk-usage.js';
+export { makeGraphTrackData, makeNodeTrackData, makeRunTrackData } from './tracking.js';
 export type {
   ConfigArgs,
   ConfigMessage,
@@ -81,18 +91,26 @@ export type {
   TraverseVisitor,
   VariationMeta as LDVariationMeta,
 } from './types.js';
-export { GraphTopologySchema, NATIVE_TOOL_KEY, NativeTool } from './types.js';
+export {
+  GraphTopologySchema,
+  NATIVE_TOOL_KEY,
+  NativeTool,
+} from './types.js';
 export type { RunUsage, SpanUsage } from './utils.js';
 export {
   addCachedTokensToInput,
+  camelizeModelParameters,
   collapseMessagesToInstructions,
   createHandler,
+  createHandlerInternal,
   createRunUsage,
   endSpanOnce,
   langChainSpanUsage,
+  normalizeModelParameters,
   omitModelStamps,
   parseJSONWithPossibleFences,
   parseTemplate,
+  pickForwardedModelParameters,
   setLdSpanAttributes,
   setModelIdentityAttributes,
   setUsageSpanAttributes,

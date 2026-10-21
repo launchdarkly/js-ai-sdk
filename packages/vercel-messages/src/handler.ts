@@ -4,14 +4,16 @@ import {
   type ConfigTurn,
   type ContentCaptureOptions,
   composeHistory,
-  config,
-  createHandler,
+  type config,
+  configInternal,
+  createHandlerInternal,
   type LDContext,
   type Message,
   type MessageContent,
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -36,24 +38,11 @@ import {
   tool,
 } from 'ai';
 import { gatewayModelId } from './model-id.js';
+import { buildModelParameterOptions } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-vercel-messages';
 const MAX_STEPS = 10;
-
-const OWNED_PARAMETER_NAMES = new Set([
-  'model',
-  'messages',
-  'prompt',
-  'system',
-  'tools',
-  'stream',
-  'output',
-  'outputformat',
-  'stopwhen',
-  'maxsteps',
-  'apikey',
-  'baseurl',
-]);
 
 export type VercelModelSource = LanguageModel | ((config: AiConfigRep) => LanguageModel | Promise<LanguageModel>);
 
@@ -86,15 +75,6 @@ function returnedUsage(usage: Usage): Record<string, number> {
 
 function servingProvider(config: AiConfigRep): string {
   return (config.provider?.name || 'unknown').toLowerCase();
-}
-
-function modelSettings(config: AiConfigRep): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(config.model.parameters ?? {}).filter(([key]) => {
-      const normalized = key.replaceAll('_', '').replaceAll('-', '').toLowerCase();
-      return !OWNED_PARAMETER_NAMES.has(normalized);
-    }),
-  );
 }
 
 async function resolveModel(config: AiConfigRep, options: VercelMessagesOptions): Promise<LanguageModel | string> {
@@ -274,8 +254,13 @@ function resultUsage(result: { usage?: unknown; steps?: Array<{ usage?: unknown 
 }
 
 export function createVercelMessagesHandler(options: VercelMessagesOptions = {}): ProviderHandler {
+  reportUsage('vercel-messages.createVercelMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createVercelMessagesHandlerInternal(options);
+}
+
+function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}): ProviderHandler {
   const { captureContent = false } = options;
-  return createHandler(
+  return createHandlerInternal(
     ['*', 'messages'],
     async (configRep, userInput = '', toolHandlers = {}, variables = {}, history) =>
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (rootSpan) => {
@@ -300,7 +285,7 @@ export function createVercelMessagesHandler(options: VercelMessagesOptions = {})
           });
           const output = requestOutput(configRep.outputFormat);
           const result = await generateText({
-            ...modelSettings(configRep),
+            ...buildModelParameterOptions(configRep.model.parameters),
             model: await resolveModel(configRep, options),
             messages,
             ...(system ? { system } : {}),
@@ -349,7 +334,7 @@ export function createVercelMessagesHandler(options: VercelMessagesOptions = {})
         });
         chatSpan = startChatSpan(configRep, rootSpan);
         const result = streamText({
-          ...modelSettings(configRep),
+          ...buildModelParameterOptions(configRep.model.parameters),
           model: await resolveModel(configRep, options),
           messages,
           ...(system ? { system } : {}),
@@ -407,9 +392,11 @@ export const vercelMessages = (
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     VercelMessagesOptions & { variables?: Record<string, unknown> } = {},
-) =>
-  config({
+) => {
+  reportUsage('vercel-messages.vercelMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
     ...options,
     key: configKey,
-    handler: createVercelMessagesHandler({ captureContent, model, modelFactory }),
+    handler: createVercelMessagesHandlerInternal({ captureContent, model, modelFactory }),
   }).invoke(userInput, context, variables);
+};

@@ -4,7 +4,8 @@ import { bindConversationId, bindSpanContext } from './conversation.js';
 import { runJudges } from './judges.js';
 import { extractVariation, getClient, initClient } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
-import { executeAndStream, modelStampsFromMeta } from './tracking.js';
+import { reportUsage } from './sdk-usage.js';
+import { executeAndStream, modelStampsFromMeta, tryGetEnvironmentId } from './tracking.js';
 import type { LDContext, Message, ToolHandlerFn } from './types.js';
 import {
   type AiConfigRep,
@@ -26,7 +27,7 @@ import {
   type TraverseVisitor,
   type VariationMeta,
 } from './types.js';
-import { endSpanOnce, normalizeMode, selectModeHandler } from './utils.js';
+import { endSpanOnce, normalizeMode, selectModeHandler, setLdSpanAttributes } from './utils.js';
 
 // Cycle protection: cap how many BFS layers a traversal will expand.
 const MAX_TRAVERSAL_DEPTH = 100;
@@ -129,6 +130,7 @@ const buildGraph = async (
     node: GraphNode,
     input?: string,
     opts?: RunNodeOptions,
+    runTrackData?: TrackData,
   ) => AsyncGenerator<GraphStreamEvent, RouteResult>;
 }> => {
   const { enabled, topology, meta } = await fetchGraphVariation(key, context);
@@ -142,6 +144,7 @@ const buildGraph = async (
     providerName: '',
     ...modelStampsFromMeta(meta),
     graphKey: key,
+    environmentId: tryGetEnvironmentId(),
   };
 
   const disabledStreamRoute = (): AsyncGenerator<GraphStreamEvent, RouteResult> => {
@@ -282,6 +285,7 @@ const buildGraph = async (
     node: GraphNode,
     input = '',
     opts: RunNodeOptions = {},
+    runTrackData: TrackData = graphTrackData,
   ): AsyncGenerator<GraphStreamEvent, ProviderResponse> {
     const resolvedHandlersForNode = resolveHandlers(options.registry, options.handlers);
     if (!resolvedHandlersForNode?.length) {
@@ -345,7 +349,7 @@ const buildGraph = async (
         getClient().track(
           '$ld:ai:graph:handoff_success',
           context,
-          { ...graphTrackData, sourceKey: opts.from.key, targetKey: node.key },
+          { ...runTrackData, sourceKey: opts.from.key, targetKey: node.key },
           1,
         );
       }
@@ -357,7 +361,7 @@ const buildGraph = async (
         getClient().track(
           '$ld:ai:graph:handoff_failure',
           context,
-          { ...graphTrackData, sourceKey: opts.from.key, targetKey: node.key },
+          { ...runTrackData, sourceKey: opts.from.key, targetKey: node.key },
           1,
         );
       }
@@ -373,6 +377,7 @@ const buildGraph = async (
     node: GraphNode,
     input = '',
     opts: RunNodeOptions = {},
+    runTrackData: TrackData = graphTrackData,
   ): AsyncGenerator<GraphStreamEvent, RouteResult> {
     if (!options.handlers?.length) {
       throw new Error(
@@ -384,7 +389,7 @@ const buildGraph = async (
     const outgoing = edgesFrom(node.key);
 
     if (outgoing.length <= 1) {
-      const res = yield* streamNode(node, input, opts);
+      const res = yield* streamNode(node, input, opts, runTrackData);
       const next = outgoing[0] ? nodes.get(outgoing[0].targetKey) : undefined;
       return { ...res, next };
     }
@@ -449,7 +454,7 @@ const buildGraph = async (
         getClient().track(
           '$ld:ai:graph:handoff_success',
           context,
-          { ...graphTrackData, sourceKey: node.key, targetKey: next.key },
+          { ...runTrackData, sourceKey: node.key, targetKey: next.key },
           1,
         );
       }
@@ -462,7 +467,7 @@ const buildGraph = async (
         getClient().track(
           '$ld:ai:graph:handoff_failure',
           context,
-          { ...graphTrackData, sourceKey: node.key, targetKey: chosenKey },
+          { ...runTrackData, sourceKey: node.key, targetKey: chosenKey },
           1,
         );
       }
@@ -595,6 +600,7 @@ const buildGraph = async (
  * `.enabled`; callers should branch on it before traversing.
  */
 export const resolveGraph = async (key: string, options: GraphArgs): Promise<GraphDefinition> => {
+  reportUsage('client.resolveGraph');
   const resolvedOptions: GraphOptions = {
     ...options,
     handlers: resolveHandlers(options.registry, options.handlers),
@@ -603,20 +609,7 @@ export const resolveGraph = async (key: string, options: GraphArgs): Promise<Gra
   return (await buildGraph(key, options.context, resolvedOptions)).def;
 };
 
-/**
- * Creates an agent graph caller bound to a graph flag key. Uses a model-driven
- * router: starts at the root and lets the model choose which outgoing edge to
- * follow at each step, threading each node's output into the next. Stops when
- * the model produces a terminal answer, a leaf is reached, a node is revisited
- * (cycle guard), or the step cap is hit.
- *
- * For framework packages that need to walk the topology and build their own
- * execution structure, use `resolveGraph` instead.
- */
-export const graph = (
-  key: string,
-  options: GraphOptions,
-): {
+type GraphCaller = {
   invoke: (
     input: string | undefined,
     context: LDContext,
@@ -629,21 +622,42 @@ export const graph = (
     variables?: Record<string, unknown>,
     history?: Message[],
   ) => AsyncGenerator<GraphStreamEvent>;
-} => {
-  // Resolution is cached per context reference so multiple invoke()/stream()
-  // invocations with the same context do not re-evaluate all node configurations from LD.
-  type BuiltGraph = Awaited<ReturnType<typeof buildGraph>>;
-  const nodeCache = new WeakMap<LDContext, Promise<BuiltGraph>>();
+};
 
-  const resolveBuilt = async (context: LDContext, resolvedOptions: GraphOptions): Promise<BuiltGraph> => {
-    let buildPromise = nodeCache.get(context);
-    if (!buildPromise) {
-      buildPromise = buildGraph(key, context, resolvedOptions);
-      nodeCache.set(context, buildPromise);
-    }
-    return buildPromise;
+/**
+ * Creates an agent graph caller bound to a graph flag key. Uses a model-driven
+ * router: starts at the root and lets the model choose which outgoing edge to
+ * follow at each step, threading each node's output into the next. Stops when
+ * the model produces a terminal answer, a leaf is reached, a node is revisited
+ * (cycle guard), or the step cap is hit.
+ *
+ * For framework packages that need to walk the topology and build their own
+ * execution structure, use `resolveGraph` instead.
+ */
+export const graph = (key: string, options: GraphOptions): GraphCaller => {
+  const inner = graphInternal(key, options);
+  return {
+    invoke: async (input, context, variables, history) => {
+      reportUsage('client.graph.invoke');
+      return inner.invoke(input, context, variables, history);
+    },
+    // Reports at call time, before any iteration; the internal stream binds the conversation id.
+    stream: (input, context, variables, history) => {
+      reportUsage('client.graph.stream');
+      return inner.stream(input, context, variables, history);
+    },
   };
+};
 
+/**
+ * {@link graph} without the `$ld:ai:sdk:usage` report: the returned `invoke`
+ * and `stream` do not report. Package graph wrappers call this so a wrapper
+ * call reports only the wrapper's own helper.
+ *
+ * @internal Exported for the LaunchDarkly handler packages; applications should
+ * call {@link graph}.
+ */
+export const graphInternal = (key: string, options: GraphOptions): GraphCaller => {
   const invoke = async (
     input: string | undefined,
     context: LDContext,
@@ -662,12 +676,8 @@ export const graph = (
       );
     }
 
-    const { def } = await resolveBuilt(context, resolvedOptions);
-    if (!def.enabled) {
-      throw new Error(`Agent graph "${key}" is disabled`);
-    }
-
-    // Same walk as stream(). Events are discarded; the done payload is the blocking result.
+    // Same walk as stream(), which resolves the graph and throws if it is disabled. Events are
+    // discarded; the done payload is the blocking result.
     let done: Extract<GraphStreamEvent, { type: 'done' }> | undefined;
     for await (const event of stream(input, context, variables, history)) {
       if (event.type === 'done') done = event;
@@ -717,13 +727,16 @@ export const graph = (
       );
     }
 
-    const { def, graphTrackData, streamRoute } = await resolveBuilt(context, resolvedOptions);
+    const { def, graphTrackData: builtTrackData, streamRoute } = await buildGraph(key, context, resolvedOptions);
     if (!def.enabled) {
       throw new Error(`Agent graph "${key}" is disabled`);
     }
 
+    // Each invocation mints its own run id for the span and every graph event it emits.
+    const graphTrackData: TrackData = { ...builtTrackData, runId: crypto.randomUUID() };
+
     const span = trace.getTracer('@launchdarkly/ai-server').startSpan('launchdarkly.graph', undefined, callerContext);
-    span.setAttribute('launchdarkly.graph.key', key);
+    setLdSpanAttributes(span, { __ld: graphTrackData, ldContext: context });
     const spanContext = trace.setSpan(callerContext, span);
     const ended = new Set<Span>();
 
@@ -763,7 +776,7 @@ export const graph = (
           // After the root hop, nodes stay oriented through the string threading
           // built below, so history is not re-sent to downstream handlers.
           else if (history && history.length > 0) routeOpts.history = history;
-          const res: RouteResult = yield* streamRoute(current, currentInput, routeOpts);
+          const res: RouteResult = yield* streamRoute(current, currentInput, routeOpts, graphTrackData);
           accumulate(res);
           last = res;
 
@@ -799,6 +812,7 @@ export const graph = (
             } as unknown as AiConfigRep,
             userContext: context,
             handler: selectHandler(judgeRoot.config, judgeRoot.meta, judgeHandlers),
+            handlers: judgeHandlers,
             userInput: resolvedInput,
             llmResponse: finalResponse,
             baseTrackData: graphTrackData,

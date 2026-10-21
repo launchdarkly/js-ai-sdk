@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.3.0...@launchdarkly/ai-server-0.4.0) (2026-10-09)
+
+
+### Experimental
+
+* **skills:** add experimental Agent Skills under `@launchdarkly/ai-server/experimental`, re-exported from `@launchdarkly/ai-node/experimental` ([a242659](https://github.com/launchdarkly/js-ai-sdk/commit/a242659783689f06d7ef2f1377c26a6735a7f81c))
+
+
+### Features
+
+* **AIC-3210:** support streaming responses from agent graph nodes ([#84](https://github.com/launchdarkly/js-ai-sdk/issues/84)) ([24671e8](https://github.com/launchdarkly/js-ai-sdk/commit/24671e84d802c233109a409a7f0fce9034490c7d))
+* **AIC-3211:** record each graph node as its own tracking event ([#91](https://github.com/launchdarkly/js-ai-sdk/issues/91)) ([2df2923](https://github.com/launchdarkly/js-ai-sdk/commit/2df2923cd6f831a6583c9747b0d17626189d292c))
+* **AIC-3416:** say the real reason when a bundler breaks an optional import [3/4] ([#78](https://github.com/launchdarkly/js-ai-sdk/issues/78)) ([7ee4d5a](https://github.com/launchdarkly/js-ai-sdk/commit/7ee4d5a8f6095c1123d4c718b7364b825d107446))
+* **AIC-3495:** record which public helpers an application calls ([#115](https://github.com/launchdarkly/js-ai-sdk/issues/115)) ([aeb4019](https://github.com/launchdarkly/js-ai-sdk/commit/aeb40190b237bb75f788c4c925008c2a9a856ab4))
+* **build:** build the AI SDK like the other LaunchDarkly JS SDKs so CommonJS apps can load it (2/4) ([#77](https://github.com/launchdarkly/js-ai-sdk/issues/77)) ([2cda755](https://github.com/launchdarkly/js-ai-sdk/commit/2cda7551c8feb7e352040384befea2cd76cb5d94))
+* **client:** `initClient(client, options)` accepts telemetry options for a pre-initialized client ([a242659](https://github.com/launchdarkly/js-ai-sdk/commit/a242659783689f06d7ef2f1377c26a6735a7f81c))
+* **client:** restore pickForwardedModelParameters for closed provider request types ([f7f85d0](https://github.com/launchdarkly/js-ai-sdk/commit/f7f85d0ae07aee14db7bc5df543003c50c602ba4))
+* **client:** warn about unrecognized `initClient` options instead of ignoring them silently ([a242659](https://github.com/launchdarkly/js-ai-sdk/commit/a242659783689f06d7ef2f1377c26a6735a7f81c))
+
+
+### Bug Fixes
+
+* **client:** `shutdownTelemetry()` releases the OpenTelemetry globals the SDK registered, so a later `initClient` exports spans again ([a242659](https://github.com/launchdarkly/js-ai-sdk/commit/a242659783689f06d7ef2f1377c26a6735a7f81c))
+* **client:** a repeat `initClient(client)` returns the client already set instead of replacing it ([a242659](https://github.com/launchdarkly/js-ai-sdk/commit/a242659783689f06d7ef2f1377c26a6735a7f81c))
+* **client:** an `initClient` that fails, or that `shutdown()` interrupts, closes the client it built, and a failure is no longer cached, so the next call retries ([a242659](https://github.com/launchdarkly/js-ai-sdk/commit/a242659783689f06d7ef2f1377c26a6735a7f81c))
+* **handlers:** camelize snake_case model.parameters for framework handlers ([75c6287](https://github.com/launchdarkly/js-ai-sdk/commit/75c6287ebdc4098df6722dfc76656b068e9a3985))
+* **judges:** a judge's own config must not fail the run it grades ([#17](https://github.com/launchdarkly/js-ai-sdk/issues/17)) ([6e85cac](https://github.com/launchdarkly/js-ai-sdk/commit/6e85cac54bb877954071b2f80d61f4359710c3ae))
+* pass AI Config model parameters through to every provider handler ([#73](https://github.com/launchdarkly/js-ai-sdk/issues/73)) ([993225f](https://github.com/launchdarkly/js-ai-sdk/commit/993225f3d1cb46016d5f2a21394d5dd505e27e4a))
+* **vercel-messages:** map model.parameters onto AI SDK call settings ([d2a52ae](https://github.com/launchdarkly/js-ai-sdk/commit/d2a52ae1a89569f6fff7b1219b4c18bb458cb84c))
+* **vercel:** tag vercelEvaluate spans with run identity ([#100](https://github.com/launchdarkly/js-ai-sdk/issues/100)) ([d32bede](https://github.com/launchdarkly/js-ai-sdk/commit/d32bedefc6d0693dad9b4e5a734f4c29f7859c12))
+
 ## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.2.0...@launchdarkly/ai-server-0.3.0) (2026-09-18)
 
 

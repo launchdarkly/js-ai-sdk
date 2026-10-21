@@ -1,6 +1,7 @@
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { type GraphOptions, graph } from '@launchdarkly/ai-server';
-import { createLangChainAgentsHandler } from './handler.js';
+import { type GraphOptions, graphInternal, reportUsage } from '@launchdarkly/ai-server';
+import { createLangChainAgentsHandlerInternal } from './handler.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 /**
  * Runs an agent graph with the LangChain agent handler pre-bound. Equivalent to
@@ -12,8 +13,11 @@ export const langchainGraph = (
   options: Omit<GraphOptions, 'handlers'> & { providers?: readonly string[] },
   llm?: BaseChatModel,
 ) => {
+  reportUsage('langchain-agents.langchainGraph', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   const { providers, ...graphOptions } = options;
   const handler =
-    providers === undefined ? createLangChainAgentsHandler(llm) : createLangChainAgentsHandler(llm, { providers });
-  return graph(key, { ...graphOptions, handlers: [handler] });
+    providers === undefined
+      ? createLangChainAgentsHandlerInternal(llm)
+      : createLangChainAgentsHandlerInternal(llm, { providers });
+  return graphInternal(key, { ...graphOptions, handlers: [handler] });
 };

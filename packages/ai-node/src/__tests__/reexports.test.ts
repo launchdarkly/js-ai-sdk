@@ -29,3 +29,21 @@ describe('@launchdarkly/ai-node re-exports', () => {
     }
   });
 });
+
+describe('@launchdarkly/ai-node/experimental re-exports', () => {
+  it('exports every named export from @launchdarkly/ai-server/experimental, as the same references', async () => {
+    const serverExperimental = await import('@launchdarkly/ai-server/experimental');
+    const nodeExperimental = await import('../experimental.js');
+
+    const serverKeys = Object.keys(serverExperimental);
+    expect(serverKeys.length).toBeGreaterThan(0);
+    for (const key of serverKeys) {
+      expect((nodeExperimental as any)[key], key).toBe((serverExperimental as any)[key]);
+    }
+  });
+
+  it('keeps experimental names off the package root', () => {
+    expect('getSkill' in node).toBe(false);
+    expect('setSkillStore' in node).toBe(false);
+  });
+});

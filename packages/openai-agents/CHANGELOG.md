@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-openai-agents-0.3.0...@launchdarkly/ai-openai-agents-0.4.0) (2026-10-09)
+
+
+### Features
+
+* **AIC-3210:** support streaming responses from agent graph nodes ([#84](https://github.com/launchdarkly/js-ai-sdk/issues/84)) ([24671e8](https://github.com/launchdarkly/js-ai-sdk/commit/24671e84d802c233109a409a7f0fce9034490c7d))
+* **AIC-3211:** record each graph node as its own tracking event ([#91](https://github.com/launchdarkly/js-ai-sdk/issues/91)) ([2df2923](https://github.com/launchdarkly/js-ai-sdk/commit/2df2923cd6f831a6583c9747b0d17626189d292c))
+* **AIC-3495:** record which public helpers an application calls ([#115](https://github.com/launchdarkly/js-ai-sdk/issues/115)) ([aeb4019](https://github.com/launchdarkly/js-ai-sdk/commit/aeb40190b237bb75f788c4c925008c2a9a856ab4))
+* **build:** build the AI SDK like the other LaunchDarkly JS SDKs so CommonJS apps can load it (2/4) ([#77](https://github.com/launchdarkly/js-ai-sdk/issues/77)) ([2cda755](https://github.com/launchdarkly/js-ai-sdk/commit/2cda7551c8feb7e352040384befea2cd76cb5d94))
+
+
+### Bug Fixes
+
+* **deps:** depend on the @launchdarkly/ai-server release each package needs ([#119](https://github.com/launchdarkly/js-ai-sdk/issues/119)) ([9c2a56b](https://github.com/launchdarkly/js-ai-sdk/commit/9c2a56b27a309515032758f64c9c2c7c21477f33))
+* **handlers:** camelize snake_case model.parameters for framework handlers ([75c6287](https://github.com/launchdarkly/js-ai-sdk/commit/75c6287ebdc4098df6722dfc76656b068e9a3985))
+* **langchain:** stop forwarding additionalModelRequestFields to ChatBedrockConverse ([f6268fd](https://github.com/launchdarkly/js-ai-sdk/commit/f6268fdc2c186efd68f91831afba8224974b6bee))
+* **openai-agents:** forward only an allowlist of ModelSettings fields from model.parameters ([398e935](https://github.com/launchdarkly/js-ai-sdk/commit/398e935ef0cb987169a5d1113a9abbf65f20e194))
+* pass AI Config model parameters through to every provider handler ([#73](https://github.com/launchdarkly/js-ai-sdk/issues/73)) ([993225f](https://github.com/launchdarkly/js-ai-sdk/commit/993225f3d1cb46016d5f2a21394d5dd505e27e4a))
+* **telemetry:** report OpenAI tool arguments as an object, not a JSON string ([#68](https://github.com/launchdarkly/js-ai-sdk/issues/68)) ([d614791](https://github.com/launchdarkly/js-ai-sdk/commit/d614791799361ce2ad71f177f298bcc4e51bcf97))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.3.0 to ^0.4.0
+
 ## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-openai-agents-0.2.0...@launchdarkly/ai-openai-agents-0.3.0) (2026-09-18)
 
 

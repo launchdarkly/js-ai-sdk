@@ -6,7 +6,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
     ...actual,
-    graph: (...args: unknown[]) => graphMock(...args),
+    graphInternal: (...args: unknown[]) => graphMock(...args),
   };
 });
 
