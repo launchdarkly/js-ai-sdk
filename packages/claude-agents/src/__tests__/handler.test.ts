@@ -380,6 +380,22 @@ describe('createClaudeAgentsHandler', () => {
     expect(await run('enabled')).toBeUndefined();
   });
 
+  it('drops a thinking with an unknown type or an enabled thinking without a budget', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const run = async (thinking: unknown) => {
+      mockQuery.mockClear();
+      const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { thinking } } };
+      await createClaudeAgentsHandler()(config as any, 'q');
+      return mockQuery.mock.calls[0][0].options.thinking;
+    };
+    expect(await run({ type: 'enabled' })).toBeUndefined();
+    expect(await run({ type: 'enabled', budget_tokens: '1024' })).toBeUndefined();
+    expect(await run({ type: 'on', budget_tokens: 1024 })).toBeUndefined();
+    expect(await run({ type: 'disabled', budget_tokens: 1, display: 'omitted' })).toEqual({ type: 'disabled' });
+    expect(await run({ type: 'adaptive', display: 'verbose' })).toEqual({ type: 'adaptive' });
+    expect(await run({ type: 'adaptive', display: 'omitted' })).toEqual({ type: 'adaptive', display: 'omitted' });
+  });
+
   it('does not let model.parameters override model, tools, allowedTools, mcpServers, hooks, or systemPrompt', async () => {
     mockQuery.mockImplementation(makeResultMessage());
     const config = {

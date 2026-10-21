@@ -30,20 +30,40 @@ const FORWARDED_QUERY_OPTION_KEYS = [
   'thinking',
 ] as const satisfies ReadonlyArray<keyof Options>;
 
+type ThinkingType = NonNullable<Options['thinking']>['type'];
+
+/** The `thinking` types the Claude Agent SDK knows (`ThinkingConfig`). */
+const THINKING_TYPES = ['adaptive', 'enabled', 'disabled'] as const satisfies ReadonlyArray<ThinkingType>;
+// Fails to compile if the SDK adds a thinking type that is not listed above.
+const _thinkingTypesExhaustive: Record<Exclude<ThinkingType, (typeof THINKING_TYPES)[number]>, never> = {} as Record<
+  never,
+  never
+>;
+
+/** The `display` values the SDK takes for adaptive and enabled thinking. */
+const THINKING_DISPLAYS: ReadonlyArray<unknown> = ['summarized', 'omitted'];
+
 /**
  * `thinking` as the Claude Agent SDK reads it. The LaunchDarkly UI writes the Messages API shape,
  * `{ type: 'enabled', budget_tokens: 1024 }`, but the SDK's `ThinkingEnabled` reads
  * `budgetTokens`, so a snake_case budget would be ignored. Only `type`, the budget, and `display`
- * are kept; anything that is not an object with a string `type` is dropped.
+ * are kept. It is dropped unless its `type` is one the SDK knows, and an `enabled` thinking is
+ * dropped without a numeric budget: the SDK would quietly run it as adaptive, and the Python SDK
+ * cannot run it at all, so both SDKs drop it. `display` is kept only for a type that takes it and
+ * only with a value the SDK knows.
  */
 function toThinkingOption(value: unknown): Options['thinking'] | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const source = value as Record<string, unknown>;
-  if (typeof source.type !== 'string') return undefined;
-  const thinking: Record<string, unknown> = { type: source.type };
-  const budgetTokens = source.budget_tokens ?? source.budgetTokens;
-  if (typeof budgetTokens === 'number') thinking.budgetTokens = budgetTokens;
-  if (typeof source.display === 'string') thinking.display = source.display;
+  const type = THINKING_TYPES.find((known) => known === source.type);
+  if (!type) return undefined;
+  const thinking: Record<string, unknown> = { type };
+  if (type === 'enabled') {
+    const budgetTokens = source.budget_tokens ?? source.budgetTokens;
+    if (typeof budgetTokens !== 'number') return undefined;
+    thinking.budgetTokens = budgetTokens;
+  }
+  if (type !== 'disabled' && THINKING_DISPLAYS.includes(source.display)) thinking.display = source.display;
   return thinking as Options['thinking'];
 }
 
