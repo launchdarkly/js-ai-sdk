@@ -418,15 +418,19 @@ describe('judge invocation', () => {
   });
 
   it.each([
-    ['prose', () => ({ output: 'the answer looks right to me' }), /not a non-empty JSON object/],
-    ['an empty object', () => ({ output: '{}' }), /not a non-empty JSON object/],
-    ['a non-object handler result', () => 'just text', /must be an object/],
+    ['prose', () => ({ output: 'the answer looks right to me' }), /^Invalid JSON from judge$/],
+    ['an empty object', () => ({ output: '{}' }), /^Invalid JSON from judge$/],
+    ['a non-object handler result', () => 'just text', /^judge handler result must be a mapping$/],
     ['no reasoning', () => ({ output: '{"score": 0.9}' }), /no reasoning/],
     ['empty reasoning', () => judgeReply(0.9, ''), /no reasoning/],
-    ['a string score', () => judgeReply('high (0.9)'), /score must be a finite number from 0 to 1, got "high \(0.9\)"/],
-    ['a score of 3', () => judgeReply(3), /got 3/],
-    ['a NaN score', () => ({ output: { score: Number.NaN, reasoning: 'x' } }), /got NaN/],
-    ['a boolean score', () => judgeReply(true), /got true/],
+    [
+      'a string score',
+      () => judgeReply('high (0.9)'),
+      /^judge score must be a number between 0 and 1, got 'high \(0.9\)'$/,
+    ],
+    ['a score of 3', () => judgeReply(3), /got 3$/],
+    ['a NaN score', () => ({ output: { score: Number.NaN, reasoning: 'x' } }), /got nan$/],
+    ['a boolean score', () => judgeReply(true), /got True$/],
   ])('records %s as an ERROR result with no score, and the run still completes', async (_name, reply, message) => {
     const handler = dualHandler('OpenAI', 'messages', reply as () => ReturnType<typeof judgeReply>);
     const api = routeHostedRun(new FakeApi());
@@ -506,10 +510,10 @@ describe('scorers', () => {
   });
 
   it.each([
-    ['a boolean', () => true, /got true/],
-    ['NaN', () => Number.NaN, /got NaN/],
-    ['an out-of-range number', () => 1.5, /got 1.5/],
-    ['a string', () => '0.5', /got "0.5"/],
+    ['a boolean', () => true, /^scorer fn must return a finite number, got True$/],
+    ['NaN', () => Number.NaN, /^scorer fn must return a finite number, got nan$/],
+    ['an out-of-range number', () => 1.5, /^scorer fn score must be between 0 and 1, got 1.5$/],
+    ['a string', () => '0.5', /^scorer fn must return a finite number, got '0.5'$/],
   ])('records %s as an invalid score naming the value', async (_name, fn, message) => {
     await makeModule(routeHostedRun(new FakeApi())).run(run({ criteria: [new Scorer('exact', fn as never)] }));
     const { data } = criterionEvents()[0];
@@ -545,6 +549,46 @@ describe('scorers', () => {
     expect(data).toMatchObject({ kind: 'scorer', status: 'COMPLETE', score: 1 });
     for (const field of ['reason', 'usage', 'judgeKey', 'variationKey', 'version'])
       expect(field in data, field).toBe(false);
+  });
+
+  describe.each([1, 10])('with concurrency %d', (concurrency) => {
+    it('cannot change the output that other criteria on the row see', async () => {
+      const seen: unknown[] = [];
+      let judged = '';
+      const handler = stubHandler('OpenAI', 'messages', async (_config, _input, _tools, variables) => {
+        if (variables && 'response_to_evaluate' in variables) {
+          judged = variables.response_to_evaluate as string;
+          return judgeReply();
+        }
+        return { output: { answer: 'original', tags: ['a'] } };
+      });
+      const mutate = new Scorer('mutate', (_row, output) => {
+        const value = output as { answer: string; tags: string[] };
+        value.answer = 'changed';
+        value.tags.push('b');
+        return 1;
+      });
+      const read = new Scorer('read', async (_row, output) => {
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        seen.push(structuredClone(output));
+        return 1;
+      });
+      await makeModule(routeHostedRun(new FakeApi())).run(
+        run({ handler, concurrency, criteria: [mutate, read, new Judge('accuracy')] }),
+      );
+      expect(seen).toEqual([{ answer: 'original', tags: ['a'] }]);
+      expect(judged).toBe("{'answer': 'original', 'tags': ['a']}");
+      expect(criterionEvents().every((event) => event.data.status === 'COMPLETE')).toBe(true);
+    });
+  });
+
+  it('still scores an output it cannot copy', async () => {
+    const output = { answer: 'x', format: () => 'x' };
+    const handler = stubHandler('OpenAI', 'messages', async () => ({ output }));
+    const fn = vi.fn(() => 1);
+    await makeModule(routeHostedRun(new FakeApi())).run(run({ handler, criteria: [new Scorer('exact', fn)] }));
+    expect(fn).toHaveBeenCalledWith(expect.anything(), output);
+    expect(criterionEvents()[0].data).toMatchObject({ status: 'COMPLETE', score: 1 });
   });
 
   it('cannot change the row that later criteria see', async () => {

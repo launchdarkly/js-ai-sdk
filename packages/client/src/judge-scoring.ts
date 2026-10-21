@@ -8,6 +8,7 @@
  * both halves and the paths cannot drift.
  */
 
+import { pythonStr, pythonTruthy } from './python-format.js';
 import { parseJSONWithPossibleFences } from './utils.js';
 
 export const FORMATTING_INSTRUCTIONS = [
@@ -29,17 +30,32 @@ export const FORMATTING_INSTRUCTIONS = [
  * prose and fail every result as invalid output.
  */
 export function buildMessageHistory(parts: { userInput?: unknown; trajectory?: string; output?: unknown }): string {
+  // Python's truthiness and str(), so a structured output reads the same as in the Python SDK.
   return [parts.userInput, parts.trajectory, parts.output, FORMATTING_INSTRUCTIONS]
-    .filter(Boolean)
-    .map(String)
+    .filter(pythonTruthy)
+    .map(pythonStr)
     .join('\n\n');
+}
+
+/**
+ * `score` when it already is a finite number, else `undefined`. Never throws.
+ *
+ * A judge is prompted for a number but can return anything. A judge that
+ * returns `"0.9 (high)"` or `null` must not take down the evaluation that
+ * follows, and must not put a string where semconv defines
+ * `gen_ai.evaluation.score.value` as a double: OTel drops a null attribute but
+ * exports a string, which breaks numeric aggregation downstream. Each path
+ * applies its own policy to the rest, such as the offline 0–1 range.
+ */
+export function numericScore(score: unknown): number | undefined {
+  return typeof score === 'number' && Number.isFinite(score) ? score : undefined;
 }
 
 /**
  * Parse a judge response into its score and reasoning. Accepts a JSON string,
  * optionally in markdown fences, or an already-decoded object. `reason` is
  * accepted as an alias for `reasoning`. The score is returned untouched, for
- * the caller to apply its own policy to.
+ * the caller to apply its own policy to, through {@link numericScore}.
  *
  * Returns `null` when the response is not a non-empty JSON object.
  */
@@ -49,6 +65,7 @@ export function parseJudgeResponse(raw: unknown): { score: unknown; reasoning: s
     return null;
   }
   const { score, reasoning, reason } = parsed as Record<string, unknown>;
-  const text = reasoning || reason;
-  return { score, reasoning: text === undefined || text === null || text === false ? '' : String(text) };
+  // `reasoning or reason or ""`, then str(), as the Python SDK reads it.
+  const text = pythonTruthy(reasoning) ? reasoning : pythonTruthy(reason) ? reason : '';
+  return { score, reasoning: pythonStr(text) };
 }

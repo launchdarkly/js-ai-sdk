@@ -7,14 +7,9 @@
 
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  generateRows,
-  generationPayload,
-  pythonFloat,
-  type RowResult,
-  SUMMARY_POLL_DEFAULTS,
-} from '../evaluations-runner.js';
+import { generateRows, generationPayload, type RowResult, SUMMARY_POLL_DEFAULTS } from '../evaluations-runner.js';
 import { EvalTool, type RunOptions } from '../experimental.js';
+import { pythonFloat } from '../python-format.js';
 import { NativeTool } from '../types.js';
 import {
   completion,
@@ -1036,22 +1031,46 @@ describe('generation events', () => {
         '04e26552bf66f7afa68ba6307c9f9c162abd2bbd963cb7e42d9dcea337152848',
       ],
       [
-        'a structured output with no usage, its number as a float',
+        'a structured output with no usage',
         rowResult({ output: { b: 1, a: [true, null, 'x'] } }),
-        '0ba60718922eb0cbeff99d5aa267c94bccef106a4cd8e3145c4e170ce7b396b1',
+        '504de7cbb5f7d8b3ef260a99c69460c6b7f4fb3ea449c16cedde0ac0e120008c',
       ],
     ])('matches the Python SDK for %s', (_name, result, hash) => {
       expect(generationPayload(ids, result).contentHash).toBe(hash);
     });
 
-    it('writes numbers in output as Python floats, and usage counts as integers', () => {
+    it('reads numbers in output as json.loads would: safe integers as ints, the rest as floats', () => {
       const result = rowResult({
-        output: { score: 1, p: 0.1, tiny: 1e-5, big: 1e16, list: [3, -0, 2.5e-7] },
+        output: { score: 1, p: 0.1, tiny: 1e-5, big: 1e16, list: [3, -0, 2.5e-7], neg: -2 },
         usage: { input_tokens: 7, output_tokens: 9 },
       });
-      // {"error":null,"output":{"big":1e+16,"list":[3.0,-0.0,2.5e-07],"p":0.1,"score":1.0,"tiny":1e-05},...}
+      // Python: json.dumps of json.loads('{"score": 1, ..., "big": 1e16, "list": [3, -0, 2.5e-07], "neg": -2}')
+      // {"error":null,"output":{"big":1e+16,"list":[3,0,2.5e-07],"neg":-2,"p":0.1,"score":1,"tiny":1e-05},...}
       expect(generationPayload(ids, result).contentHash).toBe(
-        '682983638bddcf429edbe5313b8c305523b957c204bc1dbf0c0b2a47e5d14b45',
+        '36e6b8c61c738f60f7a6921264274bf0644e509c7e9a0297b579338076bb1fb9',
+      );
+    });
+
+    it('writes a missing array element as null, as Python writes None', () => {
+      // Python: {"error":null,"output":{"list":[1,null,2]},"status":"COMPLETE"}
+      const hash = '33728410ea55e9bc69710b426ff78fd1ca0eb437ebe69d4cca83a39403ab05f6';
+      expect(generationPayload(ids, rowResult({ output: { list: [1, undefined, 2] } })).contentHash).toBe(hash);
+      expect(generationPayload(ids, rowResult({ output: { list: [1, null, 2] } })).contentHash).toBe(hash);
+    });
+
+    it('drops object keys JSON cannot hold, at any depth', () => {
+      const output = { kept: 'x', gone: undefined, fn: () => 1, sym: Symbol('s'), nested: [{ a: 1, b: undefined }] };
+      // Python: {"error":null,"output":{"kept":"x","nested":[{"a":1}]},"status":"COMPLETE"}
+      expect(generationPayload(ids, rowResult({ output })).contentHash).toBe(
+        '4bfd217d300af0c0a32f037b5e8aa036a844bd71cb1713dbcf7a99ee656304eb',
+      );
+    });
+
+    it('hashes the same JSON the tracked event carries', () => {
+      const output = { list: [1, undefined, () => 2, Symbol('s'), { a: undefined, b: [undefined] }], text: 'café' };
+      const asSent = JSON.parse(JSON.stringify(output));
+      expect(generationPayload(ids, rowResult({ output })).contentHash).toBe(
+        generationPayload(ids, rowResult({ output: asSent })).contentHash,
       );
     });
 

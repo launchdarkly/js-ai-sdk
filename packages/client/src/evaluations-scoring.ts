@@ -14,8 +14,9 @@ import type { DatasetRow } from './evaluations.js';
 import { EvaluationsError, errorMessage, isPlainObject } from './evaluations-api.js';
 import { type Criterion, criterionType, Judge, type Scorer } from './evaluations-criteria.js';
 import { eventIdFor, mapBounded, type RowResult, type RunIdentity, rowIdentity } from './evaluations-runner.js';
-import { buildMessageHistory, FORMATTING_INSTRUCTIONS, parseJudgeResponse } from './judge-scoring.js';
+import { buildMessageHistory, FORMATTING_INSTRUCTIONS, numericScore, parseJudgeResponse } from './judge-scoring.js';
 import { extractVariation } from './lifecycle.js';
+import { pythonRepr, pythonStr } from './python-format.js';
 import { findHandler } from './registry.js';
 import { renderTrajectory } from './trajectory.js';
 import type { AiConfigRep, LDContext, ProviderHandler } from './types.js';
@@ -121,25 +122,16 @@ export async function resolveJudges(
   return resolved;
 }
 
-/** Text a judge reads as the output. A non-string output is shown as JSON. */
+/** Text a judge reads as the output: Python's str(), as the Python SDK renders it, or `''` when there is none. */
 function outputText(output: unknown): string {
-  if (output === undefined || output === null) return '';
-  return typeof output === 'string' ? output : (JSON.stringify(output) ?? String(output));
+  return output === undefined || output === null ? '' : pythonStr(output);
 }
 
-function describe(value: unknown): string {
-  if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) {
-    return String(value);
-  }
-  try {
-    return JSON.stringify(value) ?? String(value);
-  } catch {
-    return String(value);
-  }
+/** A criterion score: a finite number, by the shared rule, and in 0–1, which ingest enforces. */
+function unitScore(value: unknown): number | undefined {
+  const score = numericScore(value);
+  return score !== undefined && score >= 0 && score <= 1 ? score : undefined;
 }
-
-const isScore = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
 
 /**
  * The variables a judge's rubric renders against: the row's variables plus a
@@ -162,7 +154,7 @@ export function judgeVariables(result: RowResult, judge: Judge): Record<string, 
     message_history: buildMessageHistory({
       userInput: row.input ?? undefined,
       trajectory: renderTrajectory(result.trajectory),
-      output,
+      output: result.output,
     }),
     formatting_instructions: FORMATTING_INSTRUCTIONS,
   };
@@ -209,18 +201,20 @@ async function runJudge(result: RowResult, resolved: ResolvedJudge): Promise<Cri
   } catch (err) {
     return fail('handler_raised', `judge handler raised: ${errorMessage(err)}`);
   }
-  if (!isPlainObject(response)) return fail('invalid_judge_output', 'judge handler result must be an object');
+  // The messages are the Python SDK's, so an errorMessage reads the same from either.
+  if (!isPlainObject(response)) return fail('invalid_judge_output', 'judge handler result must be a mapping');
   const parsed = parseJudgeResponse(response.output);
-  if (!parsed) return fail('invalid_judge_output', 'judge output is not a non-empty JSON object');
+  if (!parsed) return fail('invalid_judge_output', 'Invalid JSON from judge');
   // Ingest drops a judge result with no reason, which would stall the row.
   if (!parsed.reasoning) return fail('invalid_judge_output', 'judge output has no reasoning');
-  if (!isScore(parsed.score)) {
-    return fail('invalid_score', `judge score must be a finite number from 0 to 1, got ${describe(parsed.score)}`);
+  const score = unitScore(parsed.score);
+  if (score === undefined) {
+    return fail('invalid_score', `judge score must be a number between 0 and 1, got ${pythonRepr(parsed.score)}`);
   }
   const done: CriterionResult = {
     ...base,
     status: 'COMPLETE',
-    score: parsed.score,
+    score,
     reason: parsed.reasoning,
     ...clock.stop(),
   };
@@ -228,14 +222,30 @@ async function runJudge(result: RowResult, resolved: ResolvedJudge): Promise<Cri
   return done;
 }
 
+/**
+ * A scorer's own copy of the generated output. An output `structuredClone`
+ * cannot copy, such as one holding a function, is passed as is: failing a
+ * valid scorer over the output's shape would be worse than the exposure. Handler
+ * outputs are strings or parsed JSON in practice, which always copy.
+ */
+function copyOutput(output: unknown): unknown {
+  if (typeof output !== 'object' || output === null) return output;
+  try {
+    return structuredClone(output);
+  } catch {
+    return output;
+  }
+}
+
 async function runScorer(result: RowResult, scorer: Scorer): Promise<CriterionResult> {
   const clock = startClock();
   const base = { rowIndex: result.row.rowIndex, criterion: scorer, startedAt: clock.startedAt };
   let score: unknown;
   try {
-    // The public row type, as a copy: a scorer cannot change what later criteria see.
+    // Copies of the row and the output: criteria on one row run concurrently,
+    // so a scorer that changed either would change what the others score.
     const row: DatasetRow = structuredClone(result.row);
-    score = await scorer.fn(row, result.output);
+    score = await scorer.fn(row, copyOutput(result.output));
   } catch (err) {
     return {
       ...base,
@@ -244,18 +254,16 @@ async function runScorer(result: RowResult, scorer: Scorer): Promise<CriterionRe
       ...clock.stop(),
     };
   }
-  if (!isScore(score)) {
-    return {
-      ...base,
-      status: 'ERROR',
-      error: {
-        cause: 'invalid_score',
-        message: `scorer fn must return a finite number from 0 to 1, got ${describe(score)}`,
-      },
-      ...clock.stop(),
-    };
+  const valid = unitScore(score);
+  if (valid === undefined) {
+    // The Python SDK's two messages, without its boolean shortcut: a boolean is not a score.
+    const message =
+      numericScore(score) === undefined
+        ? `scorer fn must return a finite number, got ${pythonRepr(score)}`
+        : `scorer fn score must be between 0 and 1, got ${pythonRepr(score)}`;
+    return { ...base, status: 'ERROR', error: { cause: 'invalid_score', message }, ...clock.stop() };
   }
-  return { ...base, status: 'COMPLETE', score, ...clock.stop() };
+  return { ...base, status: 'COMPLETE', score: valid, ...clock.stop() };
 }
 
 /**

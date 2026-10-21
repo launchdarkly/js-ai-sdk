@@ -19,6 +19,7 @@ import {
 } from './evaluations-api.js';
 import { type Criterion, criterionWire } from './evaluations-criteria.js';
 import { createBodyTools, type EvalTool, handlerConfigTools } from './evaluations-tools.js';
+import { pythonJsonNumber } from './python-format.js';
 import { TrajectoryRecorder } from './trajectory.js';
 import type {
   AiConfigRep,
@@ -569,11 +570,16 @@ export function generateRows(
 
 /** JSON with object keys sorted at every level: the canonical form `eventId` hashes. */
 export function canonicalJson(value: unknown, formatNumber: (n: number) => string = JSON.stringify): string {
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item, formatNumber)).join(',')}]`;
+  // A value JSON cannot hold is handled as JSON.stringify handles it, so the
+  // hash covers the same JSON the tracked event carries: `null` in an array,
+  // and no key in an object. Python, which has no undefined, writes None as null.
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => (omittedByJson(item) ? 'null' : canonicalJson(item, formatNumber))).join(',')}]`;
+  }
   if (isPlainObject(value)) {
     const entries = Object.keys(value)
       .sort()
-      .filter((key) => value[key] !== undefined)
+      .filter((key) => !omittedByJson(value[key]))
       .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key], formatNumber)}`);
     return `{${entries.join(',')}}`;
   }
@@ -581,36 +587,9 @@ export function canonicalJson(value: unknown, formatNumber: (n: number) => strin
   return JSON.stringify(value);
 }
 
-/**
- * Format a number as Python's `json.dumps` writes a float: the shortest
- * round-trip digits, as `repr(float)` gives them. Whole numbers keep `.0`,
- * scientific notation is used below 1e-4 and from 1e16 with an exponent of at
- * least two digits, `-0.0` keeps its sign, and non-finite values are written
- * `NaN`, `Infinity` and `-Infinity`.
- *
- * JavaScript has one number type, so a value cannot say whether it was an int
- * or a float in another language. Every number this formats is written as a
- * float.
- */
-export function pythonFloat(value: number): string {
-  if (Number.isNaN(value)) return 'NaN';
-  if (value === Number.POSITIVE_INFINITY) return 'Infinity';
-  if (value === Number.NEGATIVE_INFINITY) return '-Infinity';
-  const sign = value < 0 || Object.is(value, -0) ? '-' : '';
-  // toExponential() with no argument gives the shortest round-trip digits.
-  const [mantissa, exponentText] = Math.abs(value).toExponential().split('e');
-  const digits = mantissa.replace('.', '');
-  const exponent = Number(exponentText);
-  if (exponent < -4 || exponent >= 16) {
-    const fraction = digits.length > 1 ? `.${digits.slice(1)}` : '';
-    const magnitude = String(Math.abs(exponent)).padStart(2, '0');
-    return `${sign}${digits[0]}${fraction}e${exponent < 0 ? '-' : '+'}${magnitude}`;
-  }
-  if (exponent < 0) return `${sign}0.${'0'.repeat(-exponent - 1)}${digits}`;
-  const whole = digits.slice(0, exponent + 1).padEnd(exponent + 1, '0');
-  const fraction = digits.slice(exponent + 1) || '0';
-  return `${sign}${whole}.${fraction}`;
-}
+/** Values JSON.stringify writes as `null` in an array and drops from an object. */
+const omittedByJson = (value: unknown): boolean =>
+  value === undefined || typeof value === 'function' || typeof value === 'symbol';
 
 export const eventIdFor = (identity: Record<string, unknown>): string =>
   createHash('sha256').update(canonicalJson(identity)).digest('hex');
@@ -742,10 +721,10 @@ function asciiJson(json: string): string {
 
 /**
  * SHA-256 of what a row generated, serialized as the Python SDK serializes it:
- * canonical JSON with non-ASCII escaped. A JavaScript number cannot say
- * whether it is an int or a float, so numbers in `output` are written as
- * Python floats. `usage` counts and the error code are integers in both
- * languages, so they are written as integers.
+ * canonical JSON with non-ASCII escaped. Numbers in `output` are read as
+ * `json.loads` reads the JSON they usually come from: a safe integer is an
+ * int, anything else a float ({@link pythonJsonNumber}), the same reading the
+ * judge text uses. `usage` counts and the error code are integers.
  */
 export function contentHashFor(generated: GeneratedContent): string {
   const entries = Object.keys(generated)
@@ -753,7 +732,7 @@ export function contentHashFor(generated: GeneratedContent): string {
     .filter((key) => generated[key as keyof GeneratedContent] !== undefined)
     .map((key) => {
       const value = generated[key as keyof GeneratedContent];
-      return `${JSON.stringify(key)}:${canonicalJson(value, key === 'output' ? pythonFloat : undefined)}`;
+      return `${JSON.stringify(key)}:${canonicalJson(value, key === 'output' ? pythonJsonNumber : undefined)}`;
     });
   return createHash('sha256')
     .update(asciiJson(`{${entries.join(',')}}`))
