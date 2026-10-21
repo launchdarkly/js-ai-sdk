@@ -26,7 +26,7 @@ That call is the whole integration. Everything it does is configured in LaunchDa
 - Run agents and multi-step graphs, where each step can use a different provider
 - Score output quality with judges, including scoring that stays off the request path
 - See cost, latency, token usage, errors, and full conversations with no instrumentation code
-- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, Vercel AI SDK, LiteLLM, or your own handler
+- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, Vercel AI SDK, LiteLLM, Google ADK, or your own handler
 
 - [What you get](#what-you-get)
 - [How It Works](#how-it-works)
@@ -94,6 +94,7 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-vercel-agents](packages/vercel-agents/README.md)`           | `*` (any) | `agent`    | AI SDK 7 `ToolLoopAgent` and native graph runner      |
 | `[@launchdarkly/ai-litellm-messages](packages/litellm-messages/README.md)`     | `*` (any) | `messages` | OpenAI-compatible requests through a LiteLLM proxy    |
 | `[@launchdarkly/ai-litellm-agents](packages/litellm-agents/README.md)`         | `*` (any) | `agent`    | OpenAI Agents SDK through a LiteLLM proxy              |
+| `[@launchdarkly/ai-google-adk-agents](packages/google-adk-agents/README.md)`   | Google    | `agent`    | Google ADK agent loop and native graph runner          |
 
 
 ## Module format support
@@ -192,6 +193,7 @@ console.log(result.response);
 | `vercelAgents`      | `@launchdarkly/ai-vercel-agents`      | `ai`                             | `ToolLoopAgent`              |
 | `litellmMessages`   | `@launchdarkly/ai-litellm-messages`   | `openai`                         | LiteLLM proxy chat completions |
 | `litellmAgents`     | `@launchdarkly/ai-litellm-agents`     | `@openai/agents`                 | OpenAI Agents via LiteLLM proxy |
+| `googleAdkAgents`   | `@launchdarkly/ai-google-adk-agents`  | `@google/adk`                    | Google ADK agent loop           |
 
 
 ---

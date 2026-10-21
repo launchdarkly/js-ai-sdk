@@ -136,9 +136,16 @@ describe('CommonJS consumer bundled with Webpack + webpack-node-externals', () =
       expect(result.status, result.stdout).toBe(0);
       // A module tsc cannot resolve in the consumer is looked up again in every ancestor
       // `node_modules`, and the consumer sits inside this repo, so a failed lookup would land on
-      // the workspace copy and pass. Every file loaded from the repo must be the consumer's own.
+      // the workspace copy and pass. Workspace files must be the consumer's own. Other hoisted
+      // packages are not workspace copies: @types/node does `export * from "buffer"`, and the
+      // `buffer` polyfill @google/adk hoists to the repo root would otherwise fail this check.
       const loaded = result.stdout.split('\n').filter((file) => file.startsWith(repoRoot));
-      expect(loaded.filter((file) => !file.startsWith(`${consumerDir}/`))).toEqual([]);
+      const workspaceRoots = [`${join(repoRoot, 'packages')}/`, `${join(repoRoot, 'node_modules', '@launchdarkly')}/`];
+      expect(
+        loaded.filter(
+          (file) => !file.startsWith(`${consumerDir}/`) && workspaceRoots.some((root) => file.startsWith(root)),
+        ),
+      ).toEqual([]);
       for (const pkg of ['ai-server', 'ai-node']) {
         const experimental = join(consumerDir, 'node_modules', '@launchdarkly', pkg, 'dist', 'experimental.d.');
         expect(

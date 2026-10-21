@@ -121,6 +121,7 @@ graph TD
  langchain["ai-langchain-agents"]
  vercel["ai-vercel-agents"]
  litellm["ai-litellm-agents"]
+ googleAdk["ai-google-adk-agents"]
  newHandler["ai-new-provider\n(future)"]
  end
  subgraph tier0 ["Tier 0 — Core"]
@@ -133,6 +134,7 @@ graph TD
  app --> langchain
  app --> vercel
  app --> litellm
+ app --> googleAdk
  app --> newHandler
  app --> ainode
  claude --> client
@@ -140,6 +142,7 @@ graph TD
  langchain --> client
  vercel --> client
  litellm --> client
+ googleAdk --> client
  newHandler --> client
  ainode --> client
 ```
@@ -148,7 +151,7 @@ graph TD
 
 - **Tier 0 — Core** (`@launchdarkly/ai-server`): The foundation. Owns all LaunchDarkly integration, telemetry orchestration, shared data types, and the primary entry points (`config()`, `graph()`, `resolveGraph()`). Has no dependency on any other `@launchdarkly/ai-server` package.
 - **Tier 0 — Convenience wrapper** (`@launchdarkly/ai-node`): A pure barrel that re-exports everything from `@launchdarkly/ai-server` and carries `@launchdarkly/node-server-sdk` as a hard dependency. No new logic — intended as the default install for Node.js applications so consumers do not need to manage the `node-server-sdk` peer dependency themselves.
-- **Tier 1 — Handler packages** (`@launchdarkly/ai-claude-*`, `@launchdarkly/ai-openai-*`, `@launchdarkly/ai-langchain-*`, `@launchdarkly/ai-vercel-*`, `@launchdarkly/ai-litellm-*`, …): Each wraps a specific AI provider SDK. Depends on `@launchdarkly/ai-server` for shared types and utilities. Must not depend on other Tier 1 packages.
+- **Tier 1 — Handler packages** (`@launchdarkly/ai-claude-*`, `@launchdarkly/ai-openai-*`, `@launchdarkly/ai-langchain-*`, `@launchdarkly/ai-vercel-*`, `@launchdarkly/ai-litellm-*`, `@launchdarkly/ai-google-adk-agents`, …): Each wraps a specific AI provider SDK. Depends on `@launchdarkly/ai-server` for shared types and utilities. Must not depend on other Tier 1 packages.
 - **Tier 2 — Consumer applications** (e.g. `main.ts`, downstream projects): Imports from one or more handler packages and either `@launchdarkly/ai-node` (standard Node.js) or `@launchdarkly/ai-server` (edge/custom runtime). Owns tool implementations and orchestration logic. No `@launchdarkly/ai` package should ever depend on Tier 2 code.
 
 ### Rules
@@ -427,7 +430,7 @@ Requires `handlers` (either in `options` or via `options.registry`) to be set. F
 
 Resolves an agent graph's topology and node configs without executing it. The returned `GraphDefinition` carries `.enabled`; callers should branch on it before traversing. The `options` object extends `GraphOptions` with a required `context: LDContext`.
 
-This is the entrypoint that framework-native runners (`toClaudeAgents`, `toOpenAIAgents`, `toLangGraph`, `toLiteLLMAgents`) use to build their own execution structure.
+This is the entrypoint that framework-native runners (`toClaudeAgents`, `toOpenAIAgents`, `toLangGraph`, `toLiteLLMAgents`, `toAdkAgents`) use to build their own execution structure.
 
 ### `Registry` / `globalRegistry` / `compose`
 
@@ -722,7 +725,7 @@ xxx(configKey: string, userInput: string, context: LDContext, options?: Omit<Con
 
 For example, `claudeAgents(configKey, userInput, context, options)` is equivalent to `config({ ...options, key: configKey, handler: createClaudeAgentsHandler() }).invoke(userInput, context)`.
 
-The naming convention matches the package suffix: `claudeAgents`, `claudeMessages`, `openaiAgents`, `openaiMessages`, `langchainAgents`, `langchainMessages`, `vercelAgents`, `vercelMessages`.
+The naming convention matches the package suffix: `claudeAgents`, `claudeMessages`, `openaiAgents`, `openaiMessages`, `langchainAgents`, `langchainMessages`, `vercelAgents`, `vercelMessages`, `googleAdkAgents`.
 
 This is a convenience only — it is not required and must not contain any logic beyond wiring the handler.
 
@@ -736,7 +739,7 @@ xxxGraph(key, options) => { invoke(input, context, variables?): Promise<Provider
 
 For example, `claudeGraph(key, options)` is equivalent to `graph(key, { ...options, handlers: [createClaudeAgentsHandler()] })`.
 
-Naming convention: `claudeGraph`, `openaiGraph`, `langchainGraph`, `vercelGraph`, `litellmGraph`.
+Naming convention: `claudeGraph`, `openaiGraph`, `langchainGraph`, `vercelGraph`, `litellmGraph`, `googleAdkGraph`.
 
 ### Native Graph Adapter (optional)
 
@@ -748,6 +751,7 @@ Current adapters:
 - `toLangGraph(def, options)` — exported from `@launchdarkly/ai-langchain-agents`
 - `toVercelAgents(def, options)` — exported from `@launchdarkly/ai-vercel-agents`
 - `toLiteLLMAgents(def, options)` — exported from `@launchdarkly/ai-litellm-agents`
+- `toAdkAgents(def, options)` — exported from `@launchdarkly/ai-google-adk-agents`
 
 ---
 

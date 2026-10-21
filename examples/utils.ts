@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { crc32, deflateSync } from 'node:zlib';
+import type { LDContext } from '@launchdarkly/ai-node';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -16,9 +17,9 @@ export function newContext() {
 export function newMultiContext() {
   return {
     kind: 'multi' as const,
-    organization: { key: 'example-org:west%region' },
-    user: { key: `example-user-${randomUUID().slice(0, 8)}` },
-  };
+    organization: { kind: 'organization' as const, key: 'example-org:west%region' },
+    user: { kind: 'user' as const, key: `example-user-${randomUUID().slice(0, 8)}` },
+  } satisfies LDContext;
 }
 
 /**
