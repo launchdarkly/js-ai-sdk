@@ -2,9 +2,9 @@ import {
   type AiConfigRep,
   type ContentCaptureOptions,
   composeHistory,
-  config,
+  configInternal,
   contentToText,
-  createHandler,
+  createHandlerInternal,
   endSpanOnce,
   imageBlockToUrl,
   type LDContext,
@@ -12,6 +12,7 @@ import {
   type MessageContent,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -24,6 +25,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-litellm-messages';
 const MAX_STEPS = 10;
@@ -263,10 +265,16 @@ function spanMessages(messages: Array<Record<string, unknown>>) {
 }
 
 export function createLiteLLMMessagesHandler(options: LiteLLMMessagesOptions = {}): ProviderHandler {
+  reportUsage('litellm-messages.createLiteLLMMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createLiteLLMMessagesHandlerInternal(options);
+}
+
+/** `createLiteLLMMessagesHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOptions = {}): ProviderHandler {
   const resolvedOptions = checkedOptions(options);
   const captureContent = resolvedOptions.captureContent ?? false;
 
-  return createHandler(
+  return createHandlerInternal(
     ['*', 'messages'],
     async (
       configRep: AiConfigRep,
@@ -511,11 +519,13 @@ export const litellmMessages = (
     clientFactory,
     variables,
     ...options
-  }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
+  }: Omit<Parameters<typeof configInternal>[0], 'handler' | 'key'> &
     LiteLLMMessagesOptions & { variables?: Record<string, unknown> } = {},
-) =>
-  config({
+) => {
+  reportUsage('litellm-messages.litellmMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
     ...options,
     key: configKey,
-    handler: createLiteLLMMessagesHandler({ apiKey, baseURL, captureContent, client, clientFactory }),
+    handler: createLiteLLMMessagesHandlerInternal({ apiKey, baseURL, captureContent, client, clientFactory }),
   }).invoke(userInput, context, variables);
+};

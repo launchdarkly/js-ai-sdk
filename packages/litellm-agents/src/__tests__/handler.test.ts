@@ -108,8 +108,8 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
     ...actual,
-    config: mockConfig.mockReturnValue({ invoke: mockInvoke }),
-    graph: mockGraph,
+    configInternal: mockConfig.mockReturnValue({ invoke: mockInvoke }),
+    graphInternal: mockGraph,
   };
 });
 
@@ -250,6 +250,31 @@ describe('createLiteLLMAgentsHandler', () => {
     expect(JSON.stringify(modelArgs)).not.toContain('provider-secret');
     expect(JSON.stringify(agentArgs[0].modelSettings)).not.toContain('api_base');
     expect(agentArgs[0].modelSettings).toEqual({ maxTokens: 250, temperature: 0.1 });
+  });
+
+  it('maps verbosity to text.verbosity and keeps only effort and summary under reasoning', async () => {
+    mockRun.mockResolvedValue(result());
+    await createLiteLLMAgentsHandler({ client: {} as never })(
+      {
+        ...baseConfig,
+        model: {
+          name: 'proxy-alias',
+          parameters: {
+            verbosity: 'low',
+            reasoning: { effort: 'high', summary: 'auto', smuggled: true },
+            metadata: { team: 'a' },
+            include_usage: true,
+            top_logprobs: 2,
+            truncation: 'auto',
+          },
+        },
+      } as never,
+      'q',
+    );
+    expect(agentArgs[0].modelSettings).toEqual({
+      reasoning: { effort: 'high', summary: 'auto' },
+      text: { verbosity: 'low' },
+    });
   });
 
   it.each([

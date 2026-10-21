@@ -58,7 +58,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
     ...actual,
-    config: mockConfig.mockReturnValue({ invoke: mockInvoke }),
+    configInternal: mockConfig.mockReturnValue({ invoke: mockInvoke }),
   };
 });
 

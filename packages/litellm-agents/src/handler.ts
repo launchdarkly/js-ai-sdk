@@ -2,9 +2,9 @@ import {
   type AiConfigRep,
   type ContentCaptureOptions,
   composeHistory,
-  config,
+  configInternal,
   contentToText,
-  createHandler,
+  createHandlerInternal,
   endSpanOnce,
   imageBlockToUrl,
   type LDContext,
@@ -13,6 +13,7 @@ import {
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -27,35 +28,16 @@ import type { JsonSchemaDefinition, ModelRequest, ModelResponse, StreamEvent } f
 import { Agent, type Model, OpenAIChatCompletionsModel, Runner, tool } from '@openai/agents';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
+import { buildMaxTurns, buildModelSettings } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-litellm-agents';
 
-// Snake_case names the AI Config UI writes, mapped to the Agents SDK's camelCase
-// ModelSettings fields. Connection keys and providerData are not in this list.
-const MODEL_SETTING_FIELDS: Array<[string, string]> = [
-  ['frequency_penalty', 'frequencyPenalty'],
-  ['max_tokens', 'maxTokens'],
-  ['parallel_tool_calls', 'parallelToolCalls'],
-  ['presence_penalty', 'presencePenalty'],
-  ['reasoning', 'reasoning'],
-  ['store', 'store'],
-  ['temperature', 'temperature'],
-  ['tool_choice', 'toolChoice'],
-  ['top_p', 'topP'],
-  ['verbosity', 'verbosity'],
-];
-
 export function agentRunSettings(parameters: Record<string, unknown> | undefined) {
-  const raw = parameters ?? {};
-  const modelSettings: Record<string, unknown> = {};
-  for (const [snake, camel] of MODEL_SETTING_FIELDS) {
-    const value = raw[snake] !== undefined ? raw[snake] : raw[camel];
-    if (value !== undefined) modelSettings[camel] = value;
-  }
-  const maxTurns = Number(raw.max_turns ?? raw.maxTurns);
+  const maxTurns = buildMaxTurns(parameters);
   return {
-    modelSettings,
-    runOptions: Number.isFinite(maxTurns) && maxTurns > 0 ? { maxTurns } : {},
+    modelSettings: buildModelSettings(parameters) ?? {},
+    runOptions: maxTurns !== undefined && maxTurns > 0 ? { maxTurns } : {},
   };
 }
 
@@ -406,10 +388,16 @@ function setCapturedInput(span: Span, capture: boolean, input: RunnerInput, inst
 }
 
 export function createLiteLLMAgentsHandler(options: LiteLLMAgentsOptions = {}): ProviderHandler {
+  reportUsage('litellm-agents.createLiteLLMAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createLiteLLMAgentsHandlerInternal(options);
+}
+
+/** `createLiteLLMAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions = {}): ProviderHandler {
   const resolvedOptions = checkedOptions(options);
   const captureContent = resolvedOptions.captureContent ?? false;
 
-  return createHandler(
+  return createHandlerInternal(
     ['*', 'agent'],
     async (
       configRep: AiConfigRep,
@@ -553,11 +541,13 @@ export const litellmAgents = (
     clientFactory,
     variables,
     ...options
-  }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
+  }: Omit<Parameters<typeof configInternal>[0], 'handler' | 'key'> &
     LiteLLMAgentsOptions & { variables?: Record<string, unknown> } = {},
-) =>
-  config({
+) => {
+  reportUsage('litellm-agents.litellmAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
     ...options,
     key: configKey,
-    handler: createLiteLLMAgentsHandler({ apiKey, baseURL, captureContent, client, clientFactory }),
+    handler: createLiteLLMAgentsHandlerInternal({ apiKey, baseURL, captureContent, client, clientFactory }),
   }).invoke(userInput, context, variables);
+};

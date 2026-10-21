@@ -1,5 +1,6 @@
-import { type GraphOptions, graph } from '@launchdarkly/ai-server';
-import { createLiteLLMAgentsHandler, type LiteLLMAgentsOptions } from './handler.js';
+import { type GraphOptions, graphInternal, reportUsage } from '@launchdarkly/ai-server';
+import { createLiteLLMAgentsHandlerInternal, type LiteLLMAgentsOptions } from './handler.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 export type LiteLLMGraphOptions = Omit<GraphOptions, 'handlers'> & LiteLLMAgentsOptions;
 
@@ -7,8 +8,10 @@ export type LiteLLMGraphOptions = Omit<GraphOptions, 'handlers'> & LiteLLMAgents
 export const litellmGraph = (
   key: string,
   { apiKey, baseURL, captureContent, client, clientFactory, ...options }: LiteLLMGraphOptions,
-) =>
-  graph(key, {
+) => {
+  reportUsage('litellm-agents.litellmGraph', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return graphInternal(key, {
     ...options,
-    handlers: [createLiteLLMAgentsHandler({ apiKey, baseURL, captureContent, client, clientFactory })],
+    handlers: [createLiteLLMAgentsHandlerInternal({ apiKey, baseURL, captureContent, client, clientFactory })],
   });
+};

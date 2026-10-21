@@ -1,14 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { agentArgs, clientArgs, handoffs, modelArgs, mockRun, mockTool, runnerArgs } = vi.hoisted(() => ({
-  agentArgs: [] as Array<Record<string, unknown>>,
-  clientArgs: [] as Array<Record<string, unknown>>,
-  handoffs: [] as unknown[],
-  modelArgs: [] as Array<unknown[]>,
-  mockRun: vi.fn(),
-  mockTool: vi.fn(({ execute, ...definition }) => ({ ...definition, execute })),
-  runnerArgs: [] as Array<Record<string, unknown>>,
-}));
+const { agentArgs, clientArgs, handoffs, modelArgs, mockRun, mockTool, mockTrack, runnerArgs, runnerListeners } =
+  vi.hoisted(() => ({
+    agentArgs: [] as Array<Record<string, unknown>>,
+    clientArgs: [] as Array<Record<string, unknown>>,
+    handoffs: [] as unknown[],
+    modelArgs: [] as Array<unknown[]>,
+    mockRun: vi.fn(),
+    mockTool: vi.fn(({ execute, ...definition }) => ({ ...definition, execute })),
+    mockTrack: vi.fn(),
+    runnerArgs: [] as Array<Record<string, unknown>>,
+    runnerListeners: {} as Record<string, (...args: unknown[]) => void>,
+  }));
 
 vi.mock('openai', () => ({
   default: class {
@@ -33,7 +36,9 @@ vi.mock('@openai/agents', () => ({
   },
   Runner: class {
     run = mockRun;
-    on = vi.fn();
+    on(name: string, listener: (...args: unknown[]) => void) {
+      runnerListeners[name] = listener;
+    }
     constructor(options: Record<string, unknown>) {
       runnerArgs.push(options);
     }
@@ -44,6 +49,11 @@ vi.mock('@openai/agents', () => ({
   }),
   setTracingDisabled: vi.fn(),
   tool: mockTool,
+}));
+
+vi.mock('@launchdarkly/ai-server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@launchdarkly/ai-server')>()),
+  getClient: () => ({ track: mockTrack }),
 }));
 
 import type { GraphDefinition, GraphNode } from '@launchdarkly/ai-server';
@@ -226,6 +236,66 @@ describe('toLiteLLMAgents', () => {
     expect(response).toEqual({
       response: 'graph answer',
       usage: { input: 9, output: 4, total: 13 },
+    });
+  });
+
+  describe('LaunchDarkly telemetry', () => {
+    const context = { key: 'user-1', kind: 'user' };
+    const events = () =>
+      mockTrack.mock.calls.map(([name, , data]) => [name, (data as { configKey: string }).configKey]);
+
+    beforeEach(() => {
+      mockRun.mockImplementation(async () => {
+        runnerListeners.agent_start?.({}, { name: 'root' });
+        runnerListeners.agent_handoff?.({}, { name: 'root' }, { name: 'leaf' });
+        runnerListeners.agent_start?.({}, { name: 'leaf' });
+        runnerListeners.agent_end?.({}, { name: 'leaf' }, 'graph answer');
+        return { finalOutput: 'graph answer', state: { usage: { inputTokens: 9, outputTokens: 4, totalTokens: 13 } } };
+      });
+    });
+
+    it('tracks nodes in path order, including the handoff target, and graph totals on the graph key', async () => {
+      await toLiteLLMAgents(Promise.resolve(graphDefinition()), { client: {} as never, context }).invoke('q');
+      expect(events()).toEqual([
+        ['$ld:ai:graph:node', 'root'],
+        ['$ld:ai:graph:node', 'leaf'],
+        ['$ld:ai:graph:handoff_success', 'root'],
+        ['$ld:ai:generation:success', 'leaf'],
+        ['$ld:ai:graph:duration:total', 'litellm-graph'],
+        ['$ld:ai:graph:total_tokens', 'litellm-graph'],
+        ['$ld:ai:graph:invocation_success', 'litellm-graph'],
+      ]);
+      const nodes = mockTrack.mock.calls.filter(([name]) => name === '$ld:ai:graph:node');
+      expect(nodes.map(([, , data]) => (data as { index: number }).index)).toEqual([0, 1]);
+      const totalTokens = mockTrack.mock.calls.find(([name]) => name === '$ld:ai:graph:total_tokens');
+      expect(totalTokens?.[3]).toBe(13);
+    });
+
+    it('tracks an invocation failure when setup fails before the run', async () => {
+      const saved = process.env.LITELLM_BASE_URL;
+      delete process.env.LITELLM_BASE_URL;
+      try {
+        await expect(toLiteLLMAgents(Promise.resolve(graphDefinition()), { context }).invoke('q')).rejects.toThrow(
+          /baseURL/,
+        );
+      } finally {
+        if (saved !== undefined) process.env.LITELLM_BASE_URL = saved;
+      }
+      expect(events()).toEqual([['$ld:ai:graph:invocation_failure', 'litellm-graph']]);
+      expect(mockRun).not.toHaveBeenCalled();
+    });
+
+    it('tracks an invocation failure when the run throws', async () => {
+      mockRun.mockRejectedValue(new Error('proxy down'));
+      await expect(
+        toLiteLLMAgents(Promise.resolve(graphDefinition()), { client: {} as never, context }).invoke('q'),
+      ).rejects.toThrow('proxy down');
+      expect(events()).toEqual([['$ld:ai:graph:invocation_failure', 'litellm-graph']]);
+    });
+
+    it('tracks nothing without a context', async () => {
+      await toLiteLLMAgents(Promise.resolve(graphDefinition()), { client: {} as never }).invoke('q');
+      expect(mockTrack).not.toHaveBeenCalled();
     });
   });
 });
