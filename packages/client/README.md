@@ -20,17 +20,10 @@ The SDK works fully without the OpenTelemetry packages — feature flags evaluat
 
 ### With telemetry (recommended for production)
 
-To export traces to the LaunchDarkly Observability dashboard (or any OTLP-compatible backend), install the OTel SDK peer dependencies alongside the core package:
+To export traces to the LaunchDarkly Observability dashboard (or any OTLP-compatible backend), install [`@launchdarkly/ai-otel`](../ai-otel/README.md), which bundles the OTel SDK peer dependencies:
 
 ```bash
-npm install @launchdarkly/ai-server \
-  @opentelemetry/sdk-trace-node \
-  @opentelemetry/sdk-trace-base \
-  @opentelemetry/exporter-trace-otlp-http \
-  @opentelemetry/otlp-exporter-base \
-  @opentelemetry/resources \
-  @opentelemetry/context-async-hooks \
-  @opentelemetry/core
+npm install @launchdarkly/ai-server @launchdarkly/ai-otel
 ```
 
 No code changes are required — `initClient()` detects the packages at runtime and sets up the tracer provider automatically.
