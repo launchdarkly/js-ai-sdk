@@ -1,5 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { MessageCreateParamsBase } from '@anthropic-ai/sdk/resources/messages/messages';
+import type {
+  CacheControlEphemeral,
+  MessageCreateParamsBase,
+  ThinkingConfigParam,
+  ToolChoice,
+} from '@anthropic-ai/sdk/resources/messages/messages';
 import {
   type AiConfigRep,
   addCachedTokensToInput,
@@ -396,28 +401,60 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** An object with a string `type`, the shape `thinking`, `tool_choice` and `cache_control` share. */
-function isTypedObject(value: unknown): boolean {
-  return isPlainObject(value) && typeof value.type === 'string';
+/** The required and optional sub-keys of one variant of a typed object, besides `type`. */
+interface TypedObjectShape {
+  required: ReadonlyArray<string>;
+  optional: ReadonlyArray<string>;
 }
 
 /**
- * Nested values the Messages API reads as objects. A value of the wrong shape (not an object, or
- * missing the `type` the API requires) is dropped rather than sent, since the API would reject it.
+ * The typed objects among the forwarded keys, as the Anthropic SDK declares them
+ * (`ThinkingConfigParam`, `ToolChoice`, `CacheControlEphemeral`): each `type` the API knows,
+ * mapped to that variant's sub-keys. The `satisfies` clauses fail to compile if the SDK adds or
+ * removes a variant. The Python SDK uses the same shapes.
  */
-const NESTED_SHAPE_CHECKS: Record<string, (value: unknown) => boolean> = {
-  cache_control: isTypedObject,
-  output_config: isPlainObject,
-  thinking: isTypedObject,
-  tool_choice: isTypedObject,
+const TYPED_OBJECT_SHAPES: Record<string, Record<string, TypedObjectShape>> = {
+  thinking: {
+    enabled: { required: ['budget_tokens'], optional: ['display'] },
+    adaptive: { required: [], optional: ['display'] },
+    disabled: { required: [], optional: [] },
+  } satisfies Record<ThinkingConfigParam['type'], TypedObjectShape>,
+  tool_choice: {
+    auto: { required: [], optional: ['disable_parallel_tool_use'] },
+    any: { required: [], optional: ['disable_parallel_tool_use'] },
+    tool: { required: ['name'], optional: ['disable_parallel_tool_use'] },
+    none: { required: [], optional: [] },
+  } satisfies Record<ToolChoice['type'], TypedObjectShape>,
+  cache_control: {
+    ephemeral: { required: [], optional: ['ttl'] },
+  } satisfies Record<CacheControlEphemeral['type'], TypedObjectShape>,
 };
+
+/**
+ * `value` with only the sub-keys its `type` takes, or `undefined` when it is not an object, its
+ * `type` is missing or unknown, or a required sub-key is missing. The API rejects all of those.
+ */
+function rebuildTypedObject(
+  value: unknown,
+  shapes: Record<string, TypedObjectShape>,
+): Record<string, unknown> | undefined {
+  if (!isPlainObject(value) || typeof value.type !== 'string' || !Object.hasOwn(shapes, value.type)) return undefined;
+  const { required, optional } = shapes[value.type];
+  if (required.some((key) => value[key] === undefined || value[key] === null)) return undefined;
+  const rebuilt: Record<string, unknown> = { type: value.type };
+  for (const key of [...required, ...optional]) {
+    if (value[key] !== undefined && value[key] !== null) rebuilt[key] = value[key];
+  }
+  return rebuilt;
+}
 
 /**
  * Picks the subset of `config.model.parameters` that maps onto `MessageCreateParamsBase`, after
  * moving a top-level `effort` (the shape the LaunchDarkly UI writes) into `output_config.effort`,
  * the shape the Messages API actually accepts. An `output_config.effort` already present in the
  * config wins over the renamed value, since it is what the customer set explicitly for that field.
- * Malformed nested values are dropped (see `NESTED_SHAPE_CHECKS`). A config that sets nothing here
+ * Malformed nested values are dropped and typed objects rebuilt (see `TYPED_OBJECT_SHAPES`). A
+ * config that sets nothing here
  * produces `{}`, so the provider call sees exactly what it always has.
  */
 function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
@@ -427,8 +464,12 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
     effort !== undefined ? { effort, ...(isPlainObject(output_config) ? output_config : undefined) } : output_config;
   const withEffortMoved = mergedOutputConfig !== undefined ? { ...rest, output_config: mergedOutputConfig } : rest;
   const picked = pickForwardedModelParameters(withEffortMoved, FORWARDED_MODEL_PARAMETER_KEYS);
-  for (const [key, isWellFormed] of Object.entries(NESTED_SHAPE_CHECKS)) {
-    if (picked[key] !== undefined && !isWellFormed(picked[key])) delete picked[key];
+  if (picked.output_config !== undefined && !isPlainObject(picked.output_config)) delete picked.output_config;
+  for (const [key, shapes] of Object.entries(TYPED_OBJECT_SHAPES)) {
+    if (picked[key] === undefined) continue;
+    const rebuilt = rebuildTypedObject(picked[key], shapes);
+    if (rebuilt) picked[key] = rebuilt;
+    else delete picked[key];
   }
   return picked;
 }

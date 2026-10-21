@@ -1680,8 +1680,15 @@ describe('createClaudeMessagesHandler — cross-SDK allowlist (TESTING.md §1.12
   it.each([
     ['thinking', 'enabled'],
     ['thinking', { budget_tokens: 1024 }],
+    ['thinking', { type: 'enabled' }],
+    ['thinking', { type: 'on', budget_tokens: 1024 }],
     ['tool_choice', 'auto'],
+    ['tool_choice', {}],
+    ['tool_choice', { type: 'tool' }],
+    ['tool_choice', { type: 'required' }],
     ['cache_control', ['ephemeral']],
+    ['cache_control', {}],
+    ['cache_control', { type: 'persistent' }],
     ['output_config', 'high'],
   ])('drops a malformed %s (%j) on invoke and stream', async (key, value) => {
     const invoked = await invokeCall({ [key]: value });
@@ -1689,6 +1696,25 @@ describe('createClaudeMessagesHandler — cross-SDK allowlist (TESTING.md §1.12
     vi.clearAllMocks();
     const streamed = await streamCall({ [key]: value });
     expect(streamed).not.toHaveProperty(key);
+  });
+
+  it.each([
+    ['thinking', { type: 'enabled', budget_tokens: 1024, x: 1 }, { type: 'enabled', budget_tokens: 1024 }],
+    ['thinking', { type: 'adaptive', display: 'omitted', budget_tokens: 1 }, { type: 'adaptive', display: 'omitted' }],
+    ['thinking', { type: 'disabled', budget_tokens: 1 }, { type: 'disabled' }],
+    [
+      'tool_choice',
+      { type: 'tool', name: 'lookup', disable_parallel_tool_use: true },
+      { type: 'tool', name: 'lookup', disable_parallel_tool_use: true },
+    ],
+    ['tool_choice', { type: 'auto', name: 'x' }, { type: 'auto' }],
+    ['cache_control', { type: 'ephemeral', ttl: '1h', scope: 'x' }, { type: 'ephemeral', ttl: '1h' }],
+  ])('keeps only the sub-keys a known %s type takes (%j)', async (key, value, expected) => {
+    const invoked = await invokeCall({ [key]: value });
+    expect(invoked[key]).toEqual(expected);
+    vi.clearAllMocks();
+    const streamed = await streamCall({ [key]: value });
+    expect(streamed[key]).toEqual(expected);
   });
 
   it('a malformed output_config does not stop a top-level effort from being forwarded', async () => {
