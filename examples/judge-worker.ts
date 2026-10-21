@@ -14,9 +14,10 @@ import { createClaudeMessagesHandler } from '@launchdarkly/ai-claude-messages';
 import type { JudgeTask } from '@launchdarkly/ai-node';
 import { getClient, initClient, runJudge, shutdown } from '@launchdarkly/ai-node';
 import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createTypesafeHandler } from '@launchdarkly/ai-typesafe';
 
 const task = workerData as JudgeTask;
-const handlers = [createOpenAIHandler(), createClaudeMessagesHandler()];
+const handlers = [createOpenAIHandler(), createClaudeMessagesHandler(), createTypesafeHandler()];
 
 async function main(): Promise<void> {
   // Initialize the LD client in this worker so we can track the evaluation
@@ -26,7 +27,16 @@ async function main(): Promise<void> {
 
   const result = await runJudge(task, handlers);
 
-  if (result && task.evaluationMetricKey) {
+  if (result?.metrics?.length) {
+    for (const metric of result.metrics) {
+      getClient().track(
+        metric.eventKey,
+        task.userContext,
+        { ...result.trackData, judgeConfigKey: metric.judgeConfigKey },
+        metric.score,
+      );
+    }
+  } else if (result && task.evaluationMetricKey) {
     getClient().track(task.evaluationMetricKey, task.userContext, result.trackData, result.score);
   }
 

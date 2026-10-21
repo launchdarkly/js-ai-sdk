@@ -109,6 +109,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
         handlers: resolvedHandlerArray,
         llmResponse: llmResponseStr,
         baseTrackData,
+        userInput,
       });
       return {
         response: parsedResponse as T,

@@ -94,6 +94,7 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-vercel-agents](packages/vercel-agents/README.md)`           | `*` (any) | `agent`    | AI SDK 7 `ToolLoopAgent` and native graph runner      |
 | `[@launchdarkly/ai-litellm-messages](packages/litellm-messages/README.md)`     | `*` (any) | `messages` | OpenAI-compatible requests through a LiteLLM proxy    |
 | `[@launchdarkly/ai-litellm-agents](packages/litellm-agents/README.md)`         | `*` (any) | `agent`    | OpenAI Agents SDK through a LiteLLM proxy              |
+| `[@launchdarkly/ai-typesafe](packages/typesafe/README.md)`                     | TypeSafe  | `messages` | TypeSafe Jev judge handler                            |
 
 
 ## Module format support
