@@ -118,6 +118,16 @@ describe('buildModelParameterOptions allowlist', () => {
   });
 
   it.each([
+    [{ reasoning: { effort: 'low', summary: 'auto' } }, { reasoning: 'low' }],
+    [{ reasoning: { summary: 'auto' } }, {}],
+    [{ reasoning: 3 }, {}],
+    [{ reasoning: { summary: 'auto' }, reasoning_effort: 'high' }, { reasoning: 'high' }],
+    [{ reasoning: 'medium', reasoning_effort: 'high' }, { reasoning: 'medium' }],
+  ])('reads reasoning effort from %j', (parameters, expected) => {
+    expect(buildModelParameterOptions(parameters as never)).toEqual(expected);
+  });
+
+  it.each([
     { type: 'auto' },
     { type: 'function', name: 'f' },
     { type: 'tool', toolName: 'f' },
