@@ -1,6 +1,6 @@
 import type { AiConfigRep, Message, ProviderHandler } from '@launchdarkly/ai-server';
 import {
-  createHandler,
+  createHandlerInternal,
   reportUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
@@ -68,7 +68,7 @@ export function createTypesafeHandler(options: TypesafeHandlerOptions = {}): Pro
   const captureContent = options.captureContent ?? false;
   const tracer = trace.getTracer('@launchdarkly/ai-typesafe');
 
-  return createHandler(
+  return createHandlerInternal(
     ['TypeSafe', 'messages'],
     async (
       config: AiConfigRep,
