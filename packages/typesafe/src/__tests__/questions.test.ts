@@ -1,7 +1,13 @@
+import { readFileSync } from 'node:fs';
 import type { AiConfigRep } from '@launchdarkly/ai-server';
-import { FORMATTING_INSTRUCTIONS } from '@launchdarkly/ai-server';
 import { describe, expect, it } from 'vitest';
-import { buildTypesafeState, extractTypesafeQuestions, reasonFromAnswer, scoreFromAnswer } from '../questions.js';
+import {
+  buildTypesafeState,
+  extractTypesafeQuestions,
+  FORMATTING_INSTRUCTIONS,
+  reasonFromAnswer,
+  scoreFromAnswer,
+} from '../questions.js';
 
 const classifiers = [
   {
@@ -174,5 +180,12 @@ describe('reasonFromAnswer', () => {
     expect(reasonFromAnswer(scored, { score: 1.5, legend })).toBe('Ok');
     expect(reasonFromAnswer(scored, { score: 1.7, legend })).toBe('Bad');
     expect(reasonFromAnswer(scored, { score: 1 })).toBe('Ok');
+  });
+});
+
+describe('FORMATTING_INSTRUCTIONS', () => {
+  it('matches the copy the client appends to judge prompts', () => {
+    const judges = readFileSync(new URL('../../../client/src/judges.ts', import.meta.url), 'utf8');
+    for (const line of FORMATTING_INSTRUCTIONS.split('\n')) expect(judges).toContain(`'${line}'`);
   });
 });

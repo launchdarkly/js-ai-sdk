@@ -1,5 +1,5 @@
-import { FORMATTING_INSTRUCTIONS } from '@launchdarkly/ai-server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { FORMATTING_INSTRUCTIONS } from '../questions.js';
 
 const { mockSystemOne } = vi.hoisted(() => ({ mockSystemOne: vi.fn() }));
 

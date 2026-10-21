@@ -1,5 +1,12 @@
 import type { AiConfigRep, Message } from '@launchdarkly/ai-server';
-import { FORMATTING_INSTRUCTIONS } from '@launchdarkly/ai-server';
+
+/** Must match `FORMATTING_INSTRUCTIONS` in `@launchdarkly/ai-server` `judges.ts`, which is not public API. */
+export const FORMATTING_INSTRUCTIONS = [
+  'Your response MUST be in valid JSON format with the following structure:',
+  '{ "score": <number, 0-1>, "reasoning": <string> }',
+  'The output must be valid, parseable JSON. Do not include additional tags, comments, formatting, or newlines.',
+  'It should be returned in a format that is immediately parseable by a JSON parsing function. Do not include ```json tags.',
+].join('\n');
 
 export type TypesafeQuestionType = 'noul' | 'choice' | 'score';
 

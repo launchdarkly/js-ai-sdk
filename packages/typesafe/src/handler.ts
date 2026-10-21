@@ -1,6 +1,7 @@
 import type { AiConfigRep, Message, ProviderHandler } from '@launchdarkly/ai-server';
 import {
   createHandler,
+  reportUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
   setModelIdentityAttributes,
@@ -19,6 +20,7 @@ import {
   scoreFromAnswer,
   typesafeOutput,
 } from './questions.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 export type TypesafeHandlerOptions = {
   captureContent?: boolean;
@@ -62,6 +64,7 @@ function usageOf(usage: SystemOneUsage | null | undefined): { input_tokens: numb
  * ask Jev for the SDK's `{score, reasoning}` JSON.
  */
 export function createTypesafeHandler(options: TypesafeHandlerOptions = {}): ProviderHandler {
+  reportUsage('typesafe.createTypesafeHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   const captureContent = options.captureContent ?? false;
   const tracer = trace.getTracer('@launchdarkly/ai-typesafe');
 
