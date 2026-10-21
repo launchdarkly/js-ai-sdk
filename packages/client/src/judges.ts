@@ -154,6 +154,8 @@ export const runJudges = async ({
       } else {
         // No compatible handler found — skip this judge rather than calling the
         // wrong provider's API with an incompatible model name.
+        // biome-ignore lint/suspicious/noConsole: judges are non-fatal; say why one was skipped
+        console.warn(`Judge '${judge.key}' skipped: no handler covers provider ${judgeProvider}`);
         continue;
       }
     } else {
@@ -279,6 +281,8 @@ export const buildJudgeTasksInternal = async ({
         collapseMessages = judgeMode === 'messages' && handler.providesFor?.[1] === 'agent';
       } else {
         // No compatible handler — skip, same as runJudges.
+        // biome-ignore lint/suspicious/noConsole: judges are non-fatal; say why one was skipped
+        console.warn(`Judge '${judge.key}' skipped: no handler covers provider ${judgeProvider}`);
         continue;
       }
     }

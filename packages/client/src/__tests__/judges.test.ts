@@ -217,6 +217,7 @@ describe('runJudges', () => {
   });
 
   it('skips a scoped wildcard when the judge provider is outside its list', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const scoped: ProviderHandler = vi.fn().mockResolvedValue({ output: '{"score":1,"reasoning":"ok"}', usage: {} });
     scoped.providesFor = ['*', 'agent'];
     scoped.providers = ['Bedrock'];
@@ -241,6 +242,8 @@ describe('runJudges', () => {
       baseTrackData,
     });
     expect(mockExecuteAndTrack).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith("Judge 'judge-flag' skipped: no handler covers provider Anthropic");
+    warn.mockRestore();
   });
 
   it.each([
