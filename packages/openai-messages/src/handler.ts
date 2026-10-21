@@ -1,14 +1,23 @@
 import {
   type AiConfigRep,
+  type CanonicalTurn,
   type ContentCaptureOptions,
-  config,
-  createHandler,
+  composeHistory,
+  type config,
+  configInternal,
+  contentToText,
+  createHandlerInternal,
   createRunUsage,
   endSpanOnce,
+  imageBlockToUrl,
+  isContentBlocks,
   type LDContext,
   type Message,
+  normalizeModelParameters,
   type ProviderHandler,
   parseTemplate,
+  pickForwardedModelParameters,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   type SpanUsage,
@@ -20,9 +29,12 @@ import {
   setUsageSpanAttributes,
   type Tool,
   type ToolDefinitionInput,
+  toolResultString,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
+import type { ResponseCreateParamsBase } from 'openai/resources/responses/responses';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-openai-messages';
 
@@ -117,16 +129,44 @@ type FunctionTool = {
 const buildTools = (
   configTools: Record<string, Tool>,
   toolHandlers: Record<string, (...args: unknown[]) => unknown>,
-): FunctionTool[] =>
-  Object.entries(configTools)
-    .filter(([name]) => typeof toolHandlers[name] === 'function')
-    .map(([name, toolConfig]) => ({
-      type: 'function',
-      name,
-      description: toolConfig.description ?? '',
-      parameters: toolConfig.parameters,
-      strict: false,
-    }));
+): { tools: FunctionTool[]; executableTools: Map<string, (...args: unknown[]) => unknown> } => {
+  const executableTools = new Map<string, (...args: unknown[]) => unknown>();
+  const tools = Object.entries(configTools).flatMap<FunctionTool>(([name, toolConfig]) => {
+    if (!Object.hasOwn(toolHandlers, name)) return [];
+    const handler = toolHandlers[name];
+    if (typeof handler !== 'function') return [];
+    executableTools.set(name, handler);
+    return [
+      {
+        type: 'function',
+        name,
+        description: toolConfig.description ?? '',
+        parameters: toolConfig.parameters,
+        strict: false,
+      },
+    ];
+  });
+  return { tools, executableTools };
+};
+
+function mapConversationTurn(turn: CanonicalTurn): OpenAI.Responses.ResponseInputItem {
+  if (turn.role === 'assistant') {
+    return { role: 'assistant', content: contentToText(turn.content) };
+  }
+
+  if (!isContentBlocks(turn.content)) {
+    return { role: 'user', content: turn.content };
+  }
+
+  return {
+    role: 'user',
+    content: turn.content.map((block) =>
+      block.type === 'text'
+        ? { type: 'input_text' as const, text: block.text }
+        : { type: 'input_image' as const, image_url: imageBlockToUrl(block), detail: 'auto' as const },
+    ),
+  };
+}
 
 function buildInputMessages(
   config: AiConfigRep,
@@ -139,13 +179,15 @@ function buildInputMessages(
       role: m.role as 'system' | 'user' | 'assistant',
       content: parseTemplate(m.content, variables),
     }));
-    if (history) {
-      for (const msg of history) {
-        const role = msg.role as 'user' | 'assistant';
-        if (role === 'user' || role === 'assistant') {
-          mapped.push({ role, content: msg.content });
-        }
-      }
+    if (history && history.length > 0) {
+      const systemMessages = mapped.filter((message) => message.role === 'system');
+      const configMessages = mapped
+        .filter(
+          (message): message is { role: 'user' | 'assistant'; content: string } =>
+            message.role === 'user' || message.role === 'assistant',
+        )
+        .map(({ role, content }) => ({ role, content }));
+      return [...systemMessages, ...composeHistory({ configMessages, history, userInput }).map(mapConversationTurn)];
     }
     const lastMsg = mapped[mapped.length - 1];
     if (lastMsg?.role !== 'user') {
@@ -154,15 +196,53 @@ function buildInputMessages(
     return mapped;
   }
   const instructions = config.instructions ? parseTemplate(config.instructions, variables) : '';
+  if (history && history.length > 0) {
+    return [
+      ...(instructions ? [{ role: 'system' as const, content: instructions }] : []),
+      ...composeHistory({ history, userInput }).map(mapConversationTurn),
+    ];
+  }
   return [
     ...(instructions ? [{ role: 'system' as const, content: instructions }] : []),
-    ...(history
-      ? history
-          .filter((msg) => msg.role === 'user' || msg.role === 'assistant')
-          .map((msg) => ({ role: msg.role as 'user' | 'assistant', content: msg.content }))
-      : []),
     { role: 'user' as const, content: userInput },
   ];
+}
+
+/**
+ * A turn's content as span parts. An `input_image` part carries a full base64 data URL on the
+ * wire, so it is noted as `[image]` rather than stringified into the span — the payload can run to
+ * megabytes, and the agent handlers already record images this compactly.
+ */
+function inputContentParts(content: unknown): SpanMessagePart[] {
+  if (typeof content === 'string') return [{ type: 'text', content }];
+  if (!Array.isArray(content)) return [{ type: 'text', content: JSON.stringify(content) }];
+  return content.map((part): SpanMessagePart => {
+    const block = part as Record<string, unknown>;
+    if (block.type === 'input_image') return { type: 'text', content: '[image]' };
+    if (typeof block.text === 'string') return { type: 'text', content: block.text };
+    return { type: 'text', content: JSON.stringify(part) };
+  });
+}
+
+/**
+ * The object a Responses tool call denotes, given the JSON string the API sends.
+ *
+ * `function_call.arguments` arrives as an opaque JSON string, while every other handler puts a
+ * parsed object on a `tool_call` part. Passing the string through left the content carriers encoding
+ * it a second time, so a reader saw `"arguments": "{\\"q\\":1}"` where an Anthropic span said
+ * `"arguments": {"q": 1}`. The same run also parses these arguments to call the tool, so the object
+ * is the shape the provider means.
+ *
+ * A string that is not JSON is returned unchanged rather than dropped: a truncated stream is worth
+ * reporting verbatim, and reporting nothing would lose what the model asked for.
+ */
+function toolArguments(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
 }
 
 /**
@@ -205,7 +285,7 @@ function splitInputMessages(items: ReadonlyArray<unknown>): {
             type: 'tool_call',
             id: typeof raw.call_id === 'string' ? raw.call_id : undefined,
             name: String(raw.name ?? ''),
-            arguments: raw.arguments,
+            arguments: toolArguments(raw.arguments),
           },
         ],
       });
@@ -213,7 +293,7 @@ function splitInputMessages(items: ReadonlyArray<unknown>): {
     }
     messages.push({
       role: typeof raw.role === 'string' ? raw.role : 'user',
-      parts: [{ type: 'text', content: typeof raw.content === 'string' ? raw.content : JSON.stringify(raw.content) }],
+      parts: inputContentParts(raw.content),
     });
   }
 
@@ -228,7 +308,7 @@ function outputItemParts(item: Record<string, unknown>): SpanMessagePart[] {
         type: 'tool_call',
         id: typeof item.call_id === 'string' ? item.call_id : undefined,
         name: String(item.name ?? ''),
-        arguments: item.arguments,
+        arguments: toolArguments(item.arguments),
       },
     ];
   }
@@ -288,12 +368,97 @@ const jsonSchemaFormat = (schema: Record<string, unknown>): any => ({
 const toToolDefinitions = (tools: FunctionTool[]): ToolDefinitionInput[] =>
   tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
 
+/**
+ * `ResponseCreateParamsBase` keys this handler forwards verbatim from `config.model.parameters`,
+ * after the `max_tokens` / `max_completion_tokens` → `max_output_tokens` rename below — the
+ * LaunchDarkly UI offers the Chat Completions parameter set, and the Responses API this handler
+ * calls does not accept either of those two names.
+ *
+ * The rule for this list: exclude a key only if setting it would BREAK the handler (wrong or
+ * missing result, or a request the handler cannot build); forward everything else the API
+ * accepts, even settings with no obvious generation effect (`store`, `user`,
+ * `safety_identifier`, `prompt_cache_key`, `prompt_cache_retention`, `include`,
+ * `context_management`, ...) — those are forwarded, not excluded, because a config that sets one
+ * still gets a working call.
+ *
+ * Handler-owned (this handler sets these itself, from the config and the call shape, so a
+ * `model.parameters` value must not be able to override what it already decided): `model`,
+ * `input`, `tools`, `previous_response_id`, `text`.
+ *
+ * Excluded (would break the handler):
+ * - `stream`, `stream_options` — the handler chooses streaming itself, by calling
+ *   `responses.create()` vs `responses.stream()`; a config value here fights that choice rather
+ *   than configuring anything.
+ * - `background` — the call returns before the output exists, so the handler would get no result
+ *   to return.
+ * - `conversation`, `prompt` — supply server-side conversation state / a stored prompt template
+ *   that conflicts with the `input` this handler already builds from `config.messages` /
+ *   `config.instructions` and threads itself via `previous_response_id`.
+ */
+const FORWARDED_MODEL_PARAMETER_KEYS = [
+  'context_management',
+  'include',
+  'instructions',
+  'max_output_tokens',
+  'metadata',
+  'moderation',
+  'parallel_tool_calls',
+  'prompt_cache_key',
+  'prompt_cache_retention',
+  'reasoning',
+  'safety_identifier',
+  'service_tier',
+  'store',
+  'temperature',
+  'tool_choice',
+  'top_logprobs',
+  'top_p',
+  'truncation',
+  'user',
+] as const;
+
+type OpenAIHandlerOwnedKeys = 'input' | 'model' | 'previous_response_id' | 'text' | 'tools';
+type OpenAIExcludedKeys = 'background' | 'conversation' | 'prompt' | 'stream' | 'stream_options';
+// If a key of ResponseCreateParamsBase is added to the SDK and not classified above as forwarded,
+// handler-owned, or excluded, this type resolves to something other than `never` and the
+// assignment below fails to compile, naming the unclassified key.
+type OpenAIUndecidedModelParameterKeys = Exclude<
+  keyof ResponseCreateParamsBase,
+  OpenAIHandlerOwnedKeys | OpenAIExcludedKeys | (typeof FORWARDED_MODEL_PARAMETER_KEYS)[number]
+>;
+const _openaiModelParameterKeysExhaustive: Record<OpenAIUndecidedModelParameterKeys, never> = {} as Record<
+  never,
+  never
+>;
+
+/**
+ * Picks the subset of `config.model.parameters` that maps onto `ResponseCreateParamsBase`, after
+ * renaming the two Chat Completions token-limit spellings the LaunchDarkly UI offers —
+ * `max_tokens` and `max_completion_tokens` — to the Responses API's own `max_output_tokens`.
+ * Precedence when a config sets more than one spelling: an explicit `max_output_tokens` wins, then
+ * `max_completion_tokens`, then `max_tokens`. A config that sets nothing here produces `{}`, so the
+ * provider call sees exactly what it always has.
+ */
+function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
+  const normalized = normalizeModelParameters(parameters);
+  const { max_tokens, max_completion_tokens, max_output_tokens, ...rest } = normalized;
+  const resolvedMaxOutputTokens = max_output_tokens ?? max_completion_tokens ?? max_tokens;
+  const withRenamedMaxTokens =
+    resolvedMaxOutputTokens !== undefined ? { ...rest, max_output_tokens: resolvedMaxOutputTokens } : rest;
+  return pickForwardedModelParameters(withRenamedMaxTokens, FORWARDED_MODEL_PARAMETER_KEYS);
+}
+
 export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+  reportUsage('openai-messages.createOpenAIHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createOpenAIHandlerInternal({ captureContent });
+}
+
+function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   const openai = new OpenAI();
 
   const MAX_STEPS = 10;
 
-  return createHandler(
+  return createHandlerInternal(
     ['OpenAI', 'messages'],
     async (
       config: AiConfigRep,
@@ -348,7 +513,9 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
         };
 
         try {
-          const tools = config.tools ? buildTools(config.tools, toolHandlers) : [];
+          const { tools, executableTools } = config.tools
+            ? buildTools(config.tools, toolHandlers)
+            : { tools: [], executableTools: new Map() };
           const inputMessages = buildInputMessages(config, userInput, variables, history);
           const toolDefinitions = toToolDefinitions(tools);
 
@@ -360,10 +527,12 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
 
           let response = await runModelTurn(
             {
+              ...buildModelParameterOptions(config.model.parameters),
               model: config.model.name,
               input: inputMessages,
-              ...(tools.length > 0 ? { tools } : {}),
-              ...(config.outputFormat ? { text: { format: jsonSchemaFormat(config.outputFormat) } } : {}),
+              tools: tools.length > 0 ? tools : undefined,
+              previous_response_id: undefined,
+              text: config.outputFormat ? { format: jsonSchemaFormat(config.outputFormat) } : undefined,
             },
             toolDefinitions,
           );
@@ -383,16 +552,20 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
             const toolOutputs = await Promise.all(
               toolCalls.map(async (tc) => {
                 const toolSpan = startToolSpan(tc.name, tc.call_id, parentContext);
-                setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.arguments });
+                setToolCallContentAttributes(toolSpan, captureContent, { arguments: toolArguments(tc.arguments) });
                 try {
                   const args = JSON.parse(tc.arguments) as Record<string, unknown>;
-                  const handler = toolHandlers[tc.name];
+                  const handler = executableTools.get(tc.name);
                   if (!handler) throw new Error(`No handler registered for tool "${tc.name}"`);
                   const result = await handler(args);
                   setToolCallContentAttributes(toolSpan, captureContent, { result });
                   toolSpan.setStatus({ code: SpanStatusCode.OK });
                   toolSpan.end();
-                  return { type: 'function_call_output' as const, call_id: tc.call_id, output: String(result) };
+                  return {
+                    type: 'function_call_output' as const,
+                    call_id: tc.call_id,
+                    output: toolResultString(result),
+                  };
                 } catch (err) {
                   failSpan(toolSpan, err);
                   throw err;
@@ -402,9 +575,12 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
 
             response = await runModelTurn(
               {
+                ...buildModelParameterOptions(config.model.parameters),
                 model: config.model.name,
                 previous_response_id: response.id,
                 input: toolOutputs,
+                tools: undefined,
+                text: undefined,
               },
               toolDefinitions,
             );
@@ -455,7 +631,9 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
       let lastResponseModel = config.model.name;
 
       try {
-        const tools = config.tools ? buildTools(config.tools, toolHandlers) : [];
+        const { tools, executableTools } = config.tools
+          ? buildTools(config.tools, toolHandlers)
+          : { tools: [], executableTools: new Map() };
         const inputMessages = buildInputMessages(config, userInput, variables, history);
         const toolDefinitions = toToolDefinitions(tools);
         const rootInput = splitInputMessages(inputMessages);
@@ -483,8 +661,20 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
           let finalResp: OpenAI.Responses.Response;
           try {
             const streamParams = previousResponseId
-              ? { model: config.model.name, previous_response_id: previousResponseId, input: currentInput }
-              : { model: config.model.name, input: currentInput, ...(tools.length > 0 ? { tools } : {}) };
+              ? {
+                  ...buildModelParameterOptions(config.model.parameters),
+                  model: config.model.name,
+                  previous_response_id: previousResponseId,
+                  input: currentInput,
+                  tools: undefined,
+                }
+              : {
+                  ...buildModelParameterOptions(config.model.parameters),
+                  model: config.model.name,
+                  input: currentInput,
+                  tools: tools.length > 0 ? tools : undefined,
+                  previous_response_id: undefined,
+                };
 
             // biome-ignore lint/suspicious/noExplicitAny: streamParams union type does not match the SDK's overloaded stream() signature
             const responseStream = openai.responses.stream(streamParams as any);
@@ -527,16 +717,16 @@ export function createOpenAIHandler({ captureContent = false }: ContentCaptureOp
           currentInput = await Promise.all(
             toolCalls.map(async (tc: OpenAI.Responses.ResponseFunctionToolCall) => {
               const toolSpan = startToolSpan(tc.name, tc.call_id, parentContext);
-              setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.arguments });
+              setToolCallContentAttributes(toolSpan, captureContent, { arguments: toolArguments(tc.arguments) });
               try {
                 const args = JSON.parse(tc.arguments) as Record<string, unknown>;
-                const handler = toolHandlers[tc.name];
+                const handler = executableTools.get(tc.name);
                 if (!handler) throw new Error(`No handler registered for tool "${tc.name}"`);
                 const result = await handler(args);
                 setToolCallContentAttributes(toolSpan, captureContent, { result });
                 toolSpan.setStatus({ code: SpanStatusCode.OK });
                 toolSpan.end();
-                return { type: 'function_call_output' as const, call_id: tc.call_id, output: String(result) };
+                return { type: 'function_call_output' as const, call_id: tc.call_id, output: toolResultString(result) };
               } catch (err) {
                 failSpan(toolSpan, err);
                 throw err;
@@ -594,9 +784,11 @@ export const openaiMessages = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createOpenAIHandler({ captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+) => {
+  reportUsage('openai-messages.openaiMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createOpenAIHandlerInternal({ captureContent }),
+  }).invoke(userInput, context, variables);
+};

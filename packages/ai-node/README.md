@@ -86,6 +86,44 @@ if (result.enabled) {
 
 Never throws. Returns `{ enabled: boolean, config: AiConfigRep | null, meta: VariationMeta | null }`.
 
+## CommonJS, AWS Lambda, and Webpack
+
+This package publishes both an ESM entry point (`dist/index.js`) and a CommonJS one (`dist/index.cjs`), so all of these work:
+
+```js
+const { config, initClient } = require('@launchdarkly/ai-node');
+const { config } = await import('@launchdarkly/ai-node');
+```
+
+```ts
+import { config, initClient } from '@launchdarkly/ai-node';
+```
+
+A Lambda that emits CommonJS and bundles with Webpack + [`webpack-node-externals`](https://www.npmjs.com/package/webpack-node-externals) works whether the LaunchDarkly AI packages are left external or inlined — no allowlist is required. Versions before 0.3.0 were ESM-only and failed at load time with `ERR_PACKAGE_PATH_NOT_EXPORTED` when externalized; if you are pinned to one of those, allowlist them so the bundler inlines them instead:
+
+```js
+// webpack.config.js — only needed on 0.2.x and earlier
+const nodeExternals = require('webpack-node-externals');
+
+module.exports = {
+  target: 'node22',
+  externals: [nodeExternals({ allowlist: [/^@launchdarkly\/ai-/] })],
+};
+```
+
+## Experimental features
+
+Experimental features are not exported from the package root. Import them from
+`@launchdarkly/ai-node/experimental`, which re-exports `@launchdarkly/ai-server/experimental`, so
+you need no direct dependency on `@launchdarkly/ai-server`. For example:
+
+```ts
+import { InMemorySkillStore, setSkillStore } from '@launchdarkly/ai-node/experimental';
+```
+
+Names there may change in a minor release. See the
+[Agent Skills guide](../client/README.md#agent-skills-experimental).
+
 ## Full API reference
 
 See [`@launchdarkly/ai-server`](../client/README.md) — all exports are re-exported unchanged from this package.

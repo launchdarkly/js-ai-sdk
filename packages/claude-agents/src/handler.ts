@@ -1,17 +1,32 @@
-import { createSdkMcpServer, type HookInput, query, tool } from '@anthropic-ai/claude-agent-sdk';
+import {
+  createSdkMcpServer,
+  type HookInput,
+  query,
+  type SDKResultMessage,
+  type SDKResultSuccess,
+  type SDKUserMessage,
+  tool,
+} from '@anthropic-ai/claude-agent-sdk';
 import {
   type AiConfigRep,
   addCachedTokensToInput,
+  type CanonicalTurn,
+  type ConfigTurn,
   type ContentCaptureOptions,
-  config,
-  createHandler,
+  composeHistory,
+  type config,
+  configInternal,
+  contentToText,
+  createHandlerInternal,
   endSpanOnce,
   type LDContext,
   type Message,
+  type MessageContent,
   NATIVE_TOOL_KEY,
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   setConversationIdIfAbsent,
@@ -25,10 +40,13 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
   toSemconvFinishReason,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
+import { buildModelParameterQueryOptions } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TOOL_MCP_NAME = 'tool-mcp';
 const MCP_TOOL_PREFIX = `mcp__${TOOL_MCP_NAME}__`;
@@ -328,7 +346,10 @@ class InferenceSpans {
   /** Feed every message of the run, in order. */
   record(message: { type: string }): void {
     if (message.type === 'assistant') {
-      this.absorb(message as AssistantResponse);
+      // Not a model response, so no span, no turn in the conversation and no usage. It can share
+      // the real response's `request_id`, which would otherwise append the error text to that
+      // response's output.
+      if (!isSynthetic(message as AssistantResponse)) this.absorb(message as AssistantResponse);
       return;
     }
     if (message.type === 'user') this.absorbUserTurn(message as UserTurn);
@@ -524,16 +545,41 @@ function failSpan(span: Span, error: unknown, endedSpans?: Set<Span>): void {
 }
 
 /**
- * Builds the error for a non-success result message.
+ * Throws when a `result` message reports a failed run, and narrows it to a success otherwise.
  *
- * `SDKResultError` has no `result` field, so the old `'result' in message` gate never matched one:
- * the loop simply ended, the run was reported OK with zeroed usage, and the real token spend and
- * `errors` were discarded. A run that hit `error_max_turns` or `error_max_budget_usd` genuinely
- * failed and has to surface as a failure.
+ * Two shapes fail. A non-`success` subtype is `SDKResultError`, which has no `result` field, so the
+ * old `'result' in message` gate never matched one: the loop simply ended, the run was reported OK
+ * with zeroed usage, and the real token spend and `errors` were discarded. A run that hit
+ * `error_max_turns` or `error_max_budget_usd` genuinely failed and has to surface as a failure.
+ *
+ * The other is a `success` subtype with `is_error` set, which is how the CLI reports a failed
+ * Anthropic API call. Measured against Agent SDK 0.3.220 with a key that had no credits: the run
+ * ends `success`, `is_error: true`, `api_error_status` set, and the error text in `result` — so a
+ * caller was handed "Credit balance is too low" as the model's answer. `is_error` is the test the
+ * agent SDK applies itself; it raises after the result, but this handler stops reading first.
  */
-function resultError(subtype: string, errors: ReadonlyArray<string> | undefined): Error {
-  const detail = errors?.length ? `: ${errors.join('; ')}` : '';
-  return new Error(`Claude agent run ended with ${subtype}${detail}`);
+export function assertRunSucceeded(message: SDKResultMessage): asserts message is SDKResultSuccess {
+  if (message.subtype !== 'success') {
+    const detail = message.errors?.length ? `: ${message.errors.join('; ')}` : '';
+    throw new Error(`Claude agent run ended with ${message.subtype}${detail}`);
+  }
+  if (message.is_error !== true) return;
+  const status = typeof message.api_error_status === 'number' ? ` (HTTP ${message.api_error_status})` : '';
+  const detail = message.result ? `: ${message.result}` : '';
+  throw new Error(`Claude agent run ended with an error result${status}${detail}`);
+}
+
+/**
+ * Whether an assistant message is one the CLI wrote itself rather than one the model returned.
+ *
+ * Measured against Agent SDK 0.3.220: a failed API call surfaces as an assistant message whose
+ * `model` is the literal `<synthetic>`, whose content is the error text and whose usage is zero, and
+ * the CLI emits the same after a response stops at `max_output_tokens`. Keyed on `model` rather than
+ * on the message's `error` field because the latter is set on both, and only the run's `result`
+ * says whether the run failed.
+ */
+function isSynthetic(message: AssistantResponse): boolean {
+  return message.message?.model === '<synthetic>';
 }
 
 /**
@@ -667,7 +713,7 @@ export const buildToolMCP = async (configTools: Record<string, Tool>, handlers: 
           throw new Error(`No handler registered for tool "${toolName}"`);
         }
         const result = await (handler as (...args: unknown[]) => unknown)(...args);
-        return { content: [{ type: 'text' as const, text: String(result) }] };
+        return { content: [{ type: 'text' as const, text: toolResultString(result) }] };
       },
     );
   });
@@ -725,15 +771,21 @@ export const partitionTools = (
   };
 };
 
-function formatHistory(history: Message[]): string {
-  return history.map((m) => `${m.role}: ${m.content}`).join('\n');
-}
-
+/**
+ * Builds the system prompt and the string prompt for the no-history path.
+ *
+ * `config.instructions` (or the `system`-role config messages) become the
+ * system prompt only — runtime `history` is NEVER flattened into it. The `_history`
+ * parameter is accepted for call-site symmetry but deliberately unused: when history
+ * is present the caller takes the structured async-iterable prompt path via
+ * {@link buildQueryPrompt} instead, and empty history stays byte-for-byte identical
+ * to passing none.
+ */
 export const buildPrompt = (
   config: AiConfigRep,
   userInput: string,
   variables: Record<string, unknown>,
-  history?: Message[],
+  _history?: Message[],
 ): { prompt: string; systemPrompt?: string } => {
   let systemPrompt: string | undefined;
   let prompt: string = userInput;
@@ -751,17 +803,129 @@ export const buildPrompt = (
     prompt = conversationHistory ? `${conversationHistory}\n\n${userInput}` : userInput;
   }
 
-  if (history && history.length > 0) {
-    const historyBlock = `Conversation History:\n\n${formatHistory(history)}`;
-    systemPrompt = systemPrompt ? `${systemPrompt}\n\n${historyBlock}` : historyBlock;
-  }
-
   return { prompt, systemPrompt };
 };
 
+/**
+ * One content block in Anthropic's native shape: a text block, or an image block
+ * whose `source` is either an inline base64 payload or a URL. LaunchDarkly's
+ * canonical image block already carries exactly this `source`, so it maps across
+ * unchanged (unlike OpenAI/LangChain, which flatten to a single `image_url`).
+ */
+type AnthropicImageSource = { type: 'base64'; media_type: string; data: string } | { type: 'url'; url: string };
+type AnthropicContentBlock = { type: 'text'; text: string } | { type: 'image'; source: AnthropicImageSource };
+
+/** Maps one canonical user turn's content into Anthropic message content. */
+function toAnthropicUserContent(content: MessageContent): string | AnthropicContentBlock[] {
+  if (typeof content === 'string') return content;
+  return content.map((block) =>
+    block.type === 'text'
+      ? { type: 'text' as const, text: block.text }
+      : { type: 'image' as const, source: block.source },
+  );
+}
+
+/**
+ * Streams the composed conversation turns as the async-iterable `prompt` that
+ * `query()` accepts in streaming-input mode. User turns carry Anthropic content
+ * blocks so images survive; an assistant turn is replayed under its own
+ * `assistant` envelope, matching the Python SDK's `_to_streamed_prompt`.
+ *
+ * The envelope `type` has to agree with the message role. The CLI reading this
+ * stream accepts an `assistant` envelope as a replayed turn, but every other
+ * envelope type is required to carry role `user` — an assistant turn sent as
+ * `type: 'user'` is rejected outright with `Expected message role 'user', got
+ * 'assistant'`. Both envelopes are cast past `SDKUserMessage`: the CLI takes
+ * assistant envelopes even though the TypeScript declaration only describes the
+ * user shape (Python declares the same parameter as an unconstrained dict
+ * stream), and our `media_type` is a plain string rather than Anthropic's
+ * media-type enum.
+ */
+async function* toStreamedPrompt(turns: CanonicalTurn[]): AsyncGenerator<SDKUserMessage> {
+  for (const turn of turns) {
+    if (turn.role === 'assistant') {
+      yield {
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: contentToText(turn.content) }] },
+        parent_tool_use_id: null,
+      } as unknown as SDKUserMessage;
+      continue;
+    }
+    yield {
+      type: 'user',
+      message: { role: 'user', content: toAnthropicUserContent(turn.content) },
+      parent_tool_use_id: null,
+    } as SDKUserMessage;
+  }
+}
+
+/** Non-system config conversation messages, template-applied, in canonical form. */
+function configConversationTurns(config: AiConfigRep, variables: Record<string, unknown>): ConfigTurn[] {
+  return (config.messages ?? [])
+    .filter((m) => m.role !== 'system')
+    .map((m) => ({ role: m.role as 'user' | 'assistant', content: parseTemplate(m.content, variables) }));
+}
+
+/**
+ * The prompt `query()` receives. Empty/missing `history` takes the plain-string
+ * path (`fallbackPrompt`) unchanged; otherwise the composed turns
+ * ([config messages] → [history] → [userInput?]) are streamed as an async
+ * iterable so multimodal history reaches the model natively rather than as text
+ * on the system prompt.
+ */
+export const buildQueryPrompt = (
+  config: AiConfigRep,
+  userInput: string,
+  variables: Record<string, unknown>,
+  history: Message[] | undefined,
+  fallbackPrompt: string,
+): string | AsyncIterable<SDKUserMessage> => {
+  if (!history || history.length === 0) return fallbackPrompt;
+  const turns = composeHistory({
+    history,
+    userInput,
+    configMessages: config.instructions ? [] : configConversationTurns(config, variables),
+  });
+  return toStreamedPrompt(turns);
+};
+
+/** Canonical content → span parts; images are noted rather than inlined. */
+function turnToSpanParts(content: MessageContent): SpanMessagePart[] {
+  if (typeof content === 'string') return content ? [{ type: 'text', content }] : [];
+  return content.map(
+    (block): SpanMessagePart =>
+      block.type === 'text' ? { type: 'text', content: block.text } : { type: 'text', content: '[image]' },
+  );
+}
+
+/**
+ * Span messages reflecting what `query()` actually receives. With history the
+ * composed turns ([config messages] → [history] → [userInput?]) are recorded
+ * turn-for-turn — images noted as `[image]` rather than inlining a data URL — so
+ * captured input matches the multimodal request. Without history the single
+ * flattened prompt string is one user turn, exactly as before.
+ */
+function buildOpeningMessages(
+  config: AiConfigRep,
+  userInput: string,
+  variables: Record<string, unknown>,
+  history: Message[] | undefined,
+  fallbackPrompt: string,
+): SpanMessage[] {
+  if (!history || history.length === 0) {
+    return [{ role: 'user', parts: [{ type: 'text', content: fallbackPrompt }] }];
+  }
+  const turns = composeHistory({
+    history,
+    userInput,
+    configMessages: config.instructions ? [] : configConversationTurns(config, variables),
+  });
+  return turns.map((turn) => ({ role: turn.role, parts: turnToSpanParts(turn.content) }));
+}
+
 function buildQueryOptions(
   config: AiConfigRep,
-  prompt: string,
+  prompt: string | AsyncIterable<SDKUserMessage>,
   systemPrompt: string | undefined,
   nativeToolNames: string[],
   mcpAllowedTools: string[],
@@ -769,25 +933,43 @@ function buildQueryOptions(
   toolMCP: any,
   // biome-ignore lint/suspicious/noExplicitAny: Claude SDK hooks config type is not publicly exported
   hooks: any,
-  extra?: Record<string, unknown>,
+  /**
+   * The allowlisted subset of `model.parameters`, from `buildModelParameterQueryOptions`.
+   * It comes from the AI Config, so it is spread FIRST and every handler-owned key below
+   * overrides it. Passed explicitly rather than folded into `internalOptions` so the two
+   * trust levels cannot be confused at a call site.
+   */
+  modelParameters: Record<string, unknown>,
+  /** Options this handler sets for itself, e.g. `includePartialMessages` on the streaming
+   * path. Trusted, so these are spread LAST and win over everything. */
+  internalOptions?: Record<string, unknown>,
 ) {
   const allAllowedTools = [...mcpAllowedTools, ...nativeToolNames];
   return {
     prompt,
     options: {
+      ...modelParameters,
       model: config.model.name,
       tools: nativeToolNames.length > 0 ? nativeToolNames : [],
       allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
       mcpServers: toolMCP ? { [TOOL_MCP_NAME]: toolMCP } : undefined,
       hooks,
-      ...(systemPrompt ? { systemPrompt } : {}),
-      ...extra,
+      systemPrompt,
+      ...internalOptions,
     },
   };
 }
 
 export function createClaudeAgentsHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  return createHandler(
+  reportUsage('claude-agents.createClaudeAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createClaudeAgentsHandlerInternal({ captureContent });
+}
+
+/** `createClaudeAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createClaudeAgentsHandlerInternal({
+  captureContent = false,
+}: ContentCaptureOptions = {}): ProviderHandler {
+  return createHandlerInternal(
     ['Anthropic', 'agent'],
     async (
       config: AiConfigRep,
@@ -805,17 +987,22 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
         // TracerProvider without one would otherwise get a flat trace.
         const parentContext = trace.setSpan(context.active(), span);
 
-        let { prompt, systemPrompt } = buildPrompt(config, userInput, variables, history);
+        const { prompt, systemPrompt: basePrompt } = buildPrompt(config, userInput, variables, history);
+        let systemPrompt = basePrompt;
         if (config.outputFormat) {
           const schemaInstruction = `Respond with valid JSON matching this schema:\n${JSON.stringify(config.outputFormat)}`;
           systemPrompt = systemPrompt ? `${systemPrompt}\n\n${schemaInstruction}` : schemaInstruction;
         }
-        // One user message, not one per configured role: `query()` takes a single prompt string, so
-        // `buildPrompt` really does flatten a configured history into one turn before the model sees
-        // it. Reporting the roles separately here would describe a request that was never sent.
+        // With runtime history, `query()` receives an async-iterable prompt of the composed turns
+        // (multimodal-native) rather than a flattened string; `systemPrompt` is unchanged. Without
+        // history the plain-string path is byte-for-byte what it always was.
+        const queryPrompt = buildQueryPrompt(config, userInput, variables, history, prompt);
+        // Reflect what `query()` actually receives: the no-history path is a single flattened
+        // prompt string (one user turn), while the history path streams the composed turns, so
+        // record those turn-for-turn rather than describing a request that was never sent.
         const opening = {
           systemInstructions: systemPrompt,
-          messages: [{ role: 'user', parts: [{ type: 'text' as const, content: prompt }] }],
+          messages: buildOpeningMessages(config, userInput, variables, history, prompt),
         };
         // Hoisted above the `try` because the catalog needs its alias map to name a native tool the
         // way the model saw it. Pure bookkeeping over two objects already in hand — nothing here can
@@ -847,12 +1034,13 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
           for await (const message of query(
             buildQueryOptions(
               config,
-              prompt,
+              queryPrompt,
               systemPrompt,
               nativeToolNames,
               mcpAllowedTools,
               toolMCP,
               toolTelemetry?.hooks,
+              buildModelParameterQueryOptions(config.model.parameters),
             ),
           )) {
             recordConversationId(span, message);
@@ -867,9 +1055,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
               // The CLI's own run-level total is authoritative, so the catch below must not
               // overwrite it with the summed-per-response figure on the error-result path.
               rootUsageWritten = true;
-              if (message.subtype !== 'success') {
-                throw resultError(message.subtype, message.errors);
-              }
+              assertRunSucceeded(message);
               setOutputContentAttributes(span, captureContent, [
                 {
                   role: 'assistant',
@@ -934,10 +1120,16 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
       const endedSpans = new Set<Span>();
 
       const { prompt, systemPrompt } = buildPrompt(config, userInput, variables, history);
-      // One user message — see the blocking path for why the configured roles are not split out.
+      // With runtime history, the streamed `query()` prompt is the composed turns (multimodal-native)
+      // rather than the flattened string; without history it stays the plain-string path.
+      const queryPrompt = buildQueryPrompt(config, userInput, variables, history, prompt);
+      // The same turns `query()` is handed above: with history that is the composed sequence, so a
+      // streamed run reports its prior turns and images rather than only the latest `userInput`.
+      // Without history it is the one flattened user message — see the blocking path for why the
+      // configured roles are not split out.
       const opening = {
         systemInstructions: systemPrompt,
-        messages: [{ role: 'user', parts: [{ type: 'text' as const, content: prompt }] }],
+        messages: buildOpeningMessages(config, userInput, variables, history, prompt),
       };
       // Hoisted above the `try` for the same reason as the blocking path.
       const { nativeToolMap, userConfigTools, nativeToolNames, nativeToolAliases } = partitionTools(
@@ -967,15 +1159,14 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
         for await (const message of query(
           buildQueryOptions(
             config,
-            prompt,
+            queryPrompt,
             systemPrompt,
             nativeToolNames,
             mcpAllowedTools,
             toolMCP,
             toolTelemetry?.hooks,
-            {
-              includePartialMessages: true,
-            },
+            buildModelParameterQueryOptions(config.model.parameters),
+            { includePartialMessages: true },
           ),
         )) {
           recordConversationId(span, message);
@@ -1003,9 +1194,7 @@ export function createClaudeAgentsHandler({ captureContent = false }: ContentCap
             finishRootSpan(span, config, rawUsage);
             // Authoritative: the paths below must not overwrite it with the per-response sum.
             rootUsageWritten = true;
-            if (message.subtype !== 'success') {
-              throw resultError(message.subtype, message.errors);
-            }
+            assertRunSucceeded(message);
             setOutputContentAttributes(span, captureContent, [
               // biome-ignore lint/suspicious/noExplicitAny: Claude SDK result field is not typed publicly
               { role: 'assistant', parts: [{ type: 'text', content: (message as any).result ?? fullOutput }] },
@@ -1077,9 +1266,11 @@ export const claudeAgents = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createClaudeAgentsHandler({ captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+) => {
+  reportUsage('claude-agents.claudeAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createClaudeAgentsHandlerInternal({ captureContent }),
+  }).invoke(userInput, context, variables);
+};

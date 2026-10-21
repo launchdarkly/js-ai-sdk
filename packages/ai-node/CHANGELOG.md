@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-node-0.2.0...@launchdarkly/ai-node-0.3.0) (2026-10-09)
+
+
+### Experimental
+
+* **skills:** add experimental Agent Skills under `@launchdarkly/ai-server/experimental`, re-exported from `@launchdarkly/ai-node/experimental` ([a242659](https://github.com/launchdarkly/js-ai-sdk/commit/a242659783689f06d7ef2f1377c26a6735a7f81c))
+
+
+### Features
+
+* **build:** build the AI SDK like the other LaunchDarkly JS SDKs so CommonJS apps can load it (2/4) ([#77](https://github.com/launchdarkly/js-ai-sdk/issues/77)) ([2cda755](https://github.com/launchdarkly/js-ai-sdk/commit/2cda7551c8feb7e352040384befea2cd76cb5d94))
+* **build:** dual ESM/CommonJS output via tsup ([d8e62e4](https://github.com/launchdarkly/js-ai-sdk/commit/d8e62e405d21b1854f5b29a0aa5661099b1d8c37))
+* **client:** `initClient(client, options)` accepts telemetry options for a pre-initialized client ([a242659](https://github.com/launchdarkly/js-ai-sdk/commit/a242659783689f06d7ef2f1377c26a6735a7f81c))
+* **client:** warn about unrecognized `initClient` options instead of ignoring them silently ([a242659](https://github.com/launchdarkly/js-ai-sdk/commit/a242659783689f06d7ef2f1377c26a6735a7f81c))
+
+
+### Bug Fixes
+
+* **client:** `shutdownTelemetry()` releases the OpenTelemetry globals the SDK registered, so a later `initClient` exports spans again ([a242659](https://github.com/launchdarkly/js-ai-sdk/commit/a242659783689f06d7ef2f1377c26a6735a7f81c))
+* **client:** a repeat `initClient(client)` returns the client already set instead of replacing it ([a242659](https://github.com/launchdarkly/js-ai-sdk/commit/a242659783689f06d7ef2f1377c26a6735a7f81c))
+* **client:** an `initClient` that fails, or that `shutdown()` interrupts, closes the client it built, and a failure is no longer cached, so the next call retries ([a242659](https://github.com/launchdarkly/js-ai-sdk/commit/a242659783689f06d7ef2f1377c26a6735a7f81c))
+* **deps:** depend on the @launchdarkly/ai-server release each package needs ([#119](https://github.com/launchdarkly/js-ai-sdk/issues/119)) ([9c2a56b](https://github.com/launchdarkly/js-ai-sdk/commit/9c2a56b27a309515032758f64c9c2c7c21477f33))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.3.0 to ^0.4.0
+
 ## [0.2.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-node-0.1.1...@launchdarkly/ai-node-0.2.0) (2026-09-08)
 
 

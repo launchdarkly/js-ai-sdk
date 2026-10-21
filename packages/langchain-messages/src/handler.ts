@@ -2,19 +2,27 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { AIMessage, type BaseMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import {
   type AiConfigRep,
+  type CanonicalTurn,
   type ContentCaptureOptions,
-  config,
-  createHandler,
+  composeHistory,
+  type config,
+  configInternal,
+  createHandlerInternal,
   createRunUsage,
   endSpanOnce,
+  imageBlockToUrl,
+  isContentBlocks,
   type LDContext,
+  langChainContentText,
   langChainFinishReasons,
   langChainSpanMessages,
   langChainSpanUsage,
   type Message,
+  type MessageContent,
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
@@ -25,8 +33,11 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
+import { type LangChainModelClass, modelConstructorParameters } from './model-parameters.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-langchain-messages';
 
@@ -48,15 +59,30 @@ function numberOrZero(value: unknown): number {
 }
 
 /**
- * The provider that actually serves the model.
+ * The configured provider, lower-cased, for `gen_ai.provider.name`.
  *
  * `gen_ai.provider.name` names who served the request, and its semconv enum has no `langchain`
- * member — LangChain is the framework, not the provider. This mirrors the choice `resolveBaseModel`
- * makes, so the attribute agrees with the client that is really used. `gen_ai.system` keeps the
- * `langchain` value the handler shipped, so existing dashboards do not break.
+ * member — LangChain is the framework, not the provider. Empty or missing names fall back to
+ * `openai`. `gen_ai.system` keeps the `langchain` value the handler shipped, so existing
+ * dashboards do not break.
  */
 function servingProvider(config: AiConfigRep): string {
-  return (config.provider?.name ?? '').toLowerCase() === 'anthropic' ? 'anthropic' : 'openai';
+  return (config.provider?.name || 'openai').toLowerCase();
+}
+
+function resolvedModelName(config: AiConfigRep, fallbackName = ''): string {
+  const name = config.model?.name || fallbackName;
+  const provider = (config.provider?.name ?? '').toLowerCase();
+  if (provider !== 'bedrock') return name;
+  const prefix = config.model?.region ?? '';
+  if (!prefix || name.startsWith(`${prefix}.`)) return name;
+  return `${prefix}.${name}`;
+}
+
+function configForModelCall(config: AiConfigRep): AiConfigRep {
+  const resolved = resolvedModelName(config);
+  if (config.model?.name === resolved) return config;
+  return { ...config, model: { ...config.model, name: resolved } };
 }
 
 /**
@@ -140,16 +166,40 @@ function normalizeOutputSchema(schema: Record<string, unknown>): Record<string, 
 }
 
 /**
+ * A pre-built chat model, or a function that builds one after the AI config is evaluated.
+ *
+ * Pass a function when the model must see `config.model.parameters` (temperature, thinking, …).
+ * A constructed instance cannot, because it is created before flag evaluation. Do not pass a
+ * constructor class — `typeof ChatAnthropic === 'function'` would call it with the config object.
+ */
+export type LangChainModelSource = BaseChatModel | ((config: AiConfigRep) => BaseChatModel | Promise<BaseChatModel>);
+
+function modelConstructorArgs(
+  config: AiConfigRep,
+  fallbackName: string,
+  modelClass: LangChainModelClass,
+): Record<string, unknown> {
+  // Name from the config always wins; `model` is never on a forwarded-keys list anyway.
+  return {
+    ...modelConstructorParameters(config.model?.parameters, modelClass),
+    model: resolvedModelName(config, fallbackName),
+  };
+}
+
+/**
  * Resolves the LangChain chat model to use for a request.
- * If the caller supplied an explicit `llm`, it is used as-is.
+ * A function in `llm` is called with the evaluated config. An instance is used as-is.
  * Otherwise, the provider and model name from the AI config are used to
  * instantiate the appropriate model via a dynamic import, so that neither
- * @langchain/openai nor @langchain/anthropic is a hard dependency.
+ * @langchain/openai, @langchain/anthropic, nor @langchain/aws is a hard
+ * dependency. Only the model class's allowlisted model.parameters are passed; see
+ * modelConstructorParameters.
  */
-async function resolveBaseModel(config: AiConfigRep, llm?: BaseChatModel): Promise<BaseChatModel> {
+async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource): Promise<BaseChatModel> {
+  const invocation = configForModelCall(config);
+  if (typeof llm === 'function') return llm(invocation);
   if (llm) return llm;
-  const providerName = (config.provider?.name ?? '').toLowerCase();
-  const modelName = config.model?.name;
+  const providerName = (invocation.provider?.name ?? '').toLowerCase();
   if (providerName === 'anthropic') {
     // biome-ignore lint/suspicious/noExplicitAny: @langchain/anthropic loaded via dynamic import with no static types
     let mod: any;
@@ -160,7 +210,17 @@ async function resolveBaseModel(config: AiConfigRep, llm?: BaseChatModel): Promi
         'Using Anthropic models requires @langchain/anthropic. Install it with: npm install @langchain/anthropic',
       );
     }
-    return new mod.ChatAnthropic({ model: modelName ?? 'claude-3-5-sonnet-20241022' });
+    return new mod.ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022', 'anthropic'));
+  }
+  if (providerName === 'bedrock') {
+    // biome-ignore lint/suspicious/noExplicitAny: @langchain/aws loaded via dynamic import with no static types
+    let mod: any;
+    try {
+      mod = await import('@langchain/aws');
+    } catch {
+      throw new Error('Using Bedrock models requires @langchain/aws. Install it with: npm install @langchain/aws');
+    }
+    return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '', 'bedrock'));
   }
   // biome-ignore lint/suspicious/noExplicitAny: @langchain/openai loaded via dynamic import with no static types
   let mod: any;
@@ -169,23 +229,32 @@ async function resolveBaseModel(config: AiConfigRep, llm?: BaseChatModel): Promi
   } catch {
     throw new Error('Using OpenAI models requires @langchain/openai. Install it with: npm install @langchain/openai');
   }
-  return new mod.ChatOpenAI({ model: modelName ?? 'gpt-4o' });
+  return new mod.ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o', 'openai'));
 }
 
 const buildTools = (
   configTools: Record<string, Tool>,
   toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
-): LangChainToolDef[] =>
-  Object.entries(configTools)
-    .filter(([name]) => typeof toolHandlers[name] === 'function')
-    .map(([name, toolConfig]) => ({
-      type: 'function',
-      function: {
-        name,
-        description: toolConfig.description ?? '',
-        parameters: toolConfig.parameters as Record<string, unknown>,
+): { tools: LangChainToolDef[]; executableTools: Map<string, ToolHandlerFn> } => {
+  const executableTools = new Map<string, ToolHandlerFn>();
+  const tools = Object.entries(configTools).flatMap<LangChainToolDef>(([name, toolConfig]) => {
+    if (!Object.hasOwn(toolHandlers, name)) return [];
+    const handler = toolHandlers[name];
+    if (typeof handler !== 'function') return [];
+    executableTools.set(name, handler);
+    return [
+      {
+        type: 'function',
+        function: {
+          name,
+          description: toolConfig.description ?? '',
+          parameters: toolConfig.parameters as Record<string, unknown>,
+        },
       },
-    }));
+    ];
+  });
+  return { tools, executableTools };
+};
 
 const buildMessages = (
   config: AiConfigRep,
@@ -194,6 +263,7 @@ const buildMessages = (
   history?: Message[],
 ): BaseMessage[] => {
   const messages: BaseMessage[] = [];
+  const configMessages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
   if (config.messages && config.messages.length > 0) {
     const systemMessages = config.messages.filter((m) => m.role === 'system');
@@ -205,26 +275,40 @@ const buildMessages = (
 
     for (const msg of conversationMessages) {
       const content = parseTemplate(msg.content, variables);
-      if (msg.role === 'user') {
-        messages.push(new HumanMessage(content));
-      } else if (msg.role === 'assistant') {
-        messages.push(new AIMessage(content));
-      }
+      if (msg.role === 'user' || msg.role === 'assistant') configMessages.push({ role: msg.role, content });
     }
   } else if (config.instructions) {
     messages.push(new SystemMessage(parseTemplate(config.instructions, variables)));
   }
 
-  if (history) {
-    for (const msg of history) {
-      if (msg.role === 'user') {
-        messages.push(new HumanMessage(msg.content));
-      } else if (msg.role === 'assistant') {
-        messages.push(new AIMessage(msg.content));
-      }
+  const toLangChainContent = (content: MessageContent) => {
+    if (!isContentBlocks(content)) return content;
+    return content.map((block) =>
+      block.type === 'text'
+        ? { type: 'text' as const, text: block.text }
+        : { type: 'image_url' as const, image_url: { url: imageBlockToUrl(block) } },
+    );
+  };
+
+  const appendTurn = (turn: CanonicalTurn) => {
+    const content = toLangChainContent(turn.content);
+    if (turn.role === 'user') {
+      messages.push(new HumanMessage({ content }));
+    } else {
+      messages.push(new AIMessage({ content }));
     }
+  };
+
+  if (history && history.length > 0) {
+    for (const turn of composeHistory({ history, userInput, configMessages })) appendTurn(turn);
+    return messages;
   }
 
+  for (const turn of configMessages) appendTurn(turn);
+
+  // Preserve the package's existing no-history behavior. In particular, an empty
+  // input still creates a HumanMessage when the config has no conversation turn,
+  // while an empty history array remains identical to omitting history.
   const lastNonSystem = [...messages].reverse().find((m) => m._getType() !== 'system');
   if (lastNonSystem?._getType() !== 'human') {
     messages.push(new HumanMessage(userInput));
@@ -244,13 +328,22 @@ const toToolDefinitions = (tools: LangChainToolDef[]): ToolDefinitionInput[] =>
 const assistantOutput = (content: unknown, toolCalls: ReadonlyArray<unknown> | undefined) =>
   langChainSpanMessages([{ _getType: () => 'ai', content, tool_calls: toolCalls ?? [] }]).messages;
 
+/** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
 export function createLangChainHandler(
-  llm?: BaseChatModel,
+  llm?: LangChainModelSource,
+  options: ContentCaptureOptions = {},
+): ProviderHandler {
+  reportUsage('langchain-messages.createLangChainHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createLangChainHandlerInternal(llm, options);
+}
+
+function createLangChainHandlerInternal(
+  llm?: LangChainModelSource,
   { captureContent = false }: ContentCaptureOptions = {},
 ): ProviderHandler {
   const MAX_STEPS = 10;
 
-  return createHandler(
+  return createHandlerInternal(
     ['*', 'messages'],
     async (
       config: AiConfigRep,
@@ -282,7 +375,9 @@ export function createLangChainHandler(
           // Resolved per-request so the correct provider/model from the AI config is used.
           const baseModel = await resolveBaseModel(config, llm);
 
-          const toolDefs = config.tools ? buildTools(config.tools, toolHandlers) : [];
+          const { tools: toolDefs, executableTools } = config.tools
+            ? buildTools(config.tools, toolHandlers)
+            : { tools: [], executableTools: new Map() };
           const outputFormat = config.outputFormat;
           const normalizedSchema = outputFormat ? normalizeOutputSchema(outputFormat) : undefined;
 
@@ -377,7 +472,7 @@ export function createLangChainHandler(
                 runUsage.add(langChainSpanUsage(rawUsage));
                 output = result.parsed;
               } else {
-                output = typeof response.content === 'string' ? response.content : '';
+                output = langChainContentText(response.content);
               }
               break;
             }
@@ -393,15 +488,15 @@ export function createLangChainHandler(
                 const toolSpan = startToolSpan(tc.name, tc.id ?? tc.name, parentContext);
                 setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.args });
                 try {
-                  const handlerFn = toolHandlers[tc.name];
-                  if (!handlerFn || typeof handlerFn !== 'function') {
+                  const handlerFn = executableTools.get(tc.name);
+                  if (!handlerFn) {
                     throw new Error(`No handler registered for tool "${tc.name}"`);
                   }
-                  const result = await (handlerFn as (...args: unknown[]) => unknown)(tc.args);
+                  const result = await handlerFn(tc.args);
                   setToolCallContentAttributes(toolSpan, captureContent, { result });
                   toolSpan.setStatus({ code: SpanStatusCode.OK });
                   toolSpan.end();
-                  return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: String(result) });
+                  return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: toolResultString(result) });
                 } catch (err) {
                   failSpan(toolSpan, err);
                   throw err;
@@ -462,7 +557,9 @@ export function createLangChainHandler(
         // Resolved per-request so the correct provider/model from the AI config is used.
         const baseModel = await resolveBaseModel(config, llm);
 
-        const toolDefs = config.tools ? buildTools(config.tools, toolHandlers) : [];
+        const { tools: toolDefs, executableTools } = config.tools
+          ? buildTools(config.tools, toolHandlers)
+          : { tools: [], executableTools: new Map() };
         const outputFormat = config.outputFormat;
         const normalizedSchema = outputFormat ? normalizeOutputSchema(outputFormat) : undefined;
 
@@ -502,7 +599,7 @@ export function createLangChainHandler(
           try {
             const chunkStream = await toolModel.stream(conversationMessages);
             for await (const chunk of chunkStream) {
-              const text = typeof chunk.content === 'string' ? chunk.content : '';
+              const text = langChainContentText(chunk.content);
               if (text && !normalizedSchema) {
                 // Only stream text chunks when there is no structured output schema;
                 // structured output is delivered as a whole in the done event.
@@ -595,15 +692,15 @@ export function createLangChainHandler(
               const toolSpan = startToolSpan(tc.name, tc.id ?? tc.name, parentContext);
               setToolCallContentAttributes(toolSpan, captureContent, { arguments: tc.args });
               try {
-                const handlerFn = toolHandlers[tc.name];
-                if (!handlerFn || typeof handlerFn !== 'function') {
+                const handlerFn = executableTools.get(tc.name);
+                if (!handlerFn) {
                   throw new Error(`No handler registered for tool "${tc.name}"`);
                 }
-                const result = await (handlerFn as (...args: unknown[]) => unknown)(tc.args);
+                const result = await handlerFn(tc.args);
                 setToolCallContentAttributes(toolSpan, captureContent, { result });
                 toolSpan.setStatus({ code: SpanStatusCode.OK });
                 toolSpan.end();
-                return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: String(result) });
+                return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: toolResultString(result) });
               } catch (err) {
                 failSpan(toolSpan, err);
                 throw err;
@@ -660,9 +757,11 @@ export const langchainMessages = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createLangChainHandler(undefined, { captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+) => {
+  reportUsage('langchain-messages.langchainMessages', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createLangChainHandlerInternal(undefined, { captureContent }),
+  }).invoke(userInput, context, variables);
+};

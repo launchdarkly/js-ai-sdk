@@ -53,11 +53,12 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
     ...actual,
-    config: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
+    configInternal: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
   };
 });
 
 import { createClaudeMessagesHandler } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -401,6 +402,39 @@ describe('createClaudeMessagesHandler', () => {
     await expect(handler(config as any, 'q', {})).rejects.toThrow(/unknownTool/);
   });
 
+  it('rejects a registered tool that is excluded from the active config', async () => {
+    const safe = vi.fn();
+    const dangerous = vi.fn();
+    mockMessagesCreate.mockResolvedValueOnce(mockToolUseResponse('dangerous', {}));
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(createClaudeMessagesHandler()(config as any, 'q', { safe, dangerous })).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+  });
+
+  it('rejects a returned tool when the active config has no tools', async () => {
+    const dangerous = vi.fn();
+    mockMessagesCreate.mockResolvedValueOnce(mockToolUseResponse('dangerous', {}));
+
+    await expect(createClaudeMessagesHandler()(baseConfig as any, 'q', { dangerous })).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(mockMessagesCreate).toHaveBeenCalledOnce();
+  });
+
+  it('rejects inherited callable names during invoke', async () => {
+    mockMessagesCreate.mockResolvedValueOnce(mockToolUseResponse('constructor', {}));
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(createClaudeMessagesHandler()(config as any, 'q', {})).rejects.toThrow(/constructor/);
+    expect(mockMessagesCreate.mock.calls[0][0].tools ?? []).toHaveLength(0);
+  });
+
   // ── 1.5 Telemetry ───────────────────────────────────────────────────────────
 
   it('uses invoke_agent as the root span name', async () => {
@@ -732,7 +766,7 @@ describe('createClaudeMessagesHandler', () => {
 
   it('claudeMessages calls config() with the correct handler and forwards args', async () => {
     const { claudeMessages } = await import('../handler.js');
-    const { config } = await import('@launchdarkly/ai-server');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
     const ctx = { kind: 'user' as const, key: 'u' };
     await claudeMessages('my-flag', 'hello', ctx, {} as any);
     expect(config).toHaveBeenCalledWith(
@@ -887,6 +921,63 @@ describe('createClaudeMessagesHandler', () => {
     const chunks = events.filter((e: any) => e.type === 'chunk').map((e: any) => e.text);
     expect(chunks).toContain('post-tool');
     expect(toolFn).toHaveBeenCalledWith({ q: 'hello' });
+  });
+
+  it('rejects inherited callable names during streaming', async () => {
+    mockMessagesStream.mockReturnValue(
+      makeStreamMock([], {
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'constructor', input: {} }],
+      }),
+    );
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(collectStream(createClaudeMessagesHandler().stream?.(config as any, 'q', {}, {}))).rejects.toThrow(
+      /constructor/,
+    );
+    expect(mockMessagesStream.mock.calls[0][0].tools ?? []).toHaveLength(0);
+  });
+
+  it('rejects an excluded registered tool during streaming', async () => {
+    const dangerous = vi.fn();
+    mockMessagesStream.mockReturnValue(
+      makeStreamMock([], {
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'dangerous', input: {} }],
+      }),
+    );
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(
+      collectStream(createClaudeMessagesHandler().stream?.(config as any, 'q', { safe: vi.fn(), dangerous }, {})),
+    ).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(mockMessagesStream).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a returned tool during streaming when the active config has no tools', async () => {
+    const dangerous = vi.fn();
+    mockMessagesStream.mockReturnValue(
+      makeStreamMock([], {
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'dangerous', input: {} }],
+      }),
+    );
+
+    await expect(
+      collectStream(createClaudeMessagesHandler().stream?.(baseConfig as any, 'q', { dangerous }, {})),
+    ).rejects.toThrow(/dangerous/);
+    expect(dangerous).not.toHaveBeenCalled();
+    expect(mockMessagesStream).toHaveBeenCalledOnce();
   });
 
   it('sets gen_ai span attributes and puts content on attributes when enabled', async () => {
@@ -1056,6 +1147,50 @@ describe('createClaudeMessagesHandler', () => {
     expect(allContent).toContain('Hi there');
   });
 
+  it('multimodal image history content blocks are preserved on the wire', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const handler = createClaudeMessagesHandler();
+    const imageHistory = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+          { type: 'text' as const, text: 'What is in this image?' },
+        ],
+      },
+    ];
+    await handler(baseConfig as any, '', {}, {}, imageHistory);
+    const call = mockMessagesCreate.mock.calls[0][0];
+    const serialized = JSON.stringify(call.messages);
+    expect(serialized).toContain('"type":"image"');
+    expect(serialized).toContain('abc123');
+    expect(call.messages.filter((m: { role: string }) => m.role === 'user')).toHaveLength(1);
+  });
+
+  it('merges image-only history with userInput into one user turn (no consecutive users)', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const handler = createClaudeMessagesHandler();
+    const imageHistory = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+        ],
+      },
+    ];
+    await handler(baseConfig as any, 'What colour is this?', {}, {}, imageHistory);
+    const call = mockMessagesCreate.mock.calls[0][0];
+    const roles = call.messages.map((m: { role: string }) => m.role);
+    // Anthropic requires alternating roles — the image turn and the question must not
+    // arrive as two consecutive user messages.
+    expect(roles.some((r: string, i: number) => r === 'user' && roles[i + 1] === 'user')).toBe(false);
+    const last = call.messages[call.messages.length - 1];
+    expect(last.role).toBe('user');
+    const serialized = JSON.stringify(last.content);
+    expect(serialized).toContain('"type":"image"');
+    expect(serialized).toContain('What colour is this?');
+  });
+
   // ── §1.9 streaming ignores outputFormat ─────────────────────────────────────
 
   it('streaming handler does not inject outputFormat schema into system prompt', async () => {
@@ -1213,5 +1348,251 @@ describe('createClaudeMessagesHandler — MAX_STEPS cap (§1.10)', () => {
     await expect(collectStream(handler.stream?.(cfg as any, 'q', { myTool: toolFn }, {}))).rejects.toThrow(
       /maximum number of steps/,
     );
+  });
+});
+
+describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockChildSpans.length = 0;
+  });
+
+  function makeStreamMock(events: any[], finalMsg: any) {
+    const asyncIterable = (async function* () {
+      for (const e of events) yield e;
+    })();
+    return {
+      [Symbol.asyncIterator]: () => asyncIterable[Symbol.asyncIterator](),
+      finalMessage: vi.fn().mockResolvedValue(finalMsg),
+    };
+  }
+
+  it('forwards recognized keys (temperature, top_p, top_k, stop_sequences, thinking) to messages.create', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          temperature: 0.5,
+          top_p: 0.9,
+          top_k: 40,
+          stop_sequences: ['STOP'],
+          thinking: { type: 'enabled', budget_tokens: 2048 },
+        },
+      },
+    };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    const call = mockMessagesCreate.mock.calls[0][0];
+    expect(call.temperature).toBe(0.5);
+    expect(call.top_p).toBe(0.9);
+    expect(call.top_k).toBe(40);
+    expect(call.stop_sequences).toEqual(['STOP']);
+    expect(call.thinking).toEqual({ type: 'enabled', budget_tokens: 2048 });
+  });
+
+  it('still defaults max_tokens to 1024 when model.parameters is set but omits it', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { temperature: 0.3 } } };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    expect(mockMessagesCreate.mock.calls[0][0].max_tokens).toBe(1024);
+  });
+
+  it('forwards a configured max_tokens unchanged (existing behaviour)', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_tokens: 2048 } } };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    expect(mockMessagesCreate.mock.calls[0][0].max_tokens).toBe(2048);
+  });
+
+  // This handler wraps the raw @anthropic-ai/sdk client, which reads snake_case keys itself, so
+  // (unlike the four framework handlers) the UI's snake_case must reach messages.create untouched
+  // rather than being camelized.
+  it('forwards snake_case model.parameters keys unchanged, not camelized', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { max_tokens: 300, top_p: 0.8, stop_sequences: ['STOP'] } },
+    };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    const call = mockMessagesCreate.mock.calls[0][0];
+    expect(call.max_tokens).toBe(300);
+    expect(call.top_p).toBe(0.8);
+    expect(call.stop_sequences).toEqual(['STOP']);
+    expect(call.maxTokens).toBeUndefined();
+    expect(call.topP).toBeUndefined();
+  });
+
+  it('does not let model.parameters override model, messages, tools, or system', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          model: 'evil-model',
+          messages: ['evil'],
+          tools: ['evil'],
+          system: 'evil system',
+          stream: true,
+        },
+      },
+    };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    const call = mockMessagesCreate.mock.calls[0][0];
+    expect(call.model).toBe(baseConfig.model.name);
+    expect(call.system).toBe('You are helpful.');
+    expect(Array.isArray(call.messages)).toBe(true);
+    expect(call.messages.at(-1).content).toBe('hi');
+    expect(call.tools).toBeUndefined();
+  });
+
+  it('never forwards credentials, endpoints, request overrides or remote tools from model.parameters', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
+    await createClaudeMessagesHandler()(cfg as any, 'hi');
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+    for (const arg of mockMessagesCreate.mock.calls[0]) {
+      expectNoNeverForwardedValue(arg);
+    }
+  });
+
+  it('drops an unrecognized model.parameters key rather than forwarding it', async () => {
+    // Unlike the four framework handlers, this handler wraps the raw Anthropic SDK client: an
+    // unsupported key reaching messages.create is a wire-level 400, not a harmlessly ignored extra.
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { made_up_key: 'nope' } } };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    expect(mockMessagesCreate.mock.calls[0][0]).not.toHaveProperty('made_up_key');
+  });
+
+  it('drops a UI-offered key the Messages API top level does not accept', async () => {
+    // The LaunchDarkly UI offers top-level `effort`; the Messages API only takes it nested under
+    // `output_config`. Without the rename in buildModelParameterOptions this would 400.
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { effort: 'high' } } };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    const call = mockMessagesCreate.mock.calls[0][0];
+    expect(call).not.toHaveProperty('effort');
+    expect(call.output_config).toEqual({ effort: 'high' });
+  });
+
+  it('an explicit output_config.effort in the config wins over the top-level effort rename', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { effort: 'high', output_config: { effort: 'low' } } },
+    };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    expect(mockMessagesCreate.mock.calls[0][0].output_config).toEqual({ effort: 'low' });
+  });
+
+  it('merges a renamed effort into an output_config that also sets other fields', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { effort: 'high', output_config: { format: { type: 'text' } } } },
+    };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    expect(mockMessagesCreate.mock.calls[0][0].output_config).toEqual({ effort: 'high', format: { type: 'text' } });
+  });
+
+  it('leaves the call unchanged from today when model.parameters is absent', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const handler = createClaudeMessagesHandler();
+    await handler(baseConfig as any, 'hi');
+    const call = mockMessagesCreate.mock.calls[0][0];
+    expect(call).toEqual({
+      model: baseConfig.model.name,
+      max_tokens: 1024,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+  });
+
+  it('leaves the call unchanged from today when model.parameters is an empty object', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: {} } };
+    const handler = createClaudeMessagesHandler();
+    await handler(cfg as any, 'hi');
+    const call = mockMessagesCreate.mock.calls[0][0];
+    expect(call).toEqual({
+      model: baseConfig.model.name,
+      max_tokens: 1024,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+  });
+
+  // ── streaming path ──────────────────────────────────────────────────────────
+
+  it('forwards recognized model.parameters to messages.stream', async () => {
+    const finalMsg = {
+      usage: { input_tokens: 3, output_tokens: 7 },
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Hi' }],
+    };
+    mockMessagesStream.mockReturnValue(makeStreamMock([], finalMsg));
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { temperature: 0.7, top_k: 10 } } };
+    const handler = createClaudeMessagesHandler();
+    const gen = handler.stream?.(cfg as any, 'q', {}, {});
+    for await (const _e of gen) {
+      // drain
+    }
+    const call = mockMessagesStream.mock.calls[0][0];
+    expect(call.temperature).toBe(0.7);
+    expect(call.top_k).toBe(10);
+  });
+
+  it('streaming path still defaults max_tokens to 1024 and drops an unrecognized key', async () => {
+    const finalMsg = {
+      usage: { input_tokens: 3, output_tokens: 7 },
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Hi' }],
+    };
+    mockMessagesStream.mockReturnValue(makeStreamMock([], finalMsg));
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: { made_up_key: 'nope' } } };
+    const handler = createClaudeMessagesHandler();
+    const gen = handler.stream?.(cfg as any, 'q', {}, {});
+    for await (const _e of gen) {
+      // drain
+    }
+    const call = mockMessagesStream.mock.calls[0][0];
+    expect(call.max_tokens).toBe(1024);
+    expect(call).not.toHaveProperty('made_up_key');
+  });
+
+  it('streaming path does not let model.parameters override model/messages/system', async () => {
+    const finalMsg = {
+      usage: { input_tokens: 3, output_tokens: 7 },
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Hi' }],
+    };
+    mockMessagesStream.mockReturnValue(makeStreamMock([], finalMsg));
+    const cfg = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { model: 'evil-model', system: 'evil system', messages: ['evil'] },
+      },
+    };
+    const handler = createClaudeMessagesHandler();
+    const gen = handler.stream?.(cfg as any, 'q', {}, {});
+    for await (const _e of gen) {
+      // drain
+    }
+    const call = mockMessagesStream.mock.calls[0][0];
+    expect(call.model).toBe(baseConfig.model.name);
+    expect(call.system).toBe('You are helpful.');
+    expect(call.messages.at(-1).content).toBe('q');
   });
 });

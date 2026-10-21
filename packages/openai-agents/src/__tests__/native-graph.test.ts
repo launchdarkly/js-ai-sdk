@@ -36,6 +36,7 @@ vi.mock('@openai/agents', () => ({
 
 const mockSpan = vi.hoisted(() => ({
   setAttribute: vi.fn(),
+  addEvent: vi.fn(),
   setStatus: vi.fn(),
   end: vi.fn(),
   recordException: vi.fn(),
@@ -60,11 +61,23 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   return {
     ...actual,
     getClient: vi.fn().mockReturnValue({ track: mockTrack }),
+    // The real `tryGetEnvironmentId` reads the LD client's feature store, which no unit test has.
+    // Stub the environment id onto the two track-data builders so the adapter's wiring can be
+    // asserted here; the lookup itself is covered in the client package's own tests.
+    makeGraphTrackData: (graphKey: string, runId: string) => ({
+      ...actual.makeGraphTrackData(graphKey, runId),
+      environmentId: 'env-123',
+    }),
+    makeNodeTrackData: (node: any, graphKey: string, runId: string) => ({
+      ...actual.makeNodeTrackData(node, graphKey, runId),
+      environmentId: 'env-123',
+    }),
     parseTemplate: (template: string) => template,
   };
 });
 
 import { toOpenAIAgents } from '../native-graph.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -134,7 +147,49 @@ describe('toOpenAIAgents', () => {
     await expect(toOpenAIAgents(Promise.resolve(def as any)).invoke('hi')).rejects.toThrow(/root/i);
   });
 
+  // ── model.parameters forwarding ───────────────────────────────────────────
+
+  it("passes each node's allowlisted model.parameters as that node's modelSettings, and the root's maxTurns to run()", async () => {
+    const def = makeTwoNodeGraph();
+    (def.root.config.model as any).parameters = { temperature: 0.2, max_turns: 7, top_p: 0.5 };
+    (def.getNode('leaf-agent')!.config.model as any).parameters = { max_tokens: 64, max_turns: 2 };
+    await toOpenAIAgents(Promise.resolve(def as any)).invoke('hi');
+    const byName = Object.fromEntries(mockAgentConstructor.mock.calls.map(([args]) => [args.name, args]));
+    expect(byName['root-agent'].modelSettings).toEqual({ temperature: 0.2, topP: 0.5 });
+    expect(byName['leaf-agent'].modelSettings).toEqual({ maxTokens: 64 });
+    // One run drives the whole graph, so only the root's turn cap applies, as in the Python SDK.
+    expect(mockRunnerRun.mock.calls[0][2]).toEqual({ maxTurns: 7 });
+  });
+
+  it('sets no modelSettings and no run options when no node has model.parameters', async () => {
+    await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
+    for (const [args] of mockAgentConstructor.mock.calls) {
+      expect(args).not.toHaveProperty('modelSettings');
+    }
+    expect(mockRunnerRun.mock.calls[0][2]).toBeUndefined();
+  });
+
+  it('never forwards request overrides, credentials or retry policy from any node', async () => {
+    const def = makeTwoNodeGraph();
+    (def.root.config.model as any).parameters = NEVER_FORWARDED_PARAMETERS;
+    (def.getNode('leaf-agent')!.config.model as any).parameters = NEVER_FORWARDED_PARAMETERS;
+    await toOpenAIAgents(Promise.resolve(def as any)).invoke('hi');
+    for (const [args] of mockAgentConstructor.mock.calls) {
+      expectNoNeverForwardedValue(args);
+    }
+  });
+
   // ── Topology translation ──────────────────────────────────────────────────
+
+  it('tool handler error propagates through the real SDK tool() rather than reaching the model', async () => {
+    const { tool: realTool, RunContext } = await vi.importActual<typeof import('@openai/agents')>('@openai/agents');
+    const graph = makeTwoNodeGraph();
+    (graph.root.config as any).tools = { search: { name: 'search', type: 'function', parameters: { type: 'object' } } };
+    const search = vi.fn().mockRejectedValue(new Error('tool exploded'));
+    await toOpenAIAgents(Promise.resolve(graph), { toolHandlers: { search } }).invoke('hi');
+    const sdkTool = realTool(mockTool.mock.calls[0][0]) as any;
+    await expect(sdkTool.invoke(new RunContext({}), '{}')).rejects.toThrow('tool exploded');
+  });
 
   it('creates one Agent per node in a two-node graph', async () => {
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
@@ -160,6 +215,22 @@ describe('toOpenAIAgents', () => {
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('test input');
     // Root is the second agent created (leaf was first)
     expect(mockRunnerRun).toHaveBeenCalledWith(createdAgents[1], 'test input');
+  });
+
+  it('forwards history to root Runner.run as structured input', async () => {
+    const history = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+        ],
+      },
+    ];
+    await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('describe', {}, history);
+    const input = mockRunnerRun.mock.calls[0][1];
+    expect(Array.isArray(input)).toBe(true);
+    expect(JSON.stringify(input)).toContain('input_image');
+    expect(JSON.stringify(input)).toContain('abc123');
   });
 
   // ── Instructions forwarding ───────────────────────────────────────────────
@@ -231,7 +302,12 @@ describe('toOpenAIAgents', () => {
       expect.any(Object),
       expect.any(Number),
     );
-    expect(mockTrack).toHaveBeenCalledWith('$ld:ai:graph:path', ldContext, expect.any(Object), expect.any(Number));
+    expect(mockTrack).not.toHaveBeenCalledWith(
+      '$ld:ai:graph:path',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it('emits invocation_failure and re-throws when runner.run rejects', async () => {
@@ -243,6 +319,80 @@ describe('toOpenAIAgents', () => {
     expect(mockTrack).toHaveBeenCalledWith('$ld:ai:graph:invocation_failure', ldContext, expect.any(Object), 1);
   });
 
+  it('tags the graph span with the run identity so LaunchDarkly can link the trace to the config', async () => {
+    await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph()), { context: ldContext }).invoke('hi');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.operation.type', 'gen_ai');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.config.key', 'test-graph');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.key', 'test-graph');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.run.id', expect.any(String));
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.variation.key', expect.any(String));
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('context.contextKeys.user', 'u1');
+    expect(mockSpan.addEvent).toHaveBeenCalledWith('feature_flag', {
+      'feature_flag.key': 'test-graph',
+      'feature_flag.provider.name': 'LaunchDarkly',
+      'feature_flag.set.id': 'env-123',
+      'feature_flag.context.id': 'u1',
+      'feature_flag.contextKeys': '{"user":"u1"}',
+    });
+  });
+
+  it('keys the graph-level events to the graph, not the root node', async () => {
+    await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph()), { context: ldContext }).invoke('hi');
+    const graphEvents = mockTrack.mock.calls.filter((c: unknown[]) =>
+      ['$ld:ai:graph:invocation_success', '$ld:ai:graph:duration:total', '$ld:ai:graph:total_tokens'].includes(
+        c[0] as string,
+      ),
+    );
+    expect(graphEvents).toHaveLength(3);
+    for (const call of graphEvents) {
+      expect(call[2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+    }
+  });
+
+  it('keys invocation_failure to the graph, not the root node', async () => {
+    mockRunnerRun.mockRejectedValue(new Error('boom'));
+    await expect(
+      toOpenAIAgents(Promise.resolve(makeTwoNodeGraph()), { context: ldContext }).invoke('hi'),
+    ).rejects.toThrow('boom');
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+  });
+
+  it('records a setup error on the graph span, tracks it as a failure, and ends the span once', async () => {
+    // A traversal that builds nothing leaves the root agent unbuilt, so setup throws before the run.
+    const def = { ...makeTwoNodeGraph(), reverseTraverse: async () => {} };
+    await expect(toOpenAIAgents(Promise.resolve(def as any), { context: ldContext }).invoke('hi')).rejects.toThrow(
+      'Root agent "root-agent" was not built',
+    );
+    expect(mockRunnerRun).not.toHaveBeenCalled();
+    expect(mockSpan.end).toHaveBeenCalledTimes(1);
+    expect(mockSpan.recordException).toHaveBeenCalledTimes(1);
+    expect(mockSpan.recordException).toHaveBeenCalledWith(expect.any(Error));
+    expect(mockSpan.setStatus).toHaveBeenCalledWith({
+      code: SpanStatusCode.ERROR,
+      message: 'Root agent "root-agent" was not built',
+    });
+    expect(mockSpan.setStatus).not.toHaveBeenCalledWith({ code: SpanStatusCode.OK });
+    const failures = mockTrack.mock.calls.filter((c: unknown[]) => c[0] === '$ld:ai:graph:invocation_failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toEqual(expect.objectContaining({ configKey: 'test-graph', graphKey: 'test-graph' }));
+  });
+
+  it('puts the environment id on every node and graph tracking event', async () => {
+    mockRunnerRun.mockImplementation(async () => {
+      capturedEventHandlers.agent_start?.({}, { name: 'root-agent' });
+      capturedEventHandlers.agent_end?.({}, { name: 'root-agent' }, 'output');
+      capturedEventHandlers.agent_handoff?.({}, { name: 'root-agent' }, { name: 'leaf-agent' });
+      return makeRunResult();
+    });
+    await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph()), { context: ldContext }).invoke('hi');
+    expect(mockTrack).toHaveBeenCalled();
+    for (const call of mockTrack.mock.calls) {
+      expect(call[2]).toEqual(expect.objectContaining({ environmentId: 'env-123' }));
+    }
+  });
+
   it('does not call track when no context is provided', async () => {
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
     expect(mockTrack).not.toHaveBeenCalled();
@@ -250,9 +400,9 @@ describe('toOpenAIAgents', () => {
 
   // ── OTel span lifecycle ───────────────────────────────────────────────────
 
-  it('sets ld.ai.graph.key span attribute on success', async () => {
+  it('sets launchdarkly.graph.key span attribute on success', async () => {
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
-    expect(mockSpan.setAttribute).toHaveBeenCalledWith('ld.ai.graph.key', 'test-graph');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.key', 'test-graph');
     expect(mockSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.OK });
     expect(mockSpan.end).toHaveBeenCalled();
   });
@@ -291,34 +441,36 @@ describe('toOpenAIAgents', () => {
 
   // ── agent_start hook ─────────────────────────────────────────────────────
 
-  it('agent_start hook pushes node to path', async () => {
+  it('agent_start emits $ld:ai:graph:node for that node', async () => {
     mockRunnerRun.mockImplementation(async () => {
-      // Simulate agent_start firing for the root agent
       capturedEventHandlers.agent_start?.({}, { name: 'root-agent' });
       return makeRunResult();
     });
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph()), { context: ldContext }).invoke('hi');
-    // Verify $ld:ai:graph:path was tracked with a value >= 1 (path includes root)
-    expect(mockTrack).toHaveBeenCalledWith('$ld:ai:graph:path', ldContext, expect.anything(), expect.any(Number));
+    const nodeCalls = mockTrack.mock.calls.filter((c: any[]) => c[0] === '$ld:ai:graph:node');
+    expect(nodeCalls).toHaveLength(1);
+    expect(nodeCalls[0][2]).toMatchObject({ nodeKey: 'root-agent', index: 0 });
+    expect(nodeCalls[0][3]).toBe(1);
+    expect(mockTrack).not.toHaveBeenCalledWith(
+      '$ld:ai:graph:path',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
-  it('agent_start does not add a duplicate key when on_handoff already added it', async () => {
-    let capturedPath: string[] | undefined;
+  it('agent_start does not emit a second node event when handoff already ran', async () => {
     mockRunnerRun.mockImplementation(async () => {
-      // Simulate on_handoff adding the leaf node key first (as the real handoff hook does)
       capturedEventHandlers.agent_handoff?.({}, { name: 'root-agent' }, { name: 'leaf-agent' });
-      // Then simulate agent_start firing for the same leaf node
       capturedEventHandlers.agent_start?.({}, { name: 'leaf-agent' });
-      // Capture path length via the track call
       return makeRunResult();
     });
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph()), { context: ldContext }).invoke('hi');
-    // $ld:ai:graph:path is tracked with path.length — leaf-agent should appear exactly once
-    const pathCall = mockTrack.mock.calls.find((c: any[]) => c[0] === '$ld:ai:graph:path');
-    // leaf-agent was added once by handoff, agent_start should NOT add it again
-    // path.length should be 1 (only leaf-agent, since root agent_start never fired)
-    expect(pathCall).toBeDefined();
-    expect(pathCall[3]).toBe(1);
+    const nodeCalls = mockTrack.mock.calls.filter(
+      (c: any[]) => c[0] === '$ld:ai:graph:node' && c[2]?.nodeKey === 'leaf-agent',
+    );
+    expect(nodeCalls).toHaveLength(1);
+    expect(nodeCalls[0][3]).toBe(1);
   });
 
   // ── config.messages system prompt ────────────────────────────────────────
@@ -354,12 +506,12 @@ describe('toOpenAIAgents', () => {
 
   // ── OTel span usage attributes ────────────────────────────────────────────
 
-  it('sets gen_ai.usage.* and ld.ai.graph.path span attributes on success', async () => {
+  it('sets gen_ai.usage.* and launchdarkly.graph.path span attributes on success', async () => {
     mockRunnerRun.mockResolvedValue(makeRunResult('output', 7, 3));
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 7);
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.output_tokens', 3);
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.total_tokens', 10);
-    expect(mockSpan.setAttribute).toHaveBeenCalledWith('ld.ai.graph.path', expect.any(String));
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.path', expect.any(String));
   });
 });

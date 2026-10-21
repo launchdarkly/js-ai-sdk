@@ -12,7 +12,15 @@ vi.mock('../lifecycle.js', () => ({
 }));
 
 import { getClient } from '../lifecycle.js';
-import { executeAndStream, executeAndTrack, wrapToolHandlers } from '../tracking.js';
+import {
+  executeAndStream,
+  executeAndTrack,
+  makeGraphTrackData,
+  makeNodeTrackData,
+  makeRunTrackData,
+  modelStampsFromMeta,
+  wrapToolHandlers,
+} from '../tracking.js';
 
 const mockContext = { kind: 'user', key: 'test-user' } as const;
 const mockTrackData = {
@@ -167,6 +175,49 @@ describe('executeAndTrack', () => {
     expect(result.trackData.version).toBe(3);
   });
 
+  it('copies modelKey and modelVersion from meta onto trackData and every event payload', async () => {
+    const handler = makeHandler('ok');
+    const result = await executeAndTrack({
+      configKey: 'flag-x',
+      config: execConfig as any,
+      meta: { variationKey: 'vA', version: 3, modelKey: 'my-model', modelVersion: 4 },
+      userContext: execContext,
+      handler,
+    });
+    expect(result.trackData.modelKey).toBe('my-model');
+    expect(result.trackData.modelVersion).toBe(4);
+    expect(mockTrack).toHaveBeenCalled();
+    for (const call of mockTrack.mock.calls) {
+      expect(call[2]).toMatchObject({ modelKey: 'my-model', modelVersion: 4 });
+    }
+  });
+
+  it('omits modelKey and modelVersion keys when meta lacks them', async () => {
+    const handler = makeHandler('ok');
+    const result = await executeAndTrack({
+      configKey: 'flag-x',
+      config: execConfig as any,
+      meta: { variationKey: 'vA', version: 3 },
+      userContext: execContext,
+      handler,
+    });
+    expect('modelKey' in result.trackData).toBe(false);
+    expect('modelVersion' in result.trackData).toBe(false);
+  });
+
+  it('treats an empty-string modelKey as absent', async () => {
+    const handler = makeHandler('ok');
+    const result = await executeAndTrack({
+      configKey: 'flag-x',
+      config: execConfig as any,
+      meta: { variationKey: 'vA', version: 3, modelKey: '', modelVersion: 1 },
+      userContext: execContext,
+      handler,
+    });
+    expect('modelKey' in result.trackData).toBe(false);
+    expect(result.trackData.modelVersion).toBe(1);
+  });
+
   it('injects ldContext into variables passed to handler', async () => {
     const handler = makeHandler('ok');
     await executeAndTrack({
@@ -274,6 +325,41 @@ describe('executeAndStream', () => {
     return fn;
   }
 
+  it('copies modelKey and modelVersion from meta onto every streamed event payload', async () => {
+    const handler = makeStreamingHandler(['Hi']);
+    await collectExecStream(
+      executeAndStream({
+        configKey: 'f',
+        config: execConfig as any,
+        meta: { variationKey: 'v1', version: 2, modelKey: 'my-model', modelVersion: 3 },
+        userContext: execContext,
+        handler,
+      }),
+    );
+    expect(mockTrack).toHaveBeenCalled();
+    for (const call of mockTrack.mock.calls) {
+      expect(call[2]).toMatchObject({ modelKey: 'my-model', modelVersion: 3 });
+    }
+  });
+
+  it('omits modelKey and modelVersion from streamed event payloads when meta lacks them', async () => {
+    const handler = makeStreamingHandler(['Hi']);
+    await collectExecStream(
+      executeAndStream({
+        configKey: 'f',
+        config: execConfig as any,
+        meta: execMeta,
+        userContext: execContext,
+        handler,
+      }),
+    );
+    expect(mockTrack).toHaveBeenCalled();
+    for (const call of mockTrack.mock.calls) {
+      expect('modelKey' in call[2]).toBe(false);
+      expect('modelVersion' in call[2]).toBe(false);
+    }
+  });
+
   it('yields chunk events from handler.stream', async () => {
     const handler = makeStreamingHandler(['Hello', ' world']);
     const events = await collectExecStream(
@@ -375,5 +461,179 @@ describe('executeAndStream', () => {
     );
     const vars = handler.mock.calls[0][3];
     expect(vars).toMatchObject({ ldContext: execContext, extra: 'val' });
+  });
+});
+
+// ─── modelStampsFromMeta ─────────────────────────────────────────────────────
+
+describe('modelStampsFromMeta', () => {
+  it('copies an integer modelVersion and a non-empty modelKey', () => {
+    expect(modelStampsFromMeta({ modelKey: 'm', modelVersion: 3 })).toEqual({ modelKey: 'm', modelVersion: 3 });
+  });
+
+  it('coerces integral numeric strings and integral floats', () => {
+    expect(modelStampsFromMeta({ modelVersion: '3' as any })).toEqual({ modelVersion: 3 });
+    expect(modelStampsFromMeta({ modelVersion: 3.0 })).toEqual({ modelVersion: 3 });
+  });
+
+  it.each([
+    ['non-numeric string', 'abc'],
+    ['non-integral float', 1.5],
+    ['non-integral string', '1.5'],
+    ['object', {}],
+    ['null', null],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['empty string', ''],
+    ['whitespace string', '   '],
+    ['boolean', true],
+  ])('omits modelVersion for a malformed value (%s) instead of emitting NaN or 0', (_label, value) => {
+    const stamps = modelStampsFromMeta({ modelVersion: value as any });
+    expect('modelVersion' in stamps).toBe(false);
+  });
+
+  it.each([
+    ['number', 123],
+    ['object', {}],
+    ['array', ['a']],
+    ['boolean', true],
+  ])('omits a non-string modelKey (%s)', (_label, value) => {
+    const stamps = modelStampsFromMeta({ modelKey: value as any, modelVersion: 1 });
+    expect('modelKey' in stamps).toBe(false);
+    expect(stamps.modelVersion).toBe(1);
+  });
+
+  it('returns an empty object for null/undefined meta', () => {
+    expect(modelStampsFromMeta(null)).toEqual({});
+    expect(modelStampsFromMeta(undefined)).toEqual({});
+  });
+});
+
+// ─── makeNodeTrackData ───────────────────────────────────────────────────────
+
+describe('makeNodeTrackData', () => {
+  const node = (meta: Record<string, unknown>) =>
+    ({
+      key: 'node-a',
+      config: { model: { name: 'gpt-4o' }, provider: { name: 'OpenAI' }, instructions: 'x' },
+      meta,
+      edges: [],
+      isTerminal: () => true,
+    }) as any;
+
+  it('builds the standard node payload and copies model stamps from node.meta', () => {
+    const td = makeNodeTrackData(
+      node({ variationKey: 'v1', version: 2, modelKey: 'my-model', modelVersion: 3 }),
+      'graph-key',
+      'run-1',
+    );
+    expect(td).toEqual({
+      runId: 'run-1',
+      configKey: 'node-a',
+      variationKey: 'v1',
+      version: 2,
+      modelName: 'gpt-4o',
+      providerName: 'OpenAI',
+      modelKey: 'my-model',
+      modelVersion: 3,
+      graphKey: 'graph-key',
+    });
+  });
+
+  it('omits modelKey and modelVersion when node.meta lacks them', () => {
+    const td = makeNodeTrackData(node({ variationKey: 'v1', version: 1 }), 'graph-key', 'run-1');
+    expect('modelKey' in td).toBe(false);
+    expect('modelVersion' in td).toBe(false);
+  });
+
+  it('carries the environment id so a tagged span can set feature_flag.set.id', () => {
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({
+      _featureStore: { getInitMetaData: () => ({ environmentId: 'env-abc' }) },
+    });
+    const td = makeNodeTrackData(node({ variationKey: 'v1', version: 1 }), 'graph-key', 'run-1');
+    expect(td.environmentId).toBe('env-abc');
+  });
+
+  it('leaves environmentId undefined when the client cannot provide one', () => {
+    (getClient as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error('not initialized');
+    });
+    const td = makeNodeTrackData(node({ variationKey: 'v1', version: 1 }), 'graph-key', 'run-1');
+    expect(td.environmentId).toBeUndefined();
+  });
+});
+
+// ─── makeGraphTrackData ──────────────────────────────────────────────────────
+
+describe('makeGraphTrackData', () => {
+  it('uses the graph key as the config key and carries the environment id', () => {
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({
+      _featureStore: { getInitMetaData: () => ({ environmentId: 'env-abc' }) },
+    });
+    expect(makeGraphTrackData('graph-key', 'run-1')).toEqual({
+      runId: 'run-1',
+      configKey: 'graph-key',
+      variationKey: '',
+      version: 1,
+      modelName: '',
+      providerName: '',
+      graphKey: 'graph-key',
+      environmentId: 'env-abc',
+    });
+  });
+});
+
+// ─── makeRunTrackData ────────────────────────────────────────────────────────
+
+describe('makeRunTrackData', () => {
+  const config = { model: { name: 'gpt-4o' }, provider: { name: 'OpenAI' }, instructions: 'x' } as any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getClient).mockReturnValue({
+      _featureStore: { getInitMetaData: () => ({ environmentId: 'env-abc' }) },
+    } as any);
+  });
+
+  it('builds the run payload with model stamps, graphKey, and the environment id', () => {
+    const td = makeRunTrackData({
+      configKey: 'my-flag',
+      config,
+      meta: { variationKey: 'v1', version: 2, modelKey: 'my-model', modelVersion: 3 },
+      graphKey: 'graph-key',
+    });
+    expect(td).toEqual({
+      runId: expect.any(String),
+      configKey: 'my-flag',
+      variationKey: 'v1',
+      version: 2,
+      modelName: 'gpt-4o',
+      providerName: 'OpenAI',
+      modelKey: 'my-model',
+      modelVersion: 3,
+      graphKey: 'graph-key',
+      environmentId: 'env-abc',
+    });
+  });
+
+  it('gives each call a fresh run id', () => {
+    const args = { configKey: 'my-flag', config, meta: { variationKey: 'v1' } };
+    expect(makeRunTrackData(args).runId).not.toBe(makeRunTrackData(args).runId);
+  });
+
+  it('falls back to defaults when meta is null', () => {
+    const td = makeRunTrackData({ configKey: 'my-flag', config, meta: null });
+    expect(td.variationKey).toBe('');
+    expect(td.version).toBe(1);
+    expect('modelKey' in td).toBe(false);
+    expect('graphKey' in td).toBe(false);
+  });
+
+  it('leaves environmentId undefined when the client cannot provide one', () => {
+    vi.mocked(getClient).mockImplementation(() => {
+      throw new Error('not initialized');
+    });
+    const td = makeRunTrackData({ configKey: 'my-flag', config, meta: { variationKey: 'v1' } });
+    expect(td.environmentId).toBeUndefined();
   });
 });

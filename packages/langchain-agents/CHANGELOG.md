@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-agents-0.3.0...@launchdarkly/ai-langchain-agents-0.4.0) (2026-10-09)
+
+
+### Features
+
+* **AIC-3211:** record each graph node as its own tracking event ([#91](https://github.com/launchdarkly/js-ai-sdk/issues/91)) ([2df2923](https://github.com/launchdarkly/js-ai-sdk/commit/2df2923cd6f831a6583c9747b0d17626189d292c))
+* **AIC-3495:** record which public helpers an application calls ([#115](https://github.com/launchdarkly/js-ai-sdk/issues/115)) ([aeb4019](https://github.com/launchdarkly/js-ai-sdk/commit/aeb40190b237bb75f788c4c925008c2a9a856ab4))
+* **build:** build the AI SDK like the other LaunchDarkly JS SDKs so CommonJS apps can load it (2/4) ([#77](https://github.com/launchdarkly/js-ai-sdk/issues/77)) ([2cda755](https://github.com/launchdarkly/js-ai-sdk/commit/2cda7551c8feb7e352040384befea2cd76cb5d94))
+
+
+### Bug Fixes
+
+* **deps:** depend on the @launchdarkly/ai-server release each package needs ([#119](https://github.com/launchdarkly/js-ai-sdk/issues/119)) ([9c2a56b](https://github.com/launchdarkly/js-ai-sdk/commit/9c2a56b27a309515032758f64c9c2c7c21477f33))
+* **handlers:** camelize snake_case model.parameters for framework handlers ([75c6287](https://github.com/launchdarkly/js-ai-sdk/commit/75c6287ebdc4098df6722dfc76656b068e9a3985))
+* **langchain:** forward only a per-model-class allowlist of constructor fields ([0990a51](https://github.com/launchdarkly/js-ai-sdk/commit/0990a51e54828c71639d59d5bc44d8653bbf81d7))
+* **langchain:** stop forwarding additionalModelRequestFields to ChatBedrockConverse ([f6268fd](https://github.com/launchdarkly/js-ai-sdk/commit/f6268fdc2c186efd68f91831afba8224974b6bee))
+* pass AI Config model parameters through to every provider handler ([#73](https://github.com/launchdarkly/js-ai-sdk/issues/73)) ([993225f](https://github.com/launchdarkly/js-ai-sdk/commit/993225f3d1cb46016d5f2a21394d5dd505e27e4a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.3.0 to ^0.4.0
+
+## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-agents-0.2.0...@launchdarkly/ai-langchain-agents-0.3.0) (2026-09-18)
+
+
+### Features
+
+* **AIC-3106:** add multimodal history support to graph().invoke() ([#18](https://github.com/launchdarkly/js-ai-sdk/issues/18)) ([9737530](https://github.com/launchdarkly/js-ai-sdk/commit/9737530fbd0610fbaebf3f36e3f0c5b2e7c5c834))
+* **client:** stamp modelKey and modelVersion from _ldMeta on tracking events ([758fe7c](https://github.com/launchdarkly/js-ai-sdk/commit/758fe7c0730f8f285a28ea702a6e4c8d87033312))
+* **client:** stamp modelKey and modelVersion from _ldMeta on tracking events ([#66](https://github.com/launchdarkly/js-ai-sdk/issues/66)) ([89e4f0e](https://github.com/launchdarkly/js-ai-sdk/commit/89e4f0e45570ccfc4606deb3284dbaa343481bbe))
+
+
+### Bug Fixes
+
+* **AIC-3382:** support Bedrock configs in LangChain handlers ([#72](https://github.com/launchdarkly/js-ai-sdk/issues/72)) ([a1487cf](https://github.com/launchdarkly/js-ai-sdk/commit/a1487cfd5379493e80ca34263121350a9d3d7156))
+* **client:** harden model stamps, share node trackData builder, keep judge results from inheriting parent model identity ([d374962](https://github.com/launchdarkly/js-ai-sdk/commit/d374962bf01024d5e2a6f1f2c3f11aaaea7ee75e))
+* extract LangChain content-block text and apply model parameters after eval ([#54](https://github.com/launchdarkly/js-ai-sdk/issues/54)) ([e34e779](https://github.com/launchdarkly/js-ai-sdk/commit/e34e779fd22181c7d455b696f44b1aa4523e76af))
+
 ## [0.2.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-agents-0.1.1...@launchdarkly/ai-langchain-agents-0.2.0) (2026-09-08)
 
 

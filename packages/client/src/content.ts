@@ -93,7 +93,16 @@ function partToText(part: SpanMessagePart): string {
     case 'tool_call':
       return JSON.stringify({ name: part.name, arguments: part.arguments ?? null });
     default:
-      return typeof part.result === 'string' ? part.result : JSON.stringify(part.result ?? null);
+      // An absent result contributes nothing, so `partsToText` drops it and the flat carriers agree
+      // with the canonical one, which omits the key. Coercing it to `null` first rendered it as the
+      // literal text `null`, which reads in the trace view as a tool that returned a null value
+      // rather than one that returned nothing.
+      //
+      // An explicit `null` result still renders as `null`, because that is what the canonical
+      // carrier reports for it. The two cases differ, and only one of them is a claim about what
+      // the tool returned.
+      if (part.result === undefined) return '';
+      return typeof part.result === 'string' ? part.result : JSON.stringify(part.result);
   }
 }
 
@@ -287,13 +296,18 @@ export function langChainSpanMessages(messages: ReadonlyArray<unknown>): {
   return { systemInstructions: system.length > 0 ? system.join('\n') : undefined, messages: converted };
 }
 
-/** LangChain message content is a string or a list of typed blocks. */
-function langChainContentText(content: unknown): string {
+/** Extracts user-visible text from LangChain string or content-block message content. */
+export function langChainContentText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
-  return (content as Array<Record<string, unknown>>)
-    .filter((block) => block.type === 'text')
-    .map((block) => String(block.text ?? ''))
+  return content
+    .map((block) => {
+      if (typeof block === 'string') return block;
+      if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'text') {
+        return String((block as Record<string, unknown>).text ?? '');
+      }
+      return '';
+    })
     .join('');
 }
 
@@ -397,6 +411,22 @@ export function setToolCallContentAttributes(
   }
   if (io.result !== undefined) {
     span.setAttribute('gen_ai.tool.call.result', stringifyToolValue(io.result));
+  }
+}
+
+/**
+ * Renders a tool handler's return value as the text sent back to the provider.
+ *
+ * A string passes through unchanged, `null`/`undefined` becomes `''`, and anything else becomes JSON.
+ * A value JSON cannot encode (a cycle, a BigInt, a function) falls back to `String(value)`.
+ */
+export function toolResultString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return '';
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
   }
 }
 

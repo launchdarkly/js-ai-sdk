@@ -1,14 +1,22 @@
 import {
   type AiConfigRep,
+  type CanonicalTurn,
+  type ConfigTurn,
   type ContentCaptureOptions,
-  config,
-  createHandler,
+  composeHistory,
+  type config,
+  configInternal,
+  contentToText,
+  createHandlerInternal,
   endSpanOnce,
+  imageBlockToUrl,
   type LDContext,
   type Message,
+  type MessageContent,
   type NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanMessage,
   type SpanMessagePart,
   type SpanUsage,
@@ -21,6 +29,7 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
 } from '@launchdarkly/ai-server';
 import type {
   Model,
@@ -33,7 +42,9 @@ import type {
 } from '@openai/agents';
 import { Agent, Runner, tool } from '@openai/agents';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
+import { buildMaxTurns, buildModelSettings } from './model-parameters.js';
 import { buildOutputType } from './utils.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER_NAME = '@launchdarkly/ai-openai-agents';
 
@@ -207,6 +218,26 @@ function failSpan(span: Span, error: unknown, endedSpans?: Set<Span>): void {
 }
 
 /**
+ * The object an Agents tool call denotes, given the JSON string the SDK carries.
+ *
+ * `function_call.arguments` and `details.toolCall.arguments` arrive as an opaque JSON string, while
+ * every other handler puts a parsed object on a `tool_call` part. Passing the string through left the
+ * content carriers encoding it a second time, so a reader saw `"arguments": "{\\"q\\":1}"` where an
+ * Anthropic span said `"arguments": {"q": 1}`.
+ *
+ * A string that is not JSON is returned unchanged rather than dropped: a truncated stream is worth
+ * reporting verbatim, and reporting nothing would lose what the model asked for.
+ */
+function toolArguments(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * Converts one Agents-SDK item into canonical span message parts.
  *
  * The SDK's `AgentInputItem` / output item unions overlap with the Responses API shapes but are not
@@ -220,7 +251,7 @@ function itemParts(item: Record<string, unknown>): SpanMessagePart[] {
         type: 'tool_call',
         id: typeof item.callId === 'string' ? item.callId : undefined,
         name: String(item.name ?? ''),
-        arguments: item.arguments,
+        arguments: toolArguments(item.arguments),
       },
     ];
   }
@@ -406,7 +437,7 @@ function attachToolSpanHooks(
   // biome-ignore lint/suspicious/noExplicitAny: Agents SDK tool hook argument types are not exported
   agent.on('agent_tool_start', (_context: unknown, tool: any, details: any) => {
     const span = startToolSpan(tool?.name ?? 'tool', callId(details), parentContext);
-    setToolCallContentAttributes(span, captureContent, { arguments: details?.toolCall?.arguments });
+    setToolCallContentAttributes(span, captureContent, { arguments: toolArguments(details?.toolCall?.arguments) });
     toolSpans.set(callId(details), span);
   });
   // biome-ignore lint/suspicious/noExplicitAny: Agents SDK tool hook argument types are not exported
@@ -437,16 +468,58 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
         strict: false,
         // biome-ignore lint/suspicious/noExplicitAny: OpenAI Agents SDK tool parameters type does not accept Record<string, unknown>
         parameters: toolConfig.parameters as any,
+        // null, not undefined: the SDK default feeds a tool error back to the model; the spec (TESTING.md §1.4) says it must propagate.
+        errorFunction: null,
         execute: async (args) => {
           const handler = toolHandlers[name] as (...args: unknown[]) => unknown;
           const result = await handler(args);
-          return String(result);
+          return toolResultString(result);
         },
       }),
     );
 
-function formatHistory(history: Message[]): string {
-  return history.map((m) => `${m.role}: ${m.content}`).join('\n');
+/**
+ * An input item for `Runner.run`, in the Responses-API item shape the Agents
+ * SDK accepts. User turns carry typed content parts (`input_text` /
+ * `input_image`) so images survive; assistant turns are plain text.
+ */
+// The Agents SDK's `input_image` content part names the source `image` (a URL or
+// data URL), unlike the raw Responses API which uses `image_url`. Sending
+// `image_url` here makes the SDK drop the source and the API rejects the turn.
+// The Agents SDK's `input_image` content part names the source `image` (a URL or
+// data URL), unlike the raw Responses API which uses `image_url`. Sending
+// `image_url` here makes the SDK drop the source and the API rejects the turn.
+// Assistant turns likewise need an `output_text` part array, not a bare string —
+// the SDK maps over `content` and throws when handed a string.
+type OpenAIUserContentPart = { type: 'input_text'; text: string } | { type: 'input_image'; image: string };
+type OpenAIInputItem =
+  | { role: 'user'; content: OpenAIUserContentPart[] }
+  | { role: 'assistant'; content: Array<{ type: 'output_text'; text: string }> };
+
+/** Maps one canonical message's content into OpenAI user-turn content parts. */
+function toUserContentParts(content: MessageContent): OpenAIUserContentPart[] {
+  if (typeof content === 'string') return [{ type: 'input_text', text: content }];
+  return content.map((block) =>
+    block.type === 'text'
+      ? { type: 'input_text' as const, text: block.text }
+      : { type: 'input_image' as const, image: imageBlockToUrl(block) },
+  );
+}
+
+/** Turns composed canonical turns into the Agents-SDK input item list. */
+function toRunnerInput(turns: CanonicalTurn[]): OpenAIInputItem[] {
+  return turns.map((turn) =>
+    turn.role === 'assistant'
+      ? { role: 'assistant', content: [{ type: 'output_text', text: contentToText(turn.content) }] }
+      : { role: 'user', content: toUserContentParts(turn.content) },
+  );
+}
+
+/** Non-system config conversation messages, template-applied, in canonical form. */
+function configConversationTurns(config: AiConfigRep, variables: Record<string, unknown>): ConfigTurn[] {
+  return (config.messages ?? [])
+    .filter((m) => m.role !== 'system')
+    .map((m) => ({ role: m.role as 'user' | 'assistant', content: parseTemplate(m.content, variables) }));
 }
 
 function buildAgentAndPrompt(
@@ -458,30 +531,39 @@ function buildAgentAndPrompt(
   history?: Message[],
 ) {
   let instructions: string | undefined;
-  let prompt = userInput;
+  // `prompt` is what Runner.run receives: a plain string for the no-history
+  // case, or a structured input item list when history is present.
+  let prompt: string | OpenAIInputItem[] = userInput;
 
   if (config.instructions) {
     instructions = parseTemplate(config.instructions, variables);
   } else if (config.messages && config.messages.length > 0) {
     const systemMessages = config.messages.filter((m) => m.role === 'system');
-    const conversationMessages = config.messages.filter((m) => m.role !== 'system');
     if (systemMessages.length > 0) {
       instructions = parseTemplate(systemMessages.map((m) => m.content).join('\n'), variables);
     }
-    const configHistory = conversationMessages.map((m) => parseTemplate(m.content, variables)).join('\n');
+    const configHistory = configConversationTurns(config, variables)
+      .map((m) => m.content)
+      .join('\n');
     prompt = configHistory ? `${configHistory}\n\n${userInput}` : userInput;
   }
 
+  // With history, pass structured conversation turns as native Runner input
+  // rather than flattening into the system prompt. `config.instructions` /
+  // system messages stay the system prompt; history + userInput become turns.
   if (history && history.length > 0) {
-    const formatted = formatHistory(history);
-    instructions = instructions
-      ? `${instructions}\n\nConversation History:\n\n${formatted}`
-      : `Conversation History:\n\n${formatted}`;
+    const turns = composeHistory({
+      history,
+      userInput,
+      configMessages: config.instructions ? [] : configConversationTurns(config, variables),
+    });
+    prompt = toRunnerInput(turns);
   }
 
   const tools = config.tools ? buildAgentTools(config.tools, toolHandlers) : [];
 
   const outputType = includeOutputType ? buildOutputType(config.outputFormat) : undefined;
+  const modelSettings = buildModelSettings(config.model.parameters);
 
   const agent = new Agent({
     name: 'assistant',
@@ -489,13 +571,43 @@ function buildAgentAndPrompt(
     ...(instructions ? { instructions } : {}),
     ...(tools.length > 0 ? { tools } : {}),
     ...(outputType ? { outputType } : {}),
+    ...(modelSettings ? { modelSettings } : {}),
   });
 
   return { agent, prompt, instructions };
 }
 
+/**
+ * Span messages reflecting exactly what `Runner.run` receives.
+ *
+ * A plain-string prompt is one user turn. A structured item list (history
+ * present) is recorded turn-for-turn so captured `gen_ai.input.messages` include
+ * the full composed history, not just the final user turn; images are noted as a
+ * compact `[image]` placeholder rather than inlining a large data URL.
+ */
+function promptToSpanMessages(prompt: string | OpenAIInputItem[]): SpanMessage[] {
+  if (typeof prompt === 'string') {
+    return [{ role: 'user', parts: [{ type: 'text', content: prompt }] }];
+  }
+  return prompt.map((item) => ({
+    role: item.role,
+    parts: item.content.map(
+      (part): SpanMessagePart =>
+        part.type === 'input_image' ? { type: 'text', content: '[image]' } : { type: 'text', content: part.text },
+    ),
+  }));
+}
+
 export function createOpenAIAgentHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  return createHandler(
+  reportUsage('openai-agents.createOpenAIAgentHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createOpenAIAgentHandlerInternal({ captureContent });
+}
+
+/** `createOpenAIAgentHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createOpenAIAgentHandlerInternal({
+  captureContent = false,
+}: ContentCaptureOptions = {}): ProviderHandler {
+  return createHandlerInternal(
     ['OpenAI', 'agent'],
     async (
       config: AiConfigRep,
@@ -523,7 +635,7 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
         );
         setInputContentAttributes(span, captureContent, {
           systemInstructions: instructions,
-          messages: [{ role: 'user', parts: [{ type: 'text', content: prompt }] }],
+          messages: promptToSpanMessages(prompt),
         });
 
         const toolTelemetry = attachToolSpanHooks(agent, parentContext, captureContent);
@@ -531,7 +643,9 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
           modelProvider: new SpanningModelProvider(defaultModelProvider(), config, parentContext, captureContent),
         });
         try {
-          const result = await runner.run(agent, prompt);
+          const maxTurns = buildMaxTurns(config.model.parameters);
+          // biome-ignore lint/suspicious/noExplicitAny: Runner.run accepts string | AgentInputItem[]; our item shape is structurally compatible
+          const result = await runner.run(agent, prompt as any, maxTurns !== undefined ? { maxTurns } : undefined);
           const finalOutput = result.finalOutput ?? '';
           const { inputTokens, outputTokens } = result.state.usage;
 
@@ -589,7 +703,7 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
       );
       setInputContentAttributes(span, captureContent, {
         systemInstructions: instructions,
-        messages: [{ role: 'user', parts: [{ type: 'text', content: prompt }] }],
+        messages: promptToSpanMessages(prompt),
       });
 
       const toolTelemetry = attachToolSpanHooks(agent, parentContext, captureContent);
@@ -597,8 +711,10 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
         modelProvider: new SpanningModelProvider(defaultModelProvider(), config, parentContext, captureContent),
       });
       try {
+        const maxTurns = buildMaxTurns(config.model.parameters);
+        const runOptions = { stream: true, signal: abortRun.signal, ...(maxTurns !== undefined ? { maxTurns } : {}) };
         // biome-ignore lint/suspicious/noExplicitAny: Agents SDK run() stream overload requires an any-cast option
-        const streamed = await runner.run(agent, prompt, { stream: true, signal: abortRun.signal } as any);
+        const streamed = await runner.run(agent, prompt as any, runOptions as any);
         // biome-ignore lint/suspicious/noExplicitAny: StreamedRunResult generics are irrelevant to this handler
         const streamedResult = streamed as StreamedRunResult<any, any>;
         let fullOutput = '';
@@ -607,7 +723,12 @@ export function createOpenAIAgentHandler({ captureContent = false }: ContentCapt
           if (event.type === 'raw_model_stream_event') {
             // biome-ignore lint/suspicious/noExplicitAny: OpenAI Agents SDK raw event data type does not expose delta field
             const rawEvent = (event as RunRawModelStreamEvent).data as any;
-            if (rawEvent?.type === 'response.output_text.delta' && typeof rawEvent?.delta === 'string') {
+            // The Agents SDK normalizes the Responses API wire event
+            // (`response.output_text.delta`) before Runner yields it. The text
+            // delta on this stream is `output_text_delta`. The same turn also
+            // arrives as a `{ type: 'model' }` companion; reading that too would
+            // emit the text twice.
+            if (rawEvent?.type === 'output_text_delta' && typeof rawEvent?.delta === 'string') {
               yield { type: 'chunk' as const, text: rawEvent.delta };
               fullOutput += rawEvent.delta;
             }
@@ -673,9 +794,11 @@ export const openaiAgents = (
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
-) =>
-  config({ ...options, key: configKey, handler: createOpenAIAgentHandler({ captureContent }) }).invoke(
-    userInput,
-    context,
-    variables,
-  );
+) => {
+  reportUsage('openai-agents.openaiAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
+    ...options,
+    key: configKey,
+    handler: createOpenAIAgentHandlerInternal({ captureContent }),
+  }).invoke(userInput, context, variables);
+};

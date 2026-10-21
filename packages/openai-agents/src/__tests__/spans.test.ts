@@ -226,6 +226,40 @@ describe('openai-agents span tree against the real Runner', () => {
     expect(named('chat')[0].attributes['gen_ai.response.finish_reasons']).toBeUndefined();
   });
 
+  it('reports tool arguments as the object they denote, not the JSON string the SDK carries', async () => {
+    // The Agents SDK carries `function_call.arguments` as an opaque JSON string, while every other
+    // handler puts a parsed object on a `tool_call` part. Passing the string through left the content
+    // carriers encoding it a second time, so this span described the same call differently from an
+    // Anthropic one.
+    const search = vi.fn().mockReturnValue('r');
+    responseQueue.push(toolCallResponse(), textResponse('Final'));
+
+    await createOpenAIAgentHandler({ captureContent: true })(toolConfig as never, 'q', { search });
+
+    const chat = named('chat').find((c) => String(c.attributes['gen_ai.output.messages'] ?? '').includes('search'));
+    const parts = JSON.parse(String(chat?.attributes['gen_ai.output.messages']))[0].parts;
+    expect(parts).toEqual([{ type: 'tool_call', id: 'call_1', name: 'search', arguments: { q: 'test' } }]);
+
+    const [tool] = named('execute_tool ');
+    expect(tool.attributes['gen_ai.tool.call.arguments']).toBe(JSON.stringify({ q: 'test' }));
+  });
+
+  it('keeps malformed tool arguments verbatim rather than dropping them', async () => {
+    // A truncated argument string is worth reporting as it arrived. Parsing without a guard would
+    // throw inside the telemetry path and take down a run the provider had already billed.
+    const search = vi.fn().mockReturnValue('r');
+    const broken = toolCallResponse();
+    broken.output[0].arguments = '{"q":';
+    responseQueue.push(broken, textResponse('Final'));
+
+    const run = createOpenAIAgentHandler({ captureContent: true })(toolConfig as never, 'q', { search });
+    await run.catch(() => undefined);
+
+    const chat = named('chat').find((c) => String(c.attributes['gen_ai.output.messages'] ?? '').includes('search'));
+    const parts = JSON.parse(String(chat?.attributes['gen_ai.output.messages']))[0].parts;
+    expect(parts).toEqual([{ type: 'tool_call', id: 'call_1', name: 'search', arguments: '{"q":' }]);
+  });
+
   it('nests the SDK-emitted execute_tool span under the root, not under the chat span', async () => {
     const search = vi.fn().mockReturnValue('r');
     responseQueue.push(toolCallResponse(), textResponse('Final'));

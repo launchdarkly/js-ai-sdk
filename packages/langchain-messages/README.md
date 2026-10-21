@@ -39,6 +39,21 @@ import { createLangChainHandler } from '@launchdarkly/ai-langchain-messages';
 const handler = createLangChainHandler(new ChatAnthropic({ model: 'claude-opus-4-5' }));
 ```
 
+A constructed instance cannot see flag parameters. Pass a function instead if the model should
+be built after evaluation:
+
+```ts
+const handler = createLangChainHandler((config) => new ChatAnthropic({
+  model: config.model.name,
+  temperature: typeof config.model.parameters?.temperature === 'number' ? config.model.parameters.temperature : undefined,
+}));
+```
+
+Pick out the settings you want by name. Don't spread `config.model.parameters` into the constructor:
+it comes from the AI Config, and a spread would let it set constructor options such as `apiKey`,
+`anthropicApiUrl` or `clientOptions`. If you pass no model, the handler builds one itself and
+forwards only an allowlist of generation settings.
+
 ### Convenience wrapper
 
 ```ts

@@ -50,12 +50,13 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
     ...actual,
-    config: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
+    configInternal: vi.fn().mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) }),
   };
 });
 
-import { NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
+import { type Message, NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
 import { buildPrompt, buildToolMCP, createClaudeAgentsHandler, partitionTools } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -187,6 +188,179 @@ describe('createClaudeAgentsHandler', () => {
     mockQuery.mockImplementation(makeResultMessage('final answer'));
     const result = await createClaudeAgentsHandler()(baseConfig as any, 'q');
     expect(result.output).toBe('final answer');
+  });
+
+  it('forwards model.parameters.maxTurns to query options', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { maxTurns: 3 } } };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBe(3);
+  });
+
+  // The LaunchDarkly UI writes model.parameters in snake_case (the wire name every provider
+  // client expects), but the Claude Agent SDK's query() Options only reads camelCase — so a
+  // config saved as `max_turns` must reach query() as `maxTurns`, not vanish silently.
+  it('converts a snake_case max_turns to maxTurns for query options', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_turns: 7 } } };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBe(7);
+    expect(options.max_turns).toBeUndefined();
+  });
+
+  it('converts snake_case model.parameters keys for query options (maxThinkingTokens etc.)', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { max_thinking_tokens: 2048, max_budget_usd: 1.5, fallback_model: 'claude-haiku' },
+      },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxThinkingTokens).toBe(2048);
+    expect(options.maxBudgetUsd).toBe(1.5);
+    expect(options.fallbackModel).toBe('claude-haiku');
+  });
+
+  it('forwards recognized model.parameters keys to query options', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: { maxThinkingTokens: 2048, maxBudgetUsd: 1.5, effort: 'high', fallbackModel: 'claude-haiku' },
+      },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxThinkingTokens).toBe(2048);
+    expect(options.maxBudgetUsd).toBe(1.5);
+    expect(options.effort).toBe('high');
+    expect(options.fallbackModel).toBe('claude-haiku');
+  });
+
+  it('drops model.parameters keys that are not on the query options allowlist', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { temperature: 0.7, someUnknownKey: 100, maxTurns: 2 } },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.temperature).toBeUndefined();
+    expect(options.someUnknownKey).toBeUndefined();
+    expect(options.maxTurns).toBe(2);
+  });
+
+  it('never forwards credentials, endpoints, remote tools or host-process settings to query options', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    // mcpServers and hooks are set by the handler itself; the deep check proves neither carries
+    // the config's value.
+    expectNoNeverForwardedValue(options, ['mcpServers', 'hooks']);
+  });
+
+  it('never forwards them on the streaming path either', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+    });
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
+    await collectStream(createClaudeAgentsHandler().stream?.(config as any, 'q', {}, {}));
+    const { options } = mockQuery.mock.calls[0][0];
+    expectNoNeverForwardedValue(options, ['mcpServers', 'hooks']);
+  });
+
+  it('forwards every allowed key under the Claude Agent SDK name and shape', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const schema = { type: 'object', properties: { answer_text: { type: 'string' } } };
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          max_turns: 4,
+          max_thinking_tokens: 2048,
+          thinking: { type: 'enabled', budget_tokens: 1024, display: 'summarized', extra_key: 'dropped' },
+          effort: 'high',
+          max_budget_usd: 1.5,
+          fallback_model: 'claude-haiku',
+          output_format: { type: 'json_schema', schema, extra_key: 'dropped' },
+          betas: ['context-1m-2025-08-07'],
+        },
+      },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options).toMatchObject({
+      maxTurns: 4,
+      maxThinkingTokens: 2048,
+      effort: 'high',
+      maxBudgetUsd: 1.5,
+      fallbackModel: 'claude-haiku',
+      betas: ['context-1m-2025-08-07'],
+    });
+    // The SDK's ThinkingEnabled reads budgetTokens, not the Messages API's budget_tokens.
+    expect(options.thinking).toEqual({ type: 'enabled', budgetTokens: 1024, display: 'summarized' });
+    // The JSON schema itself is passed through as written.
+    expect(options.outputFormat).toEqual({ type: 'json_schema', schema });
+  });
+
+  it('accepts a camelCase thinking.budgetTokens and drops a thinking value without a type', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const run = async (thinking: unknown) => {
+      mockQuery.mockClear();
+      const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { thinking } } };
+      await createClaudeAgentsHandler()(config as any, 'q');
+      return mockQuery.mock.calls[0][0].options.thinking;
+    };
+    expect(await run({ type: 'enabled', budgetTokens: 512 })).toEqual({ type: 'enabled', budgetTokens: 512 });
+    expect(await run({ type: 'adaptive' })).toEqual({ type: 'adaptive' });
+    expect(await run({ budget_tokens: 512 })).toBeUndefined();
+    expect(await run('enabled')).toBeUndefined();
+  });
+
+  it('does not let model.parameters override model, tools, allowedTools, mcpServers, hooks, or systemPrompt', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const config = {
+      ...baseConfig,
+      model: {
+        ...baseConfig.model,
+        parameters: {
+          model: 'smuggled-model',
+          tools: ['smuggled-tool'],
+          allowedTools: ['smuggled-allowed'],
+          mcpServers: { smuggled: true },
+          hooks: { smuggled: true },
+          systemPrompt: 'smuggled prompt',
+        },
+      },
+    };
+    await createClaudeAgentsHandler()(config as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.model).toBe('claude-opus-4-5');
+    expect(options.systemPrompt).toBe('You are helpful.');
+    expect(options.tools).not.toEqual(['smuggled-tool']);
+    expect(options.allowedTools).not.toEqual(['smuggled-allowed']);
+    expect(options.mcpServers).not.toEqual({ smuggled: true });
+    expect(options.hooks).not.toEqual({ smuggled: true });
+  });
+
+  it('does not set maxTurns or other forwarded keys when model.parameters is absent', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await createClaudeAgentsHandler()(baseConfig as any, 'q');
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBeUndefined();
+    expect(options.maxThinkingTokens).toBeUndefined();
+    expect(options.maxBudgetUsd).toBeUndefined();
+    expect(options.effort).toBeUndefined();
+    expect(options.fallbackModel).toBeUndefined();
+    expect(options.thinking).toBeUndefined();
   });
 
   // ── 1.3 Tool wiring ─────────────────────────────────────────────────────────
@@ -419,7 +593,7 @@ describe('createClaudeAgentsHandler', () => {
 
   it('claudeAgents calls config() with the correct handler', async () => {
     const { claudeAgents } = await import('../handler.js');
-    const { config } = await import('@launchdarkly/ai-server');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
     const ctx = { kind: 'user' as const, key: 'u' };
     await claudeAgents('flag', 'hello', ctx, {} as any);
     expect(config).toHaveBeenCalledWith(
@@ -432,7 +606,7 @@ describe('createClaudeAgentsHandler', () => {
 
   it('claudeAgents passes userInput and context to config().invoke()', async () => {
     const { claudeAgents } = await import('../handler.js');
-    const { config } = await import('@launchdarkly/ai-server');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
     const invokeMock = vi.fn().mockResolvedValue({ response: 'ok', usage: {} });
     vi.mocked(config).mockReturnValue({ invoke: invokeMock } as any);
     const ctx = { kind: 'user' as const, key: 'u' };
@@ -492,6 +666,44 @@ describe('createClaudeAgentsHandler', () => {
     expect(done.output).toBe('Final answer');
   });
 
+  it('forwards model.parameters.maxTurns alongside includePartialMessages on the streaming path', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+    });
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { maxTurns: 5 } } };
+    const handler = createClaudeAgentsHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBe(5);
+    expect(options.includePartialMessages).toBe(true);
+  });
+
+  it('converts a snake_case max_turns to maxTurns on the streaming path', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+    });
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_turns: 9 } } };
+    const handler = createClaudeAgentsHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.maxTurns).toBe(9);
+    expect(options.max_turns).toBeUndefined();
+  });
+
+  it('does not let model.parameters override includePartialMessages on the streaming path', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+    });
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { includePartialMessages: false } },
+    };
+    const handler = createClaudeAgentsHandler();
+    await collectStream(handler.stream?.(config as any, 'q', {}, {}));
+    const { options } = mockQuery.mock.calls[0][0];
+    expect(options.includePartialMessages).toBe(true);
+  });
+
   it('sets span attributes and puts content on attributes when enabled', async () => {
     mockQuery.mockImplementation(async function* () {
       yield { type: 'result', subtype: 'success', result: 'ok', usage: { input_tokens: 2, output_tokens: 1 } };
@@ -546,45 +758,186 @@ describe('createClaudeAgentsHandler', () => {
     expect(mockSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
   });
 
-  // ── History ──────────────────────────────────────────────────────────────────
+  // ── History (§1.11 — structured query prompt, not system-prompt text) ────────
 
   const sampleHistory = [
     { role: 'user' as const, content: 'What is feature flagging?' },
     { role: 'assistant' as const, content: 'Feature flagging is a technique...' },
   ];
 
-  it('history is appended to system prompt (via buildPrompt)', () => {
+  const imageHistory = [
+    {
+      role: 'user' as const,
+      content: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } },
+      ],
+    },
+  ];
+
+  it('history is not stuffed into systemPrompt via buildPrompt', () => {
     const { systemPrompt } = buildPrompt(baseConfig as any, 'q', {}, sampleHistory);
     expect(systemPrompt).toContain('You are helpful.');
-    expect(systemPrompt).toContain('Conversation History:');
+    expect(systemPrompt).not.toContain('Conversation History:');
   });
 
-  it('history format is correct', () => {
-    const { systemPrompt } = buildPrompt(baseConfig as any, 'q', {}, sampleHistory);
-    expect(systemPrompt).toContain('user: What is feature flagging?');
-    expect(systemPrompt).toContain('assistant: Feature flagging is a technique...');
-  });
-
-  it('empty history is treated like no history', () => {
+  it('empty history is treated like no history in buildPrompt', () => {
     const { systemPrompt } = buildPrompt(baseConfig as any, 'q', {}, []);
     expect(systemPrompt).not.toContain('Conversation History:');
     expect(systemPrompt).toBe('You are helpful.');
   });
 
-  it('history without prior system prompt', () => {
-    const config = { model: { name: 'claude-opus-4-5' }, provider: { name: 'Anthropic' } };
-    const { systemPrompt } = buildPrompt(config as any, 'q', {}, sampleHistory);
-    expect(systemPrompt).toContain('Conversation History:');
-    expect(systemPrompt).toContain('user: What is feature flagging?');
-    expect(systemPrompt).toContain('assistant: Feature flagging is a technique...');
+  it('history uses async iterable prompt and keeps instructions as systemPrompt', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await createClaudeAgentsHandler()(baseConfig as any, 'follow up', {}, {}, sampleHistory);
+    const { prompt, options } = mockQuery.mock.calls[0][0];
+    expect(options.systemPrompt).toContain('You are helpful.');
+    expect(options.systemPrompt).not.toContain('Conversation History:');
+    expect(
+      typeof prompt === 'string' ? false : prompt != null && typeof prompt[Symbol.asyncIterator] === 'function',
+    ).toBe(true);
   });
 
-  it('history is passed through to query when calling the handler', async () => {
+  it('multimodal image history maps to Anthropic image content blocks on query prompt', async () => {
     mockQuery.mockImplementation(makeResultMessage());
-    await createClaudeAgentsHandler()(baseConfig as any, 'q', {}, {}, sampleHistory);
-    const { options } = mockQuery.mock.calls[0][0];
-    expect(options.systemPrompt).toContain('Conversation History:');
-    expect(options.systemPrompt).toContain('user: What is feature flagging?');
+    await createClaudeAgentsHandler()(baseConfig as any, 'describe', {}, {}, imageHistory);
+    const { prompt, options } = mockQuery.mock.calls[0][0];
+    expect(options.systemPrompt).not.toContain('Conversation History:');
+    expect(typeof prompt === 'string').toBe(false);
+    const chunks: unknown[] = [];
+    for await (const chunk of prompt as AsyncIterable<unknown>) {
+      chunks.push(chunk);
+    }
+    const serialized = JSON.stringify(chunks);
+    expect(serialized).toContain('"type":"image"');
+    expect(serialized).toContain('abc123');
+  });
+
+  it('empty userInput with history ending in user does not append empty turn', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const fullTurn = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'xyz' } },
+          { type: 'text' as const, text: 'Analyze this diagram' },
+        ],
+      },
+    ];
+    await createClaudeAgentsHandler()(baseConfig as any, '', {}, {}, fullTurn);
+    const { prompt } = mockQuery.mock.calls[0][0];
+    const chunks: Array<{ message?: { role?: string; content?: unknown } }> = [];
+    for await (const chunk of prompt as AsyncIterable<(typeof chunks)[number]>) {
+      chunks.push(chunk);
+    }
+    const userTurns = chunks.filter((c) => c.message?.role === 'user' || (c as { type?: string }).type === 'user');
+    expect(userTurns.length).toBe(1);
+  });
+
+  // The envelope `type` has to agree with the message role: the CLI takes an `assistant`
+  // envelope as a replayed turn and rejects every other envelope whose role is not `user`,
+  // exiting with `Expected message role 'user', got 'assistant'`. These mirror the Python
+  // SDK's envelope tests so both SDKs stream history the same way.
+
+  const alternatingHistory = [
+    { role: 'user' as const, content: 'I am going to share an image with you.' },
+    { role: 'assistant' as const, content: 'Sure — go ahead and share it.' },
+    {
+      role: 'user' as const,
+      content: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'redsquare' } },
+        { type: 'text' as const, text: 'What colour is the square?' },
+      ],
+    },
+  ];
+
+  async function streamedEnvelopes(userInput: string, history: Message[]) {
+    mockQuery.mockImplementation(makeResultMessage());
+    await createClaudeAgentsHandler()(baseConfig as any, userInput, {}, {}, history);
+    const { prompt } = mockQuery.mock.calls[0][0];
+    const envelopes: Array<{ type: string; message: { role: string; content: unknown } }> = [];
+    for await (const envelope of prompt as AsyncIterable<(typeof envelopes)[number]>) {
+      envelopes.push(envelope);
+    }
+    return envelopes;
+  }
+
+  function capturedInputMessages() {
+    const written = mockSpan.setAttribute.mock.calls.find((c: unknown[]) => c[0] === 'gen_ai.input.messages')?.[1];
+    return JSON.parse(String(written)) as Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+  }
+
+  it('every envelope satisfies the CLI role contract', async () => {
+    const envelopes = await streamedEnvelopes('', alternatingHistory);
+    for (const envelope of envelopes) {
+      const role = envelope.message.role;
+      expect(
+        envelope.type === 'assistant' || role === 'user',
+        `envelope type ${envelope.type} with role ${role} is rejected by the CLI`,
+      ).toBe(true);
+      expect(envelope.type).toBe(role);
+    }
+  });
+
+  it('replays an assistant turn as an assistant envelope', async () => {
+    const envelopes = await streamedEnvelopes('', [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'hello' },
+    ]);
+    expect(envelopes[1]).toEqual({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+      parent_tool_use_id: null,
+    });
+  });
+
+  it('keeps user content blocks so images still reach the model natively', async () => {
+    const envelopes = await streamedEnvelopes('', alternatingHistory);
+    expect(envelopes).toHaveLength(3);
+    expect(envelopes[2].message.content).toEqual([
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'redsquare' } },
+      { type: 'text', text: 'What colour is the square?' },
+    ]);
+  });
+
+  it('records the real turn roles as captured input', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await createClaudeAgentsHandler({ captureContent: true })(baseConfig as any, '', {}, {}, alternatingHistory);
+    expect(capturedInputMessages().map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+  });
+
+  // The streamed run is handed the same composed turns as the blocking one, so its captured input
+  // has to report them too — it used to record only the flattened latest `userInput`.
+
+  it('streaming records the composed history turns, not just the latest userInput', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await collectStream(
+      createClaudeAgentsHandler({ captureContent: true }).stream?.(baseConfig as any, '', {}, {}, alternatingHistory),
+    );
+
+    const captured = capturedInputMessages();
+    expect(captured.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+    expect(JSON.stringify(captured)).toContain('Sure — go ahead and share it.');
+  });
+
+  it('streaming notes a history image compactly rather than inlining its payload', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await collectStream(
+      createClaudeAgentsHandler({ captureContent: true }).stream?.(baseConfig as any, '', {}, {}, alternatingHistory),
+    );
+
+    const parts = capturedInputMessages().at(-1)?.parts ?? [];
+    expect(parts).toEqual([
+      { type: 'text', content: '[image]' },
+      { type: 'text', content: 'What colour is the square?' },
+    ]);
+    expect(JSON.stringify(capturedInputMessages())).not.toContain('redsquare');
+  });
+
+  it('streaming without history still records the one flattened user turn', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    await collectStream(createClaudeAgentsHandler({ captureContent: true }).stream?.(baseConfig as any, 'q', {}, {}));
+
+    expect(capturedInputMessages()).toEqual([{ role: 'user', parts: [{ type: 'text', content: 'q' }] }]);
   });
 });
 

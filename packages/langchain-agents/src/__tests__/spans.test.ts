@@ -153,8 +153,8 @@ describe('langchain-agents span tree against a real tracer', () => {
     expect(attrs['gen_ai.usage.input_tokens']).toBe(10);
     expect(attrs['gen_ai.usage.output_tokens']).toBe(5);
     expect(attrs['gen_ai.usage.total_tokens']).toBe(15);
-    // `gen_ai.provider.name` names who served the model; `langchain` is the framework and is not a
-    // member of the semconv enum. The legacy `gen_ai.system` keeps the value the handler shipped.
+    // `gen_ai.provider.name` is the configured provider, lower-cased. The legacy `gen_ai.system`
+    // keeps the shipped framework value.
     expect(attrs['gen_ai.provider.name']).toBe('openai');
     expect(attrs['gen_ai.system']).toBe('langchain');
   });

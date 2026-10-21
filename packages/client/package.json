@@ -1,6 +1,6 @@
 {
   "name": "@launchdarkly/ai-server",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "license": "Apache-2.0",
   "author": "LaunchDarkly <team@launchdarkly.com>",
   "description": "LaunchDarkly AI client core",
@@ -24,24 +24,50 @@
     "access": "public"
   },
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "experimental": [
+        "dist/experimental.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./experimental": {
+      "import": {
+        "types": "./dist/experimental.d.ts",
+        "default": "./dist/experimental.js"
+      },
+      "require": {
+        "types": "./dist/experimental.d.cts",
+        "default": "./dist/experimental.cjs"
+      }
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "prepare": "tsc",
-    "build": "tsc",
-    "build:watch": "tsc --watch",
+    "prepare": "tsup-node",
+    "build": "tsup-node",
+    "build:watch": "tsup-node --watch",
     "clean": "rm -rf dist",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.sdk-compat.json",
+    "api:check": "tsc --emitDeclarationOnly --declarationMap false --outDir temp/dts && api-extractor run --config api-extractor.json && api-extractor run --config api-extractor.experimental.json",
+    "api:update": "tsc --emitDeclarationOnly --declarationMap false --outDir temp/dts && api-extractor run --local --config api-extractor.json && api-extractor run --local --config api-extractor.experimental.json"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
@@ -84,7 +110,11 @@
     }
   },
   "devDependencies": {
+    "@launchdarkly/akamai-server-edgekv-sdk": "^1.4.45",
+    "@launchdarkly/cloudflare-server-sdk": "^2.7.44",
     "@launchdarkly/node-server-sdk": "^9.7.3",
+    "@launchdarkly/vercel-server-sdk": "^1.3.67",
+    "@microsoft/api-extractor": "^7.59.4",
     "@opentelemetry/context-async-hooks": "^2.8.0",
     "@opentelemetry/core": "^2.8.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.219.0",

@@ -94,6 +94,18 @@ Review these conversions in test assertions — `handler.stream?.(args)` returns
 Biome organises imports alphabetically within each group. Vitest's `vi.mock` calls are **hoisted to the top of the file** regardless of source order. If mock setup depends on import order, rely on `vi.hoisted()` rather than declaration order.
 
 
+## PR Titles and the Changelog
+
+PRs are squash-merged with the PR title as the commit message, and release-please builds each package's changelog from those messages.
+
+- **A change to an experimental feature uses that feature's scope:** `skills` (Agent Skills). `feat`, `fix` and `perf` commits with one of these scopes are listed under **Experimental** (`changelog-sections` in `release-please-config.json`), for example `feat(skills): watch skills for revocations`. Any other scope, such as `client`, lists the change as a core feature or fix.
+- **Use exactly one scope.** `feat(skills,client):` matches no Experimental row, so it lands under Features.
+- **A PR that changes both core and experimental behaviour** should be split. If it can't be, add a `BEGIN_COMMIT_OVERRIDE` block to its description with one conventional-commit line per change. An override also corrects a merged PR's title, as long as the release PR hasn't merged yet.
+- **A breaking experimental change** uses `!` while the package is 0.x: `feat(skills)!:` bumps the minor version, which is what an experimental break is allowed. After 1.0, `!` would force a major release. Use `feat(skills):` without `!` instead, and say the change is breaking in the title.
+- **When a feature is promoted to core,** remove its rows from `changelog-sections`.
+
+The rule is specified in `TESTING.md` §0.3 in `launchdarkly/ai-sdks-monorepo`.
+
 ## Package Hierarchy
 
 The monorepo is organized into three tiers plus a convenience wrapper. Dependencies only flow **downward** — never sideways between packages in the same tier, and never upward.
@@ -107,6 +119,7 @@ graph TD
  claude["ai-claude-agents"]
  openai["ai-openai-agents"]
  langchain["ai-langchain-agents"]
+ vercel["ai-vercel-agents"]
  newHandler["ai-new-provider\n(future)"]
  end
  subgraph tier0 ["Tier 0 — Core"]
@@ -117,11 +130,13 @@ graph TD
  app --> claude
  app --> openai
  app --> langchain
+ app --> vercel
  app --> newHandler
  app --> ainode
  claude --> client
  openai --> client
  langchain --> client
+ vercel --> client
  newHandler --> client
  ainode --> client
 ```
@@ -130,7 +145,7 @@ graph TD
 
 - **Tier 0 — Core** (`@launchdarkly/ai-server`): The foundation. Owns all LaunchDarkly integration, telemetry orchestration, shared data types, and the primary entry points (`config()`, `graph()`, `resolveGraph()`). Has no dependency on any other `@launchdarkly/ai-server` package.
 - **Tier 0 — Convenience wrapper** (`@launchdarkly/ai-node`): A pure barrel that re-exports everything from `@launchdarkly/ai-server` and carries `@launchdarkly/node-server-sdk` as a hard dependency. No new logic — intended as the default install for Node.js applications so consumers do not need to manage the `node-server-sdk` peer dependency themselves.
-- **Tier 1 — Handler packages** (`@launchdarkly/ai-claude-agents`, `@launchdarkly/ai-claude-messages`, `@launchdarkly/ai-openai-agents`, `@launchdarkly/ai-openai-messages`, `@launchdarkly/ai-langchain-agents`, `@launchdarkly/ai-langchain-messages`, `@launchdarkly/ai-bedrock-agents`, `@launchdarkly/ai-bedrock-messages`, …): Each wraps a specific AI provider SDK. Depends on `@launchdarkly/ai-server` for shared types and utilities. Must not depend on other Tier 1 packages.
+- **Tier 1 — Handler packages** (`@launchdarkly/ai-claude-*`, `@launchdarkly/ai-openai-*`, `@launchdarkly/ai-langchain-*`, `@launchdarkly/ai-vercel-*`, `@launchdarkly/ai-bedrock-*`, …): Each wraps a specific AI provider SDK. Depends on `@launchdarkly/ai-server` for shared types and utilities. Must not depend on other Tier 1 packages.
 - **Tier 2 — Consumer applications** (e.g. `main.ts`, downstream projects): Imports from one or more handler packages and either `@launchdarkly/ai-node` (standard Node.js) or `@launchdarkly/ai-server` (edge/custom runtime). Owns tool implementations and orchestration logic. No `@launchdarkly/ai` package should ever depend on Tier 2 code.
 
 ### Rules
@@ -149,11 +164,11 @@ The client manages a singleton connection to LaunchDarkly and the associated tel
 | Export | Description |
 |---|---|
 | `initClient(options?)` | Auto-discovers and initializes `@launchdarkly/node-server-sdk` (optional peer dep, loaded via dynamic import). Optional — the first AI API call triggers lazy init when `LD_SDK_KEY` is set. Accepts optional overrides for SDK key, base URIs, service name, environment, and OTLP endpoint. Returns `Promise<LDClientInterface>`. On every successful path, including the already-initialized path, flushes `$ld:ai:sdk:info` for any LaunchDarkly AI packages that have not yet reported. |
-| `initClient(client)` | **BYOC overload** — accepts a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk`). Stores it directly without calling the node SDK. Flushes pending `$ld:ai:sdk:info` events. |
+| `initClient(client, options?)` | **BYOC overload** — accepts a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk`). Stores it directly without calling the node SDK. Flushes pending `$ld:ai:sdk:info` events. The optional second argument is the same options bag as the other overload. Idempotent like that overload: once a client is set, a second call returns it and ignores both a different client and the new telemetry options — `shutdown()` first to swap clients. |
 | `getClient()` | Returns the initialized `LDClientInterface`. Throws if initialization has not completed. |
 | `shutdown()` | Flushes all pending events and telemetry, then closes the client. Must be called before the process exits. Clears sdk-info reporting so a later client reports again. |
 | `waitForTelemetry()` | Waits for the OTel provider to be ready. Useful when spans must not be dropped at startup. |
-| `shutdownTelemetry()` | Flushes and stops the OTel exporter independently of the LD client. |
+| `shutdownTelemetry()` | Flushes and stops the OTel exporter independently of the LD client, and releases the OTel globals the SDK registered. |
 | `registerAiSdkPackage(name, version)` | Records a LaunchDarkly AI package identity. Handler and convenience packages call this at import time. |
 
 ### Core Data Types
@@ -222,6 +237,8 @@ LaunchDarkly metadata attached to a flag variation.
 | `variationKey` | string? | Identifier for the specific variation. |
 | `version` | number? | Variation version number. |
 | `mode` | `'agent' \| 'completion' \| 'judge'` | Execution mode, used alongside `provider.name` to select a handler. |
+| `modelKey` | string? | Stable key of the pinned model config, from `_ldMeta.modelKey`. Absent when the variation has no linked model config. Copied onto `TrackData`. |
+| `modelVersion` | number? | Pinned model config version, from `_ldMeta.modelVersion`. Copied onto `TrackData`. |
 
 #### `ProviderResponse`
 
@@ -269,6 +286,8 @@ Payload attached to every LaunchDarkly tracking event.
 | `version` | number | Variation version number. |
 | `modelName` | string | Model name from the config. |
 | `providerName` | string | Provider name from the config. |
+| `modelKey` | string? | Stable key of the pinned model config, read from `_ldMeta.modelKey`. Omitted when the variation has no pinned model config. |
+| `modelVersion` | number? | Pinned model config version, read from `_ldMeta.modelVersion`. Omitted when absent. |
 | `graphKey` | string? | Present when the event was produced inside an agent graph. |
 | `toolKey` | string? | Present when the event is for a tool call. |
 | `judgeConfigKey` | string? | Present when the event is from a judge execution. |
@@ -397,7 +416,7 @@ Returns:
 
 Creates an agent graph caller bound to a graph flag key. Uses a model-driven router: starts at the root node and lets the model choose which outgoing edge to follow at each step, threading each node's output into the next. Stops when the model produces a terminal answer, a leaf is reached, a node is revisited (cycle guard), or the step cap is hit.
 
-Returns `{ invoke(input: string | undefined, context: LDContext, variables?: Record<string, any>): Promise<ProviderGraphResponse> }`.
+Returns `{ invoke(input: string | undefined, context: LDContext, variables?: Record<string, any>): Promise<ProviderGraphResponse>, stream(input: string | undefined, context: LDContext, variables?: Record<string, any>): AsyncGenerator<GraphStreamEvent> }`.
 
 Requires `handlers` (either in `options` or via `options.registry`) to be set. For framework packages that need to walk the topology and build their own execution structure, use `resolveGraph` instead.
 
@@ -437,6 +456,7 @@ const combined = compose(globalRegistry, localRegistry);
 | Export | Description |
 |---|---|
 | `createHandler(providesFor, handler)` | Attaches `providesFor` metadata to a handler function and returns it as a `ProviderHandler`. This is the canonical way to build any handler — both package-internal factories and user-supplied custom handlers. See [Factory Function](#factory-function). |
+| `makeNodeTrackData(node, graphKey, runId)` | Builds the standard `TrackData` for a graph node event (including the `_ldMeta` model stamps). Native graph adapter packages must use this instead of building their own payload. |
 | `parseTemplate(template, variables)` | Replaces `{{variable}}` placeholders in a string. Supports dot-notation for nested values (e.g. `{{user.name}}`). Unrecognized placeholders are left as-is. |
 | `parseJSONWithPossibleFences(text)` | Parses a JSON string that may be wrapped in markdown code fences (` ```json ` or ` ``` `). Returns `null` if the text is not valid JSON. |
 
@@ -511,9 +531,10 @@ The handler is responsible for translating `AiConfigRep` fields into the prompt 
 
 If `config.tools` is present, the handler must:
 
-1. Convert each `Tool` definition into the format the provider SDK accepts, using the tool's `name`, `description`, and `parameters` (JSON Schema).
-2. When the provider requests a tool call, look up the tool name in `toolHandlers` and invoke the matching function with the arguments the model provided.
-3. Submit the tool output back to the provider and continue — repeating until the provider produces a final text response (agentic loop).
+1. Select tools whose names are callable own properties of `toolHandlers`. This request-scoped selection is the authorization boundary; inherited properties and handlers not attached to the active config are excluded.
+2. Convert that selection into the format the provider SDK accepts, using each tool's `name`, `description`, and `parameters` (JSON Schema).
+3. When the provider requests a tool call, resolve it only from the same request-scoped selection and invoke the matching function with the arguments the model provided. Treat provider-returned names as untrusted and fail closed if a name was not offered for this request.
+4. Submit the tool output back to the provider and continue — repeating until the provider produces a final text response (agentic loop).
 
 If `config.tools` is absent or empty, tool handling should be skipped entirely.
 
@@ -557,6 +578,21 @@ be.
   `gen_ai.usage.input_tokens` includes uncached, cache-read, and cache-creation
   input, with the breakdown in `gen_ai.usage.cache_read.input_tokens` and
   `gen_ai.usage.cache_creation.input_tokens`
+
+**One prefix for everything LaunchDarkly owns: `launchdarkly.`** Anything that is
+not an OTel semantic convention goes under it — `launchdarkly.config.key`,
+`launchdarkly.variation.key`, `launchdarkly.run.id`, `launchdarkly.graph.key`,
+`launchdarkly.graph.path`, `launchdarkly.operation.type`,
+`launchdarkly.stream.abandoned` — and so do span names this SDK invents, such as
+`launchdarkly.graph`.
+
+`ld.ai.` is a different namespace with a different job: LaunchDarkly **metric and
+event** keys live there (`$ld:ai:tool_call`, `$ld.ai.judge.*`,
+`ld.ai.provider.error`). Reusing it for a span attribute is how the graph span
+ended up with `ld.ai.graph.key` while the root carried `launchdarkly.graph.key` —
+two names for one concept. Don't reintroduce it: a reader filtering on
+`launchdarkly.` should see everything this SDK owns and nothing should hide
+elsewhere.
 
 **Content attributes** — only when the caller passes `captureContent: true`.
 Conversation content is PII, so it is off by default and every write goes
@@ -683,7 +719,7 @@ xxx(configKey: string, userInput: string, context: LDContext, options?: Omit<Con
 
 For example, `claudeAgents(configKey, userInput, context, options)` is equivalent to `config({ ...options, key: configKey, handler: createClaudeAgentsHandler() }).invoke(userInput, context)`.
 
-The naming convention matches the package suffix: `claudeAgents`, `claudeMessages`, `openaiAgents`, `openaiMessages`, `langchainAgents`, `langchainMessages`.
+The naming convention matches the package suffix: `claudeAgents`, `claudeMessages`, `openaiAgents`, `openaiMessages`, `langchainAgents`, `langchainMessages`, `vercelAgents`, `vercelMessages`.
 
 This is a convenience only — it is not required and must not contain any logic beyond wiring the handler.
 
@@ -697,7 +733,7 @@ xxxGraph(key, options) => { invoke(input, context, variables?): Promise<Provider
 
 For example, `claudeGraph(key, options)` is equivalent to `graph(key, { ...options, handlers: [createClaudeAgentsHandler()] })`.
 
-Naming convention: `claudeGraph`, `openaiGraph`, `langchainGraph`.
+Naming convention: `claudeGraph`, `openaiGraph`, `langchainGraph`, `vercelGraph`.
 
 ### Native Graph Adapter (optional)
 
@@ -707,6 +743,7 @@ Current adapters:
 - `toClaudeAgents(def, options)` — exported from `@launchdarkly/ai-claude-agents`
 - `toOpenAIAgents(def, options)` — exported from `@launchdarkly/ai-openai-agents`
 - `toLangGraph(def, options)` — exported from `@launchdarkly/ai-langchain-agents`
+- `toVercelAgents(def, options)` — exported from `@launchdarkly/ai-vercel-agents`
 
 ---
 

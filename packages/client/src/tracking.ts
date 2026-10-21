@@ -1,6 +1,7 @@
 import { getClient } from './lifecycle.js';
 import type {
   AiConfigRep,
+  GraphNode,
   LDContext,
   Message,
   ProviderHandler,
@@ -68,6 +69,76 @@ export const wrapToolHandlers = (
 };
 
 /**
+ * Copies the pinned model-config identity (`modelKey`, `modelVersion`) from a
+ * variation's `_ldMeta` into a shape that can be spread into `TrackData`.
+ * Keys are omitted (not set to `undefined`) when absent; an empty `modelKey`
+ * is treated as absent. `_ldMeta` is an untyped flag payload, so a
+ * `modelVersion` that does not coerce to a finite integer is omitted rather
+ * than emitted as `NaN`. Gonfalon's cost attribution reads these two fields
+ * from every `$ld:ai:*` event payload.
+ *
+ * @internal Exported for the client package's own tests; adapters should use
+ * {@link makeRunTrackData} or {@link makeNodeTrackData} instead.
+ */
+export const modelStampsFromMeta = (
+  meta: VariationMeta | null | undefined,
+): Pick<TrackData, 'modelKey' | 'modelVersion'> => {
+  const stamps: Pick<TrackData, 'modelKey' | 'modelVersion'> = {};
+  const modelKey: unknown = meta?.modelKey;
+  if (typeof modelKey === 'string' && modelKey.length > 0) stamps.modelKey = modelKey;
+  const raw: unknown = meta?.modelVersion;
+  // `Number('')` and `Number('  ')` are 0, so blank strings must be rejected before coercion.
+  if (typeof raw === 'number' || (typeof raw === 'string' && raw.trim().length > 0)) {
+    const version = Number(raw);
+    if (Number.isInteger(version)) stamps.modelVersion = version;
+  }
+  return stamps;
+};
+
+/**
+ * Builds the standard tracking payload for a graph node event. Shared by all
+ * native graph adapters (openai-agents, claude-agents, langchain-agents) so the
+ * payload shape — including the `_ldMeta` model stamps — is defined once.
+ */
+export const makeNodeTrackData = (node: GraphNode, graphKey: string, runId: string): TrackData => ({
+  runId,
+  configKey: node.key,
+  variationKey: node.meta.variationKey ?? '',
+  version: node.meta.version ?? 1,
+  modelName: node.config.model.name,
+  providerName: node.config.provider.name,
+  ...modelStampsFromMeta(node.meta),
+  graphKey,
+  environmentId: tryGetEnvironmentId(),
+});
+
+/**
+ * Builds the tracking payload for a native graph run as a whole. The graph flag
+ * is itself the AI Config the trace belongs to, so its key is both the config
+ * key and the graph key — the same choice the client's own graph runner makes in
+ * `graph.ts`. There is no model or variation to report: a graph flag carries a
+ * topology, and `GraphDefinition` does not expose its `_ldMeta`.
+ *
+ * Native graph adapters pass this to `setLdSpanAttributes` so the
+ * `launchdarkly.graph` span can be found by an AI Config Monitoring query, and
+ * use it for their graph-level `$ld:ai:graph:*` events.
+ *
+ * @internal Exported for the native graph adapter packages only; not part of
+ * the public API. The signature changes if `GraphDefinition` gains the graph
+ * flag's variation metadata.
+ */
+export const makeGraphTrackData = (graphKey: string, runId: string): TrackData => ({
+  runId,
+  configKey: graphKey,
+  variationKey: '',
+  version: 1,
+  modelName: '',
+  providerName: '',
+  graphKey,
+  environmentId: tryGetEnvironmentId(),
+});
+
+/**
  * Reads the LaunchDarkly environment MongoDB ObjectId from the SDK's internal
  * feature store init metadata. This mirrors what the official OTel hook does
  * when it emits `feature_flag` events; we need it to set `feature_flag.set.id`
@@ -75,8 +146,11 @@ export const wrapToolHandlers = (
  *
  * Uses a private API that is stable across minor SDK versions. Returns
  * `undefined` gracefully on any failure (edge runtimes, custom clients, etc.).
+ *
+ * @internal Exported for this package's own modules (`graph.ts`); not part of
+ * the public API.
  */
-function tryGetEnvironmentId(): string | undefined {
+export function tryGetEnvironmentId(): string | undefined {
   try {
     // biome-ignore lint/suspicious/noExplicitAny: private LD SDK internals mirror what the SDK's own OTel hook accesses
     const featureStore = (getClient() as any)._featureStore;
@@ -85,6 +159,35 @@ function tryGetEnvironmentId(): string | undefined {
     return undefined;
   }
 }
+
+/**
+ * Builds the tracking payload for one run of an AI Config: a fresh run ID, the
+ * variation identity, `_ldMeta` model stamps, and the environment ID that the
+ * Monitoring tab needs to correlate traces. Adapters that run a config outside
+ * `config().invoke()` (e.g. `vercelEvaluate`) use this so their events and spans
+ * match the SDK's own.
+ */
+export const makeRunTrackData = ({
+  configKey,
+  config,
+  meta,
+  graphKey,
+}: {
+  configKey: string;
+  config: AiConfigRep;
+  meta: VariationMeta | null | undefined;
+  graphKey?: string;
+}): TrackData => ({
+  runId: crypto.randomUUID(),
+  configKey,
+  variationKey: meta?.variationKey ?? '',
+  version: meta?.version ?? 1,
+  modelName: config.model.name ?? '',
+  providerName: config.provider?.name ?? '',
+  ...modelStampsFromMeta(meta),
+  ...(graphKey ? { graphKey } : {}),
+  environmentId: tryGetEnvironmentId(),
+});
 
 export const executeAndTrack = async ({
   configKey,
@@ -109,16 +212,7 @@ export const executeAndTrack = async ({
   graphKey?: string;
   history?: Message[];
 }): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData }> => {
-  const trackData: TrackData = {
-    runId: crypto.randomUUID(),
-    configKey,
-    variationKey: meta.variationKey ?? '',
-    version: meta.version ?? 1,
-    modelName: config.model.name ?? '',
-    providerName: config.provider?.name ?? '',
-    ...(graphKey ? { graphKey } : {}),
-    environmentId: tryGetEnvironmentId(),
-  };
+  const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
   const trackedToolHandlers = wrapToolHandlers(toolHandlers, userContext, trackData);
 
@@ -189,16 +283,7 @@ export async function* executeAndStream({
   graphKey?: string;
   history?: Message[];
 }): AsyncGenerator<ExecuteStreamEvent> {
-  const trackData: TrackData = {
-    runId: crypto.randomUUID(),
-    configKey,
-    variationKey: meta.variationKey ?? '',
-    version: meta.version ?? 1,
-    modelName: config.model.name ?? '',
-    providerName: config.provider?.name ?? '',
-    ...(graphKey ? { graphKey } : {}),
-    environmentId: tryGetEnvironmentId(),
-  };
+  const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
   const trackedToolHandlers = wrapToolHandlers(toolHandlers, userContext, trackData);
   const mergedVariables = { ...variables, ldContext: { ...userContext }, __ld: trackData };

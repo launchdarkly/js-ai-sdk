@@ -12,6 +12,5 @@
     "sourceMap": true,
     "outDir": "./dist"
   },
-  "include": ["src/*.ts"],
-  "references": [{ "path": "../client" }]
+  "include": ["src/*.ts"]
 }
