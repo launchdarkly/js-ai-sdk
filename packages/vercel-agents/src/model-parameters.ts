@@ -67,6 +67,10 @@ const _vercelModelParameterKeysExhaustive: Record<VercelUndecidedModelParameterK
  * - `reasoning_effort` (OpenAI's name) becomes `reasoning`, whose values it shares. An explicit
  *   `reasoning` wins.
  *
+ * `tool_choice` is forwarded only as a string (`auto`, `none`, `required`). The AI SDK reads any
+ * other value as `{ type: 'tool', toolName }`, so an object in another provider's shape, such as
+ * `{ type: 'auto' }`, would force a call to a tool named `undefined`; it is dropped instead.
+ *
  * Only `FORWARDED_MODEL_PARAMETER_KEYS` survive. A config that sets none of them produces `{}`,
  * so the call sees exactly what it always has.
  */
@@ -77,5 +81,7 @@ export function buildModelParameterOptions(parameters: AiConfigRep['model']['par
   const maxOutputTokens = max_output_tokens ?? max_completion_tokens ?? max_tokens;
   if (maxOutputTokens !== undefined) renamed.max_output_tokens = maxOutputTokens;
   if (reasoning_effort !== undefined && renamed.reasoning === undefined) renamed.reasoning = reasoning_effort;
-  return pickForwardedModelParameters(camelizeModelParameters(renamed), FORWARDED_MODEL_PARAMETER_KEYS);
+  const options = pickForwardedModelParameters(camelizeModelParameters(renamed), FORWARDED_MODEL_PARAMETER_KEYS);
+  if (options.toolChoice !== undefined && typeof options.toolChoice !== 'string') delete options.toolChoice;
+  return options;
 }

@@ -116,4 +116,14 @@ describe('buildModelParameterOptions allowlist', () => {
       toolChoice: 'auto',
     });
   });
+
+  it.each([
+    { type: 'auto' },
+    { type: 'function', name: 'f' },
+    { type: 'tool', toolName: 'f' },
+  ])('drops a tool_choice that is not a string: %j', (toolChoice) => {
+    expect(buildModelParameterOptions({ tool_choice: toolChoice, temperature: 0.2 } as never)).toEqual({
+      temperature: 0.2,
+    });
+  });
 });
