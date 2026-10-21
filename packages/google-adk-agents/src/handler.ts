@@ -11,8 +11,8 @@ import { BasePlugin, createEvent, FunctionTool, Gemini, InMemoryRunner, isFinalR
 import {
   type AiConfigRep,
   type ContentCaptureOptions,
-  config,
-  createHandler,
+  configInternal,
+  createHandlerInternal,
   type HandlerStreamEvent,
   type LDContext,
   type Message,
@@ -20,6 +20,7 @@ import {
   NativeTool,
   type ProviderHandler,
   parseTemplate,
+  reportUsage,
   type SpanUsage,
   setInputContentAttributes,
   setOutputContentAttributes,
@@ -38,6 +39,7 @@ import {
   startToolSpan,
   succeedSpan,
 } from './spans.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const GOOGLE_PROVIDERS = new Set(['google', 'gemini', 'vertex', 'google-genai', 'gcp.gemini']);
 const APP_NAME = 'launchdarkly';
@@ -164,6 +166,12 @@ export function historyContents(history: Array<{ role: string; content: unknown 
 }
 
 export function createGoogleAdkAgentsHandler(options: GoogleAdkAgentsOptions = {}): ProviderHandler {
+  reportUsage('google-adk-agents.createGoogleAdkAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createGoogleAdkAgentsHandlerInternal(options);
+}
+
+/** `createGoogleAdkAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createGoogleAdkAgentsHandlerInternal(options: GoogleAdkAgentsOptions = {}): ProviderHandler {
   const vertex = resolveVertex(options);
 
   const run = async (
@@ -249,7 +257,7 @@ export function createGoogleAdkAgentsHandler(options: GoogleAdkAgentsOptions = {
     }
   }
 
-  return createHandler(['*', 'agent'], run, stream, options.captureContent ?? false);
+  return createHandlerInternal(['*', 'agent'], run, stream, options.captureContent ?? false);
 }
 
 export const googleAdkAgents = (
@@ -265,15 +273,17 @@ export const googleAdkAgents = (
     location,
     model,
     ...rest
-  }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
+  }: Omit<Parameters<typeof configInternal>[0], 'handler' | 'key'> &
     ContentCaptureOptions &
     GoogleAdkAgentsOptions & { variables?: Record<string, unknown> } = {},
-) =>
-  config({
+) => {
+  reportUsage('google-adk-agents.googleAdkAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return configInternal({
     ...rest,
     key: configKey,
-    handler: createGoogleAdkAgentsHandler({ apiKey, useVertexai, project, location, model, captureContent }),
+    handler: createGoogleAdkAgentsHandlerInternal({ apiKey, useVertexai, project, location, model, captureContent }),
   }).invoke(userInput, ldContext, variables);
+};
 
 function parentOf(span: Span | undefined): Context | undefined {
   if (!span || typeof trace.setSpan !== 'function') return undefined;

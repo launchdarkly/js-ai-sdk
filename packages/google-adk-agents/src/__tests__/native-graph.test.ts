@@ -185,6 +185,22 @@ describe('toAdkAgents', () => {
     spy.mockRestore();
   });
 
+  it('tracks one graph:node per visited node and graph totals on the graph key', async () => {
+    created.followTransfer = true;
+    await toAdkAgents(graphDef() as never).call('hi', { context: { kind: 'user', key: 'user-1' } });
+    const events = track.mock.calls.map(([name, , data]) => [name, (data as { configKey: string }).configKey]);
+    expect(events).toEqual([
+      ['$ld:ai:graph:node', 'root'],
+      ['$ld:ai:graph:handoff_success', 'root'],
+      ['$ld:ai:graph:node', 'leaf'],
+      ['$ld:ai:graph:duration:total', 'graph-flag'],
+      ['$ld:ai:graph:total_tokens', 'graph-flag'],
+      ['$ld:ai:graph:invocation_success', 'graph-flag'],
+    ]);
+    const nodes = track.mock.calls.filter(([name]) => name === '$ld:ai:graph:node');
+    expect(nodes.map(([, , data]) => (data as { nodeKey: string; index: number }).index)).toEqual([0, 1]);
+  });
+
   it('tracks invocation failure and ends the span when the runner throws', async () => {
     const { trace } = await import('@opentelemetry/api');
     const span = { setAttribute: vi.fn(), setStatus: vi.fn(), end: vi.fn(), recordException: vi.fn() };

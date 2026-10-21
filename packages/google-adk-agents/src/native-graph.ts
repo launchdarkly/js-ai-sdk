@@ -2,10 +2,11 @@
  * Compiles a LaunchDarkly agent graph into an ADK workflow.
  */
 import { FunctionTool, InMemoryRunner, isFinalResponse, LlmAgent, START, Workflow } from '@google/adk';
-import { getClient, makeNodeTrackData, parseTemplate } from '@launchdarkly/ai-server';
+import { getClient, makeGraphTrackData, makeNodeTrackData, parseTemplate, reportUsage } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { historyContents } from './handler.js';
 import { usageCounts } from './spans.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TRACER = '@launchdarkly/ai-google-adk-agents';
 
@@ -40,6 +41,7 @@ export interface AdkGraphCallOptions {
 }
 
 export function toAdkAgents(definition: AdkGraphDefinition, options: AdkGraphOptions = {}) {
+  reportUsage('google-adk-agents.toAdkAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return {
     async call(
       userInput: string,
@@ -69,6 +71,14 @@ export function toAdkAgents(definition: AdkGraphDefinition, options: AdkGraphOpt
         let history = callOptions.history;
         while (current && !seen.has(current.key)) {
           seen.add(current.key);
+          if (ldContext) {
+            getClient().track(
+              '$ld:ai:graph:node',
+              ldContext as never,
+              { ...trackData(current, definition.key, runId), nodeKey: current.key, index: path.length },
+              1,
+            );
+          }
           path.push(current.key);
           handoff.target = undefined;
           const step = await runAgent(agents.get(current.key) as LlmAgent, userInput, history);
@@ -90,17 +100,17 @@ export function toAdkAgents(definition: AdkGraphDefinition, options: AdkGraphOpt
         }
         span.setAttribute('ld.ai.graph.path', path.join('->'));
         span.setStatus({ code: SpanStatusCode.OK });
-        if (ldContext) trackSuccess(definition.root, definition.key, runId, ldContext, path, usage, started);
+        if (ldContext) trackSuccess(definition.key, runId, ldContext, usage, started);
         return { response, usage };
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         span.recordException(err);
         span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
-        if (ldContext && definition.root) {
+        if (ldContext) {
           getClient().track(
             '$ld:ai:graph:invocation_failure',
             ldContext as never,
-            trackData(definition.root, definition.key, runId),
+            makeGraphTrackData(definition.key, runId),
             1,
           );
         }
@@ -131,19 +141,16 @@ function trackData(node: AdkGraphNode, graphKey: string, runId: string) {
 }
 
 function trackSuccess(
-  root: AdkGraphNode,
   graphKey: string,
   runId: string,
   ldContext: unknown,
-  path: string[],
   usage: { total: number },
   started: number,
 ): void {
   const client = getClient();
-  const data = trackData(root, graphKey, runId);
+  const data = makeGraphTrackData(graphKey, runId);
   client.track('$ld:ai:graph:duration:total', ldContext as never, data, Date.now() - started);
   client.track('$ld:ai:graph:total_tokens', ldContext as never, data, usage.total);
-  client.track('$ld:ai:graph:path', ldContext as never, data, path.length);
   client.track('$ld:ai:graph:invocation_success', ldContext as never, data, 1);
 }
 

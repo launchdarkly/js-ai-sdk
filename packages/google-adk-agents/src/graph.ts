@@ -1,8 +1,9 @@
 /**
  * Graph convenience wrapper. Callers cannot replace the pre-wired ADK handler.
  */
-import { type GraphOptions, graph } from '@launchdarkly/ai-server';
-import { createGoogleAdkAgentsHandler, type GoogleAdkAgentsOptions } from './handler.js';
+import { type GraphOptions, graphInternal, reportUsage } from '@launchdarkly/ai-server';
+import { createGoogleAdkAgentsHandlerInternal, type GoogleAdkAgentsOptions } from './handler.js';
+import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 export type GoogleAdkGraphOptions = Omit<GraphOptions, 'handlers'> &
   GoogleAdkAgentsOptions & {
@@ -11,9 +12,10 @@ export type GoogleAdkGraphOptions = Omit<GraphOptions, 'handlers'> &
   };
 
 export function googleAdkGraph(key: string, options: GoogleAdkGraphOptions = {}) {
+  reportUsage('google-adk-agents.googleAdkGraph', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   const { handlers: _handlers, apiKey, useVertexai, project, location, model, captureContent, ...rest } = options;
-  return graph(key, {
+  return graphInternal(key, {
     ...rest,
-    handlers: [createGoogleAdkAgentsHandler({ apiKey, useVertexai, project, location, model, captureContent })],
+    handlers: [createGoogleAdkAgentsHandlerInternal({ apiKey, useVertexai, project, location, model, captureContent })],
   });
 }

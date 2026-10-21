@@ -5,10 +5,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@launchdarkly/ai-server', async () => {
   const actual = await vi.importActual<typeof import('@launchdarkly/ai-server')>('@launchdarkly/ai-server');
-  return { ...actual, graph: vi.fn(() => ({ invoke: vi.fn() })) };
+  return { ...actual, graphInternal: vi.fn(() => ({ invoke: vi.fn() })) };
 });
 
-import { graph } from '@launchdarkly/ai-server';
+import { graphInternal as graph } from '@launchdarkly/ai-server';
 import { googleAdkGraph } from '../graph.js';
 
 describe('googleAdkGraph', () => {
