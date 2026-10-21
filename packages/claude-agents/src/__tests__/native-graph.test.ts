@@ -195,6 +195,25 @@ describe('toClaudeAgents', () => {
     expect(mockTool.mock.calls[0][0]).toBe('leaf');
   });
 
+  it('drops a cyclic edge with a warning when the child was not built', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // root → A → B → A: post-order reaches B while A is still unbuilt.
+    const b = makeNode('B', [makeEdge('B', 'A')]);
+    const a = makeNode('A', [makeEdge('A', 'B')]);
+    const root = makeNode('root', [makeEdge('root', 'A')]);
+    const def = makeGraphDef({
+      root,
+      reverseTraverse: async (fn, ctx = {}) => {
+        for (const n of [b, a, root]) await fn(n, ctx);
+        return undefined;
+      },
+    });
+    await toClaudeAgents(Promise.resolve(def)).invoke('hello');
+    expect(mockTool.mock.calls.map((c) => c[0])).toEqual(['B', 'A']);
+    expect(warn).toHaveBeenCalledWith('[LaunchDarkly] Dropping cyclic edge "B" -> "A"');
+    warn.mockRestore();
+  });
+
   // T6: root query allowedTools contains mcp__subagents__ prefix
   it('passes child sub-agent tool names to root query allowedTools with mcp__subagents__ prefix', async () => {
     const def = makeGraphDef();
