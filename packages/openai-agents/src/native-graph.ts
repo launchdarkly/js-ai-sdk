@@ -149,12 +149,15 @@ export const toOpenAIAgents = (
 
         // Build leaves → root so children exist before parents reference them as handoffs
         await def.reverseTraverse<void>(async (node, ctx) => {
-          const childHandoffs = node.edges.map((edge) => {
+          const childHandoffs = node.edges.flatMap((edge) => {
             const childAgent = agentCtx[edge.targetKey];
             if (!childAgent) {
-              throw new Error(`Child agent "${edge.targetKey}" was not built before parent "${node.key}"`);
+              // A child is unbuilt only when the edge closes a cycle; drop it so the graph still builds.
+              // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a dropped edge must be visible
+              console.warn(`[LaunchDarkly] Dropping cyclic edge "${node.key}" -> "${edge.targetKey}"`);
+              return [];
             }
-            return handoff(childAgent);
+            return [handoff(childAgent)];
           });
 
           const instructions = buildInstructions(node, variables);
