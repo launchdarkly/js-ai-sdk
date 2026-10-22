@@ -577,7 +577,7 @@ describe('scorers', () => {
         run({ handler, concurrency, criteria: [mutate, read, new Judge('accuracy')] }),
       );
       expect(seen).toEqual([{ answer: 'original', tags: ['a'] }]);
-      expect(judged).toBe("{'answer': 'original', 'tags': ['a']}");
+      expect(judged).toBe('{"answer":"original","tags":["a"]}');
       expect(criterionEvents().every((event) => event.data.status === 'COMPLETE')).toBe(true);
     });
   });

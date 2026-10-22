@@ -77,10 +77,11 @@ describe('pythonStr and pythonTruthy', () => {
 });
 
 describe('the shared judge contract', () => {
-  it('renders a structured output in message_history as Python str(), skipping empty parts', () => {
-    expect(buildMessageHistory({ userInput: 'q', output: { answer: 'yes', confidence: 0.9 } })).toBe(
-      ['q', "{'answer': 'yes', 'confidence': 0.9}", FORMATTING_INSTRUCTIONS].join('\n\n'),
+  it('renders a structured output in message_history as JSON, skipping empty parts', () => {
+    expect(buildMessageHistory({ userInput: 'q', output: { answer: 'oui', ok: true, note: null } })).toBe(
+      ['q', '{"answer":"oui","ok":true,"note":null}', FORMATTING_INSTRUCTIONS].join('\n\n'),
     );
+    expect(buildMessageHistory({ output: { city: 'Zürich' } })).toContain('{"city":"Zürich"}');
     expect(buildMessageHistory({ userInput: 'q', output: {} })).toBe(['q', FORMATTING_INSTRUCTIONS].join('\n\n'));
   });
 

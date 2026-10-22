@@ -8,6 +8,7 @@
  * both halves and the paths cannot drift.
  */
 
+import { toolResultString } from './content.js';
 import { pythonStr, pythonTruthy } from './python-format.js';
 import { parseJSONWithPossibleFences } from './utils.js';
 
@@ -30,8 +31,10 @@ export const FORMATTING_INSTRUCTIONS = [
  * prose and fail every result as invalid output.
  */
 export function buildMessageHistory(parts: { userInput?: unknown; trajectory?: string; output?: unknown }): string {
-  // Python's truthiness and str(), so a structured output reads the same as in the Python SDK.
-  return [parts.userInput, parts.trajectory, parts.output, FORMATTING_INSTRUCTIONS]
+  // Python's truthiness, so the same parts are skipped as in the Python SDK. A structured output is
+  // shown as JSON, by the rule tool results follow, so a rubric reads the same text in every SDK.
+  const output = pythonTruthy(parts.output) ? toolResultString(parts.output) : undefined;
+  return [parts.userInput, parts.trajectory, output, FORMATTING_INSTRUCTIONS]
     .filter(pythonTruthy)
     .map(pythonStr)
     .join('\n\n');
