@@ -21,7 +21,8 @@ vi.mock('../lifecycle.js', () => ({
   shutdownTelemetry: vi.fn(),
 }));
 
-import { isFiniteScore, runJudge, runJudges } from '../judges.js';
+import { numericScore } from '../judge-scoring.js';
+import { runJudge, runJudges } from '../judges.js';
 import type { JudgeTask, ProviderHandler } from '../types.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -379,10 +380,11 @@ describe('judge score validation', () => {
     // A judge is prompted for a number but can return anything; OTel drops a null attribute and
     // exports a string, which breaks numeric aggregation on gen_ai.evaluation.score.value.
     for (const junk of [null, undefined, '0.9', '85%', {}, [], Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(isFiniteScore(junk)).toBe(false);
+      expect(numericScore(junk)).toBeUndefined();
     }
+    expect(numericScore(true)).toBeUndefined();
     for (const ok of [0, 0.9, 1, -1]) {
-      expect(isFiniteScore(ok)).toBe(true);
+      expect(numericScore(ok)).toBe(ok);
     }
   });
 });

@@ -51,6 +51,23 @@ export function compose(a: Registry, b: Registry): Registry {
 }
 
 /**
+ * The handler selection rule `config()` uses, shared by every caller that picks
+ * a handler for a provider and mode: a handler whose `providesFor` names the
+ * provider wins over a `'*'` handler, and the mode must match exactly. Pass the
+ * mode already normalized. Returns `undefined` when nothing matches.
+ */
+export function findHandler(
+  handlers: readonly ProviderHandler[] | undefined,
+  provider: string,
+  mode: 'agent' | 'messages',
+): ProviderHandler | undefined {
+  return (
+    handlers?.find((h) => h.providesFor?.[0] === provider && h.providesFor?.[1] === mode) ??
+    handlers?.find((h) => h.providesFor?.[0] === '*' && h.providesFor?.[1] === mode)
+  );
+}
+
+/**
  * Merges registry handlers with local handlers. Local handlers are prepended
  * so that selectHandler finds them first (highest precedence).
  */

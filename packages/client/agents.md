@@ -36,9 +36,18 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/skills-fdv2.ts` | Agent Skills delivery transport — the FDv2 protocol, the wire-key/`version` translation, the held object set, and `FDv2SkillStore`. Sits **below** the store seam; imports `skills-core` only, and nothing imports it |
 | `src/skills-watch.ts` | Agent Skills eager re-reconcile — `watchSkills` / `SkillWatcher`, wiring the store's change listener to `writeSkills`. Sits **above** `skills-fs` and modifies none of it |
 | `src/skills-fs.ts` | `writeSkills` — the manifest format, on-disk filenames, and reconcile semantics |
+| `src/evaluations.ts` | Evaluations from Code — `initEvaluations`, `EvaluationsModule.run()` and its argument validation and orchestration, the public option and result types |
+| `src/evaluations-api.ts` | Evaluations from Code — the retrying management API client, its injectable `Transport` seam, `EvaluationsError`, and the strict-JSON check |
+| `src/evaluations-runner.ts` | Evaluations from Code — the management API operations, row rendering, handler config, the generation phase, event payloads and flushing, and summary parsing |
+| `src/evaluations-tools.ts` | Evaluations from Code — `EvalTool` (inline and library), tool validation, and `tools.get()` |
+| `src/evaluations-criteria.ts` | Evaluations from Code — `Judge`, `Scorer`, `Criterion`, validated where constructed, and the `criteria` entries pinned on the create body |
+| `src/evaluations-scoring.ts` | Evaluations from Code — the evaluation phase: judge resolution and handler selection, judge and scorer invocation, criterion event payloads |
+| `src/judge-scoring.ts` | The judge contract every judge path shares: `FORMATTING_INSTRUCTIONS`, the one `message_history` builder, and `{score, reasoning}` parsing. `judges.ts` and the evaluations harness both use it, so the paths cannot drift |
+| `src/python-format.ts` | Python's text forms (`str()`, `repr()`, truthiness, and the `json.dumps` float format), for text that must read the same as the Python SDK's: `contentHash`, judge `message_history` and reasoning, and offline criterion error messages |
+| `src/trajectory.ts` | Tool-call trajectory capture and rendering — `TrajectoryRecorder` (one per online invocation in `tracking.ts`, one per evaluation row offline), `exposedToolKeys`, and `renderTrajectory`, the text a judge reads in `message_history`. `HANDOFF_TOOL_PREFIX` is defined here once and used by `tracking.ts` and `graph.ts` |
 | `src/safe-fs.ts` | Symlink-refusing filesystem primitives. Knows nothing about skills; owns the single interceptable rename and unlink call sites |
 | `src/index.ts` | Public barrel — the package root, and the only surface handler packages import from |
-| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Agent Skills is exported here and only here |
+| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Agent Skills and Evaluations from Code are exported here and only here |
 
 The Agent Skills module dependencies run **one way only**:
 
@@ -286,6 +295,23 @@ export type {
   SkillStore,
 } from './types.js';
 export { createSkill, createSkillOutcome, createSkillReference } from './types.js';
+
+export type {
+  AIConfig,
+  DatasetRow,
+  EvalRunResult,
+  GenerationConfig,
+  GenerationMode,
+  GenerationOverrides,
+  InitEvaluationsOptions,
+  InlineDatasetRow,
+  RunOptions,
+  RunSummary,
+} from './evaluations.js';
+export { EvaluationsError, EvaluationsModule, initEvaluations } from './evaluations.js';
+export type { Criterion } from './evaluations-criteria.js';
+export { Judge, Scorer } from './evaluations-criteria.js';
+export { EvalTool } from './evaluations-tools.js';
 ```
 
 The stage rules (shared spec §0.3), which every change here must keep:
@@ -364,7 +390,7 @@ Handlers may return any of these — the client normalizes them before emitting 
       - Calls `handler(config, userInput, toolHandlers, variables, history)`
       - On success: emits `$ld:ai:generation:success` + token tracks
       - On error: emits `$ld:ai:generation:error` then re-throws
-3. If `judgeConfiguration.judges` is present, runs each judge handler (sampled by `samplingRate`) against the primary response, tracks `evaluationMetricKey`, and emits a `gen_ai.evaluation.result` span event on the judge's `invoke_agent` span (`gen_ai.evaluation.name` / `.score.value` / `.explanation`).
+3. If `judgeConfiguration.judges` is present, runs each judge handler (its `message_history` carries the invocation's rendered tool-call trajectory, recorded inside the `$ld:ai:tool_call` wrapper) (sampled by `samplingRate`) against the primary response, tracks `evaluationMetricKey`, and emits a `gen_ai.evaluation.result` span event on the judge's `invoke_agent` span (`gen_ai.evaluation.name` / `.score.value` / `.explanation`).
 4. Returns `ProviderResponse`: `{ response: string, usage: { input, output, total }, trackData: TrackData, judgeResults?: Record<string, JudgeCallResult>, judgeTasks?: JudgeTask[] }`. `judgeResults` is populated when `skipJudges` is `false` (default) and judges ran; `judgeTasks` is populated when `skipJudges: true`.
 
 ---

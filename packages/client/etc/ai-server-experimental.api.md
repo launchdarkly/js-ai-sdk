@@ -5,6 +5,12 @@
 ```ts
 
 // @public
+export type AIConfig = {
+    key: string;
+    variation: string;
+};
+
+// @public
 export function allSkills(): Promise<Skill[]>;
 
 // @public
@@ -29,6 +35,58 @@ export function createSkillReference(init: {
     key: string;
     version: number;
 }): SkillReference;
+
+// @public
+export type Criterion = Judge | Scorer;
+
+// @public
+export type DatasetRow = {
+    rowIndex: number;
+    input: string | null;
+    expectedOutput: string | null;
+    variables: Record<string, unknown>;
+    metadata: Record<string, unknown> | null;
+};
+
+// @public
+export type EvalRunResult = {
+    passed: boolean;
+    url: string;
+    runId: string;
+    summary: RunSummary;
+};
+
+// @public
+export class EvalTool {
+    constructor(key: string, implementation: EvalToolImplementation, schema: Record<string, unknown>, description?: string);
+    readonly description: string;
+    // Warning: (ae-forgotten-export) The symbol "EvalToolImplementation" needs to be exported by the entry point experimental.d.ts
+    readonly implementation: EvalToolImplementation;
+    readonly key: string;
+    readonly projectKey: string | undefined;
+    readonly schema: Readonly<Record<string, unknown>>;
+    readonly source: 'library' | 'inline';
+    readonly version: number | undefined;
+}
+
+// @public
+export class EvaluationsError extends Error {
+    constructor(message: string, options?: {
+        cause?: unknown;
+    });
+}
+
+// @public
+export class EvaluationsModule {
+    // @internal
+    constructor(internalsArg: unknown);
+    readonly projectKey: string;
+    run(options: RunOptions): Promise<EvalRunResult>;
+    readonly sdkKey: string | undefined;
+    // Warning: (ae-forgotten-export) The symbol "ToolsClient" needs to be exported by the entry point experimental.d.ts
+    readonly tools: ToolsClient;
+    readonly uiBaseUri: string;
+}
 
 // @public (undocumented)
 export type FDv2Mode = 'stream' | 'poll';
@@ -66,6 +124,24 @@ export type FDv2SkillStoreOptions = {
 };
 
 // @public
+export type GenerationConfig = {
+    provider: string;
+    model: string;
+    mode: GenerationMode;
+    parameters?: Record<string, unknown>;
+    instructions?: string;
+    messages?: ConfigMessage[];
+    promptSnippets?: Record<string, string>;
+    outputFormat?: Record<string, unknown>;
+};
+
+// @public
+export type GenerationMode = 'completion' | 'agent';
+
+// @public
+export type GenerationOverrides = Partial<Omit<GenerationConfig, 'mode'>>;
+
+// @public
 export function getSkill(key: string, options?: {
     version?: number;
 }): Promise<Skill | null>;
@@ -79,6 +155,29 @@ export function getSkillResult(key: string, options?: {
 export function getSkills(refs: ReadonlyArray<SkillReference | string>): Promise<Skill[]>;
 
 // @public
+export function initEvaluations(options?: InitEvaluationsOptions): EvaluationsModule;
+
+// @public
+export type InitEvaluationsOptions = {
+    projectKey?: string;
+    apiKey?: string;
+    sdkKey?: string;
+    apiBaseUri?: string;
+    uiBaseUri?: string;
+    logEvents?: boolean;
+    transport?: Transport;
+};
+
+// @public
+export type InlineDatasetRow = {
+    rowIdx?: number;
+    input: string;
+    expectedOutput?: string;
+    variables?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+};
+
+// @public
 export class InMemorySkillStore implements SkillStore {
     constructor(objects?: Record<string, RawSkillObject>);
     addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
@@ -86,6 +185,19 @@ export class InMemorySkillStore implements SkillStore {
     getObject(kind: string, key: string, version?: number | null): RawSkillObject | null;
     put(raw: RawSkillObject): void;
     removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+}
+
+// @public
+export class Judge {
+    constructor(key: string, options?: {
+        threshold?: number;
+        passRateThreshold?: number;
+        groundTruthContext?: string;
+    });
+    readonly groundTruthContext?: string;
+    readonly key: string;
+    readonly passRateThreshold: number;
+    readonly threshold: number;
 }
 
 // @public
@@ -126,6 +238,54 @@ export type ReconcileReport = {
     readonly ok: boolean;
     readonly errors: readonly ReconcileAction[];
 };
+
+// @public
+export type RunOptions = {
+    key: string;
+    dataset: string | readonly InlineDatasetRow[];
+    tools?: readonly EvalTool[];
+    criteria?: readonly Criterion[];
+    concurrency?: number;
+    pollIntervalSeconds?: number;
+    pollTimeoutSeconds?: number;
+} & ({
+    handler: ProviderHandler;
+    handlers?: never;
+} | {
+    handlers: ProviderHandler[];
+    handler?: never;
+}) & ({
+    generation: GenerationConfig;
+    aiConfig?: never;
+} | {
+    aiConfig: AIConfig;
+    generation?: GenerationOverrides;
+});
+
+// @public
+export type RunSummary = {
+    totalRows: number;
+    passedRows: number;
+    failedRows: number;
+    errorRows: number;
+    pendingRows: number;
+};
+
+// @public
+export class Scorer {
+    constructor(name: string, fn: ScorerFn, options?: {
+        threshold?: number;
+        passRateThreshold?: number;
+        successDirection?: SuccessDirection;
+    });
+    // Warning: (ae-forgotten-export) The symbol "ScorerFn" needs to be exported by the entry point experimental.d.ts
+    readonly fn: ScorerFn;
+    readonly name: string;
+    readonly passRateThreshold: number;
+    // Warning: (ae-forgotten-export) The symbol "SuccessDirection" needs to be exported by the entry point experimental.d.ts
+    readonly successDirection: SuccessDirection;
+    readonly threshold: number;
+}
 
 // @public
 export function setSkillStore(store: SkillStore | null | undefined): void;
@@ -227,6 +387,9 @@ export type WriteSkillsOptions = {
 
 // Warnings were encountered during analysis:
 //
+// temp/dts/evaluations.d.ts:48:5 - (ae-forgotten-export) The symbol "Transport" needs to be exported by the entry point experimental.d.ts
+// temp/dts/evaluations.d.ts:67:5 - (ae-forgotten-export) The symbol "ConfigMessage" needs to be exported by the entry point experimental.d.ts
+// temp/dts/evaluations.d.ts:111:5 - (ae-forgotten-export) The symbol "ProviderHandler" needs to be exported by the entry point experimental.d.ts
 // temp/dts/skills-fdv2.d.ts:454:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point experimental.d.ts
 
 // (No @packageDocumentation comment for this package)

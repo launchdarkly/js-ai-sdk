@@ -1,6 +1,6 @@
 import type { AiConfigRep, Message } from '@launchdarkly/ai-server';
 
-/** Must match `FORMATTING_INSTRUCTIONS` in `@launchdarkly/ai-server` `judges.ts`, which is not public API. */
+/** Must match `FORMATTING_INSTRUCTIONS` in `@launchdarkly/ai-server` `judge-scoring.ts`, which is not public API. */
 export const FORMATTING_INSTRUCTIONS = [
   'Your response MUST be in valid JSON format with the following structure:',
   '{ "score": <number, 0-1>, "reasoning": <string> }',
