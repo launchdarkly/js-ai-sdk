@@ -44,7 +44,7 @@ await shutdown();
 | `cwd` | `process.cwd()` | Working directory for the Claude Code process the Agent SDK starts. |
 | `settingSources` | `[]` (none) | Which Claude Code settings sources to load: `'user'` (`~/.claude/settings.json`), `'project'` (`.claude/settings.json`, and `CLAUDE.md`), `'local'` (`.claude/settings.local.json`). |
 
-These configure the host process, not the model, so only your application can set them. A flag's model parameters can't set or override either one.
+These configure the host process, not the model, so only your application can set them. A flag's model parameters can't set or override either one. `claudeAgents()`, `claudeGraph()` and `toClaudeAgents()` take `cwd` and `settingSources` too, with the same defaults.
 
 > **A run loads none of the host's Claude Code settings unless you opt in.** The Claude Agent SDK's own default loads the user, project and local settings of the machine it runs on, including their plugins, skills, hooks, permission rules and `CLAUDE.md`. This handler sends `settingSources: []` instead, so an agent runs from its LaunchDarkly config alone. To load host settings, name the sources:
 >
@@ -53,6 +53,23 @@ These configure the host process, not the model, so only your application can se
 > ```
 >
 > The Agent SDK still reads the managed-settings policy tier (managed settings files and MDM) whatever you pass.
+
+#### Migrating from a version that loaded host settings
+
+Earlier versions left `settingSources` unset, so the Agent SDK loaded every settings source on the host. A run now loads none of them. Anything a deployment configured through those files stops applying, including:
+
+- plugins, skills, hooks, permission rules and `CLAUDE.md`
+- the `env` block, for example `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_VERTEX`, and proxy variables
+- `apiKeyHelper` and `model`
+
+A deployment that reaches Bedrock, Vertex or a gateway through `~/.claude/settings.json` fails to authenticate after the upgrade. To fix it, either set those variables in the process environment, or load the source that holds them:
+
+```ts
+createClaudeAgentsHandler({ settingSources: ['user'] });
+claudeAgents('my-ai-config-flag', input, context, { settingSources: ['user'] });
+claudeGraph('support-graph', { settingSources: ['user'] });
+toClaudeAgents(resolveGraph('support-graph', { context }), { context, settingSources: ['user'] });
+```
 
 ### Built-in tools
 

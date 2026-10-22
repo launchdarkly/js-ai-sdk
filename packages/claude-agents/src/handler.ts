@@ -975,11 +975,15 @@ function buildQueryOptions(
  *
  * Host settings load only when the application opts in. `settingSources` not given sends `[]`,
  * because the Agent SDK's own default loads every source (`user`, `project`, `local`),
- * including that host's plugins, skills, hooks, permission rules and `CLAUDE.md`. Pass the
- * sources to load them, e.g. `['user', 'project', 'local']` for all. `cwd` not given is not
- * sent, which leaves the process's working directory.
+ * including that host's plugins, skills, hooks, permission rules and `CLAUDE.md`, and its
+ * settings-file `env` (`ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX`, proxy
+ * variables), `apiKeyHelper` and `model`. Pass the sources to load them, e.g. `['user']`, or
+ * `['user', 'project', 'local']` for all. `cwd` not given is not sent, which leaves the process's
+ * working directory.
+ *
+ * `createClaudeAgentsHandler`, `claudeAgents`, `claudeGraph` and `toClaudeAgents` all take these.
  */
-type ClaudeAgentsHostOptions = {
+export type ClaudeAgentsHostOptions = {
   /** Working directory for the Claude Code process. Defaults to `process.cwd()`. */
   cwd?: string;
   /**
@@ -1011,7 +1015,7 @@ export type QueryPreparation = {
 export type PrepareQuery = (config: AiConfigRep) => Promise<QueryPreparation | undefined>;
 
 /** The host options for `query()`: `settingSources` always, `[]` unless given; `cwd` only if given. */
-function hostQueryOptions({ cwd, settingSources }: ClaudeAgentsHostOptions): Record<string, unknown> {
+export function hostQueryOptions({ cwd, settingSources }: ClaudeAgentsHostOptions): Record<string, unknown> {
   return {
     ...(cwd !== undefined && { cwd }),
     settingSources: settingSources ?? [],
@@ -1330,16 +1334,19 @@ export const claudeAgents = (
   configKey: string,
   userInput: string,
   context: LDContext,
-  // Both `captureContent` and `variables` are lifted out of `options`: the first configures the
-  // handler, the second belongs to the invocation. Passing either through to `config()` drops it —
+  // `captureContent`, the host options and `variables` are lifted out of `options`: the first two
+  // configure the handler, the last belongs to the invocation. Passing either through to `config()` drops it —
   // which is how a `{{user_input}}` placeholder used to reach the model unsubstituted whenever a
   // caller used one of these wrappers instead of `config().invoke()`.
   {
     captureContent,
+    cwd,
+    settingSources,
     variables,
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
-    ContentCaptureOptions & {
+    ContentCaptureOptions &
+    ClaudeAgentsHostOptions & {
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
@@ -1348,6 +1355,6 @@ export const claudeAgents = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createClaudeAgentsHandlerInternal({ captureContent }),
+    handler: createClaudeAgentsHandlerInternal({ captureContent, cwd, settingSources }),
   }).invoke(userInput, context, variables);
 };

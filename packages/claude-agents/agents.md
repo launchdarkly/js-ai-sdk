@@ -34,14 +34,14 @@ That means the LaunchDarkly flag variation must have `provider.name === "Anthrop
 // Factory — returns a ProviderHandler with providesFor attached
 export function createClaudeAgentsHandler(options?: { captureContent?: boolean; cwd?: string; settingSources?: SettingSource[] }): ProviderHandler
 
-// Convenience wrapper — identical to config({ ...options, key: configKey, handler: createClaudeAgentsHandler() }).invoke(userInput, context)
-export const claudeAgents: (configKey: string, userInput: string, context: LDContext, options?: Omit<ConfigArgs, 'handler' | 'key'>) => Promise<ProviderResponse>
+// Convenience wrapper — identical to config({ ...options, key: configKey, handler: createClaudeAgentsHandler({ captureContent, cwd, settingSources }) }).invoke(userInput, context, variables)
+export const claudeAgents: (configKey: string, userInput: string, context: LDContext, options?: Omit<ConfigArgs, 'handler' | 'key'> & { captureContent?, cwd?, settingSources?, variables? }) => Promise<ProviderResponse>
 
-// Graph convenience wrapper — identical to graph(key, { ...options, handlers: [createClaudeAgentsHandler()] })
-export function claudeGraph(key: string, options: Omit<GraphOptions, 'handlers'>): { invoke(input, context, variables?): Promise<ProviderGraphResponse> }
+// Graph convenience wrapper — identical to graph(key, { ...options, handlers: [createClaudeAgentsHandler({ cwd, settingSources })] })
+export function claudeGraph(key: string, options: Omit<GraphOptions, 'handlers'> & { cwd?, settingSources? }): { invoke(input, context, variables?): Promise<ProviderGraphResponse> }
 
 // Native graph adapter — builds a Claude code-agents graph from a resolved GraphDefinition
-export function toClaudeAgents(def: Promise<GraphDefinition>, opts?: object): { invoke(input?, variables?): Promise<ProviderGraphResponse> }
+export function toClaudeAgents(def: Promise<GraphDefinition>, opts?: { toolHandlers?, context?, cwd?, settingSources? }): { invoke(input?, variables?): Promise<ProviderGraphResponse> }
 
 // NativeTool sentinels for Claude Code built-in capabilities
 export const ClaudeBash: NativeTool
@@ -105,7 +105,9 @@ If `config.tools` is absent, `toolMCP` and `allowedTools` are both `undefined`.
 
 ### 2a. Host options (`cwd`, `settingSources`)
 
-`createClaudeAgentsHandler({ cwd, settingSources })` takes two trusted, app-supplied options and passes them to every `query()` call, blocking and streaming. They are spread with the handler's own options, after `model.parameters`, and `model-parameters.ts` already drops both from a config, so a config can neither set nor override them. **`settingSources` is always sent, `[]` unless the application gives sources**: the Agent SDK's own default loads every source, which put the host's plugins, skills, hooks, permission rules and `CLAUDE.md` into every run (AIC-3584). `[]` still lets the SDK read the managed-settings policy tier. `cwd` is sent only when given. The convenience wrappers and the native graph adapter don't take these options.
+`createClaudeAgentsHandler({ cwd, settingSources })` takes two trusted, app-supplied options and passes them to every `query()` call, blocking and streaming. They are spread with the handler's own options, after `model.parameters`, and `model-parameters.ts` already drops both from a config, so a config can neither set nor override them. **`settingSources` is always sent, `[]` unless the application gives sources**: the Agent SDK's own default loads every source, which put the host's plugins, skills, hooks, permission rules and `CLAUDE.md` into every run (AIC-3584). `[]` still lets the SDK read the managed-settings policy tier. `cwd` is sent only when given. Settings-file `env` (`ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX`, proxy variables), `apiKeyHelper` and `model` come from those sources too, so `[]` drops them; the README's migration note covers this.
+
+`claudeAgents()` and `claudeGraph()` lift `cwd` and `settingSources` out of their options and build the handler with them, so neither reaches `config()` or `graph()`. `toClaudeAgents()` takes them in `opts` and passes `hostQueryOptions(opts)` to every Anthropic node's `query()`, root and sub-agents, after that node's `model.parameters`. All four entry points share `hostQueryOptions`, so all four default to `[]`.
 
 ### 3. Agentic Loop
 
