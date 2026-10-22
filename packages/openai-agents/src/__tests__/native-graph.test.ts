@@ -193,7 +193,7 @@ describe('toOpenAIAgents', () => {
     (def.getNode('leaf-agent')!.config.model as any).parameters = NEVER_FORWARDED_PARAMETERS;
     await toOpenAIAgents(Promise.resolve(def as any)).invoke('hi');
     for (const [args] of mockAgentConstructor.mock.calls) {
-      expectNoNeverForwardedValue(args);
+      expectNoNeverForwardedValue(args, ['instructions']);
     }
   });
 

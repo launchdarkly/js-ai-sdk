@@ -267,7 +267,8 @@ describe('createOpenAIAgentHandler', () => {
     await createOpenAIAgentHandler()(config as any, 'q');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
     expect(agentArgs.modelSettings).toBeUndefined();
-    expectNoNeverForwardedValue(agentArgs);
+    // The handler sets `instructions` itself; the deep check proves it does not carry the config's value.
+    expectNoNeverForwardedValue(agentArgs, ['instructions']);
     expect(mockRun.mock.calls[0][2]).toBeUndefined();
   });
 

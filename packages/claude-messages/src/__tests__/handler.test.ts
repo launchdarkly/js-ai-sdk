@@ -1458,7 +1458,8 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     await createClaudeMessagesHandler()(cfg as any, 'hi');
     expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
     for (const arg of mockMessagesCreate.mock.calls[0]) {
-      expectNoNeverForwardedValue(arg);
+      // The handler sets `system` itself; the deep check proves it does not carry the config's value.
+      expectNoNeverForwardedValue(arg, ['system']);
     }
   });
 
