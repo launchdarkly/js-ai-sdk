@@ -449,22 +449,31 @@ function rebuildTypedObject(
 }
 
 /**
+ * `output_config` rebuilt as `{ effort }`, or `undefined` when there is no string effort. An
+ * `output_config.effort` wins over a top-level `effort` (the shape the LaunchDarkly UI writes),
+ * since it is what the customer set explicitly for that field. Every other `output_config` sub-key
+ * is dropped: `format` is structured output, which the handler owns through `outputFormat`, and
+ * forwarding it would make the API enforce a schema the handler did not ask for.
+ */
+function toOutputConfig(effort: unknown, outputConfig: unknown): { effort: string } | undefined {
+  const explicit = isPlainObject(outputConfig) ? outputConfig.effort : undefined;
+  const chosen = typeof explicit === 'string' ? explicit : effort;
+  return typeof chosen === 'string' ? { effort: chosen } : undefined;
+}
+
+/**
  * Picks the subset of `config.model.parameters` that maps onto `MessageCreateParamsBase`, after
- * moving a top-level `effort` (the shape the LaunchDarkly UI writes) into `output_config.effort`,
- * the shape the Messages API actually accepts. An `output_config.effort` already present in the
- * config wins over the renamed value, since it is what the customer set explicitly for that field.
- * Malformed nested values are dropped and typed objects rebuilt (see `TYPED_OBJECT_SHAPES`). A
- * config that sets nothing here
- * produces `{}`, so the provider call sees exactly what it always has.
+ * moving a top-level `effort` into `output_config.effort`, the shape the Messages API actually
+ * accepts (see `toOutputConfig`). Malformed nested values are dropped and typed objects rebuilt
+ * (see `TYPED_OBJECT_SHAPES`). A config that sets nothing here produces `{}`, so the provider call
+ * sees exactly what it always has.
  */
 function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
   const normalized = normalizeModelParameters(parameters);
   const { effort, output_config, ...rest } = normalized;
-  const mergedOutputConfig =
-    effort !== undefined ? { effort, ...(isPlainObject(output_config) ? output_config : undefined) } : output_config;
-  const withEffortMoved = mergedOutputConfig !== undefined ? { ...rest, output_config: mergedOutputConfig } : rest;
-  const picked = pickForwardedModelParameters(withEffortMoved, FORWARDED_MODEL_PARAMETER_KEYS);
-  if (picked.output_config !== undefined && !isPlainObject(picked.output_config)) delete picked.output_config;
+  const outputConfig = toOutputConfig(effort, output_config);
+  const picked = pickForwardedModelParameters(rest, FORWARDED_MODEL_PARAMETER_KEYS);
+  if (outputConfig) picked.output_config = outputConfig;
   for (const [key, shapes] of Object.entries(TYPED_OBJECT_SHAPES)) {
     if (picked[key] === undefined) continue;
     const rebuilt = rebuildTypedObject(picked[key], shapes);

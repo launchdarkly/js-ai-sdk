@@ -70,7 +70,8 @@ export const CHAT_OPENAI_FORWARDED_KEYS = [
  * - `contextManagement`: server-side state.
  *
  * Nested values (`thinking`, `outputConfig`) are the Anthropic Messages API's own snake_case
- * shapes, which `ChatAnthropic` sends as written, so they are not converted.
+ * shapes, which `ChatAnthropic` sends as written, so they are not converted. `outputConfig` keeps
+ * only `effort` (see `toAnthropicOutputConfig`).
  */
 export const CHAT_ANTHROPIC_FORWARDED_KEYS = [
   'betas',
@@ -149,12 +150,24 @@ function toAnthropicThinking(value: unknown): Record<string, unknown> | undefine
 }
 
 /**
+ * `outputConfig` rebuilt as `{ effort }`, or `undefined` when there is no string effort. An
+ * explicit `output_config.effort` wins over a top-level `effort`. Every other sub-key is dropped:
+ * `format` is structured output, which the handler owns through `outputFormat`, and forwarding it
+ * would make the API enforce a schema the handler did not ask for.
+ */
+function toAnthropicOutputConfig(effort: unknown, outputConfig: unknown): { effort: string } | undefined {
+  const explicit = isPlainObject(outputConfig) ? outputConfig.effort : undefined;
+  const chosen = typeof explicit === 'string' ? explicit : effort;
+  return typeof chosen === 'string' ? { effort: chosen } : undefined;
+}
+
+/**
  * Nested values each model class reads as objects. A value of the wrong shape is dropped rather
  * than passed on.
  */
 const NESTED_SHAPE_CHECKS: Record<LangChainModelClass, Record<string, (value: unknown) => boolean>> = {
   openai: { logitBias: isPlainObject },
-  anthropic: { outputConfig: isPlainObject },
+  anthropic: {},
   bedrock: { performanceConfig: isPlainObject },
 };
 
@@ -168,7 +181,7 @@ const NESTED_SHAPE_CHECKS: Record<LangChainModelClass, Record<string, (value: un
  * - `ChatOpenAI` reads its service tier as `service_tier`, so a camelized `serviceTier` is
  *   renamed back.
  * - `ChatAnthropic` has no `effort` field; a top-level `effort` becomes `outputConfig.effort`.
- *   An explicit `output_config.effort` wins.
+ *   An explicit `output_config.effort` wins, and `outputConfig` keeps nothing else.
  * - `ChatAnthropic` has no `maxTokensToSample` or `stop` field. `max_tokens_to_sample` is another
  *   name for `max_tokens` and becomes `maxTokens`, and `stop` is another name for `stop_sequences`
  *   and becomes `stopSequences`. When both names are set, `max_tokens` and `stop_sequences` win.
@@ -183,10 +196,9 @@ export function modelConstructorParameters(
     delete camelized.serviceTier;
   }
   if (modelClass === 'anthropic') {
-    if (camelized.effort !== undefined) {
-      const outputConfig = isPlainObject(camelized.outputConfig) ? camelized.outputConfig : {};
-      camelized.outputConfig = { effort: camelized.effort, ...outputConfig };
-    }
+    const outputConfig = toAnthropicOutputConfig(camelized.effort, camelized.outputConfig);
+    if (outputConfig) camelized.outputConfig = outputConfig;
+    else delete camelized.outputConfig;
     camelized.maxTokens ??= camelized.maxTokensToSample;
     camelized.stopSequences ??= camelized.stop;
   }

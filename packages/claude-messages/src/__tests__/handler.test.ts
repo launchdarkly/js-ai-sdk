@@ -1495,7 +1495,7 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     expect(mockMessagesCreate.mock.calls[0][0].output_config).toEqual({ effort: 'low' });
   });
 
-  it('merges a renamed effort into an output_config that also sets other fields', async () => {
+  it('keeps only effort from an output_config that also sets other fields', async () => {
     mockMessagesCreate.mockResolvedValue(mockFinalResponse());
     const cfg = {
       ...baseConfig,
@@ -1503,7 +1503,7 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     };
     const handler = createClaudeMessagesHandler();
     await handler(cfg as any, 'hi');
-    expect(mockMessagesCreate.mock.calls[0][0].output_config).toEqual({ effort: 'high', format: { type: 'text' } });
+    expect(mockMessagesCreate.mock.calls[0][0].output_config).toEqual({ effort: 'high' });
   });
 
   it('leaves the call unchanged from today when model.parameters is absent', async () => {
@@ -1664,7 +1664,7 @@ describe('createClaudeMessagesHandler — cross-SDK allowlist (TESTING.md §1.12
   it('invoke forwards exactly the canonical keys', async () => {
     const call = await invokeCall({ ...CANONICAL_PARAMETERS, ...REMOVED });
     expect(forwardedKeys(call)).toEqual(EXPECTED_FORWARDED_KEYS);
-    expect(call.output_config).toEqual({ effort: 'high', format: { type: 'json_schema', schema: {} } });
+    expect(call.output_config).toEqual({ effort: 'high' });
   });
 
   it('stream forwards exactly the canonical keys, the same as invoke', async () => {
@@ -1690,6 +1690,9 @@ describe('createClaudeMessagesHandler — cross-SDK allowlist (TESTING.md §1.12
     ['cache_control', {}],
     ['cache_control', { type: 'persistent' }],
     ['output_config', 'high'],
+    ['output_config', {}],
+    ['output_config', { effort: 3 }],
+    ['output_config', { format: { type: 'json_schema', schema: {} } }],
   ])('drops a malformed %s (%j) on invoke and stream', async (key, value) => {
     const invoked = await invokeCall({ [key]: value });
     expect(invoked).not.toHaveProperty(key);
@@ -1720,5 +1723,22 @@ describe('createClaudeMessagesHandler — cross-SDK allowlist (TESTING.md §1.12
   it('a malformed output_config does not stop a top-level effort from being forwarded', async () => {
     const call = await invokeCall({ effort: 'low', output_config: 'nope' });
     expect(call.output_config).toEqual({ effort: 'low' });
+  });
+
+  it('drops output_config.format on invoke and stream, so the API cannot enforce a schema the handler did not ask for', async () => {
+    const parameters = {
+      output_config: { effort: 'low', format: { type: 'json_schema', schema: { type: 'object' } } },
+    };
+    const invoked = await invokeCall(parameters);
+    expect(invoked.output_config).toEqual({ effort: 'low' });
+    vi.clearAllMocks();
+    const streamed = await streamCall(parameters);
+    expect(streamed.output_config).toEqual({ effort: 'low' });
+  });
+
+  it('drops a non-string top-level effort', async () => {
+    const call = await invokeCall({ effort: { level: 'high' } });
+    expect(call).not.toHaveProperty('output_config');
+    expect(call).not.toHaveProperty('effort');
   });
 });

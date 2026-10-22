@@ -84,7 +84,7 @@ describe('modelConstructorParameters', () => {
       betas: ['context-1m-2025-08-07'],
       maxTokens: 100,
       // ChatAnthropic sends these to the Messages API as written, so they stay snake_case.
-      outputConfig: { effort: 'low', format: { type: 'json_schema', schema: {} } },
+      outputConfig: { effort: 'low' },
       stopSequences: ['END'],
       temperature: 0.2,
       thinking: { type: 'enabled', budget_tokens: 1024 },
@@ -94,6 +94,19 @@ describe('modelConstructorParameters', () => {
     expect(modelConstructorParameters({ effort: 'low', output_config: { effort: 'high' } }, 'anthropic')).toEqual({
       outputConfig: { effort: 'high' },
     });
+  });
+
+  it('keeps only effort in ChatAnthropic outputConfig, dropping format and any other sub-key', () => {
+    expect(
+      modelConstructorParameters(
+        { output_config: { effort: 'high', format: { type: 'json_schema', schema: {} }, task_budget: 5 } },
+        'anthropic',
+      ),
+    ).toEqual({ outputConfig: { effort: 'high' } });
+    expect(modelConstructorParameters({ effort: 'low', output_config: { effort: 7 } }, 'anthropic')).toEqual({
+      outputConfig: { effort: 'low' },
+    });
+    expect(modelConstructorParameters({ effort: { level: 'low' } }, 'anthropic')).toEqual({});
   });
 
   it('maps ChatAnthropic max_tokens_to_sample to maxTokens and stop to stopSequences; the primary names win', () => {
@@ -138,6 +151,9 @@ describe('modelConstructorParameters', () => {
     ['anthropic', 'thinking', { type: 'enabled' }],
     ['anthropic', 'thinking', { type: 'on', budget_tokens: 1024 }],
     ['anthropic', 'output_config', 'high'],
+    ['anthropic', 'output_config', {}],
+    ['anthropic', 'output_config', { effort: 3 }],
+    ['anthropic', 'output_config', { format: { type: 'json_schema', schema: {} } }],
     ['openai', 'logit_bias', [1, 2]],
     ['bedrock', 'performance_config', 'optimized'],
   ] as const)('drops a malformed nested value for %s: %s = %j', (modelClass, key, value) => {
