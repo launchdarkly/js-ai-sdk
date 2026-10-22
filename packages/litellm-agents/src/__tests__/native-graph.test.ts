@@ -58,6 +58,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => ({
 
 import type { GraphDefinition, GraphNode } from '@launchdarkly/ai-server';
 import { toLiteLLMAgents } from '../native-graph.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 function node(key: string, model: string, children: string[] = [], withTool = false) {
   return {
@@ -167,6 +168,58 @@ describe('toLiteLLMAgents', () => {
     await expect((runnerArgs[0].modelProvider as { getModel: () => Promise<unknown> }).getModel()).resolves.toBe(
       agentArgs[1].model,
     );
+  });
+
+  // The LiteLLM Agents list in the cross-SDK spec (TESTING.md §1.12): a native adapter uses the
+  // same list as the handler.
+  it("forwards exactly the LiteLLM Agents keys from each node's model.parameters", async () => {
+    const definition = graphDefinition();
+    const parameters = {
+      frequency_penalty: 0.1,
+      max_tokens: 256,
+      max_turns: 4,
+      parallel_tool_calls: false,
+      presence_penalty: 0.2,
+      reasoning: { effort: 'low', summary: 'auto' },
+      temperature: 0.4,
+      text: { verbosity: 'high' },
+      tool_choice: 'auto',
+      top_p: 0.9,
+      verbosity: 'low',
+      store: true,
+      made_up_key: 1,
+    };
+    (definition.root!.config.model as any).parameters = parameters;
+    (definition.getNode('leaf')!.config.model as any).parameters = { ...parameters, max_turns: 9 };
+    await toLiteLLMAgents(Promise.resolve(definition), { client: {} as never }).invoke('q');
+    const expected = {
+      frequencyPenalty: 0.1,
+      maxTokens: 256,
+      parallelToolCalls: false,
+      presencePenalty: 0.2,
+      reasoning: { effort: 'low' },
+      temperature: 0.4,
+      text: { verbosity: 'high' },
+      toolChoice: 'auto',
+      topP: 0.9,
+    };
+    expect(agentArgs.map((args) => args.modelSettings)).toEqual([expected, expected]);
+    // One run drives the whole graph, so only the root's turn limit applies.
+    expect(mockRun.mock.calls[0][2]).toEqual({ maxTurns: 4 });
+  });
+
+  it('never forwards a key from any never-forward category from any node', async () => {
+    const definition = graphDefinition();
+    (definition.root!.config.model as any).parameters = { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 };
+    (definition.getNode('leaf')!.config.model as any).parameters = NEVER_FORWARDED_PARAMETERS;
+    await toLiteLLMAgents(Promise.resolve(definition), { client: {} as never }).invoke('q');
+    expect(agentArgs.map((args) => args.modelSettings)).toEqual([{}, { temperature: 0.3 }]);
+    for (const args of agentArgs) {
+      // The adapter sets `instructions` itself; the deep check proves it does not carry the config's value.
+      expectNoNeverForwardedValue(args, ['instructions']);
+    }
+    for (const args of modelArgs) expectNoNeverForwardedValue(args);
+    expect(mockRun.mock.calls[0]).toHaveLength(2);
   });
 
   it('converts node tools with the supplied local handlers', async () => {
