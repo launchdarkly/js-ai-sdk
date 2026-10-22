@@ -124,6 +124,18 @@ describe('toClaudeAgents', () => {
     }
   });
 
+  it("never forwards a node's output_format to its query()", async () => {
+    const def = makeGraphDef();
+    (def.root!.config.model as any).parameters = {
+      output_format: { type: 'json_schema', schema: { type: 'object' } },
+      max_turns: 3,
+    };
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+    const rootOptions = mockQuery.mock.calls[0][0].options;
+    expect(rootOptions.maxTurns).toBe(3);
+    expect(rootOptions.outputFormat).toBeUndefined();
+  });
+
   it("forwards each node's allowlisted model.parameters, including maxTurns, to that node's query()", async () => {
     const def = makeGraphDef();
     (def.root!.config.model as any).parameters = {

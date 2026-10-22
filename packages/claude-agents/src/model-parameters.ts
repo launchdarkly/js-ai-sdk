@@ -18,6 +18,10 @@ import {
  * `settings`, `settingSources`, `plugins`, `hooks`, `canUseTool`), which remote tools it connects
  * to (`mcpServers`), and which session it resumes (`resume`, `sessionId`, `forkSession`,
  * `continue`). None of those can come from a config.
+ *
+ * `outputFormat` is not forwarded either: structured output belongs to the config's own
+ * `outputFormat` (TESTING.md §1.9), which the handler applies itself, so a schema in
+ * `model.parameters` would only fight it.
  */
 const FORWARDED_QUERY_OPTION_KEYS = [
   'betas',
@@ -26,7 +30,6 @@ const FORWARDED_QUERY_OPTION_KEYS = [
   'maxBudgetUsd',
   'maxThinkingTokens',
   'maxTurns',
-  'outputFormat',
   'thinking',
 ] as const satisfies ReadonlyArray<keyof Options>;
 
@@ -68,20 +71,9 @@ function toThinkingOption(value: unknown): Options['thinking'] | undefined {
 }
 
 /**
- * `outputFormat` as the Claude Agent SDK reads it: `{ type: 'json_schema', schema }`, with the
- * schema passed through as written. Anything else is dropped.
- */
-function toOutputFormatOption(value: unknown): Options['outputFormat'] | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const source = value as Record<string, unknown>;
-  if (source.type !== 'json_schema' || !source.schema || typeof source.schema !== 'object') return undefined;
-  return { type: 'json_schema', schema: source.schema as Record<string, unknown> };
-}
-
-/**
  * `config.model.parameters` as `query()` options: camelized, narrowed to
- * `FORWARDED_QUERY_OPTION_KEYS`, with `thinking` and `outputFormat` rebuilt in the shapes the SDK
- * reads. A config that sets none of them produces `{}`.
+ * `FORWARDED_QUERY_OPTION_KEYS`, with `thinking` rebuilt in the shape the SDK reads. A config
+ * that sets none of them produces `{}`.
  */
 export function buildModelParameterQueryOptions(
   parameters: AiConfigRep['model']['parameters'] | unknown,
@@ -94,11 +86,6 @@ export function buildModelParameterQueryOptions(
     const thinking = toThinkingOption(options.thinking);
     if (thinking) options.thinking = thinking;
     else delete options.thinking;
-  }
-  if (options.outputFormat !== undefined) {
-    const outputFormat = toOutputFormatOption(options.outputFormat);
-    if (outputFormat) options.outputFormat = outputFormat;
-    else delete options.outputFormat;
   }
   return options as Partial<Options>;
 }

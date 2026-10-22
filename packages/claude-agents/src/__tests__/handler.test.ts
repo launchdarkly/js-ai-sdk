@@ -278,7 +278,6 @@ describe('createClaudeAgentsHandler', () => {
 
   it('forwards every allowed key under the Claude Agent SDK name and shape', async () => {
     mockQuery.mockImplementation(makeResultMessage());
-    const schema = { type: 'object', properties: { answer_text: { type: 'string' } } };
     const config = {
       ...baseConfig,
       model: {
@@ -290,7 +289,6 @@ describe('createClaudeAgentsHandler', () => {
           effort: 'high',
           max_budget_usd: 1.5,
           fallback_model: 'claude-haiku',
-          output_format: { type: 'json_schema', schema, extra_key: 'dropped' },
           betas: ['context-1m-2025-08-07'],
         },
       },
@@ -307,8 +305,25 @@ describe('createClaudeAgentsHandler', () => {
     });
     // The SDK's ThinkingEnabled reads budgetTokens, not the Messages API's budget_tokens.
     expect(options.thinking).toEqual({ type: 'enabled', budgetTokens: 1024, display: 'summarized' });
-    // The JSON schema itself is passed through as written.
-    expect(options.outputFormat).toEqual({ type: 'json_schema', schema });
+  });
+
+  it('never forwards output_format, on invoke or stream: structured output comes from the config outputFormat', async () => {
+    const schema = { type: 'object', properties: { smuggled: { type: 'string' } } };
+    const parameters = {
+      output_format: { type: 'json_schema', schema },
+      outputFormat: { type: 'json_schema', schema },
+      temperature: 0.2,
+    };
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters } };
+    mockQuery.mockImplementation(makeResultMessage());
+    await createClaudeAgentsHandler()(config as any, 'q');
+    expect(mockQuery.mock.calls[0][0].options.outputFormat).toBeUndefined();
+    mockQuery.mockClear();
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+    });
+    await collectStream(createClaudeAgentsHandler().stream?.(config as any, 'q', {}, {}));
+    expect(mockQuery.mock.calls[0][0].options.outputFormat).toBeUndefined();
   });
 
   // The Claude Agents list in the cross-SDK spec (TESTING.md §1.12): the options a config adds on
@@ -341,16 +356,7 @@ describe('createClaudeAgentsHandler', () => {
       }
       return mockQuery.mock.calls[0][0].options as Record<string, unknown>;
     };
-    const expected = [
-      'betas',
-      'effort',
-      'fallbackModel',
-      'maxBudgetUsd',
-      'maxThinkingTokens',
-      'maxTurns',
-      'outputFormat',
-      'thinking',
-    ];
+    const expected = ['betas', 'effort', 'fallbackModel', 'maxBudgetUsd', 'maxThinkingTokens', 'maxTurns', 'thinking'];
     const added: Record<string, string[]> = {};
     const forwarded: Record<string, Record<string, unknown>> = {};
     for (const path of ['invoke', 'stream'] as const) {
