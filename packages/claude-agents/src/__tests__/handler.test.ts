@@ -1095,6 +1095,28 @@ describe('createClaudeAgentsHandler — host options and built-in tool set', () 
       expect(options.settingSources).toEqual([]);
     });
 
+    it('claudeAgents sends settingSources: [] unless given, and forwards the host options to the handler', async () => {
+      const { claudeAgents } = await import('../handler.js');
+      const { configInternal } = await import('@launchdarkly/ai-server');
+      const ctx = { kind: 'user' as const, key: 'u' };
+      const lastHandler = () =>
+        vi.mocked(configInternal).mock.calls.at(-1)?.[0].handler as ReturnType<typeof createClaudeAgentsHandler>;
+
+      await claudeAgents('flag', 'q', ctx);
+      const defaults = await queryOptions(lastHandler(), path);
+      expect(Object.hasOwn(defaults, 'cwd')).toBe(false);
+      expect(defaults.settingSources).toEqual([]);
+
+      await claudeAgents('flag', 'q', ctx, { cwd: '/srv/app', settingSources: ['user'] });
+      // Handler options, so they configure the handler and are not passed on to `config()`.
+      const args = vi.mocked(configInternal).mock.calls.at(-1)?.[0];
+      expect(args).not.toHaveProperty('cwd');
+      expect(args).not.toHaveProperty('settingSources');
+      const given = await queryOptions(lastHandler(), path);
+      expect(given.cwd).toBe('/srv/app');
+      expect(given.settingSources).toEqual(['user']);
+    });
+
     it('lets no config set or override a host option', async () => {
       const config = {
         ...baseConfig,

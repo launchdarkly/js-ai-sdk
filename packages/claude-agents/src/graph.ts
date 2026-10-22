@@ -1,13 +1,16 @@
 import { type GraphOptions, graphInternal, reportUsage } from '@launchdarkly/ai-server';
-import { createClaudeAgentsHandlerInternal } from './handler.js';
+import { type ClaudeAgentsHostOptions, createClaudeAgentsHandlerInternal } from './handler.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 /**
  * Runs an agent graph with the Claude agent handler pre-bound. Equivalent to
- * `graph(key, { ...options, handlers: [createClaudeAgentsHandler()] })`.
+ * `graph(key, { ...options, handlers: [createClaudeAgentsHandler({ cwd, settingSources })] })`.
  * Use the base `graph()` directly for multi-provider graphs.
  */
-export const claudeGraph = (key: string, options: Omit<GraphOptions, 'handlers'>) => {
+export const claudeGraph = (
+  key: string,
+  { cwd, settingSources, ...options }: Omit<GraphOptions, 'handlers'> & ClaudeAgentsHostOptions,
+) => {
   reportUsage('claude-agents.claudeGraph', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  return graphInternal(key, { ...options, handlers: [createClaudeAgentsHandlerInternal()] });
+  return graphInternal(key, { ...options, handlers: [createClaudeAgentsHandlerInternal({ cwd, settingSources })] });
 };
