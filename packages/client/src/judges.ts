@@ -1,5 +1,5 @@
 import { withJudgeEvaluation } from './conversation.js';
-import { buildMessageHistory, numericScore } from './judge-scoring.js';
+import { buildMessageHistory, numericScore, withoutOutputFormat } from './judge-scoring.js';
 import { extractVariation, getClient } from './lifecycle.js';
 import { reportUsage } from './sdk-usage.js';
 import { executeAndTrack } from './tracking.js';
@@ -106,25 +106,6 @@ function handlerFor(
   );
 }
 
-/**
- * A judge is an ordinary AI Config and can carry its own `outputFormat` JSON Schema, but the judge
- * verdict contract is owned by the SDK: `{ score, reasoning }`, enforced by `FORMATTING_INSTRUCTIONS`
- * and the parser below. A provider handler that also honors `config.outputFormat` would constrain the
- * model to the author's schema instead, so the field must never reach a handler (or a serialized
- * `JudgeTask`). Returns the same object reference when `outputFormat` is absent; never mutates `config`,
- * which may be the cached result of `extractVariation`.
- */
-const withoutOutputFormat = (config: AiConfigRep): AiConfigRep => {
-  if (config.outputFormat === undefined) return config;
-  const { outputFormat: _outputFormat, ...rest } = config;
-  return rest;
-};
-
-const warnOutputFormatIgnored = (judgeKey: string) => {
-  // biome-ignore lint/suspicious/noConsole: intentional warning — a judge's outputFormat is silently ignored
-  console.error(`Judge '${judgeKey}': ignoring outputFormat — a judge must return { score, reasoning }.`);
-};
-
 export const runJudges = async ({
   config,
   userContext,
@@ -202,10 +183,9 @@ export const runJudges = async ({
       judgeHandler = handler;
     }
 
-    if (judgeConfig.outputFormat !== undefined) warnOutputFormatIgnored(judge.key);
-
     const effectiveJudgeConfig = withoutOutputFormat(
       collapseMessages ? collapseMessagesToInstructions(judgeConfig) : judgeConfig,
+      judge.key,
     );
 
     const messageHistory = buildMessageHistory({ userInput, trajectory, output: llmResponse });
@@ -366,11 +346,9 @@ export const buildJudgeTasksInternal = async ({
       }
     }
 
-    if (judgeConfig.outputFormat !== undefined) warnOutputFormatIgnored(judge.key);
-
     tasks.push({
       configKey: judge.key,
-      judgeConfig: withoutOutputFormat(judgeConfig),
+      judgeConfig: withoutOutputFormat(judgeConfig, judge.key),
       judgeMeta,
       actualOutput: llmResponse,
       userInput,
@@ -426,10 +404,9 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
 
   // Defensive: an older serialized `JudgeTask` (e.g. from a worker queue built before this fix)
   // may still carry `outputFormat` on `judgeConfig`, so strip it here too rather than trust the caller.
-  if (judgeConfig.outputFormat !== undefined) warnOutputFormatIgnored(configKey);
-
   const effectiveConfig = withoutOutputFormat(
     collapseMessages ? collapseMessagesToInstructions(judgeConfig) : judgeConfig,
+    configKey,
   );
 
   // The same history the inline path builds: input, trajectory, output.

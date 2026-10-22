@@ -437,7 +437,7 @@ describe('runJudges strips outputFormat before it reaches a handler', () => {
   });
 
   it('logs the reason exactly once per judge, naming the judge key, only when outputFormat was present', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const judgeConfigWithSchema = {
       ...mockJudgeConfig,
       outputFormat: { type: 'json_schema', properties: { message: { type: 'string' } } },
@@ -453,14 +453,14 @@ describe('runJudges strips outputFormat before it reaches a handler', () => {
       baseTrackData,
     });
 
-    const warnings = errorSpy.mock.calls.filter((call) => String(call[0]).includes('ignoring outputFormat'));
+    const warnings = warnSpy.mock.calls.filter((call) => String(call[0]).includes('ignoring outputFormat'));
     expect(warnings).toHaveLength(1);
     expect(String(warnings[0][0])).toContain('judge-flag');
-    errorSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   it('does not log, and does not change behaviour, when outputFormat is absent', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     await runJudges({
       config,
@@ -473,9 +473,9 @@ describe('runJudges strips outputFormat before it reaches a handler', () => {
 
     const sentConfig = mockExecuteAndTrack.mock.calls[0][0].config;
     expect(sentConfig).toBe(mockJudgeConfig);
-    const warnings = errorSpy.mock.calls.filter((call) => String(call[0]).includes('ignoring outputFormat'));
+    const warnings = warnSpy.mock.calls.filter((call) => String(call[0]).includes('ignoring outputFormat'));
     expect(warnings).toHaveLength(0);
-    errorSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   it('strips outputFormat AND collapses messages when falling back to an agent handler', async () => {
@@ -529,7 +529,8 @@ describe('buildJudgeTasks strips outputFormat from the stored JudgeTask', () => 
     judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
   };
 
-  it('the stored judgeConfig has no outputFormat', async () => {
+  it('the stored judgeConfig has no outputFormat, and the drop is warned once', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const judgeConfigWithSchema = {
       ...mockJudgeConfig,
       outputFormat: { type: 'json_schema', properties: { message: { type: 'string' } } },
@@ -547,6 +548,10 @@ describe('buildJudgeTasks strips outputFormat from the stored JudgeTask', () => 
     expect(tasks).toHaveLength(1);
     expect(tasks[0].judgeConfig.outputFormat).toBeUndefined();
     expect(tasks[0].judgeConfig.model).toEqual(judgeConfigWithSchema.model);
+    const warnings = warnSpy.mock.calls.filter((call) => String(call[0]).includes('ignoring outputFormat'));
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0][0])).toContain('judge-flag');
+    warnSpy.mockRestore();
   });
 });
 
@@ -561,6 +566,7 @@ describe('runJudge strips outputFormat defensively from a possibly-legacy task',
   });
 
   it('strips outputFormat even though the task still carries it (as an older serialized task would)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const judgeConfigWithSchema = {
       ...mockJudgeConfig,
       outputFormat: { type: 'json_schema', properties: { message: { type: 'string' } } },
@@ -585,6 +591,10 @@ describe('runJudge strips outputFormat defensively from a possibly-legacy task',
     expect(sentConfig.outputFormat).toBeUndefined();
     expect(sentConfig.model).toEqual(judgeConfigWithSchema.model);
     expect(result?.score).toBe(0.6);
+    const warnings = warnSpy.mock.calls.filter((call) => String(call[0]).includes('ignoring outputFormat'));
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0][0])).toContain('judge-flag');
+    warnSpy.mockRestore();
   });
 });
 

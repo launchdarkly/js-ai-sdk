@@ -9,6 +9,7 @@
  */
 
 import { pythonStr, pythonTruthy } from './python-format.js';
+import type { AiConfigRep } from './types.js';
 import { parseJSONWithPossibleFences } from './utils.js';
 
 export const FORMATTING_INSTRUCTIONS = [
@@ -68,4 +69,25 @@ export function parseJudgeResponse(raw: unknown): { score: unknown; reasoning: s
   // `reasoning or reason or ""`, then str(), as the Python SDK reads it.
   const text = pythonTruthy(reasoning) ? reasoning : pythonTruthy(reason) ? reason : '';
   return { score, reasoning: pythonStr(text) };
+}
+
+/**
+ * A judge config with its `outputFormat` removed, warning once when it was present.
+ *
+ * A judge is an ordinary AI Config and can carry its own `outputFormat` JSON Schema, but the verdict
+ * shape belongs to this module: `{ score, reasoning }`, enforced by `FORMATTING_INSTRUCTIONS` and
+ * `parseJudgeResponse`. A provider handler that honors `config.outputFormat` would constrain the judge
+ * model to the author's schema instead, so the verdict could never parse. Every judge path (inline,
+ * deferred `JudgeTask`, offline evaluations) passes its config through here before it reaches a
+ * handler or a serialized task.
+ *
+ * Returns `config` itself when the field is absent. Never mutates it: it may be the cached result of
+ * `extractVariation`.
+ */
+export function withoutOutputFormat(config: AiConfigRep, judgeKey: string): AiConfigRep {
+  if (config.outputFormat === undefined) return config;
+  // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; an ignored judge setting must be visible
+  console.warn(`[LaunchDarkly] Judge '${judgeKey}': ignoring outputFormat; a judge must return { score, reasoning }.`);
+  const { outputFormat: _outputFormat, ...rest } = config;
+  return rest;
 }

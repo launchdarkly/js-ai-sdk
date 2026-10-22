@@ -224,7 +224,7 @@ The AI configuration object fetched from a LaunchDarkly flag variation. Represen
 
 At least one of `instructions` or a non-empty `messages` array must be present.
 
-A judge is an ordinary AI Config and can carry `outputFormat` too, but the client ignores it: the judge verdict contract is fixed at `{ score, reasoning }`, so set `outputFormat` on the primary config being evaluated, not on a judge.
+A judge is an ordinary AI Config and can carry `outputFormat` too, but the client drops it on every judge path (inline, deferred and offline evaluations) and logs a `console.warn` naming the judge: the judge verdict contract is fixed at `{ score, reasoning }`, so set `outputFormat` on the primary config being evaluated, not on a judge.
 
 #### `Tool`
 
