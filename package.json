@@ -25,6 +25,7 @@
     "api:update": "s=0; for d in packages/*/; do [ -f \"$d/api-extractor.json\" ] || continue; yarn --cwd \"$d\" -s api:update || s=1; done; exit $s",
     "api:surface": "node scripts/api-surface.mjs",
     "test:api-surface": "node --test scripts/api-surface.test.mjs",
+    "test:api-breaking": "node --test scripts/api-breaking.test.mjs",
     "lint:pkg": "sherif",
     "lint:pkg:fix": "sherif -f",
     "size": "sh -c 'cd packages/$0 && npm pack --dry-run 2>&1 | grep \"npm notice package size\"'",

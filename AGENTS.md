@@ -112,6 +112,7 @@ Every public entry point has a committed API Extractor report at `packages/<pack
 
 - **Change a public name or signature, then run `yarn api:update`** and commit the updated report in the same PR. `yarn api:check`, which CI runs, fails while a report is out of date. Each package also has its own `api:check` / `api:update`.
 - **The reports are owned by `@launchdarkly/team-ai-agents`** in `.github/CODEOWNERS`, so their approval of the report diff is how public API changes are reviewed.
+- **A breaking change must be declared.** On every PR, `scripts/api-breaking.mjs` (the API compatibility workflow) compares each report with the PR's base. API Extractor does not classify changes, so every removed or changed declaration counts as breaking, and so does a removed report; an added declaration does not. It fails unless the PR title has `!` (`feat!: ...`, `fix(scope)!: ...`) or an owner applied the `api-compatible` label because they judge the change compatible, for example a new optional parameter. On the release PR it compares each released package with its last release tag, and fails on a breaking change unless the new version is a major one (a minor one before 1.0.0) or the release PR has `api-compatible`. Experimental reports are skipped. `yarn test:api-breaking` tests the check.
 - **Never edit a report by hand.** Each package's `api-extractor*.json` extends `api-extractor.base.json`; a new package or entry point adds its config and commits its report in the same PR.
 
 ## Public API Surface
