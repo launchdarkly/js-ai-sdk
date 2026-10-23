@@ -7,6 +7,7 @@
 #   + Name    joining the public surface; may be exported or not
 
 claudeAgents  usage=claude-agents.claudeAgents
++ ClaudeAgentsHostOptions
 ClaudeBash
 ClaudeEdit
 ClaudeGlob

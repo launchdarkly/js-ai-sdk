@@ -10,6 +10,7 @@ import {
   LD_AI_PACKAGE_NAME as AI_SDK_NAME,
   LD_AI_PACKAGE_VERSION as AI_SDK_VERSION,
 } from '../../../client/src/version.js';
+import { createClaudeAgentsSkillsHandler } from '../experimental.js';
 import { createClaudeAgentsHandler } from '../handler.js';
 import * as entry from '../index.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from '../version.js';
@@ -88,9 +89,14 @@ const CALLS: Record<string, Call[]> = {
 
 const listRows = usageRows('ai-claude-agents.txt', entry);
 
-const rows: Array<[string, () => Promise<void>]> = listRows.flatMap(({ id, fn }) =>
-  (CALLS[id] ?? []).map((call): [string, () => Promise<void>] => [id, () => call(fn)]),
-);
+const rows: Array<[string, () => Promise<void>]> = [
+  ...listRows.flatMap(({ id, fn }) =>
+    (CALLS[id] ?? []).map((call): [string, () => Promise<void>] => [id, () => call(fn)]),
+  ),
+  // `./experimental` has no approved list yet, so its helper is called directly. It reports its
+  // own ID and not the core factory's.
+  ['experimental.createClaudeAgentsSkillsHandler', () => fire(() => createClaudeAgentsSkillsHandler())],
+];
 
 it('has a call for every usage ID its list reports, and none it does not', () => {
   expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());

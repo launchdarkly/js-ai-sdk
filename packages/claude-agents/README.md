@@ -100,6 +100,41 @@ const result = await claudeGraph('support-graph', {}).invoke(
 );
 ```
 
+## Agent Skills (experimental)
+
+> **Experimental.** Imported from `@launchdarkly/ai-claude-agents/experimental`. The name and behavior may change in a minor release, and each change is listed under **Experimental** in the changelog.
+
+`createClaudeAgentsHandler` doesn't give the model a variation's skills. `createClaudeAgentsSkillsHandler` does. It takes the same options, plus `skillsTempDir`.
+
+```ts
+import { config } from '@launchdarkly/ai-server';
+import { FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server/experimental';
+import { createClaudeAgentsSkillsHandler } from '@launchdarkly/ai-claude-agents/experimental';
+
+const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
+await store.waitForSkills({ timeoutSeconds: 10 });
+setSkillStore(store);
+
+const triage = config({
+  key: 'triage-agent',
+  handler: createClaudeAgentsSkillsHandler({ settingSources: [] }),
+});
+```
+
+On every invoke and stream it:
+
+1. Writes the variation's `skills` into a new directory under `skillsTempDir` (default: the OS temp directory), through the store you configured with `setSkillStore`. Pinned versions are honored.
+2. Hands that directory to the Claude Agent SDK as a local plugin named `launchdarkly`, enables only those skills (`launchdarkly:<key>`), and turns on the `Skill` tool.
+3. Removes the directory when the run ends, whether it succeeded, failed, or a stream was abandoned.
+
+Each run has its own directory, so concurrent runs and different variations never share files, and nothing needs to watch for changes. Detaching a skill from a variation takes effect on the next run.
+
+**A run whose skills can't be written doesn't start.** The handler throws before the model is called if no store is configured, the store hasn't received its first payload, a skill fails integrity verification, or a pinned version isn't in the store. The error names each skill. A variation with no skills runs exactly as it would with `createClaudeAgentsHandler`, and needs no store.
+
+A `Skill` call shows up in traces as an `execute_tool Skill` span.
+
+**Not covered yet:** `claudeAgents()`, `claudeGraph()` and `toClaudeAgents()` use the core handler, so a variation run through them doesn't get its skills.
+
 ## How It Works
 
 - Uses the system prompt and conversation history defined in your LaunchDarkly flag config.
