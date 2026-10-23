@@ -390,7 +390,7 @@ export type WriteSkillsOptions = {
 // temp/dts/evaluations.d.ts:48:5 - (ae-forgotten-export) The symbol "Transport" needs to be exported by the entry point experimental.d.ts
 // temp/dts/evaluations.d.ts:67:5 - (ae-forgotten-export) The symbol "ConfigMessage" needs to be exported by the entry point experimental.d.ts
 // temp/dts/evaluations.d.ts:111:5 - (ae-forgotten-export) The symbol "ProviderHandler" needs to be exported by the entry point experimental.d.ts
-// temp/dts/skills-fdv2.d.ts:454:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point experimental.d.ts
+// temp/dts/skills-fdv2.d.ts:460:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point experimental.d.ts
 
 // (No @packageDocumentation comment for this package)
 
