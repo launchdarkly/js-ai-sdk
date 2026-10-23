@@ -709,8 +709,7 @@ describe('lifecycle', () => {
       });
 
       it('a throwing hook is logged and fails neither the other hooks nor client teardown', async () => {
-        // Experimental code reached from core through a hook must not break
-        // the core call.
+        // Feature cleanup reached through a hook must not break shutdown().
         const { registerShutdownHook } = await import('../shutdown-hooks.js');
         registerShutdownHook('test: throws', () => {
           throw new Error('clear exploded');
@@ -748,13 +747,15 @@ describe('lifecycle', () => {
         expect(second).toHaveBeenCalledOnce();
       });
 
-      it('loading the package root registers no Agent Skills hook', async () => {
-        // The root entry point must not import experimental code. Agent Skills
-        // registers its hook when its core module loads, so the hook's absence
-        // after loading the root shows the root never loaded that module.
+      it('loading the package root registers the Agent Skills hook and no experimental hook', async () => {
+        // Agent Skills is exported from the root, and registers its hook when
+        // its core module loads, so the root's shutdown() clears its state.
+        // The root must still not load experimental code.
         await import('../index.js');
 
-        expect([...(hooks()?.keys() ?? [])].filter((name) => !name.startsWith('test: '))).toEqual([]);
+        const names = [...(hooks()?.keys() ?? [])].filter((name) => !name.startsWith('test: '));
+        expect(names).toEqual(['Agent Skills']);
+        expect(names.filter((name) => /experimental/i.test(name))).toEqual([]);
       });
     });
   });
@@ -1071,8 +1072,8 @@ describe('lifecycle', () => {
     });
 
     it('does not fail on a malformed skills field', async () => {
-      // Agent Skills is experimental, so its field cannot break a core call
-      // (TESTING.md §0.3). `skillRefs` rejects it instead.
+      // A malformed skills field cannot break a config call; `skillRefs`
+      // rejects it instead.
       const mockClient = makeMockClient();
       mockClient.variation = vi.fn().mockResolvedValue({
         _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'messages' },

@@ -8,6 +8,7 @@
 
 - addCachedTokensToInput
 AiConfigRep
++ allSkills
 - anyMultimodal
 - buildJudgeTasks  usage=client.buildJudgeTasks
 - camelizeModelParameters
@@ -29,8 +30,17 @@ ConversationIdSpanProcessor
 createHandler  usage=client.createHandler
 - createHandlerInternal  # internal: plumbing for the handler packages; moves to the internal entry point
 - createRunUsage
++ createSkill
++ createSkillOutcome
++ createSkillReference
 - endSpanOnce
++ FDv2Mode
++ FDv2SkillStore
++ FDv2SkillStoreOptions
 getClient
++ getSkill
++ getSkillResult
++ getSkills
 globalRegistry
 graph  usage=client.graph.invoke,client.graph.stream
 GraphArgs
@@ -51,6 +61,7 @@ HandlerStreamEvent
 ImageContentBlock
 initClient
 + InitClientOptions
++ InMemorySkillStore
 + InputTokenDetails
 inspectConfig  usage=client.inspectConfig
 - inspectConfigInternal  # internal: plumbing for the handler packages; moves to the internal entry point
@@ -73,12 +84,15 @@ LDVariationMeta
 - makeGraphTrackData
 - makeNodeTrackData
 - makeRunTrackData
++ MANIFEST_FILENAME
++ MANIFEST_VERSION
 Message
 MessageContent
 - NATIVE_TOOL_KEY
 NativeTool
 - normalizeModelParameters
 - omitModelStamps
++ OnUnavailable
 - parseJSONWithPossibleFences
 parseTemplate
 - pickForwardedModelParameters
@@ -86,6 +100,10 @@ ProviderGraphResponse
 ProviderHandler
 ProviderResponse
 - ProviderSetupFn
++ RawSkillObject
++ ReconcileAction
++ ReconcileActionKind
++ ReconcileReport
 - registerAiSdkPackage
 Registry
 - RegistryInput  # internal: alias of Registry; ConfigArgs.registry and GraphOptions.registry take Registry
@@ -101,14 +119,27 @@ runJudge  usage=client.runJudge
 - setLdSpanAttributes
 - setModelIdentityAttributes
 - setOutputContentAttributes
++ setSkillStore
 - setToolCallContentAttributes
 - setToolDefinitionAttributes
 - setUsageSpanAttributes
 shutdown
 - shutdownTelemetry  # internal: not needed to init, configure, execute or read results
++ Skill
++ SKILL_FILENAME
++ SkillOutcome
++ SkillOutcomeReason
++ SkillReference
++ skillRefs
++ SKILLS_DEFAULT_BASE_URI
++ SKILLS_DEFAULT_DEBOUNCE_MS
++ SKILLS_DEFAULT_STREAM_URI
++ SkillStore
++ SkillWatcher
 - SpanMessage
 - SpanMessagePart
 - SpanUsage
++ StoreDiagnostics
 StreamEvent
 + StreamHandlerFn
 TextContentBlock
@@ -122,4 +153,8 @@ ToolHandlerFn
 TrackData
 - TraverseVisitor
 - waitForTelemetry  # internal: not needed to init, configure, execute or read results
++ watchSkills
++ WatchSkillsOptions
 withConversationId
++ writeSkills
++ WriteSkillsOptions

@@ -69,7 +69,7 @@ export function _clearState(): void {
  * replacement.
  *
  * ```ts
- * import { FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server/experimental';
+ * import { FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server';
  *
  * setSkillStore(new FDv2SkillStore(process.env.LD_SDK_KEY!).start());
  * ```

@@ -234,9 +234,9 @@ if (!result.enabled) {
 
 ---
 
-### Agent Skills (experimental)
+### Agent Skills
 
-> **Experimental.** Agent Skills is published from the `@launchdarkly/ai-server/experimental` entry point and is not exported from the package root. Its names may change in a minor release, so pin the version you test against and read the changelog before upgrading. Import every name in this section from `@launchdarkly/ai-server/experimental` (or `@launchdarkly/ai-node/experimental` if you install `@launchdarkly/ai-node`).
+Import every name in this section from `@launchdarkly/ai-server` (or `@launchdarkly/ai-node` if you install `@launchdarkly/ai-node`).
 
 Agent Skills are versioned `SKILL.md` documents managed in LaunchDarkly and attached to AI Config variations by reference. This package tells you which skills a config references, retrieves their content, and writes them to `<root>/<key>/SKILL.md`, where agent runtimes such as the Claude Agent SDK discover them.
 
@@ -253,7 +253,7 @@ import {
   setSkillStore,
   skillRefs,
   writeSkills,
-} from '@launchdarkly/ai-server/experimental';
+} from '@launchdarkly/ai-server';
 
 // A store serves wire-shaped raw objects. `contentHash` is sha256, lowercase
 // hex, over the verbatim UTF-8 bytes of `content`. Content that does not hash
@@ -381,7 +381,7 @@ On macOS and Windows, write permission on the managed root **and its ancestors**
 `InMemorySkillStore` is for tests and bring-your-own-content. In production, skill content arrives through `FDv2SkillStore`, which uses LaunchDarkly's SDK-facing FDv2 delivery channel (the `GET /sdk/poll` and `GET /sdk/stream` endpoints the base SDK's FDv2 data source uses), authenticated with the environment's server-side SDK key.
 
 ```ts
-import { FDv2SkillStore, setSkillStore, watchSkills } from '@launchdarkly/ai-server/experimental';
+import { FDv2SkillStore, setSkillStore, watchSkills } from '@launchdarkly/ai-server';
 
 const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
 if (!(await store.waitForSkills({ timeoutSeconds: 10 }))) {
@@ -463,7 +463,7 @@ The line is a `[LaunchDarkly] ` prefix, the event name, a space, and one JSON ob
 
 **The record is written regardless of telemetry configuration.** It is not sampled, batched, or dependent on a LaunchDarkly connection. If you send LaunchDarkly nothing, this record is your complete detection surface for tampered or malformed skill content.
 
-**Changes to `ld.skills.integrity_failure` are always announced.** Agent Skills is experimental, so like every name in this section the event name and its fields may change in a minor release. Any rename or removal gets a changelog entry under **Experimental**, so check the changelog before upgrading if you alert on this record. Once Agent Skills is promoted out of experimental, they change only in a major release.
+**Changes to `ld.skills.integrity_failure` are always announced.** The event name and its fields are public API like every name in this section: a rename or removal is a breaking change with a changelog entry, so check the changelog before upgrading if you alert on this record.
 
 | Field | Always present | Value |
 |---|---|---|
@@ -507,7 +507,7 @@ These ten tokens are the whole vocabulary. The Python SDK emits the same ten for
 The log record is for operators; `getSkillResult` is for your application. It runs the same retrieval and verification as `getSkill`, but reports which of five outcomes happened instead of collapsing them all to `null`.
 
 ```ts
-import { getSkillResult } from '@launchdarkly/ai-server/experimental';
+import { getSkillResult } from '@launchdarkly/ai-server';
 
 const outcome = await getSkillResult('pdf-extraction', { version: 2 });
 
