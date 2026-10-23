@@ -21,6 +21,8 @@
     "lint:fix": "biome lint --write .",
     "code:check": "biome check .",
     "code:fix": "biome check --write .",
+    "api:check": "s=0; for d in packages/*/; do [ -f \"$d/api-extractor.json\" ] || continue; yarn --cwd \"$d\" -s api:check || { echo \"$d: an API report is out of date; run yarn api:update and commit the result\" >&2; s=1; }; done; exit $s",
+    "api:update": "s=0; for d in packages/*/; do [ -f \"$d/api-extractor.json\" ] || continue; yarn --cwd \"$d\" -s api:update || s=1; done; exit $s",
     "api:surface": "node scripts/api-surface.mjs",
     "test:api-surface": "node --test scripts/api-surface.test.mjs",
     "lint:pkg": "sherif",
