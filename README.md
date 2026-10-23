@@ -131,6 +131,8 @@ npm install @launchdarkly/ai-server @launchdarkly/vercel-server-sdk @launchdarkl
 
 Then call `initClient(preInitializedClient)` with your platform's LD client before the first AI call.
 
+> **The runtime must provide Node's built-in modules.** For Agent Skills, the `@launchdarkly/ai-server` package root imports `node:fs`, `node:fs/promises`, `node:path`, `node:os` and `node:crypto` when it loads, and every handler package imports that root. On a runtime that doesn't provide them, the import fails even if you never use Agent Skills. Restoring support for those runtimes is tracked in AIC-3674.
+
 **With telemetry** (recommended for production) — traces export to the LaunchDarkly Observability dashboard:
 
 ```bash

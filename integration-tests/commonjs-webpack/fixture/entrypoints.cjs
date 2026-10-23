@@ -14,9 +14,11 @@ process.stdout.write(
   JSON.stringify({
     aiNodeConfig: typeof aiNode.config,
     aiNodeInitClient: typeof aiNode.initClient,
+    aiNodeExperimentalInitEvaluations: typeof aiNodeExperimental.initEvaluations,
     aiNodeExperimentalGetSkill: typeof aiNodeExperimental.getSkill,
     aiNodeRootGetSkill: typeof aiNode.getSkill,
     aiServerConfig: typeof aiServer.config,
+    aiServerExperimentalInitEvaluations: typeof aiServerExperimental.initEvaluations,
     aiServerExperimentalGetSkill: typeof aiServerExperimental.getSkill,
     aiServerRootGetSkill: typeof aiServer.getSkill,
     openaiMessages: typeof openaiMessages.openaiMessages,

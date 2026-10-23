@@ -11,8 +11,9 @@
  * application's skill files.
  */
 
+import { reportUsage } from './sdk-usage.js';
 import { getStore, SKILL_OBJECT_KIND } from './skills-core.js';
-import { type WriteSkillsOptions, writeSkills } from './skills-fs.js';
+import { type WriteSkillsOptions, writeSkillsInternal } from './skills-fs.js';
 import type { ReconcileReport, Skill, SkillReference, SkillStore } from './types.js';
 
 /**
@@ -99,7 +100,7 @@ export class SkillWatcher {
    * does not count toward {@link reconciles}.
    */
   async runInitial(): Promise<ReconcileReport> {
-    const run = this.running.then(() => writeSkills(this.request, this.root, this.options));
+    const run = this.running.then(() => writeSkillsInternal(this.request, this.root, this.options));
     // Keep the chain alive past a rejection; the caller still gets `run`.
     this.running = run.then(
       () => undefined,
@@ -112,7 +113,7 @@ export class SkillWatcher {
     if (this.closed) return;
     let report: ReconcileReport;
     try {
-      report = await writeSkills(this.request, this.root, this.options);
+      report = await writeSkillsInternal(this.request, this.root, this.options);
     } catch (cause) {
       // Log and keep watching; dying here would silently stop revocations.
       error(
@@ -202,6 +203,7 @@ export async function watchSkills(
   root: string,
   options: WatchSkillsOptions = {},
 ): Promise<{ report: ReconcileReport; watcher: SkillWatcher }> {
+  reportUsage('client.watchSkills');
   const store = getStore();
   if (store === null) {
     throw new Error('watchSkills needs a configured skill store. Configure one with setSkillStore(store).');
