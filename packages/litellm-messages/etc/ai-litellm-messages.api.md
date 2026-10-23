@@ -31,6 +31,7 @@ export interface LiteLLMMessagesOptions extends ContentCaptureOptions {
     client?: CompatibleClient;
     // (undocumented)
     clientFactory?: (config: AiConfigRep) => CompatibleClient;
+    maxRetries?: number;
 }
 
 // (No @packageDocumentation comment for this package)

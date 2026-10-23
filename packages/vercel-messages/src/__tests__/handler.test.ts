@@ -542,3 +542,81 @@ describe('createVercelMessagesHandler', () => {
     expect(invoke).toHaveBeenCalledWith('hello', context, undefined);
   });
 });
+
+// `maxRetries` is a per-call AI SDK setting, so it is asserted on the `generateText` / `streamText`
+// request rather than on a client (TESTING.md §1.1a, A.21).
+describe('createVercelMessagesHandler — maxRetries (§1.1a)', () => {
+  const streamResult = () => ({
+    textStream: (async function* () {
+      yield 'ok';
+    })(),
+    usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    aiMocks.generateText.mockResolvedValue(generation());
+    aiMocks.streamText.mockImplementation(streamResult);
+  });
+
+  it('passes the value to generateText and streamText', async () => {
+    const handler = createVercelMessagesHandler({ maxRetries: 7 });
+    await handler(baseConfig as any, 'q');
+    await collect(handler.stream?.(baseConfig as any, 'q', {}, {}) as AsyncIterable<any>);
+    expect(aiMocks.generateText.mock.calls[0][0].maxRetries).toBe(7);
+    expect(aiMocks.streamText.mock.calls[0][0].maxRetries).toBe(7);
+  });
+
+  it('keeps the AI SDK default when omitted', async () => {
+    const handler = createVercelMessagesHandler();
+    await handler(baseConfig as any, 'q');
+    await collect(handler.stream?.(baseConfig as any, 'q', {}, {}) as AsyncIterable<any>);
+    expect(aiMocks.generateText.mock.calls[0][0]).not.toHaveProperty('maxRetries');
+    expect(aiMocks.streamText.mock.calls[0][0]).not.toHaveProperty('maxRetries');
+  });
+
+  it('honours an explicit 0 from the caller', async () => {
+    await createVercelMessagesHandler({ maxRetries: 0 })(baseConfig as any, 'q');
+    expect(aiMocks.generateText.mock.calls[0][0].maxRetries).toBe(0);
+  });
+
+  it('cannot be set by model.parameters', async () => {
+    const config = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { max_retries: 50, maxRetries: 50 } },
+    };
+    const handler = createVercelMessagesHandler({ maxRetries: 3 });
+    await handler(config as any, 'q');
+    await collect(handler.stream?.(config as any, 'q', {}, {}) as AsyncIterable<any>);
+    expect(aiMocks.generateText.mock.calls[0][0].maxRetries).toBe(3);
+    expect(aiMocks.streamText.mock.calls[0][0].maxRetries).toBe(3);
+  });
+
+  it('applies to a caller-supplied model, and to the call that runs the tool loop', async () => {
+    const model = { modelId: 'mine' } as any;
+    const config = {
+      ...baseConfig,
+      tools: {
+        weather: { name: 'weather', type: 'function', parameters: { type: 'object' } },
+      },
+    };
+    await createVercelMessagesHandler({ model, maxRetries: 7 })(config as any, 'q', {
+      weather: vi.fn().mockResolvedValue('sunny'),
+    });
+    const request = aiMocks.generateText.mock.calls[0][0];
+    expect(request.model).toBe(model);
+    // The AI SDK runs every tool-loop step inside this one call, and applies maxRetries to each.
+    expect(request.stopWhen).toEqual({ type: 'step-count', steps: 10 });
+    expect(request.maxRetries).toBe(7);
+  });
+
+  it('is forwarded by the convenience export and not passed to config()', async () => {
+    const invoke = vi.fn().mockResolvedValue({ response: 'ok', usage: {} });
+    serverMocks.config.mockReturnValue({ invoke });
+    await vercelMessages('my-flag', 'hello', { kind: 'user', key: 'u' }, { maxRetries: 6 });
+    const args = serverMocks.config.mock.calls[0][0];
+    expect(args).not.toHaveProperty('maxRetries');
+    await args.handler(baseConfig, 'q');
+    expect(aiMocks.generateText.mock.calls[0][0].maxRetries).toBe(6);
+  });
+});

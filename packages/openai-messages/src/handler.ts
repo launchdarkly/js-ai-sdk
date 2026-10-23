@@ -482,13 +482,29 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
   return picked;
 }
 
-export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createOpenAIHandler({
+  captureContent = false,
+  maxRetries,
+}: ContentCaptureOptions & {
+  /**
+   * How many times the `OpenAI` client retries a failed request (a rate limit, a timeout, a 5xx)
+   * before the error reaches the handler. Omit it to keep the client's own default of 2. Raise it
+   * when many calls share one rate-limit window, as an evaluation run with many concurrent workers
+   * does: two retries is thin when a whole batch hits the same window at once. The retries happen
+   * inside the client, so a retried turn is still one `chat` span.
+   */
+  maxRetries?: number;
+} = {}): ProviderHandler {
   reportUsage('openai-messages.createOpenAIHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  return createOpenAIHandlerInternal({ captureContent });
+  return createOpenAIHandlerInternal({ captureContent, maxRetries });
 }
 
-function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  const openai = new OpenAI();
+function createOpenAIHandlerInternal({
+  captureContent = false,
+  maxRetries,
+}: ContentCaptureOptions & { maxRetries?: number } = {}): ProviderHandler {
+  // Passed only when set, so an omitted value keeps the vendor default rather than a copy of it.
+  const openai = new OpenAI(maxRetries !== undefined ? { maxRetries } : {});
 
   const MAX_STEPS = 10;
 
@@ -805,16 +821,19 @@ export const openaiMessages = (
   configKey: string,
   userInput: string,
   context: LDContext,
-  // Both `captureContent` and `variables` are lifted out of `options`: the first configures the
-  // handler, the second belongs to the invocation. Passing either through to `config()` drops it —
-  // which is how a `{{user_input}}` placeholder used to reach the model unsubstituted whenever a
-  // caller used one of these wrappers instead of `config().invoke()`.
+  // `captureContent`, `maxRetries` and `variables` are lifted out of `options`: the first two
+  // configure the handler, the third belongs to the invocation. Passing any through to `config()`
+  // drops it — which is how a `{{user_input}}` placeholder used to reach the model unsubstituted
+  // whenever a caller used one of these wrappers instead of `config().invoke()`.
   {
     captureContent,
+    maxRetries,
     variables,
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     ContentCaptureOptions & {
+      /** Retry count for the `OpenAI` client. See `createOpenAIHandler`. */
+      maxRetries?: number;
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
@@ -823,6 +842,6 @@ export const openaiMessages = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createOpenAIHandlerInternal({ captureContent }),
+    handler: createOpenAIHandlerInternal({ captureContent, maxRetries }),
   }).invoke(userInput, context, variables);
 };

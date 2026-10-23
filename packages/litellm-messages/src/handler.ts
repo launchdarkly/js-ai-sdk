@@ -72,6 +72,15 @@ export interface LiteLLMMessagesOptions extends ContentCaptureOptions {
   baseURL?: string;
   client?: CompatibleClient;
   clientFactory?: (config: AiConfigRep) => CompatibleClient;
+  /**
+   * How many times the OpenAI-compatible client the handler builds retries a failed request (a
+   * rate limit, a timeout, a 5xx) before the error reaches the handler. Omit it to keep the
+   * client's own default of 2. Raise it when many calls share one rate-limit window, as an
+   * evaluation run with many concurrent workers does: two retries is thin when a whole batch hits
+   * the same window at once. It cannot be combined with `client` or `clientFactory`, because the
+   * handler does not build those: set the retry count on that client instead.
+   */
+  maxRetries?: number;
 }
 
 const proxyApiKey = (apiKey?: string) => (apiKey ?? process.env.LITELLM_API_KEY) || 'not-needed';
@@ -207,12 +216,21 @@ function resolveClient(options: LiteLLMMessagesOptions, configRep: AiConfigRep):
   return new OpenAI({
     apiKey: proxyApiKey(options.apiKey),
     baseURL,
+    // Passed only when set, so an omitted value keeps the vendor default rather than a copy of it.
+    ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
   }) as unknown as CompatibleClient;
 }
 
 function checkedOptions(options: LiteLLMMessagesOptions): LiteLLMMessagesOptions {
   if (!options.client && !options.clientFactory && !(options.baseURL ?? process.env.LITELLM_BASE_URL)) {
     throw new Error('LiteLLM proxy baseURL is required (pass baseURL or set LITELLM_BASE_URL)');
+  }
+  // Refused rather than ignored: the handler never constructs a client it is given, so the value
+  // would go nowhere and the caller would believe their retries had been raised.
+  if (options.maxRetries !== undefined && (options.client || options.clientFactory)) {
+    throw new Error(
+      'maxRetries applies only to the client the handler builds. Set the retry count on the client passed as client or returned by clientFactory instead.',
+    );
   }
   return options;
 }
@@ -517,6 +535,7 @@ export const litellmMessages = (
     captureContent,
     client,
     clientFactory,
+    maxRetries,
     variables,
     ...options
   }: Omit<Parameters<typeof configInternal>[0], 'handler' | 'key'> &
@@ -526,6 +545,13 @@ export const litellmMessages = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createLiteLLMMessagesHandlerInternal({ apiKey, baseURL, captureContent, client, clientFactory }),
+    handler: createLiteLLMMessagesHandlerInternal({
+      apiKey,
+      baseURL,
+      captureContent,
+      client,
+      clientFactory,
+      maxRetries,
+    }),
   }).invoke(userInput, context, variables);
 };

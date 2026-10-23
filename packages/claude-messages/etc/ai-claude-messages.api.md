@@ -12,11 +12,14 @@ import { ProviderResponse } from '@launchdarkly/ai-server';
 
 // @public (undocumented)
 export const claudeMessages: (configKey: string, userInput: string, context: LDContext, input?: Omit<Parameters<typeof config>[0], "handler" | "key"> & ContentCaptureOptions & {
+    maxRetries?: number;
     variables?: Record<string, unknown>;
 }) => Promise<ProviderResponse<string>>;
 
 // @public (undocumented)
-export function createClaudeMessagesHandler(input?: ContentCaptureOptions): ProviderHandler;
+export function createClaudeMessagesHandler(input?: ContentCaptureOptions & {
+    maxRetries?: number;
+}): ProviderHandler;
 
 // (No @packageDocumentation comment for this package)
 
