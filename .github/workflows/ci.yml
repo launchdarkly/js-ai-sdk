@@ -133,6 +133,10 @@ jobs:
       - name: Check exports against the approved API surface
         run: yarn api:surface
 
+      # The PR and release checks themselves run in api-compatibility.yml.
+      - name: Test the API compatibility check
+        run: yarn test:api-breaking
+
   # ─── Test ───────────────────────────────────────────────────────────────────
   test:
     name: Tests
