@@ -12,15 +12,23 @@
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type AiConfigRep, type ProviderHandler, registerAiSdkPackage, reportUsage } from '@launchdarkly/ai-server';
+import {
+  type AiConfigRep,
+  type ContentCaptureOptions,
+  type ProviderHandler,
+  registerAiSdkPackage,
+  reportUsage,
+} from '@launchdarkly/ai-server';
 import {
   type ReconcileReport,
   type SkillReference,
   skillRefs,
   writeSkills,
 } from '@launchdarkly/ai-server/experimental';
-import { type createClaudeAgentsHandler, createClaudeAgentsHandlerInternal, type QueryPreparation } from './handler.js';
+import { type ClaudeAgentsHostOptions, createClaudeAgentsHandlerInternal, type QueryPreparation } from './handler.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
+
+export type { ClaudeAgentsHostOptions } from './handler.js';
 
 registerAiSdkPackage(LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
 
@@ -34,13 +42,14 @@ const PLUGIN_NAME = 'launchdarkly';
 const RUN_DIR_PREFIX = 'ld-skills-';
 
 /** Options for {@link createClaudeAgentsSkillsHandler}: the core factory's, plus where runs keep their skills. */
-export type ClaudeAgentsSkillsHandlerOptions = NonNullable<Parameters<typeof createClaudeAgentsHandler>[0]> & {
-  /**
-   * Parent of the directory each invoke writes its skills into. Defaults to the OS temp
-   * directory. Each invoke creates its own directory here and removes it when the run ends.
-   */
-  skillsTempDir?: string;
-};
+export type ClaudeAgentsSkillsHandlerOptions = ContentCaptureOptions &
+  ClaudeAgentsHostOptions & {
+    /**
+     * Parent of the directory each invoke writes its skills into. Defaults to the OS temp
+     * directory. Each invoke creates its own directory here and removes it when the run ends.
+     */
+    skillsTempDir?: string;
+  };
 
 /**
  * Why a run did not start, naming each skill that could not be written. Built from the report's
@@ -78,7 +87,8 @@ async function prepareSkills(config: AiConfigRep, parent: string): Promise<Query
   const refs = skillRefs(config);
   if (refs.length === 0) return undefined;
 
-  const dir = await realpath(await mkdtemp(join(parent, RUN_DIR_PREFIX)));
+  // Resolve the parent first: a realpath failure after mkdtemp would leak the new directory.
+  const dir = await mkdtemp(join(await realpath(parent), RUN_DIR_PREFIX));
   const cleanup = () => removeRunDirectory(dir);
   try {
     const pluginRoot = join(dir, PLUGIN_NAME);

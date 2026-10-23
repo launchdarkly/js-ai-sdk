@@ -8,10 +8,14 @@ import { ContentCaptureOptions } from '@launchdarkly/ai-server';
 import { ProviderHandler } from '@launchdarkly/ai-server';
 import { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 
-// Warning: (ae-forgotten-export) The symbol "createClaudeAgentsHandler" needs to be exported by the entry point experimental.d.ts
-//
 // @public
-export type ClaudeAgentsSkillsHandlerOptions = NonNullable<Parameters<typeof createClaudeAgentsHandler>[0]> & {
+export type ClaudeAgentsHostOptions = {
+    cwd?: string;
+    settingSources?: SettingSource[];
+};
+
+// @public
+export type ClaudeAgentsSkillsHandlerOptions = ContentCaptureOptions & ClaudeAgentsHostOptions & {
     skillsTempDir?: string;
 };
 
