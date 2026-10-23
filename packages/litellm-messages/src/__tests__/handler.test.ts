@@ -63,6 +63,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 });
 
 import { createLiteLLMMessagesHandler, litellmMessages } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 const baseConfig = {
   instructions: 'You are helpful.',
@@ -639,5 +640,81 @@ describe('createLiteLLMMessagesHandler', () => {
       expect(mockConfig.mock.calls[0][0]).not.toHaveProperty('variables');
       expect(mockInvoke).toHaveBeenCalledWith('hello', context, variables);
     });
+  });
+});
+
+describe('createLiteLLMMessagesHandler — cross-SDK allowlist (TESTING.md §1.12)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSpans.length = 0;
+  });
+
+  // Every key on the LiteLLM Messages list, each with a well-formed value.
+  const CANONICAL_PARAMETERS = {
+    frequency_penalty: 0.1,
+    max_completion_tokens: 200,
+    max_tokens: 100,
+    parallel_tool_calls: false,
+    presence_penalty: 0.2,
+    reasoning_effort: 'low',
+    seed: 7,
+    stop: ['END'],
+    temperature: 0.5,
+    tool_choice: 'auto',
+    top_p: 0.9,
+  };
+  const EXPECTED_FORWARDED_KEYS = Object.keys(CANONICAL_PARAMETERS).sort();
+  const HANDLER_OWNED_KEYS = ['messages', 'model', 'response_format', 'stream', 'stream_options', 'tools'];
+
+  const forwardedKeys = (request: Record<string, unknown>) =>
+    Object.keys(request)
+      .filter((key) => !HANDLER_OWNED_KEYS.includes(key))
+      .sort();
+
+  async function invokeRequest(parameters: Record<string, unknown>) {
+    const create = vi.fn().mockResolvedValue(completion());
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters } };
+    await createLiteLLMMessagesHandler({ client: { chat: { completions: { create } } } as never })(
+      config as never,
+      'q',
+    );
+    return create.mock.calls[0][0] as Record<string, unknown>;
+  }
+
+  async function streamRequest(parameters: Record<string, unknown>) {
+    const create = vi.fn().mockResolvedValue(stream([{ choices: [{ delta: { content: 'Hi' } }] }]));
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters } };
+    const handler = createLiteLLMMessagesHandler({ client: { chat: { completions: { create } } } as never });
+    await collect(handler.stream?.(config as never, 'q', {}, {}) as AsyncIterable<unknown>);
+    return create.mock.calls[0][0] as Record<string, unknown>;
+  }
+
+  it('invoke forwards exactly the canonical keys', async () => {
+    const request = await invokeRequest({ ...CANONICAL_PARAMETERS, made_up_key: 1 });
+    expect(forwardedKeys(request)).toEqual(EXPECTED_FORWARDED_KEYS);
+    expect(request).toMatchObject(CANONICAL_PARAMETERS);
+  });
+
+  it('stream forwards exactly the canonical keys, with the same values as invoke', async () => {
+    const parameters = { ...CANONICAL_PARAMETERS, made_up_key: 1 };
+    const streamed = await streamRequest(parameters);
+    const invoked = await invokeRequest(parameters);
+    expect(forwardedKeys(streamed)).toEqual(EXPECTED_FORWARDED_KEYS);
+    const pick = (request: Record<string, unknown>) =>
+      Object.fromEntries(EXPECTED_FORWARDED_KEYS.map((key) => [key, request[key]]));
+    expect(pick(streamed)).toEqual(pick(invoked));
+  });
+
+  it('drops an unknown key on invoke and stream', async () => {
+    expect(await invokeRequest({ made_up_key: 1, temperature: 0.1 })).not.toHaveProperty('made_up_key');
+    expect(await streamRequest({ made_up_key: 1, temperature: 0.1 })).not.toHaveProperty('made_up_key');
+  });
+
+  it('never forwards a key from any never-forward category, on invoke or stream', async () => {
+    const parameters = { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 };
+    for (const request of [await invokeRequest(parameters), await streamRequest(parameters)]) {
+      expect(request.temperature).toBe(0.3);
+      expectNoNeverForwardedValue(request);
+    }
   });
 });

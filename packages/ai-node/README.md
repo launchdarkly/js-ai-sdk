@@ -14,7 +14,7 @@ This package re-exports the full public API of [`@launchdarkly/ai-server`](../cl
 ## Installation
 
 ```bash
-npm install @launchdarkly/ai-node
+npm install @launchdarkly/ai-node dotenv
 ```
 
 Add whichever handler package(s) your application uses:

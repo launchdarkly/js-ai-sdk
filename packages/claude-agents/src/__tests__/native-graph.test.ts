@@ -124,6 +124,18 @@ describe('toClaudeAgents', () => {
     }
   });
 
+  it("never forwards a node's output_format to its query()", async () => {
+    const def = makeGraphDef();
+    (def.root!.config.model as any).parameters = {
+      output_format: { type: 'json_schema', schema: { type: 'object' } },
+      max_turns: 3,
+    };
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+    const rootOptions = mockQuery.mock.calls[0][0].options;
+    expect(rootOptions.maxTurns).toBe(3);
+    expect(rootOptions.outputFormat).toBeUndefined();
+  });
+
   it("forwards each node's allowlisted model.parameters, including maxTurns, to that node's query()", async () => {
     const def = makeGraphDef();
     (def.root!.config.model as any).parameters = {
@@ -159,7 +171,32 @@ describe('toClaudeAgents', () => {
     await (leafTool![3] as (args: { input: string }) => Promise<unknown>)({ input: 'sub task' });
     expect(mockQuery).toHaveBeenCalledTimes(2);
     for (const call of mockQuery.mock.calls) {
-      expectNoNeverForwardedValue(call[0].options, ['mcpServers', 'hooks']);
+      // `settingSources` is handler-owned: always sent, `[]` unless the application gives sources.
+      expectNoNeverForwardedValue(call[0].options, ['mcpServers', 'hooks', 'settingSources']);
+      expect(call[0].options.settingSources).toEqual([]);
+    }
+  });
+
+  /** Invokes the graph and calls the leaf's sub-agent tool, so both nodes' `query()` options exist. */
+  async function rootAndLeafOptions(opts?: Parameters<typeof toClaudeAgents>[1]) {
+    await toClaudeAgents(Promise.resolve(makeGraphDef()), opts).invoke('hi');
+    const leafTool = mockTool.mock.calls.find((call) => call[0] === 'leaf');
+    await (leafTool![3] as (args: { input: string }) => Promise<unknown>)({ input: 'sub task' });
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    return mockQuery.mock.calls.map((call) => call[0].options as Record<string, unknown>);
+  }
+
+  it('sends settingSources: [] and no cwd to every node when neither option is given', async () => {
+    for (const options of await rootAndLeafOptions()) {
+      expect(options.settingSources).toEqual([]);
+      expect(Object.hasOwn(options, 'cwd')).toBe(false);
+    }
+  });
+
+  it('forwards cwd and settingSources to every node', async () => {
+    for (const options of await rootAndLeafOptions({ cwd: '/srv/app', settingSources: ['user', 'project'] })) {
+      expect(options.cwd).toBe('/srv/app');
+      expect(options.settingSources).toEqual(['user', 'project']);
     }
   });
 

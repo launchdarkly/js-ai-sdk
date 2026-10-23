@@ -94,6 +94,7 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-vercel-agents](packages/vercel-agents/README.md)`           | `*` (any) | `agent`    | AI SDK 7 `ToolLoopAgent` and native graph runner      |
 | `[@launchdarkly/ai-litellm-messages](packages/litellm-messages/README.md)`     | `*` (any) | `messages` | OpenAI-compatible requests through a LiteLLM proxy    |
 | `[@launchdarkly/ai-litellm-agents](packages/litellm-agents/README.md)`         | `*` (any) | `agent`    | OpenAI Agents SDK through a LiteLLM proxy              |
+| `[@launchdarkly/ai-typesafe](packages/typesafe/README.md)`                     | TypeSafe  | `messages` | TypeSafe Jev judge handler                            |
 
 
 ## Module format support
@@ -117,7 +118,7 @@ Optional dependencies stay behind a runtime `import()` in both formats. This cov
 **Node.js** — single install, no peer dependency wiring:
 
 ```bash
-npm install @launchdarkly/ai-node @launchdarkly/ai-openai-messages
+npm install @launchdarkly/ai-node @launchdarkly/ai-openai-messages dotenv
 ```
 
 `@launchdarkly/ai-node` is a thin barrel that re-exports all of `@launchdarkly/ai-server` and carries `@launchdarkly/node-server-sdk` as a hard dependency. `initClient()` auto-discovers it at runtime — no extra setup required.
@@ -125,7 +126,7 @@ npm install @launchdarkly/ai-node @launchdarkly/ai-openai-messages
 **Edge / custom runtime** (Vercel, Cloudflare, etc.) — use the core package and pass your own client:
 
 ```bash
-npm install @launchdarkly/ai-server @launchdarkly/vercel-server-sdk @launchdarkly/ai-openai-messages
+npm install @launchdarkly/ai-server @launchdarkly/vercel-server-sdk @launchdarkly/ai-openai-messages dotenv
 ```
 
 Then call `initClient(preInitializedClient)` with your platform's LD client before the first AI call.
@@ -133,7 +134,7 @@ Then call `initClient(preInitializedClient)` with your platform's LD client befo
 **With telemetry** (recommended for production) — traces export to the LaunchDarkly Observability dashboard:
 
 ```bash
-npm install @launchdarkly/ai-node @launchdarkly/ai-otel @launchdarkly/ai-openai-messages
+npm install @launchdarkly/ai-node @launchdarkly/ai-otel @launchdarkly/ai-openai-messages dotenv
 ```
 
 No code changes are needed between the two — `initClient()` detects whether the OTel packages are present at runtime and configures the tracer provider automatically. If they are absent, the SDK logs a one-time `console.warn` with the exact install command and continues normally.
@@ -148,6 +149,8 @@ cp .env.example .env
 LiteLLM integrations additionally require `LITELLM_BASE_URL` to point to the
 proxy's OpenAI-compatible `/v1` endpoint. Set `LITELLM_API_KEY` only when the
 proxy has authentication enabled. Provider credentials belong on the proxy.
+
+The SDK does not load `.env` itself; it only reads `process.env`. The examples below start with `import 'dotenv/config';` so that your app, not the library, decides whether a `.env` file is loaded. That import needs `dotenv` installed, which the install commands above include. Drop both if you set the environment another way.
 
 ### 3. Call a model
 

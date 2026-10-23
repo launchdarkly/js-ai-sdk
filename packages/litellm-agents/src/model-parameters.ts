@@ -16,7 +16,6 @@ const FORWARDED_MODEL_SETTINGS_KEYS = [
   'parallelToolCalls',
   'presencePenalty',
   'reasoning',
-  'store',
   'temperature',
   'text',
   'toolChoice',
@@ -30,11 +29,17 @@ const FORWARDED_MODEL_SETTINGS_KEYS = [
  *   SDK's transport overrides (`extraHeaders`, `extraBody`, `extraQuery`), so a config could
  *   replace the request's headers (including authorization) or body.
  * - `retry` is client retry policy, not a model setting.
- * - `contextManagement`, `promptCacheRetention` and `truncation` are outside the LiteLLM allowlist
- *   shared with the Python SDK; `contextManagement` and `truncation` are Responses API settings that
- *   the Chat Completions model the proxy is reached through never sends.
+ * - `store` and `promptCacheRetention` are data retention, not generation settings.
+ * - `contextManagement` and `truncation` are Responses API settings that the Chat Completions
+ *   model the proxy is reached through never sends.
  */
-type ExcludedModelSettingsKeys = 'contextManagement' | 'promptCacheRetention' | 'providerData' | 'retry' | 'truncation';
+type ExcludedModelSettingsKeys =
+  | 'contextManagement'
+  | 'promptCacheRetention'
+  | 'providerData'
+  | 'retry'
+  | 'store'
+  | 'truncation';
 // If the Agents SDK adds a ModelSettings field and it is not classified above as forwarded or
 // excluded, this type resolves to something other than `never` and the assignment below fails to
 // compile, naming the unclassified key.
@@ -62,9 +67,12 @@ function pickNested(value: unknown, keys: ReadonlyArray<string>): Record<string,
  * `config.model.parameters` as the Agents SDK's `ModelSettings`: camelized, narrowed to
  * `FORWARDED_MODEL_SETTINGS_KEYS`, with nested values rebuilt in the shapes the SDK reads:
  *
- * - `reasoning` keeps `effort` and `summary`.
+ * - `reasoning` keeps `effort`, which the Chat Completions model sends as `reasoning_effort`. It has
+ *   no field for `summary` and drops it, so `summary` is not forwarded.
  * - `text` keeps `verbosity`. A top-level `verbosity` (the name the UI and the Python SDK use)
  *   becomes `text.verbosity`; an explicit `text.verbosity` wins.
+ * - `toolChoice` is a string (`auto`, `required`, `none`, or a tool name); any other value is
+ *   dropped.
  *
  * `max_turns` is not a `ModelSettings` field; see `buildMaxTurns`. A config that sets none of
  * these produces `undefined`, so the Agent is constructed exactly as it always has been.
@@ -75,7 +83,7 @@ export function buildModelSettings(
   const camelized = camelizeModelParameters(normalizeModelParameters(parameters));
   const settings = pickForwardedModelParameters(camelized, FORWARDED_MODEL_SETTINGS_KEYS);
 
-  const reasoning = pickNested(settings.reasoning, ['effort', 'summary']);
+  const reasoning = pickNested(settings.reasoning, ['effort']);
   if (reasoning) settings.reasoning = reasoning;
   else delete settings.reasoning;
 
@@ -84,6 +92,8 @@ export function buildModelSettings(
   ]);
   if (text) settings.text = text;
   else delete settings.text;
+
+  if (settings.toolChoice !== undefined && typeof settings.toolChoice !== 'string') delete settings.toolChoice;
 
   return Object.keys(settings).length > 0 ? (settings as ModelSettings) : undefined;
 }

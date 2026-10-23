@@ -9,7 +9,7 @@ Pass `{ providers: ['Bedrock'] }` to `createLangChainHandler` (and to `langchain
 ## Installation
 
 ```bash
-yarn add @launchdarkly/ai-server @launchdarkly/ai-langchain-messages
+yarn add @launchdarkly/ai-server @launchdarkly/ai-langchain-messages dotenv
 ```
 
 The default model is `ChatOpenAI`, so set `OPENAI_API_KEY` unless you pass a custom `BaseChatModel`.

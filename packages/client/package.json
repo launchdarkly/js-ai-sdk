@@ -70,8 +70,7 @@
     "api:update": "tsc --emitDeclarationOnly --declarationMap false --outDir temp/dts && api-extractor run --local --config api-extractor.json && api-extractor run --local --config api-extractor.experimental.json"
   },
   "dependencies": {
-    "@opentelemetry/api": "^1.9.1",
-    "dotenv": "^16.5.0"
+    "@opentelemetry/api": "^1.9.1"
   },
   "peerDependencies": {
     "@launchdarkly/node-server-sdk": "^9.7.3",

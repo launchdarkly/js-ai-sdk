@@ -1206,6 +1206,35 @@ describe('model source', () => {
     expect(factory.mock.calls[0][0]).not.toBe(cfg);
   });
 
+  it('keeps only effort in the default Anthropic outputConfig on invoke and stream', async () => {
+    MockChatAnthropic.mockClear();
+    MockChatAnthropic.mockImplementation(function MockChatAnthropic() {
+      return {};
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'Anthropic' },
+      model: {
+        name: 'claude-sonnet-4-5',
+        parameters: { output_config: { effort: 'low', format: { type: 'json_schema', schema: { type: 'object' } } } },
+      },
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    mockCreateAgent.mockReturnValue({
+      stream: vi.fn().mockImplementation(async function* () {
+        yield { agent: { messages: [new AIMessage({ content: 'streamed' })] } };
+      }),
+    });
+    for await (const _e of createLangChainAgentsHandler().stream?.(cfg as any, 'q', {}, {}) ??
+      (async function* () {})()) {
+      // drain
+    }
+    expect(MockChatAnthropic.mock.calls.map(([args]) => args)).toEqual([
+      { outputConfig: { effort: 'low' }, model: 'claude-sonnet-4-5' },
+      { outputConfig: { effort: 'low' }, model: 'claude-sonnet-4-5' },
+    ]);
+  });
+
   it('resolves a factory on the streaming path', async () => {
     const llm = { invoke: vi.fn() };
     const factory = vi.fn().mockReturnValue(llm);

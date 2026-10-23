@@ -6,6 +6,7 @@ import { extractVariation, getClient, initClient } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
 import { reportUsage } from './sdk-usage.js';
 import { executeAndStream, modelStampsFromMeta, tryGetEnvironmentId } from './tracking.js';
+import { HANDOFF_TOOL_PREFIX } from './trajectory.js';
 import type { LDContext, Message, ToolHandlerFn } from './types.js';
 import {
   type AiConfigRep,
@@ -243,7 +244,7 @@ const buildGraph = async (
 
     for (const edge of outgoing) {
       const target = nodes.get(edge.targetKey);
-      const toolName = `__handoff_${sanitizeName(edge.targetKey)}`;
+      const toolName = `${HANDOFF_TOOL_PREFIX}${sanitizeName(edge.targetKey)}`;
       // The prefix is unconditional: without it, a description sourced from the target's own
       // instructions reads as a tool that does the target's work, and the model calls it
       // instead of the node's real tools.
@@ -311,6 +312,7 @@ const buildGraph = async (
         providerName: node.config.provider?.name ?? '',
         graphKey: key,
       };
+      let trajectory = '';
 
       for await (const event of executeAndStream({
         configKey: node.key,
@@ -330,6 +332,7 @@ const buildGraph = async (
           response = event.response;
           usage = event.usage;
           trackData = event.trackData;
+          trajectory = event.trajectory;
         }
       }
 
@@ -343,6 +346,9 @@ const buildGraph = async (
         baseTrackData: trackData,
         toolHandlers,
         graphKey: key,
+        // This node's own calls. A graph-level judge gets none: splicing nodes'
+        // trajectories together would describe a conversation that never happened.
+        trajectory,
       });
 
       if (opts.from) {
@@ -413,6 +419,7 @@ const buildGraph = async (
         providerName: node.config.provider?.name ?? '',
         graphKey: key,
       };
+      let trajectory = '';
 
       for await (const event of executeAndStream({
         configKey: node.key,
@@ -432,6 +439,7 @@ const buildGraph = async (
           response = event.response;
           usage = event.usage;
           trackData = event.trackData;
+          trajectory = event.trajectory;
         }
       }
 
@@ -445,6 +453,9 @@ const buildGraph = async (
         baseTrackData: trackData,
         toolHandlers,
         graphKey: key,
+        // This node's own calls. A graph-level judge gets none: splicing nodes'
+        // trajectories together would describe a conversation that never happened.
+        trajectory,
       });
 
       const chosenKey = chosen();

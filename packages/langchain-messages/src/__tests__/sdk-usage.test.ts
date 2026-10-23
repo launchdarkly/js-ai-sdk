@@ -5,11 +5,13 @@
 import type { LDClientInterface, LDContext } from '@launchdarkly/ai-server';
 import { initClient, shutdown } from '@launchdarkly/ai-server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { usageRows } from '../../../../scripts/api-surface.mjs';
 import {
   LD_AI_PACKAGE_NAME as AI_SDK_NAME,
   LD_AI_PACKAGE_VERSION as AI_SDK_VERSION,
 } from '../../../client/src/version.js';
-import { createLangChainHandler, langchainMessages } from '../handler.js';
+import { createLangChainHandler } from '../handler.js';
+import * as entry from '../index.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from '../version.js';
 
 const ctx: LDContext = { kind: 'user', key: 'user-1' };
@@ -46,6 +48,34 @@ async function settle(value: Promise<unknown>): Promise<void> {
   }
 }
 
+/** Each call receives the export the list names, whatever its signature. */
+type Call = (fn: any) => Promise<void>;
+
+const fire = (call: () => unknown): Promise<void> => {
+  call();
+  return Promise.resolve();
+};
+
+/**
+ * How to call each usage-reporting helper. Which helpers are tested comes from
+ * this package's approved list (`usage=` fields), and each call receives the
+ * function the package exports under the name the list gives.
+ */
+const CALLS: Record<string, Call[]> = {
+  'langchain-messages.langchainMessages': [(fn) => settle(fn('k', 'q', ctx))],
+  'langchain-messages.createLangChainHandler': [(fn) => fire(() => fn())],
+};
+
+const listRows = usageRows('ai-langchain-messages.txt', entry);
+
+const rows: Array<[string, () => Promise<void>]> = listRows.flatMap(({ id, fn }) =>
+  (CALLS[id] ?? []).map((call): [string, () => Promise<void>] => [id, () => call(fn)]),
+);
+
+it('has a call for every usage ID its list reports, and none it does not', () => {
+  expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());
+});
+
 describe('§3.27 langchain-messages helper usage', () => {
   let client: FakeClient;
 
@@ -60,16 +90,7 @@ describe('§3.27 langchain-messages helper usage', () => {
     await shutdown();
   });
 
-  it.each([
-    ['langchain-messages.langchainMessages', () => settle(langchainMessages('k', 'q', ctx))],
-    [
-      'langchain-messages.createLangChainHandler',
-      () => {
-        createLangChainHandler();
-        return Promise.resolve();
-      },
-    ],
-  ] as Array<[string, () => Promise<void>]>)('%s sends one $ld:ai:sdk:usage event', async (helper, call) => {
+  it.each(rows)('%s sends one $ld:ai:sdk:usage event', async (helper, call) => {
     try {
       await call();
     } catch {

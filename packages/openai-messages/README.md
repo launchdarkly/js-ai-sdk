@@ -7,7 +7,7 @@ OpenAI handler for `@launchdarkly/ai-server` using the **OpenAI Responses API** 
 ## Installation
 
 ```bash
-yarn add @launchdarkly/ai-server @launchdarkly/ai-openai-messages
+yarn add @launchdarkly/ai-server @launchdarkly/ai-openai-messages dotenv
 ```
 
 Set `OPENAI_API_KEY` in your environment (the OpenAI SDK reads it automatically).

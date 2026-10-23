@@ -28,6 +28,13 @@ export type AiConfigRep = {
         }>;
     };
     evaluationMetricKey?: string;
+    classifiers?: Array<{
+        key: string;
+        type: string;
+        instructions: string;
+        eventKey: string;
+        criteria?: Record<string, string | null> | Array<string | null>;
+    }>;
     provider: {
         name: string;
     };
@@ -313,6 +320,7 @@ export type JudgeCallResult = {
         input: number;
         output: number;
     };
+    eventKey?: string;
 };
 
 // @public
@@ -320,6 +328,12 @@ export type JudgeRunResult = JudgeCallResult & {
     trackData: TrackData & {
         judgeConfigKey: string;
     };
+    results?: Record<string, JudgeCallResult>;
+    metrics?: Array<{
+        eventKey: string;
+        score: number;
+        judgeConfigKey: string;
+    }>;
 };
 
 // @public
@@ -328,6 +342,8 @@ export type JudgeTask = {
     judgeConfig: AiConfigRep;
     judgeMeta: LDVariationMeta;
     actualOutput: string;
+    userInput?: string;
+    trajectory?: string;
     userContext: LDContext;
     variables?: Record<string, unknown>;
     judgeProvider: string | undefined;
@@ -700,7 +716,7 @@ export function withConversationId<T>(id: string, fn: () => T): T;
 
 // Warnings were encountered during analysis:
 //
-// temp/dts/types.d.ts:370:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
+// temp/dts/types.d.ts:381:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
 // temp/dts/utils.d.ts:38:5 - (ae-forgotten-export) The symbol "StreamHandlerInput" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)

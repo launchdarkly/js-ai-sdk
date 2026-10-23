@@ -21,7 +21,8 @@ vi.mock('../lifecycle.js', () => ({
   shutdownTelemetry: vi.fn(),
 }));
 
-import { isFiniteScore, runJudge, runJudges } from '../judges.js';
+import { numericScore } from '../judge-scoring.js';
+import { buildJudgeTasks, runJudge, runJudges } from '../judges.js';
 import type { JudgeTask, ProviderHandler } from '../types.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -144,6 +145,39 @@ describe('runJudges', () => {
     expect(callArgs.handler).toBe(wildcardAgentHandler);
     expect(callArgs.config.instructions).toBeTruthy();
     expect(callArgs.config.messages).toHaveLength(0);
+  });
+
+  it('prefers an exact provider handler over an earlier wildcard', async () => {
+    mockExtractVariation.mockResolvedValue({
+      config: { ...mockJudgeConfig, provider: { name: 'TypeSafe' }, model: { name: 'jev' } },
+      meta: mockJudgeMeta,
+    });
+    const wildcard: ProviderHandler = vi
+      .fn()
+      .mockResolvedValue({ output: '{"score":0.1,"reasoning":"no"}', usage: {} });
+    wildcard.providesFor = ['*', 'messages'];
+    const typesafe: ProviderHandler = vi
+      .fn()
+      .mockResolvedValue({ output: '{"score":0.5,"reasoning":"ok"}', usage: {} });
+    typesafe.providesFor = ['TypeSafe', 'messages'];
+
+    await runJudges({
+      config: {
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'Be helpful.',
+        judgeConfiguration: { judges: [{ key: 'jev', samplingRate: 1 }] },
+      },
+      userContext: mockContext,
+      handler: wildcard,
+      handlers: [wildcard, typesafe],
+      userInput: 'question',
+      llmResponse: 'answer',
+      baseTrackData,
+    });
+
+    expect(mockExecuteAndTrack).toHaveBeenCalledWith(expect.objectContaining({ handler: typesafe }));
+    expect(wildcard).not.toHaveBeenCalled();
   });
 
   it('uses an exact agent handler for the same provider when no messages handler is registered, and collapses messages', async () => {
@@ -399,15 +433,239 @@ describe('runJudges', () => {
   });
 });
 
+describe('runJudges strips outputFormat before it reaches a handler', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExtractVariation.mockResolvedValue({ config: mockJudgeConfig, meta: mockJudgeMeta });
+    mockExecuteAndTrack.mockResolvedValue({
+      usage: { input: 1, output: 1, total: 2 },
+      response: '{"score":0.9,"reasoning":"good"}',
+      trackData: baseTrackData,
+    });
+  });
+
+  const config = {
+    model: { name: 'gpt-4o' },
+    provider: { name: 'OpenAI' },
+    instructions: 'You are helpful.',
+    judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
+  };
+
+  it('never forwards outputFormat to the handler, and the rest of the config is intact', async () => {
+    const judgeConfigWithSchema = {
+      ...mockJudgeConfig,
+      outputFormat: { type: 'json_schema', properties: { message: { type: 'string' } } },
+    };
+    mockExtractVariation.mockResolvedValue({ config: judgeConfigWithSchema, meta: mockJudgeMeta });
+
+    await runJudges({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    expect(mockExecuteAndTrack).toHaveBeenCalled();
+    const sentConfig = mockExecuteAndTrack.mock.calls[0][0].config;
+    expect(sentConfig.outputFormat).toBeUndefined();
+    expect(sentConfig.model).toEqual(judgeConfigWithSchema.model);
+    expect(sentConfig.provider).toEqual(judgeConfigWithSchema.provider);
+    expect(sentConfig.instructions).toBe(judgeConfigWithSchema.instructions);
+  });
+
+  it('a judge whose config has an outputFormat still produces a score (this is what was broken)', async () => {
+    const judgeConfigWithSchema = {
+      ...mockJudgeConfig,
+      outputFormat: { type: 'json_schema', properties: { message: { type: 'string' } } },
+    };
+    mockExtractVariation.mockResolvedValue({ config: judgeConfigWithSchema, meta: mockJudgeMeta });
+
+    const result = await runJudges({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    expect(result['judge-flag'].score).toBe(0.9);
+  });
+
+  it('logs the reason exactly once per judge, naming the judge key, only when outputFormat was present', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const judgeConfigWithSchema = {
+      ...mockJudgeConfig,
+      outputFormat: { type: 'json_schema', properties: { message: { type: 'string' } } },
+    };
+    mockExtractVariation.mockResolvedValue({ config: judgeConfigWithSchema, meta: mockJudgeMeta });
+
+    await runJudges({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    const warnings = warnSpy.mock.calls.filter((call) => String(call[0]).includes('ignoring outputFormat'));
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0][0])).toContain('judge-flag');
+    warnSpy.mockRestore();
+  });
+
+  it('does not log, and does not change behaviour, when outputFormat is absent', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await runJudges({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    const sentConfig = mockExecuteAndTrack.mock.calls[0][0].config;
+    expect(sentConfig).toBe(mockJudgeConfig);
+    const warnings = warnSpy.mock.calls.filter((call) => String(call[0]).includes('ignoring outputFormat'));
+    expect(warnings).toHaveLength(0);
+    warnSpy.mockRestore();
+  });
+
+  it('strips outputFormat AND collapses messages when falling back to an agent handler', async () => {
+    const judgeConfigWithMessagesAndSchema = {
+      model: { name: 'claude-3-5-sonnet' },
+      provider: { name: 'Anthropic' },
+      messages: [
+        { role: 'system', content: 'You are a judge.' },
+        { role: 'user', content: 'Evaluate this.' },
+      ],
+      outputFormat: { type: 'json_schema', properties: { message: { type: 'string' } } },
+    };
+    mockExtractVariation.mockResolvedValue({
+      config: judgeConfigWithMessagesAndSchema,
+      meta: { ...mockJudgeMeta, mode: 'judge' },
+    });
+
+    const wildcardAgentHandler: ProviderHandler = vi
+      .fn()
+      .mockResolvedValue({ output: '{"score":0.8,"reasoning":"ok"}', usage: {} });
+    wildcardAgentHandler.providesFor = ['*', 'agent'];
+
+    await runJudges({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      handlers: [wildcardAgentHandler],
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    expect(mockExecuteAndTrack).toHaveBeenCalled();
+    const sentConfig = mockExecuteAndTrack.mock.calls[0][0].config;
+    expect(sentConfig.instructions).toBeTruthy();
+    expect(sentConfig.messages).toHaveLength(0);
+    expect(sentConfig.outputFormat).toBeUndefined();
+  });
+});
+
+describe('buildJudgeTasks strips outputFormat from the stored JudgeTask', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExtractVariation.mockResolvedValue({ config: mockJudgeConfig, meta: mockJudgeMeta });
+  });
+
+  const config = {
+    model: { name: 'gpt-4o' },
+    provider: { name: 'OpenAI' },
+    instructions: 'You are helpful.',
+    judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
+  };
+
+  it('the stored judgeConfig has no outputFormat, and the drop is warned once', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const judgeConfigWithSchema = {
+      ...mockJudgeConfig,
+      outputFormat: { type: 'json_schema', properties: { message: { type: 'string' } } },
+    };
+    mockExtractVariation.mockResolvedValue({ config: judgeConfigWithSchema, meta: mockJudgeMeta });
+
+    const tasks = await buildJudgeTasks({
+      config,
+      userContext: mockContext,
+      handler: makeHandler(),
+      llmResponse: 'world',
+      baseTrackData,
+    });
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].judgeConfig.outputFormat).toBeUndefined();
+    expect(tasks[0].judgeConfig.model).toEqual(judgeConfigWithSchema.model);
+    const warnings = warnSpy.mock.calls.filter((call) => String(call[0]).includes('ignoring outputFormat'));
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0][0])).toContain('judge-flag');
+    warnSpy.mockRestore();
+  });
+});
+
+describe('runJudge strips outputFormat defensively from a possibly-legacy task', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecuteAndTrack.mockResolvedValue({
+      usage: { input: 1, output: 1, total: 2 },
+      response: '{"score":0.6,"reasoning":"fine"}',
+      trackData: baseTrackData,
+    });
+  });
+
+  it('strips outputFormat even though the task still carries it (as an older serialized task would)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const judgeConfigWithSchema = {
+      ...mockJudgeConfig,
+      outputFormat: { type: 'json_schema', properties: { message: { type: 'string' } } },
+    };
+    const handler = makeHandler();
+    const task: JudgeTask = {
+      configKey: 'judge-flag',
+      judgeConfig: judgeConfigWithSchema,
+      judgeMeta: mockJudgeMeta,
+      actualOutput: 'world',
+      userContext: mockContext,
+      judgeProvider: 'OpenAI',
+      judgeMode: 'messages',
+      collapseMessages: false,
+      parentTrackData: baseTrackData,
+    };
+
+    const result = await runJudge(task, [handler]);
+
+    expect(mockExecuteAndTrack).toHaveBeenCalled();
+    const sentConfig = mockExecuteAndTrack.mock.calls[0][0].config;
+    expect(sentConfig.outputFormat).toBeUndefined();
+    expect(sentConfig.model).toEqual(judgeConfigWithSchema.model);
+    expect(result?.score).toBe(0.6);
+    const warnings = warnSpy.mock.calls.filter((call) => String(call[0]).includes('ignoring outputFormat'));
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0][0])).toContain('judge-flag');
+    warnSpy.mockRestore();
+  });
+});
+
 describe('judge score validation', () => {
   it('only treats a finite number as a recordable score', () => {
     // A judge is prompted for a number but can return anything; OTel drops a null attribute and
     // exports a string, which breaks numeric aggregation on gen_ai.evaluation.score.value.
     for (const junk of [null, undefined, '0.9', '85%', {}, [], Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(isFiniteScore(junk)).toBe(false);
+      expect(numericScore(junk)).toBeUndefined();
     }
+    expect(numericScore(true)).toBeUndefined();
     for (const ok of [0, 0.9, 1, -1]) {
-      expect(isFiniteScore(ok)).toBe(true);
+      expect(numericScore(ok)).toBe(ok);
     }
   });
 });
@@ -490,5 +748,137 @@ describe('runJudge result trackData', () => {
     const task = { ...makeTask(parentTrackData), judgeProvider: 'Anthropic' } as JudgeTask;
     expect(await runJudge(task, [scoped])).toBeNull();
     expect(mockExecuteAndTrack).not.toHaveBeenCalled();
+  });
+});
+
+describe('typesafe judge results', () => {
+  const payload = JSON.stringify({
+    kind: 'typesafe',
+    results: [
+      {
+        key: 'migration_intent',
+        eventKey: '$ld:ai:judge:jev:migration_intent',
+        score: 0.25,
+        reason: 'Unclear',
+      },
+      { key: 'migration', eventKey: '$ld:ai:judge:jev:migration', score: 0.9, reason: 'Yes' },
+    ],
+  });
+  const usage = { input: 100, output: 20, total: 120 };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExtractVariation.mockResolvedValue({
+      config: { ...mockJudgeConfig, provider: { name: 'TypeSafe' } },
+      meta: mockJudgeMeta,
+    });
+    mockExecuteAndTrack.mockResolvedValue({
+      usage,
+      response: payload,
+      trackData: baseTrackData,
+    });
+  });
+
+  it('returns one result per label with full usage and tracks each eventKey', async () => {
+    const track = vi.fn();
+    mockGetClient.mockReturnValue({ track });
+    const result = await runJudges({
+      config: {
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'Be helpful.',
+        judgeConfiguration: { judges: [{ key: 'jev-judge', samplingRate: 1 }] },
+      },
+      userContext: mockContext,
+      handler: makeHandler(),
+      userInput: 'question',
+      llmResponse: 'answer',
+      baseTrackData,
+    });
+
+    expect(mockExecuteAndTrack).toHaveBeenCalledTimes(1);
+    expect(mockExecuteAndTrack).toHaveBeenCalledWith(
+      expect.objectContaining({
+        variables: expect.objectContaining({ input: 'question', response_to_evaluate: 'answer' }),
+      }),
+    );
+    expect(result['jev-judge.migration_intent']).toEqual({
+      usage,
+      response: 'Unclear',
+      score: 0.25,
+      eventKey: '$ld:ai:judge:jev:migration_intent',
+    });
+    expect(result['jev-judge.migration']).toEqual({
+      usage,
+      response: 'Yes',
+      score: 0.9,
+      eventKey: '$ld:ai:judge:jev:migration',
+    });
+    expect(track).toHaveBeenCalledTimes(2);
+    expect(track).toHaveBeenCalledWith(
+      '$ld:ai:judge:jev:migration_intent',
+      mockContext,
+      expect.objectContaining({ judgeConfigKey: 'jev-judge.migration_intent' }),
+      0.25,
+    );
+    expect(track).toHaveBeenCalledWith(
+      '$ld:ai:judge:jev:migration',
+      mockContext,
+      expect.objectContaining({ judgeConfigKey: 'jev-judge.migration' }),
+      0.9,
+    );
+  });
+
+  it('returns every label from runJudge and a metric for each eventKey', async () => {
+    mockExecuteAndTrack.mockResolvedValue({
+      usage,
+      response: payload,
+      trackData: { runId: 'judge-run', modelKey: 'judge-model', configKey: 'jev-judge' },
+    });
+    const handler: ProviderHandler = vi.fn();
+    handler.providesFor = ['TypeSafe', 'messages'];
+    const result = await runJudge(
+      {
+        configKey: 'jev-judge',
+        judgeConfig: { ...mockJudgeConfig, provider: { name: 'TypeSafe' } },
+        judgeMeta: mockJudgeMeta,
+        actualOutput: 'answer',
+        userInput: 'question',
+        userContext: mockContext,
+        judgeProvider: 'TypeSafe',
+        judgeMode: 'messages',
+        collapseMessages: false,
+        parentTrackData: baseTrackData,
+      },
+      [handler],
+    );
+    expect(mockExecuteAndTrack).toHaveBeenCalledWith(
+      expect.objectContaining({
+        variables: expect.objectContaining({ input: 'question', response_to_evaluate: 'answer' }),
+      }),
+    );
+    expect(result?.score).toBe(0.25);
+    expect(result?.response).toBe('Unclear');
+    expect(result?.eventKey).toBe('$ld:ai:judge:jev:migration_intent');
+    expect(result?.usage).toEqual(usage);
+    expect(result?.results?.['jev-judge.migration']).toEqual({
+      usage,
+      response: 'Yes',
+      score: 0.9,
+      eventKey: '$ld:ai:judge:jev:migration',
+    });
+    expect(result?.metrics).toEqual([
+      {
+        eventKey: '$ld:ai:judge:jev:migration_intent',
+        score: 0.25,
+        judgeConfigKey: 'jev-judge.migration_intent',
+      },
+      { eventKey: '$ld:ai:judge:jev:migration', score: 0.9, judgeConfigKey: 'jev-judge.migration' },
+    ]);
+    // The judge run's own identity must not replace the evaluated config.
+    expect(result?.trackData).toEqual({
+      ...baseTrackData,
+      judgeConfigKey: 'jev-judge.migration_intent',
+    });
   });
 });

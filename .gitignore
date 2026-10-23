@@ -31,4 +31,4 @@ integration-tests/**/.canary/
 
 .claude/
 # API Extractor working files
-packages/client/temp/
+packages/*/temp/

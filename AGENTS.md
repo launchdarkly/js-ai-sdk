@@ -98,13 +98,28 @@ Biome organises imports alphabetically within each group. Vitest's `vi.mock` cal
 
 PRs are squash-merged with the PR title as the commit message, and release-please builds each package's changelog from those messages.
 
-- **A change to an experimental feature uses that feature's scope:** `skills` (Agent Skills). `feat`, `fix` and `perf` commits with one of these scopes are listed under **Experimental** (`changelog-sections` in `release-please-config.json`), for example `feat(skills): watch skills for revocations`. Any other scope, such as `client`, lists the change as a core feature or fix.
+- **A change to an experimental feature uses that feature's scope:** `skills` (Agent Skills), `evaluations` (Evaluations from Code). `feat`, `fix` and `perf` commits with one of these scopes are listed under **Experimental** (`changelog-sections` in `release-please-config.json`), for example `feat(skills): watch skills for revocations`. Any other scope, such as `client`, lists the change as a core feature or fix.
 - **Use exactly one scope.** `feat(skills,client):` matches no Experimental row, so it lands under Features.
 - **A PR that changes both core and experimental behaviour** should be split. If it can't be, add a `BEGIN_COMMIT_OVERRIDE` block to its description with one conventional-commit line per change. An override also corrects a merged PR's title, as long as the release PR hasn't merged yet.
 - **A breaking experimental change** uses `!` while the package is 0.x: `feat(skills)!:` bumps the minor version, which is what an experimental break is allowed. After 1.0, `!` would force a major release. Use `feat(skills):` without `!` instead, and say the change is breaking in the title.
 - **When a feature is promoted to core,** remove its rows from `changelog-sections`.
 
 The rule is specified in `TESTING.md` §0.3 in `launchdarkly/ai-sdks-monorepo`.
+
+## Public API Reports
+
+Every public entry point has a committed API Extractor report at `packages/<package>/etc/<name>.api.md`: every exported name, type-only names included, with its full declaration. `<name>` is the package name without `@launchdarkly/`, plus `-experimental` for the `./experimental` entry point. The reports are the public API contract. `@launchdarkly/ai-node` re-exports `@launchdarkly/ai-server`, whose reports cover it, and `@launchdarkly/ai-otel` exports nothing, so neither has a report.
+
+- **Change a public name or signature, then run `yarn api:update`** and commit the updated report in the same PR. `yarn api:check`, which CI runs, fails while a report is out of date. Each package also has its own `api:check` / `api:update`.
+- **The reports are owned by `@launchdarkly/team-ai-agents`** in `.github/CODEOWNERS`, so their approval of the report diff is how public API changes are reviewed.
+- **A breaking change must be declared.** On every PR, `scripts/api-breaking.mjs` (the API compatibility workflow) compares each report with the PR's base. API Extractor does not classify changes, so every removed or changed declaration counts as breaking, and so does a removed report; an added declaration does not. It fails unless the PR title has `!` (`feat!: ...`, `fix(scope)!: ...`) or an owner applied the `api-compatible` label because they judge the change compatible, for example a new optional parameter. On the release PR it compares each released package with its last release tag, and fails on a breaking change unless the new version is a major one (a minor one before 1.0.0) or the release PR has `api-compatible`. Experimental reports are skipped. `yarn test:api-breaking` tests the check.
+- **Never edit a report by hand.** Each package's `api-extractor*.json` extends `api-extractor.base.json`; a new package or entry point adds its config and commits its report in the same PR.
+
+## Public API Surface
+
+The approved public names of each entry point are the lists in `api-surface/`, copied in by sync PRs and never edited by hand. `yarn api:surface` compares each list with the names its entry point's API Extractor report (`packages/<package>/etc/*.api.md`) exports, type-only names included, and fails on an exported name the list does not allow or an unmarked name that is no longer exported. Regenerate the reports with `yarn api:update` first. `API_SURFACE_DIR=<dir>` reads the lists from another directory, and `API_SURFACE_STRICT=1`, set for every major release, also fails on any `-` or `+` marker. The entry points it covers are listed in `ENTRY_POINTS` in `scripts/api-surface.mjs`. `yarn test:api-surface` tests the check itself. CI runs both, after `api:check`.
+
+The `usage=` fields on the lists drive every package's `sdk-usage.test.ts` (§3.27): `usageRows()` from `scripts/api-surface.mjs` turns a list into one row per usage ID, and each suite's `CALLS` table says only how to call the function the package exports under that name. A usage ID with no entry in `CALLS`, or an entry for an ID the list no longer reports, fails the suite, so adding a reporting helper means adding its call there.
 
 ## Package Hierarchy
 
@@ -217,6 +232,8 @@ The AI configuration object fetched from a LaunchDarkly flag variation. Represen
 | `outputFormat` | object | no | Optional JSON Schema the model output must conform to. Handlers enforce structured output via the provider's native API where supported, or via system-prompt injection as a fallback. Ignored in streaming mode. |
 
 At least one of `instructions` or a non-empty `messages` array must be present.
+
+A judge is an ordinary AI Config and can carry `outputFormat` too, but the client drops it on every judge path (inline, deferred and offline evaluations) and logs a `console.warn` naming the judge: the judge verdict contract is fixed at `{ score, reasoning }`, so set `outputFormat` on the primary config being evaluated, not on a judge.
 
 #### `Tool`
 
@@ -651,7 +668,7 @@ The handler must return:
 
 ### Streaming (optional)
 
-A handler package may implement real-time token streaming by passing a streaming generator as the **third argument** to `createHandler`. When present, `config().stream()` calls this instead of the blocking handler and forwards `chunk` events to the caller in real time.
+A handler package may implement real-time token streaming by passing a streaming generator as the **`stream` option** to `createHandler`. When present, `config().stream()` calls this instead of the blocking handler and forwards `chunk` events to the caller in real time.
 
 **Type:**
 

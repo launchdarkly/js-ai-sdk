@@ -1,4 +1,5 @@
 import type { NativeTool, ProviderHandler, ToolHandlerFn } from './types.js';
+import { selectModeHandler } from './utils.js';
 
 /**
  * `providesFor`, plus the allowlist as a set on a `'*'` handler. Order and repeated
@@ -58,6 +59,21 @@ export function compose(a: Registry, b: Registry): Registry {
   result.register({ handlers: a.handlers, tools: a.tools });
   result.register({ handlers: b.handlers, tools: b.tools });
   return result;
+}
+
+/**
+ * The handler selection rule `config()` uses, shared by every caller that picks
+ * a handler for a provider and mode: a handler whose `providesFor` names the
+ * provider wins, then the shortest `'*'` allowlist containing it, then an
+ * unscoped `'*'` handler. The mode must match exactly. Pass the mode already
+ * normalized. Returns `undefined` when nothing matches.
+ */
+export function findHandler(
+  handlers: readonly ProviderHandler[] | undefined,
+  provider: string,
+  mode: 'agent' | 'messages',
+): ProviderHandler | undefined {
+  return handlers ? selectModeHandler(handlers, provider, mode) : undefined;
 }
 
 /**

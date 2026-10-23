@@ -11,7 +11,7 @@ All handler packages (`@launchdarkly/ai-*`) depend on this package.
 ### Without telemetry
 
 ```bash
-npm install @launchdarkly/ai-server
+npm install @launchdarkly/ai-server dotenv
 ```
 
 `@launchdarkly/node-server-sdk` is an optional peer dependency — include it for standard Node.js, or pass a pre-initialized client from another LD SDK (e.g. `@launchdarkly/vercel-server-sdk`) to `initClient(client)` for edge runtimes.
@@ -23,7 +23,7 @@ The SDK works fully without the OpenTelemetry packages — feature flags evaluat
 To export traces to the LaunchDarkly Observability dashboard (or any OTLP-compatible backend), install [`@launchdarkly/ai-otel`](../ai-otel/README.md), which bundles the OTel SDK peer dependencies:
 
 ```bash
-npm install @launchdarkly/ai-server @launchdarkly/ai-otel
+npm install @launchdarkly/ai-server @launchdarkly/ai-otel dotenv
 ```
 
 No code changes are required — `initClient()` detects the packages at runtime and sets up the tracer provider automatically.
@@ -39,6 +39,12 @@ No code changes are required — `initClient()` detects the packages at runtime 
 | `LD_SERVICE_NAME` | No | OTel `service.name` resource attribute (default: `nodejs-sdk`) |
 | `LD_ENVIRONMENT` | No | `deployment.environment` resource attribute attached to telemetry |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OTLP endpoint override (default: LaunchDarkly Observability backend) |
+| `LD_PROJECT_KEY` | For evaluations | Project that holds the evaluations, datasets and tools (see [Evaluations from Code](#evaluations-from-code-experimental)) |
+| `LD_API_TOKEN` | For evaluations | Management API access token used by the evaluations harness |
+| `LD_API_BASE_URI` | No | Evaluations management API host override; separate from `LD_BASE_URI` |
+| `LD_UI_BASE_URI` | No | Host for evaluation run links (default: `https://app.launchdarkly.com`) |
+
+The SDK reads these from `process.env` and never loads a `.env` file itself. If you want `.env` loading, install `dotenv` (`npm install dotenv`) and add `import 'dotenv/config';` to your own entrypoint before importing the SDK, as the examples below do.
 
 The client uses **lazy initialization**: importing the package does not connect to LaunchDarkly. The singleton is created automatically on the first API call that needs it (`config().invoke()`, `graph().invoke()`, `resolveGraph()`, etc.), as long as `LD_SDK_KEY` is set in the environment.
 
@@ -129,6 +135,8 @@ const result3 = await caller.invoke('Can you give me an example?', { kind: 'user
 
 await shutdown();
 ```
+
+**Judges see the tool calls.** A judge attached to the config is shown, in `{{message_history}}`, the user input, then the tools the config offered and every call the handler made to them, then the response, then the format instructions. That lets a rubric grade how the answer was reached, not only the text. Only the config's own tools are listed, not the rest of a registry, and a `NativeTool` is left out because the provider runs it where the SDK cannot see it. A config with no tools gets the history it had before. With `skipJudges: true`, each `JudgeTask` carries `userInput` and the rendered `trajectory`, so `runJudge` shows a deferred judge the same history. In a graph, each node's judge sees that node's calls; a `graphJudge` sees none, because it grades the answer of the whole run.
 
 ### `graph(key, options)`
 
@@ -577,6 +585,203 @@ The managed root's own mode is **yours, not the SDK's**: `writeSkills` creates o
 Ancestors matter for the same reason. An identity that can rename a directory above the root can substitute the whole tree, with no race involved, and the agent then loads skills it wrote itself. Descriptor pinning inside `writeSkills` cannot prevent that, because the substituted tree is what the agent reads.
 
 **The SDK does not report whether the root is writable.** It knows only its own identity, which just wrote there. It cannot know which identity will run the agent, so any check would answer the wrong question and look like reassurance where caution is needed.
+
+---
+
+### Evaluations from Code (experimental)
+
+> **Experimental.** Import every name in this section from `@launchdarkly/ai-server/experimental` (or `@launchdarkly/ai-node/experimental` if you install `@launchdarkly/ai-node`). None is exported from the package root. Names may change in a minor release, so read the changelog before upgrading.
+
+An evaluation from code runs a dataset through your own code and reports the results to LaunchDarkly. One `run()` call:
+
+1. creates a new evaluation and run in your project;
+2. **generates**: calls your handler once per dataset row;
+3. **evaluates**: scores each generated output against your criteria, LaunchDarkly AI Judges and local scorer functions, if you pass any;
+4. waits for LaunchDarkly to account for every row, and returns the outcome.
+
+Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row and on the run; the SDK reports scores and never computes a verdict itself.
+
+```ts
+import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { initEvaluations } from '@launchdarkly/ai-server/experimental';
+
+// Reads LD_PROJECT_KEY, LD_API_TOKEN and LD_SDK_KEY unless you pass them.
+const evals = initEvaluations({ projectKey: 'my-project' });
+
+const result = await evals.run({
+  key: `support-qa-${Date.now()}`, // every run creates a new evaluation, so keep keys unique
+  dataset: 'support-golden', // the key of a dataset in LaunchDarkly
+  handler: createOpenAIHandler(),
+  generation: {
+    provider: 'OpenAI',
+    model: 'gpt-4o',
+    mode: 'completion',
+    messages: [
+      { role: 'system', content: 'You are a support agent.' },
+      { role: 'user', content: '{{input}}' },
+    ],
+  },
+});
+
+console.log(result.url, result.summary);
+process.exit(result.passed ? 0 : 1);
+```
+
+`initEvaluations()` performs no network I/O. It throws straight away when the project key, the API access token or the SDK key is missing. The SDK key can be left out only when a client is already initialized with `initClient(client)`, because without one no result could ever reach LaunchDarkly.
+
+| Option | Environment variable | Description |
+|---|---|---|
+| `projectKey` | `LD_PROJECT_KEY` | Project that holds the evaluations, datasets and tools |
+| `apiKey` | `LD_API_TOKEN` | Management API access token |
+| `sdkKey` | `LD_SDK_KEY` | SDK key for the client that sends result events. Ignored, with a warning, when a client is already initialized |
+| `apiBaseUri` | `LD_API_BASE_URI` | Management API host (default `https://app.launchdarkly.com`). Separate from `LD_BASE_URI`, which points at event delivery |
+| `uiBaseUri` | `LD_UI_BASE_URI` | Host for the run link in the result (default `https://app.launchdarkly.com`). Set it for a non-production instance, or its links point at production |
+| `logEvents` | — | Log each result event with its `emittedAt` and `eventId` through `console.info` (default `false`) |
+| `transport` | — | Replaces the `fetch`-based management API transport, for tests |
+
+#### Choosing a mode and handlers
+
+`generation.mode` is required and has no default:
+
+- `'completion'` when the prompt is a list of `messages` and the handler sends one request to a chat or messages API;
+- `'agent'` when the prompt is one `instructions` block and an agent framework runs the model, such as OpenAI Agents, Claude Agents or LangChain agents.
+
+When you are not sure, use the mode the AI Config has in LaunchDarkly. The prompt must be the field the mode reads; the harness never turns `instructions` into `messages` or the reverse.
+
+Pass `handler` for one handler, or `handlers` for several. Each config in the run, generation and every judge, picks its handler from this pool by provider and mode, using the same rule as `config()`: a handler that names the provider wins over a `'*'` handler, and the mode must match exactly. So one pool can hold an OpenAI handler for generation and an Anthropic handler for a judge. Every handler must declare `providesFor`, so build it with a provider package's factory or with `createHandler`. To evaluate application code that does not read the config, wrap it:
+
+```ts
+import { createHandler } from '@launchdarkly/ai-server';
+
+const handler = createHandler(['OpenAI', 'messages'], async (_config, input) => ({
+  output: await myApp.answer(input ?? ''),
+}));
+```
+
+A handler is called once per row as `handler(config, input, toolHandlers, variables)` and is never retried, because a retry could repeat tool side effects. A handler that throws, or returns something other than an object, marks its row `ERROR`; the other rows still run. Rows run `concurrency` at a time (default 10).
+
+#### Starting from an AI Config
+
+Pass `aiConfig` instead of a full `generation` to evaluate a variation you already have. Its model, provider, parameters, prompt and output format become the defaults, read from the latest version of the variation. `generation` can then override single fields; `parameters` merge key by key. The AI Config supplies the mode, so `generation.mode` is not allowed here.
+
+```ts
+await evals.run({
+  key: `support-qa-${Date.now()}`,
+  dataset: 'support-golden',
+  handler: createOpenAIHandler(),
+  aiConfig: { key: 'support-agent', variation: 'candidate' },
+  generation: { parameters: { temperature: 0.2 } },
+});
+```
+
+The variation's tools and judges are the defaults too. If it lists tools, pass `tools` with an implementation for each, or `tools: []` to run without them. Its judges become criteria with default thresholds unless you pass `criteria`; `criteria: []` runs without them.
+
+#### Datasets in code
+
+Pass an array of rows as `dataset` instead of a dataset key. Each row has a non-empty `input`, and optionally `expectedOutput`, `variables` and `metadata`. A row's index is its position in the array.
+
+```ts
+await evals.run({
+  key: `support-qa-${Date.now()}`,
+  dataset: [
+    { input: 'How do I reset my password?', expectedOutput: 'Use the reset link.' },
+    { input: 'Where is order {{order_id}}?', variables: { order_id: 'A-17' } },
+  ],
+  handler: createOpenAIHandler(),
+  generation: { provider: 'OpenAI', model: 'gpt-4o', mode: 'completion', messages: [{ role: 'user', content: '{{input}}' }] },
+});
+```
+
+Rows are uploaded to the run before any row generates, in batches of up to 500. They are uploaded as written, and `{{…}}` placeholders render the same way as in a stored dataset. A malformed row, or a `variables` or `metadata` value that is not plain JSON (`NaN`, `Infinity`, a `Date`, a `Map`), fails the run before anything is created. If an upload fails, the run is cancelled and `run()` throws.
+
+Your handler receives each row's rendered input, plus its variables with `input` and `expected_output` added.
+
+#### Tools
+
+Pass `tools` as an array of `EvalTool`. Construct one to define a tool in code, or `await evals.tools.get()` to read one from your project's AI library, which pins its version then. One array can hold both kinds.
+
+```ts
+import { EvalTool } from '@launchdarkly/ai-server/experimental';
+
+const searchDocs = await evals.tools.get('search_docs', { implementation: searchDocsImpl });
+
+const lookupOrder = new EvalTool(
+  'lookup_order',
+  async ({ order_id }: { order_id: string }) => `order ${order_id} shipped`,
+  { type: 'object', properties: { order_id: { type: 'string' } }, required: ['order_id'] },
+  'Look up an order by id',
+);
+
+await evals.run({ /* … */ tools: [searchDocs, lookupOrder] });
+```
+
+The handler receives the same `{ key: implementation }` map either way. The array is checked before any request: a blank or uppercase key, a key listed twice (compared without case), a schema that is not a plain JSON object, or an implementation that is not a function each throw. A `NativeTool` works only as a library tool, because the provider supplies its schema.
+
+#### Scoring with judges and scorers
+
+Pass `criteria` to score every generated row. A `Judge` refers to an AI Judge config that already exists in your project; the SDK creates and ships no judges. A `Scorer` wraps a local function.
+
+```ts
+import { createClaudeMessagesHandler } from '@launchdarkly/ai-claude-messages';
+import { Judge, Scorer } from '@launchdarkly/ai-server/experimental';
+
+await evals.run({
+  key: `support-qa-${Date.now()}`,
+  dataset: 'support-golden',
+  // The judge is served by Anthropic, so the pool has a handler for it too.
+  handlers: [createOpenAIHandler(), createClaudeMessagesHandler()],
+  generation: { provider: 'OpenAI', model: 'gpt-4o', mode: 'completion', messages: [{ role: 'user', content: '{{input}}' }] },
+  criteria: [
+    new Judge('accuracy-judge', { threshold: 0.8 }),
+    new Scorer('mentions-policy', (_row, output) => (String(output).includes('refund policy') ? 1 : 0)),
+  ],
+});
+```
+
+| | `Judge` | `Scorer` |
+|---|---|---|
+| `threshold`: score a row must reach | default `0.5` | default `1.0` |
+| `passRateThreshold`: share of rows that must pass | default `0.95` | default `0.95` |
+| Direction | Set on the judge's AI Config in LaunchDarkly | `successDirection`, default `'higher_is_better'`. Use `'lower_is_better'` for a scorer that counts something unwanted |
+| Other | `groundTruthContext`: what to grade against, when it is not the row's expected output | `fn(row, output)` may be async and must return a number from 0 to 1. Booleans are not accepted: return `1` or `0` |
+
+Thresholds must be finite numbers from 0 to 1. Judge keys and scorer names must be unique within a run, compared without case.
+
+Judges are resolved through flag delivery once per run, before anything is created. A judge that does not exist or is turned off, a judge no handler in the pool can run, or a judge whose prompt does not match its handler's mode fails the run straight away, with every such judge named in one error. After that, a failure is recorded against its row instead of thrown: an unparseable judge reply, a score that is not a number from 0 to 1, or a judge or scorer that throws each becomes an `ERROR` result. A row whose generation failed is not scored.
+
+A judge never gets tools. Its config is passed to the handler unrendered, so the handler's own template pass is the only one, and a `{{…}}` in generated output stays literal. A judge rubric can use these variables, in addition to the row's own:
+
+| Variable | Value |
+|---|---|
+| `{{input}}` | The rendered row input |
+| `{{response_to_evaluate}}` | The generated output |
+| `{{expected_output}}` | The row's expected output, or `""` |
+| `{{ground_truth_context}}` | The judge's `groundTruthContext` rendered against the row, else the expected output, else `""` |
+| `{{message_history}}` | The row input, the tool calls the row made, the output, then the `{ "score", "reasoning" }` format instructions |
+| `{{formatting_instructions}}` | The format instructions on their own |
+
+`{{message_history}}` is built the same way as for online judges, so a rubric reads the same conversation in a production sample and in a dataset replay. When the row had tools, it lists them and each call in order:
+
+```
+Tools available: lookup_order, issue_refund
+Tool calls made while producing the response, in order:
+1. lookup_order
+   arguments: {"order_id":"A-17"}
+   result: order A-17 shipped
+2. issue_refund
+   arguments: {"amount":19.99,"order_id":"A-17"}
+   error: refund window closed
+```
+
+At most 50 calls per row are listed, and each argument list or result is cut at 2000 characters. Calls past the limit still run and are counted. A `NativeTool` runs inside the provider, so it is not listed.
+
+#### Results and events
+
+Each generated row sends one `$ld:ai:offline-evals:generation` event, and each `(row, criterion)` pair one `$ld:ai:offline-evals:criterion` event. Events carry the run and row identity, the output or error, usage, timings and a stable `eventId`. They do not repeat the row's input, expected output, variables or metadata, which the dataset already holds. Events are flushed in batches of at most 500 and before the run is polled. No feature flag gates them.
+
+`run()` then polls the run summary every `pollIntervalSeconds` (default 2) until every row is accounted for, for up to `pollTimeoutSeconds` (default 180). Raise both for large datasets. The result has `passed`, `url`, `runId` and `summary` (`totalRows`, `passedRows`, `failedRows`, `errorRows`, `pendingRows`). `passed` is true only when no row errored or failed.
+
+A timeout almost always means LaunchDarkly did not receive some events, not that it is slow. The error says whether no rows arrived at all, which points at the event transport or a key and token from different projects, or only some did. Pass `logEvents: true` to `initEvaluations()` to log each event's `emittedAt` and `eventId`, so you can compare when the SDK sent an event with when LaunchDarkly received it.
 
 ---
 
