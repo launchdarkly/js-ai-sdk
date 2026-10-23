@@ -15,10 +15,13 @@ import { NativeTool } from '@launchdarkly/ai-server';
 import { ProviderGraphResponse } from '@launchdarkly/ai-server';
 import { ProviderHandler } from '@launchdarkly/ai-server';
 import { ProviderResponse } from '@launchdarkly/ai-server';
+import { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import { ToolHandlerFn } from '@launchdarkly/ai-server';
 
+// Warning: (ae-forgotten-export) The symbol "ClaudeAgentsHostOptions" needs to be exported by the entry point index.d.ts
+//
 // @public (undocumented)
-export const claudeAgents: (configKey: string, userInput: string, context: LDContext, input?: Omit<Parameters<typeof config>[0], "handler" | "key"> & ContentCaptureOptions & {
+export const claudeAgents: (configKey: string, userInput: string, context: LDContext, input?: Omit<Parameters<typeof config>[0], "handler" | "key"> & ContentCaptureOptions & ClaudeAgentsHostOptions & {
     variables?: Record<string, unknown>;
 }) => Promise<ProviderResponse<string>>;
 
@@ -32,7 +35,7 @@ export const ClaudeEdit: NativeTool;
 export const ClaudeGlob: NativeTool;
 
 // @public
-export const claudeGraph: (key: string, options: Omit<GraphOptions, "handlers">) => {
+export const claudeGraph: (key: string, input: Omit<GraphOptions, "handlers"> & ClaudeAgentsHostOptions) => {
     invoke: (input: string | undefined, context: LDContext, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
     stream: (input: string | undefined, context: LDContext, variables?: Record<string, unknown>, history?: Message[]) => AsyncGenerator<GraphStreamEvent>;
 };
@@ -59,13 +62,13 @@ export const ClaudeWebSearch: NativeTool;
 export const ClaudeWrite: NativeTool;
 
 // @public (undocumented)
-export function createClaudeAgentsHandler(input?: ContentCaptureOptions): ProviderHandler;
+export function createClaudeAgentsHandler(options?: ContentCaptureOptions & ClaudeAgentsHostOptions): ProviderHandler;
 
 // @public
 export const toClaudeAgents: (defPromise: Promise<GraphDefinition>, opts?: {
     toolHandlers?: Record<string, ToolHandlerFn | NativeTool>;
     context?: LDContext;
-}) => {
+} & ClaudeAgentsHostOptions) => {
     invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 };
 
