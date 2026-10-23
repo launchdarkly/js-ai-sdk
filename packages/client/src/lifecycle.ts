@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { context, propagation, trace } from '@opentelemetry/api';
 import { ConversationIdSpanProcessor } from './conversation.js';
 import {

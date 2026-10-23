@@ -11,7 +11,7 @@ All handler packages (`@launchdarkly/ai-*`) depend on this package.
 ### Without telemetry
 
 ```bash
-npm install @launchdarkly/ai-server
+npm install @launchdarkly/ai-server dotenv
 ```
 
 `@launchdarkly/node-server-sdk` is an optional peer dependency — include it for standard Node.js, or pass a pre-initialized client from another LD SDK (e.g. `@launchdarkly/vercel-server-sdk`) to `initClient(client)` for edge runtimes.
@@ -23,7 +23,7 @@ The SDK works fully without the OpenTelemetry packages — feature flags evaluat
 To export traces to the LaunchDarkly Observability dashboard (or any OTLP-compatible backend), install [`@launchdarkly/ai-otel`](../ai-otel/README.md), which bundles the OTel SDK peer dependencies:
 
 ```bash
-npm install @launchdarkly/ai-server @launchdarkly/ai-otel
+npm install @launchdarkly/ai-server @launchdarkly/ai-otel dotenv
 ```
 
 No code changes are required — `initClient()` detects the packages at runtime and sets up the tracer provider automatically.
@@ -43,6 +43,8 @@ No code changes are required — `initClient()` detects the packages at runtime 
 | `LD_API_TOKEN` | For evaluations | Management API access token used by the evaluations harness |
 | `LD_API_BASE_URI` | No | Evaluations management API host override; separate from `LD_BASE_URI` |
 | `LD_UI_BASE_URI` | No | Host for evaluation run links (default: `https://app.launchdarkly.com`) |
+
+The SDK reads these from `process.env` and never loads a `.env` file itself. If you want `.env` loading, install `dotenv` (`npm install dotenv`) and add `import 'dotenv/config';` to your own entrypoint before importing the SDK, as the examples below do.
 
 The client uses **lazy initialization**: importing the package does not connect to LaunchDarkly. The singleton is created automatically on the first API call that needs it (`config().invoke()`, `graph().invoke()`, `resolveGraph()`, etc.), as long as `LD_SDK_KEY` is set in the environment.
 

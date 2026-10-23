@@ -520,14 +520,15 @@ When `enabled` is `false`, `config` is always `null`. When `enabled` is `true` b
 
 ## Dependencies
 
-Tier 0, so the runtime surface is deliberately tiny: two hard dependencies, and everything else either optional or dev-only. Nothing here may grow without a reason recorded in this table.
+Tier 0, so the runtime surface is deliberately tiny: one hard dependency, and everything else either optional or dev-only. Nothing here may grow without a reason recorded in this table.
 
 ### Runtime (`dependencies`)
 
 | Package | Why |
 |---|---|
 | `@opentelemetry/api` | The tracer/span API used on every instrumented path (`tracking.ts`, `graph.ts`, `content.ts`, `utils.ts`). API-only — the *SDK* half is an optional peer, so a consumer that never configures OTel still gets no-op spans rather than a crash. |
-| `dotenv` | `.env` loading for `LD_SDK_KEY` and the OTel endpoint variables, imported as `dotenv/config` from `lifecycle.ts`. |
+
+There is deliberately no `dotenv` here: `lifecycle.ts` reads `process.env` directly, so loading a `.env` file is the application's job rather than the SDK's. Do not add `import 'dotenv/config'` to any module under `src/`; `src/__tests__/no-dotenv.test.ts` fails if either package entry pulls it in. `dotenv` stays a root devDependency for `main.ts` and `examples/` only.
 
 ### Optional peers (`peerDependencies`, every one `optional: true`)
 
