@@ -955,54 +955,88 @@ describe('watchSkills following a version bump', () => {
 });
 
 describe('watchSkills when a source drops a reference', () => {
-  it('prunes it on the next complete reconcile, and not while another reference is unavailable', async () => {
-    // 'c' is unavailable (its read throws), which makes the run incomplete.
-    // An *absent* reference does not: it stays requested, and the run still prunes.
-    let cDown = true;
-    const store = new MutableStore([rawSkill('a', 1), rawSkill('b', 1)]);
-    const getObject = store.getObject.bind(store);
-    store.getObject = (kind, key, version) => {
-      if (key === 'c' && cDown) throw new Error('store read failed');
-      return getObject(kind, key, version);
-    };
+  /** Watches `[a, b, c]`, all written, and collects each later report. */
+  async function watching(store: MutableStore) {
     _setStore(store);
     await initClient(fake);
-    const { source, answer } = countingSource([ref('a', 1), ref('b', 1)]);
+    const { source, answer } = countingSource([ref('a', 1), ref('b', 1), ref('c', 1)]);
     const reports: ReconcileReport[] = [];
     const root = await scratchRoot();
-    const { watcher } = await watchSkills(source, root, { debounceMs: 5, onReconcile: (r) => void reports.push(r) });
+    const { report, watcher } = await watchSkills(source, root, {
+      debounceMs: 5,
+      onReconcile: (r) => void reports.push(r),
+    });
+    expect(report.ok).toBe(true);
+    return { answer, reports, root, watcher };
+  }
+
+  async function next(reports: ReconcileReport[], count: number): Promise<ReconcileReport> {
+    expect(await waitUntil(() => reports.length === count)).toBe(true);
+    return reports[count - 1] as ReconcileReport;
+  }
+
+  it('prunes it in a clean run', async () => {
+    const { answer, reports, root, watcher } = await watching(
+      new MutableStore([rawSkill('a', 1), rawSkill('b', 1), rawSkill('c', 1)]),
+    );
     try {
-      // 'b' dropped, but 'c' could not be read: no prune this run.
       answer([ref('a', 1), ref('c', 1)]);
       fake.change();
-      expect(await waitUntil(() => reports.length === 1)).toBe(true);
-      expect(actionFor(reports[0] as ReconcileReport, 'c')?.action).toBe('error');
-      expect(actionFor(reports[0] as ReconcileReport, 'b')).toBeUndefined();
-      expect(await skillFile(root, 'b')).toBe(body('b', 1));
-
-      // 'c' becomes readable: everything resolves, so 'b' is pruned.
-      cDown = false;
-      store.change({ add: [rawSkill('c', 1)] });
-      expect(await waitUntil(() => reports.length === 2)).toBe(true);
-      expect(actionFor(reports[1] as ReconcileReport, 'b')?.action).toBe('removed');
+      const report = await next(reports, 1);
+      expect(actionFor(report, 'b')?.action).toBe('removed');
       expect(existsSync(path.join(root, 'b'))).toBe(false);
+      expect(report.ok).toBe(true);
     } finally {
       await watcher.close();
     }
   });
 
-  it('prunes a dropped reference in a clean run', async () => {
-    _setStore(new MutableStore([rawSkill('a', 1), rawSkill('b', 1)]));
-    await initClient(fake);
-    const { source, answer } = countingSource([ref('a', 1), ref('b', 1)]);
-    const reports: ReconcileReport[] = [];
-    const root = await scratchRoot();
-    const { watcher } = await watchSkills(source, root, { debounceMs: 5, onReconcile: (r) => void reports.push(r) });
+  it('prunes it beside an absent reference, which keeps its own file', async () => {
+    const store = new MutableStore([rawSkill('a', 1), rawSkill('b', 1), rawSkill('c', 1)]);
+    const { answer, reports, root, watcher } = await watching(store);
     try {
-      answer([ref('a', 1)]);
+      // 'c' leaves the store and 'b' leaves the answer in the same run. An
+      // absent reference is protected by its key; it does not hold the prune.
+      store.change({ remove: ['c:1'] });
+      answer([ref('a', 1), ref('c', 1)]);
       fake.change();
-      expect(await waitUntil(() => reports.length === 1)).toBe(true);
-      expect(actionFor(reports[0] as ReconcileReport, 'b')?.action).toBe('removed');
+      expect(await waitUntil(() => reports.some((r) => actionFor(r, 'b')?.action === 'removed'))).toBe(true);
+      const report = reports.find((r) => actionFor(r, 'b')?.action === 'removed') as ReconcileReport;
+      expect(actionFor(report, 'c')?.action).toBe('error');
+      expect(existsSync(path.join(root, 'b'))).toBe(false);
+      expect(await skillFile(root, 'c')).toBe(body('c', 1));
+      expect((await manifestEntry(root, 'c'))?.version).toBe(1);
+      for (const r of reports) expect(actionFor(r, 'c')?.action).not.toBe('removed');
+    } finally {
+      await watcher.close();
+    }
+  });
+
+  it('does not prune it while the store is unavailable, and does on the next available run', async () => {
+    let storeDown = false;
+    const store = new MutableStore([rawSkill('a', 1), rawSkill('b', 1), rawSkill('c', 1)]);
+    const getObject = store.getObject.bind(store);
+    store.getObject = (kind, key, version) => {
+      if (storeDown) throw new Error('store read failed');
+      return getObject(kind, key, version);
+    };
+    const { answer, reports, root, watcher } = await watching(store);
+    try {
+      storeDown = true;
+      answer([ref('a', 1), ref('c', 1)]);
+      fake.change();
+      const down = await next(reports, 1);
+      expect(down.ok).toBe(false);
+      expect(down.actions.some((a) => a.action === 'removed')).toBe(false);
+      expect(await skillFile(root, 'b')).toBe(body('b', 1));
+      expect((await manifestEntry(root, 'b'))?.version).toBe(1);
+
+      storeDown = false;
+      fake.change();
+      const up = await next(reports, 2);
+      expect(actionFor(up, 'b')?.action).toBe('removed');
+      expect(existsSync(path.join(root, 'b'))).toBe(false);
+      expect(up.ok).toBe(true);
     } finally {
       await watcher.close();
     }
