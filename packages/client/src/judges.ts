@@ -1,5 +1,5 @@
 import { withJudgeEvaluation } from './conversation.js';
-import { buildMessageHistory, numericScore } from './judge-scoring.js';
+import { buildMessageHistory, numericScore, withoutOutputFormat } from './judge-scoring.js';
 import { extractVariation, getClient } from './lifecycle.js';
 import { reportUsage } from './sdk-usage.js';
 import { executeAndTrack } from './tracking.js';
@@ -183,7 +183,10 @@ export const runJudges = async ({
       judgeHandler = handler;
     }
 
-    const effectiveJudgeConfig = collapseMessages ? collapseMessagesToInstructions(judgeConfig) : judgeConfig;
+    const effectiveJudgeConfig = withoutOutputFormat(
+      collapseMessages ? collapseMessagesToInstructions(judgeConfig) : judgeConfig,
+      judge.key,
+    );
 
     const messageHistory = buildMessageHistory({ userInput, trajectory, output: llmResponse });
 
@@ -345,7 +348,7 @@ export const buildJudgeTasksInternal = async ({
 
     tasks.push({
       configKey: judge.key,
-      judgeConfig,
+      judgeConfig: withoutOutputFormat(judgeConfig, judge.key),
       judgeMeta,
       actualOutput: llmResponse,
       userInput,
@@ -399,7 +402,12 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
   const judgeHandler = exactMatch ?? agentFallback;
   if (!judgeHandler) return null;
 
-  const effectiveConfig = collapseMessages ? collapseMessagesToInstructions(judgeConfig) : judgeConfig;
+  // Defensive: an older serialized `JudgeTask` (e.g. from a worker queue built before this fix)
+  // may still carry `outputFormat` on `judgeConfig`, so strip it here too rather than trust the caller.
+  const effectiveConfig = withoutOutputFormat(
+    collapseMessages ? collapseMessagesToInstructions(judgeConfig) : judgeConfig,
+    configKey,
+  );
 
   // The same history the inline path builds: input, trajectory, output.
   const messageHistory = buildMessageHistory({ userInput, trajectory, output: actualOutput });

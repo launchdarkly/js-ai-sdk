@@ -308,6 +308,38 @@ describe('judge invocation', () => {
     ]);
   });
 
+  // The offline path owns the { score, reasoning } contract like the online paths: a judge config's own
+  // outputFormat would have the handler constrain the judge model to that schema, so its verdict could
+  // never parse.
+  it("never passes a judge config's outputFormat to the judge handler, and warns once per judge per run", async () => {
+    lifecycle.resolve.mockResolvedValue(
+      servedJudge({
+        provider: { name: 'Anthropic' },
+        messages: [{ role: 'system', content: 'Judge {{response_to_evaluate}}' }],
+        outputFormat: { type: 'json_schema', properties: { message: { type: 'string' } } },
+      }),
+    );
+    const anthropic = stubHandler('Anthropic', 'messages', async () => judgeReply(0.75, 'ok'));
+    await makeModule(routeHostedRun(new FakeApi(), [datasetRow(0), datasetRow(1)])).run(
+      run({
+        handler: undefined,
+        handlers: [stubHandler('OpenAI'), anthropic],
+        criteria: [new Judge('$ld:ai:judge:accuracy')],
+      }),
+    );
+    const judged = anthropic.mock.calls.map(([config]) => config);
+    expect(judged).toHaveLength(2);
+    for (const config of judged) expect('outputFormat' in config).toBe(false);
+    expect(judged[0].messages).toEqual([{ role: 'system', content: 'Judge {{response_to_evaluate}}' }]);
+    expect(criterionEvents().map((e) => e.data)).toEqual([
+      expect.objectContaining({ status: 'COMPLETE', score: 0.75 }),
+      expect.objectContaining({ status: 'COMPLETE', score: 0.75 }),
+    ]);
+    const warnings = warn.mock.calls.filter((call) => String(call[0]).includes('ignoring outputFormat'));
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0][0])).toContain('$ld:ai:judge:accuracy');
+  });
+
   it('leaves placeholders in generated output literal after the handler renders the rubric', async () => {
     let rendered = '';
     const handler = stubHandler('OpenAI', 'messages', async (config, _input, _tools, variables) => {

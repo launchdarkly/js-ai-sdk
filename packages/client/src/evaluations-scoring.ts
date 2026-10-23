@@ -15,7 +15,13 @@ import type { DatasetRow } from './evaluations.js';
 import { EvaluationsError, errorMessage, isPlainObject } from './evaluations-api.js';
 import { type Criterion, criterionType, Judge, type Scorer } from './evaluations-criteria.js';
 import { eventIdFor, mapBounded, type RowResult, type RunIdentity, rowIdentity } from './evaluations-runner.js';
-import { buildMessageHistory, FORMATTING_INSTRUCTIONS, numericScore, parseJudgeResponse } from './judge-scoring.js';
+import {
+  buildMessageHistory,
+  FORMATTING_INSTRUCTIONS,
+  numericScore,
+  parseJudgeResponse,
+  withoutOutputFormat,
+} from './judge-scoring.js';
 import { extractVariation } from './lifecycle.js';
 import { pythonRepr } from './python-format.js';
 import { findHandler } from './registry.js';
@@ -89,7 +95,10 @@ export async function resolveJudges(
     if (!isPlainObject(served?.config)) {
       throw new EvaluationsError(`LaunchDarkly judge '${judge.key}' returned an invalid AI config variation`);
     }
-    const { tools: _tools, ...config } = served.config as AiConfigRep;
+    // Neither the judge's tools nor its outputFormat reach the handler. Resolution is per run, so the
+    // outputFormat warning fires once per judge per run, not once per row.
+    const { tools: _tools, ...withoutTools } = served.config as AiConfigRep;
+    const config = withoutOutputFormat(withoutTools, judge.key);
     const meta = isPlainObject(served.meta) ? served.meta : {};
     const provider = isPlainObject(config.provider) ? config.provider.name : undefined;
     const mode = normalizeMode(typeof meta.mode === 'string' ? meta.mode : undefined);
