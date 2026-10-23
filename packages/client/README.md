@@ -325,7 +325,7 @@ const report = await writeSkills('*', '.claude/skills', {
 });
 ```
 
-**Know what `'*'` asks for.** It writes the **whole project library**, which puts every skill's `description` into the agent's context, including skills no AI Config references and skills belonging to other teams. `writeSkills(skillRefs(config), root)`, as in the first example, writes only what the resolved variation asked for.
+**Know what `'*'` asks for.** It writes the **whole project library**, which puts every skill's `description` into the agent's context, including skills no AI Config references and skills belonging to other teams. `writeSkills(skillRefs(config), root)`, as in the first example, writes only what the resolved variation asked for. At boot that is safe, because `skillRefs` throws for a config that could not be resolved. Under `watchSkills`, use `configSkills` instead: a list from `skillRefs` is fixed, so the watcher never sees the config change (see [Following an AI Config](#following-an-ai-config-configskills)).
 
 | Export | Description |
 |---|---|
@@ -335,11 +335,13 @@ const report = await writeSkills('*', '.claude/skills', {
 | `getSkillResult(key, { version? })` | The same retrieval, reporting **why**: resolves to `{ skill, reason, detail }`, where `reason` is `ok` / `absent` / `integrity_failure` / `store_unavailable` / `wrong_version`. Throws only when no store is configured. See [fail closed on tampering](#fail-closed-on-tampering-getskillresult). |
 | `getSkills(refs)` | Batch form. Accepts `SkillReference` values and bare key strings (string = latest). Results follow input order; missing or unverifiable entries are omitted, and a warning logs how many failed verification. |
 | `allSkills()` | Every verified skill the store holds, newest version per key. |
-| `writeSkills(skills, root, options?)` | Materialize to `<root>/<key>/SKILL.md`. Accepts `Skill` / `SkillReference` / key strings, or the literal `'*'`. Returns a `ReconcileReport`. Throws for a caller error (an unusable `root`, a bare string other than `'*'`), distinct from the per-skill `error` actions in the report. |
+| `writeSkills(skills, root, options?)` | Materialize to `<root>/<key>/SKILL.md`. Accepts `Skill` / `SkillReference` / key strings, the literal `'*'`, or a `SkillSource`, which it reads once. Returns a `ReconcileReport`. Throws for a caller error (an unusable `root`, a bare string other than `'*'`), distinct from the per-skill `error` actions in the report. A source that throws, rejects, or answers anything but an array of references and key strings is reported like an unavailable store: one run-level `error`, and nothing on disk changes. |
 | `InMemorySkillStore` | An in-memory `SkillStore` for local development and testing: `put(raw)`, `getObject(kind, key, version?)`, `allObjects(kind)`, `addListener(kind, fn)`, `removeListener(kind, fn)`. Holds several versions of a key: `getObject` answers a pin with exactly that version and an omitted version with the newest. `addListener` throws for any kind but `'skill'`. |
 | `FDv2SkillStore(sdkKey, options?)` | The delivery transport: a `SkillStore` fed by LaunchDarkly over the SDK-facing FDv2 channel. `start()`, `waitForSkills({ timeoutSeconds })`, `isInitialized()`, `close()`, `diagnostics`, `failed`, `addListener` / `removeListener`. `close()` is **final** — `start()` throws afterwards. Options (`FDv2SkillStoreOptions`): `mode` (`'stream'` default, or `'poll'`), `baseUri`, `streamUri`, `pollIntervalSeconds`, `readTimeoutSeconds`, `initialBackoffSeconds`, `maxBackoffSeconds` (all in seconds, each positive and finite, with `initialBackoffSeconds` no greater than `maxBackoffSeconds`; the constructor throws otherwise). **Server-side only.** See [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly). |
-| `watchSkills(skills, root, options?)` | `writeSkills` plus a re-reconcile on every delivery change, so with `'*'` revocation takes effect within `debounceMs` rather than at the next restart (see [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly) for an explicit list). Resolves to `{ report, watcher }`; `await watcher.close()` when done. Options (`WatchSkillsOptions`): everything `writeSkills` takes, plus `debounceMs` (milliseconds, default `SKILLS_DEFAULT_DEBOUNCE_MS`) and `onReconcile`. One watcher per root. |
-| `SkillWatcher` | Returned by `watchSkills`: `reconciles` (re-reconciles completed, excluding the initial one), `notify` (the registered change listener), `close()` (idempotent; detaches and awaits any reconcile in flight). |
+| `watchSkills(skills, root, options?)` | `writeSkills` plus a re-reconcile on every delivery change, and, for a `SkillSource`, on every change to one of its `configKeys`. Which changes in LaunchDarkly reach disk depends on the form of `skills`; see [Which changes reach disk](#which-changes-reach-disk). Resolves to `{ report, watcher }`; `await watcher.close()` when done. Options (`WatchSkillsOptions`): everything `writeSkills` takes, plus `debounceMs` (milliseconds, default `SKILLS_DEFAULT_DEBOUNCE_MS`) and `onReconcile`. One watcher per root. |
+| `SkillWatcher` | Returned by `watchSkills`: `reconciles` (re-reconciles completed, excluding the initial one), `notify()` (schedules a reconcile through the same debounce as a change; call it from your own listener), `close()` (idempotent; detaches from the store and the base client, and awaits any reconcile in flight). |
+| `configSkills(key, context)` | A `SkillSource` for the skills AI Config `key` pins for `context`, following that config. Each read evaluates the config afresh. See [Following an AI Config](#following-an-ai-config-configskills). |
+| `createSkillSource({ refs, configKeys })` / `SkillSource` | Build a frozen source by hand: `refs` is a function returning the current references (or a promise of them), and `configKeys` (default `[]`) names the AI Configs whose changes make a watcher read it again. Throws `TypeError` for a `refs` that is not a function, or a `configKeys` that is a bare string or holds anything but non-empty strings. |
 | `StoreDiagnostics` | What the transport has seen: `payloadsTransferred`, `skillObjectsReceived`, `objectsIgnored`, `objectsRevoked` (keys removed by a `delete-object` or dropped by a full transfer; a version bump or a tombstone for an unknown key does not count), `payloadsIgnored`, `hashlessObjects`, `connectionFailures`, `lastError`. |
 | `SKILLS_DEFAULT_BASE_URI` / `SKILLS_DEFAULT_STREAM_URI` | `'https://sdk.launchdarkly.com'` and `'https://stream.launchdarkly.com'`, the default hosts for `GET /sdk/poll` and `GET /sdk/stream`. |
 | `SKILLS_DEFAULT_DEBOUNCE_MS` | `500` — the `watchSkills` coalescing window in milliseconds. |
@@ -374,7 +376,7 @@ On macOS and Windows, write permission on the managed root **and its ancestors**
 
 **Skill content is opaque to the SDK.** `Skill.content` is a `Uint8Array` of the exact bytes that were hashed, and the SDK never parses or decodes it. There is no frontmatter accessor or YAML dependency; decode and parse the bytes yourself with a parser you trust.
 
-**No LaunchDarkly telemetry is emitted for skills.** Signals go through an internal no-op emitter; `client.track()` is never called and no LD context is involved.
+**No LaunchDarkly telemetry is emitted for skills.** Signals go through an internal no-op emitter, and no LD context is involved. The exception is `configSkills`: calling it sends one `$ld:ai:sdk:usage` event, and each read of its source is a real `variation` evaluation, which records an evaluation event in the base SDK just as `inspectConfig` does.
 
 #### Receiving skills from LaunchDarkly
 
@@ -412,7 +414,7 @@ try {
 
 - The store must implement the optional `addListener`; otherwise `watchSkills` throws rather than degrading to a one-shot reconcile.
 - Delivery changes are coalesced over `debounceMs` (default `SKILLS_DEFAULT_DEBOUNCE_MS`, 500 ms), so a payload of forty objects runs one reconcile, not forty. `onReconcile` receives each of those reports, never the initial one.
-- The watcher exposes `reconciles` (re-reconciles completed), `notify` (the registered listener, for tests), and `close()`, which detaches and awaits any reconcile in flight.
+- The watcher exposes `reconciles` (re-reconciles completed), `notify()` (schedules a reconcile through the same debounce), and `close()`, which detaches and awaits any reconcile in flight.
 - Do not point two watchers at one root, or call `writeSkills` on a watched root yourself: two interleaved reconciles of one root lose manifest entries.
 - `debounceMs` is in **milliseconds**, while `timeout` in the same options is in **seconds**, as are every `FDv2SkillStore` time option and `waitForSkills`' `timeoutSeconds`. The debounce is the one millisecond value in the skills API.
 
@@ -439,7 +441,7 @@ try {
 
 **Polling and streaming have separate hosts.** By default `/sdk/poll` goes to `https://sdk.launchdarkly.com` and `/sdk/stream` to `https://stream.launchdarkly.com`. Pass `baseUri` alone to use one host for both, or `streamUri` as well to set them independently.
 
-**Streaming is the default, and it is what makes revocation fast.** A `delete-object` reaches a live stream in seconds; with `mode: 'poll'` it arrives within one `pollIntervalSeconds` (default 30). With `watchSkills('*', …)`, a revoked skill's `SKILL.md` leaves the disk without a restart. With an explicit list such as `skillRefs(config)` it does not: a requested skill the store no longer holds stays in the requested set as an `error` action and is not pruned, and the watcher listens only to the skill store, not to flag changes, so unpinning a skill from a config is not seen either. Re-run `writeSkills` with a fresh list for those. During an outage the store keeps serving its last content, and `writeSkills`' default `onUnavailable: 'keep'` leaves managed files alone, so an outage does not read as "everything was revoked".
+**Streaming is the default, and it is what makes revocation fast.** A `delete-object` reaches a live stream in seconds; with `mode: 'poll'` it arrives within one `pollIntervalSeconds` (default 30). With `watchSkills('*', …)`, a revoked skill's `SKILL.md` leaves the disk without a restart. With a fixed list such as `skillRefs(config)` it does not: a requested skill the store no longer holds stays in the requested set as an `error` action and is not pruned, and a fixed list never re-reads the config, so a config moving to a new version or dropping a skill is not seen either. Use `configSkills` for a config-scoped watcher; see [Which changes reach disk](#which-changes-reach-disk). During an outage the store keeps serving its last content, and `writeSkills`' default `onUnavailable: 'keep'` leaves managed files alone, so an outage does not read as "everything was revoked".
 
 **Without the watcher, the revocation bound is process lifetime.** If you call `writeSkills` once at boot and never run `watchSkills`, a skill revoked after boot stays on disk, and in the agent's context, until the process reconciles again. To pull a skill immediately, restart or re-run `writeSkills`. Neither recalls content an agent has already read into a conversation.
 
@@ -450,6 +452,60 @@ try {
 > **Beta caveats, worth knowing before you deploy.** Payload signing does not exist on this channel yet, so delivery is TLS-only and the content hash establishes self-consistency, not origin authenticity. The SDK-facing FDv2 endpoints are available to every account. An account without Agent Skills access receives no skill content rather than an error status. An HTTP 403 is reported as a fatal error explaining what to check. `ld-relay` does not speak the FDv2 endpoints, so relay-only deployments cannot receive skills.
 
 **If every skill comes back empty, check `diagnostics.hashlessObjects`.** Objects without a `contentHash` are withheld, so a nonzero count means skills are being withheld, not that the environment has none. The count is cumulative, not the current size of the withheld set. The store logs an error per hashless object, plus a summary when its contents become wholly hashless or the withheld set changes (not repeated for an unchanged re-delivery). There is no fallback that skips verification.
+
+#### Following an AI Config: `configSkills`
+
+`watchSkills(configSkills(key, context), root)` keeps `root` in step with the skills one AI Config pins for one context. It is the form to use for config-scoped materialization under the watcher.
+
+```ts
+import { initClient } from '@launchdarkly/ai-server';
+import { configSkills, FDv2SkillStore, setSkillStore, watchSkills } from '@launchdarkly/ai-server/experimental';
+
+await initClient(); // a base LaunchDarkly client: the watcher hears config changes from it
+const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
+await store.waitForSkills({ timeoutSeconds: 10 });
+setSkillStore(store);
+
+const { report, watcher } = await watchSkills(
+  configSkills('support-agent', { kind: 'user', key: 'user-123' }),
+  '.claude/skills',
+);
+```
+
+The watcher subscribes to the base client's `update:support-agent` event before the initial reconcile. On that event, and on every skill-store change, it evaluates the config again and reconciles against the answer. The config and the skill content arrive on separate connections, in no fixed order, and both orders converge: a new version that is not in the store yet reports `error` and leaves the old file in place until it arrives, then replaces it. The old version is overwritten, never pruned first.
+
+**A read that fails changes nothing on disk.** No initialized AI client (`configSkills` never initializes one), a `variation` that throws or returns its default, a value that is not an AI Config, and an enabled config with a malformed `skills` field are all failed reads. Under `onUnavailable: 'keep'` the report carries one run-level `error` (empty key) and `ok` is `false`; under `'raise'` it throws. Only an answer from LaunchDarkly empties the set: a disabled variation, or an enabled config with no `skills`, reads as `[]`, and its skills leave disk.
+
+**Each read is a real evaluation.** It calls `variation(key, context, null)` on the base client, which records an evaluation event, as `inspectConfig` does. Under a watcher that is once per reconcile, and the debounce bounds it.
+
+**`watchSkills` throws if nothing would report a config change.** With a non-empty `configKeys`, it throws when no AI client is initialized, when the client has no `on` method (a client passed to `initClient` that implements only `variation`), and when `isOffline()` is true. A watcher that never hears about config changes looks exactly like one whose config never changed. To follow a config some other way, pass a source with an empty `configKeys` and call `watcher.notify()` from your own listener.
+
+**Daemon mode is not detected.** A base client with `useLdd: true` evaluates from a persistent store with no data source, so it has `on` and is not offline, but it never reports a change. A watcher on such a client follows skill-store changes only.
+
+**Several configs, or your own resolution, take a hand-built source.**
+
+```ts
+import { createSkillSource } from '@launchdarkly/ai-server/experimental';
+
+const source = createSkillSource({
+  refs: async () => resolveMySkills(), // an array of SkillReference values and key strings
+  configKeys: ['planner-agent', 'writer-agent'],
+});
+```
+
+`refs` must throw or reject when it cannot answer, rather than return `[]`: an empty answer prunes every managed skill. Any answer that is not an array of references and valid key strings, including one valid entry beside a malformed one, is a failed read. `writeSkills`' `timeout` bounds the read: `timeout: 0` never calls `refs`, and a promise still pending at the deadline is abandoned (it cannot be cancelled) and its result discarded, so a source with side effects must tolerate a result nobody reads. A synchronous `refs` cannot be interrupted.
+
+#### Which changes reach disk
+
+The form of `skills` decides which changes in LaunchDarkly a watcher ever writes:
+
+| Change in LaunchDarkly | `'*'` | fixed list | `SkillSource` |
+| --- | --- | --- | --- |
+| A skill is deleted (possible only once nothing pins it) | pruned | stays on disk, reported `error` on every run | already pruned, when the config stopped referencing it |
+| A config moves `pdf-extraction` v2 → v3 | unaffected: `'*'` already follows the newest version | v2 stays on disk, reported `error`; v3 is never written | v3 replaces v2 |
+| A config stops referencing a skill | unaffected: `'*'` asks for the whole library | stays on disk | pruned |
+
+A fixed list, `skillRefs(config)` included, is for a set that does not change for the life of the process.
 
 #### Observability: integrity failures are logged for your SIEM
 
@@ -810,7 +866,7 @@ All types are re-exported from this package. Handler packages import them from h
 | `ConfigArgs` | Arguments accepted by `config()` (key, handler, toolHandlers, registry) |
 | `LDVariationMeta` | LaunchDarkly metadata on a flag variation (enabled, variationKey, version, mode) |
 | `LDContext` | Owned by this package (structurally compatible with all LD SDK versions). Import from `@launchdarkly/ai-server` instead of directly from the LD SDK. |
-| `LDClientInterface` | Minimal interface `(variation, track, flush, close)` that any LD SDK client satisfies structurally. Returned by `initClient()` and `getClient()`. |
+| `LDClientInterface` | Minimal interface `(variation, track, flush, close)` that any LD SDK client satisfies structurally, plus optional `on`, `off` and `isOffline`, which `watchSkills` uses to follow an AI Config. Returned by `initClient()` and `getClient()`. |
 | `GraphOptions` | Options accepted by `graph()` (handlers, toolHandlers, graphJudge — no context) |
 | `GraphArgs` | Options accepted by `resolveGraph()` — extends `GraphOptions` with a required `context` |
 | `GraphDefinition` | A resolved agent graph: topology accessors, `runNode`, and the traverse primitives |
@@ -820,6 +876,7 @@ All types are re-exported from this package. Handler packages import them from h
 | `GraphTopology` | The parsed graph flag shape (`root` + `edges`) |
 | `Skill` | A verified skill document: `key`, `version`, `content` (`Uint8Array` — the verified verbatim bytes), `contentHash`, `name`, `description` |
 | `SkillReference` | A version-pinned pointer to a skill: `{ key, version }` |
+| `SkillSource` | A requested set read when it is needed: `{ refs, configKeys }`, built with `createSkillSource` or `configSkills` |
 | `SkillOutcome` | What `getSkillResult()` resolves to: `{ skill, reason, detail }`. `skill` is non-null exactly when `reason` is `'ok'` |
 | `SkillOutcomeReason` | The closed set of retrieval outcomes: `'absent' \| 'integrity_failure' \| 'ok' \| 'store_unavailable' \| 'wrong_version'` |
 | `SkillStore` | The structural seam skill content is retrieved through: `getObject(kind, key, version?)`, `allObjects`, optional `isInitialized()`, `addListener` / `removeListener`. A store without `isInitialized()` is treated as initialized. |

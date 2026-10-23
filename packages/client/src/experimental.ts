@@ -30,6 +30,7 @@ export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills
 export { FDv2SkillStore, SKILLS_DEFAULT_BASE_URI, SKILLS_DEFAULT_STREAM_URI } from './skills-fdv2.js';
 export type { WriteSkillsOptions } from './skills-fs.js';
 export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
+export { configSkills } from './skills-source.js';
 export type { WatchSkillsOptions } from './skills-watch.js';
 export { SKILLS_DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
 export type {
@@ -42,9 +43,10 @@ export type {
   SkillOutcome,
   SkillOutcomeReason,
   SkillReference,
+  SkillSource,
   SkillStore,
 } from './types.js';
-export { createSkill, createSkillOutcome, createSkillReference } from './types.js';
+export { createSkill, createSkillOutcome, createSkillReference, createSkillSource } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Evaluations from Code

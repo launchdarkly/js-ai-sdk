@@ -8,9 +8,11 @@
 
 + AIConfig
 allSkills
++ configSkills  usage=experimental.configSkills
 createSkill
 createSkillOutcome
 createSkillReference
++ createSkillSource
 + Criterion
 + DatasetRow
 + EvalRunResult
@@ -51,6 +53,7 @@ skillRefs
 SKILLS_DEFAULT_BASE_URI
 SKILLS_DEFAULT_DEBOUNCE_MS
 SKILLS_DEFAULT_STREAM_URI
++ SkillSource
 SkillStore
 SkillWatcher
 StoreDiagnostics

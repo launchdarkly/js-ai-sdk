@@ -371,6 +371,9 @@ export interface LDClientInterface {
     close(): void | Promise<void>;
     // (undocumented)
     flush(): Promise<void>;
+    isOffline?(): boolean;
+    off?(event: string, listener: (...args: unknown[]) => void): unknown;
+    on?(event: string, listener: (...args: unknown[]) => void): unknown;
     // (undocumented)
     track(eventName: string, context: LDContext, data?: unknown, metricValue?: number): void;
     // (undocumented)
@@ -712,7 +715,7 @@ export function withConversationId<T>(id: string, fn: () => T): T;
 
 // Warnings were encountered during analysis:
 //
-// temp/dts/types.d.ts:381:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
+// temp/dts/types.d.ts:428:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 

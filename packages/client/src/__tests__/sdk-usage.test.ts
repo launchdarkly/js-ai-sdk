@@ -168,6 +168,8 @@ const CALLS: Record<string, Call> = {
   'client.buildJudgeTasks': (buildJudgeTasks) => settle(buildJudgeTasks(judgeArgs())),
   'client.createHandler': (createHandler) =>
     fire(() => createHandler(['OpenAI', 'messages'], async () => ({ output: '' }))),
+  // Builds a source and does not read it.
+  'experimental.configSkills': (configSkills) => fire(() => configSkills('k', ctx)),
   // Throws on missing credentials; the report is the first statement, so it still lands.
   'experimental.initEvaluations': (initEvaluations) =>
     fire(() => {
