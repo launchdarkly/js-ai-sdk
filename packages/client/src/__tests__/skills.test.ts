@@ -45,7 +45,7 @@ vi.mock('@launchdarkly/node-server-sdk', () => ({ init: (...args: unknown[]) => 
 
 import * as experimental from '../experimental.js';
 import * as packageIndex from '../index.js';
-import { initClient, shutdown } from '../lifecycle.js';
+import { INIT_CLIENT_OPTIONS, initClient, shutdown } from '../lifecycle.js';
 import {
   _clearState,
   _setEmitterForTesting,
@@ -448,15 +448,18 @@ describe('package exports', () => {
       'utf-8',
     );
     for (const name of [...SKILLS_TYPES, ...SKILLS_VALUES]) {
-      expect(report, name).toMatch(new RegExp(`^export .*\\b${name}\\b`, 'm'));
-      expect(experimentalReport, name).not.toMatch(new RegExp(`^export .*\\b${name}\\b`, 'm'));
+      // Anchored on the declaration, so a name that only appears in another export's signature
+      // (`Skill` in `getSkill(): Promise<Skill | null>`) does not count as exported.
+      const declaration = new RegExp(`^export (declare )?(type|interface|class|function|const|enum) ${name}\\b`, 'm');
+      expect(report, name).toMatch(declaration);
+      expect(experimentalReport, name).not.toMatch(declaration);
     }
   });
 
   it('initClient options do not name the skill store', () => {
-    // The store has its own setter, `setSkillStore`, not an initClient option.
-    const report = readFileSync(new URL('../../etc/ai-server.api.md', import.meta.url), 'utf-8');
-    expect(report).not.toMatch(/skillStore/);
+    // The store has its own setter, `setSkillStore`, not an initClient option. INIT_CLIENT_OPTIONS
+    // is typed against the options type, so it lists every option and only those.
+    expect(Object.keys(INIT_CLIENT_OPTIONS).filter((key) => /skill/i.test(key))).toEqual([]);
   });
 
   it('exports the three fixed values from the package root with exact values', () => {

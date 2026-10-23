@@ -3,7 +3,11 @@
  *
  * A feature module (today, Agent Skills) registers its own cleanup when it
  * loads, and `shutdown()` runs whatever is registered, so `lifecycle.ts` never
- * imports a feature module.
+ * imports a feature module. Agent Skills is now core, so this is no longer
+ * about keeping core free of experimental imports. It stays for two reasons:
+ * `lifecycle.ts` stays independent of the skills modules, so they can be
+ * loaded lazily, and the `globalThis` slot below clears state across duplicate
+ * package copies.
  *
  * Hooks live on a `globalThis` symbol slot, so a hook registered from one
  * bundle (or a second copy of this package) is run by another's `shutdown()`.

@@ -4,7 +4,7 @@ import { config, initClient, setSkillStore as setNodeSkillStore } from '@launchd
 import * as nodeExperimental from '@launchdarkly/ai-node/experimental';
 import * as server from '@launchdarkly/ai-server';
 import { InMemorySkillStore, type SkillStore, setSkillStore } from '@launchdarkly/ai-server';
-import { initEvaluations } from '@launchdarkly/ai-server/experimental';
+import * as serverExperimental from '@launchdarkly/ai-server/experimental';
 
 const store: SkillStore = new InMemorySkillStore();
 setSkillStore(store);
@@ -13,4 +13,14 @@ setNodeSkillStore(store);
 // @ts-expect-error Agent Skills is not exported from the experimental subpath.
 export const experimentalGetSkill = nodeExperimental.getSkill;
 
-export const used = [config, initClient, server.config, initEvaluations, nodeExperimental.initEvaluations];
+// @ts-expect-error Nor from the server's experimental subpath, so a stale experimental.d.ts / .d.cts
+// (or typesVersions) that still declares it fails here.
+export const serverExperimentalGetSkill = serverExperimental.getSkill;
+
+export const used = [
+  config,
+  initClient,
+  server.config,
+  serverExperimental.initEvaluations,
+  nodeExperimental.initEvaluations,
+];

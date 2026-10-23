@@ -341,7 +341,7 @@ function isLDClient(value: unknown): value is LDClientInterface {
  * Every `InitBaseClientOptions` key `initClient` reads. Typed against the
  * options type, so adding an option without listing it here fails to compile.
  */
-const INIT_CLIENT_OPTIONS: Record<keyof InitBaseClientOptions, true> = {
+export const INIT_CLIENT_OPTIONS: Record<keyof InitBaseClientOptions, true> = {
   sdkKey: true,
   baseUri: true,
   streamUri: true,
