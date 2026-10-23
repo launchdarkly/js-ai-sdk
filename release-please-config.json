@@ -100,12 +100,42 @@
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
       "component": "@launchdarkly/ai-vercel-messages"
+    },
+    "packages/typesafe": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
+      "component": "@launchdarkly/ai-typesafe"
+    },
+    "packages/litellm-agents": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
+      "component": "@launchdarkly/ai-litellm-agents"
+    },
+    "packages/litellm-messages": {
+      "release-type": "node",
+      "versioning": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "include-v-in-tag": false,
+      "extra-files": ["src/version.ts"],
+      "component": "@launchdarkly/ai-litellm-messages"
     }
   },
   "changelog-sections": [
     { "type": "feat", "scope": "skills", "section": "Experimental" },
     { "type": "fix", "scope": "skills", "section": "Experimental" },
     { "type": "perf", "scope": "skills", "section": "Experimental" },
+    { "type": "feat", "scope": "evaluations", "section": "Experimental" },
+    { "type": "fix", "scope": "evaluations", "section": "Experimental" },
+    { "type": "perf", "scope": "evaluations", "section": "Experimental" },
     { "type": "feat", "section": "Features" },
     { "type": "feature", "section": "Features" },
     { "type": "fix", "section": "Bug Fixes" },

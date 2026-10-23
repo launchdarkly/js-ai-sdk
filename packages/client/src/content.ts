@@ -414,6 +414,22 @@ export function setToolCallContentAttributes(
   }
 }
 
+/**
+ * Renders a tool handler's return value as the text sent back to the provider.
+ *
+ * A string passes through unchanged, `null`/`undefined` becomes `''`, and anything else becomes JSON.
+ * A value JSON cannot encode (a cycle, a BigInt, a function) falls back to `String(value)`.
+ */
+export function toolResultString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return '';
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
 /** A string passes through unchanged; anything else becomes JSON. */
 function stringifyToolValue(value: unknown): string {
   return typeof value === 'string' ? value : JSON.stringify(value ?? null);

@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { context, propagation, trace } from '@opentelemetry/api';
 import { ConversationIdSpanProcessor } from './conversation.js';
 import {
@@ -116,7 +115,8 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
     console.warn(
       '[LaunchDarkly] Telemetry is disabled because one or more OpenTelemetry SDK ' +
         'packages are not installed. To enable, run:\n' +
-        `  npm install ${LD_OTEL_PEER_DEPS}`,
+        '  npm install @launchdarkly/ai-otel\n' +
+        `or install the packages individually:\n  npm install ${LD_OTEL_PEER_DEPS}`,
     );
     return null;
   }

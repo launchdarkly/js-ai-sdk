@@ -1,0 +1,15 @@
+# Public names of @launchdarkly/ai-vercel-messages (package root).
+# Approved public names for the API-surface check. Owned in CODEOWNERS.
+# One name per line, sorted case-insensitively. A trailing "# ..." is a note.
+#
+#   Name      public; must be exported
+#   - Name    leaving the public surface; may be exported or not
+#   + Name    joining the public surface; may be exported or not
+
+createVercelMessagesHandler  usage=vercel-messages.createVercelMessagesHandler
+vercelEvaluate  usage=vercel-messages.vercelEvaluate
+VercelEvaluateOptions
+VercelEvaluateResult
+vercelMessages  usage=vercel-messages.vercelMessages
+VercelMessagesOptions
+- VercelModelSource  # internal: not needed to init, configure, execute or read results

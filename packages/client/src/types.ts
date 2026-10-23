@@ -145,6 +145,17 @@ export type AiConfigRep = {
     judges?: Array<{ key: string; samplingRate: number }>;
   };
   evaluationMetricKey?: string;
+  /**
+   * Classifier questions for a TypeSafe judge. A non-empty list satisfies
+   * config validation when `instructions` and `messages` are absent.
+   */
+  classifiers?: Array<{
+    key: string;
+    type: string;
+    instructions: string;
+    eventKey: string;
+    criteria?: Record<string, string | null> | Array<string | null>;
+  }>;
   provider: { name: string };
   /**
    * Optional JSON Schema (type: 'object' at root) that the model output must
@@ -440,7 +451,8 @@ export function parseAiConfig(raw: unknown): ParseResult<AiConfigRep> {
 
   const hasInstructions = typeof raw.instructions === 'string';
   const hasMessages = Array.isArray(raw.messages) && raw.messages.length > 0;
-  if (!hasInstructions && !hasMessages) {
+  const hasClassifiers = Array.isArray(raw.classifiers) && raw.classifiers.length > 0;
+  if (!hasInstructions && !hasMessages && !hasClassifiers) {
     return {
       success: false,
       error: { message: 'AiConfigRep must have either instructions or a non-empty messages array' },
@@ -533,6 +545,8 @@ export type JudgeCallResult = {
   score: number;
   response: string;
   usage: { total: number; input: number; output: number };
+  /** Metric name for this score. Set when the judge produced one event per label. */
+  eventKey?: string;
 };
 
 export type ProviderResponse<T = string> = {
@@ -576,6 +590,17 @@ export type JudgeTask = {
   judgeMeta: VariationMeta;
   /** The LLM response to evaluate. */
   actualOutput: string;
+  /**
+   * The user input of the originating invocation, shown to the judge before the
+   * response. A TypeSafe judge reads this as Jev's `input` field.
+   */
+  userInput?: string;
+  /**
+   * The originating invocation's rendered tool-call trajectory, shown to the
+   * judge between the input and the response. A string, so the task survives
+   * structured clone. `''` when the invocation had no tools.
+   */
+  trajectory?: string;
   /** The LaunchDarkly context from the originating invocation. */
   userContext: LDContext;
   /** Optional template variables to pass to the judge handler. */
@@ -611,6 +636,18 @@ export type JudgeRunResult = JudgeCallResult & {
    * from the main thread after the worker posts its result.
    */
   trackData: TrackData & { judgeConfigKey: string };
+  /**
+   * Present when one judge call produced several scores, as a TypeSafe Jev
+   * classifier does. Keys are `configKey.questionKey`. `score` / `response` on
+   * this result are the first entry. Every entry carries the call's full usage
+   * and, for a classifier, its `eventKey`.
+   */
+  results?: Record<string, JudgeCallResult>;
+  /**
+   * One LaunchDarkly metric per classifier. When this is set, track each entry's
+   * `eventKey` and do not also track `evaluationMetricKey`.
+   */
+  metrics?: Array<{ eventKey: string; score: number; judgeConfigKey: string }>;
 };
 
 export type ProviderSetupFn = () => ProviderHandler;
@@ -821,7 +858,7 @@ export type GraphDefinition = {
   /** Walk root -> leaves (deepest last), awaiting each visitor result. */
   // biome-ignore lint/suspicious/noExplicitAny: T = any default keeps existing call-sites working without type annotations
   traverse: <T = any>(fn: TraverseVisitor<T>, ctx?: Record<string, unknown>) => Promise<T | undefined>;
-  /** Walk leaves -> root (root last), awaiting each visitor result. */
+  /** Walk children before parents (each node once, root last), awaiting each visitor result. */
   // biome-ignore lint/suspicious/noExplicitAny: T = any default keeps existing call-sites working without type annotations
   reverseTraverse: <T = any>(fn: TraverseVisitor<T>, ctx?: Record<string, unknown>) => Promise<T | undefined>;
 };

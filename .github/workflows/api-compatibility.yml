@@ -1,0 +1,42 @@
+name: API compatibility
+
+# A breaking change to a public name or signature must be declared with `!` in the PR
+# title, and a release's versions must match the changes since each package's last
+# release. See scripts/api-breaking.mjs.
+
+on:
+  pull_request:
+    # edited / labeled / unlabeled: a new title or the api-compatible label re-runs the check.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  api-compatibility:
+    name: API compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the base commit and every release tag
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: A breaking change is declared
+        if: github.head_ref != 'release-please--branches--main'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: node scripts/api-breaking.mjs pr --base "$BASE" --title "$TITLE" --labels "$LABELS"
+
+      - name: The release versions match their changes
+        if: github.head_ref == 'release-please--branches--main'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: node scripts/api-breaking.mjs release --base "$BASE" --labels "$LABELS"

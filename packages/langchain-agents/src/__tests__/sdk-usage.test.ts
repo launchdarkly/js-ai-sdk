@@ -5,13 +5,13 @@
 import type { LDClientInterface, LDContext } from '@launchdarkly/ai-server';
 import { initClient, shutdown } from '@launchdarkly/ai-server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { usageRows } from '../../../../scripts/api-surface.mjs';
 import {
   LD_AI_PACKAGE_NAME as AI_SDK_NAME,
   LD_AI_PACKAGE_VERSION as AI_SDK_VERSION,
 } from '../../../client/src/version.js';
-import { langchainGraph } from '../graph.js';
-import { createLangChainAgentsHandler, langchainAgents } from '../handler.js';
-import { toLangGraph } from '../native-graph.js';
+import { createLangChainAgentsHandler } from '../handler.js';
+import * as entry from '../index.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from '../version.js';
 
 const ctx: LDContext = { kind: 'user', key: 'user-1' };
@@ -58,6 +58,44 @@ async function drainSettled(stream: AsyncGenerator<unknown>): Promise<void> {
   }
 }
 
+/** Each call receives the export the list names, whatever its signature. */
+type Call = (fn: any) => Promise<void>;
+
+const fire = (call: () => unknown): Promise<void> => {
+  call();
+  return Promise.resolve();
+};
+
+/**
+ * How to call each usage-reporting helper. Which helpers are tested comes from
+ * this package's approved list (`usage=` fields), and each call receives the
+ * function the package exports under the name the list gives.
+ */
+const CALLS: Record<string, Call[]> = {
+  'langchain-agents.langchainAgents': [(fn) => settle(fn('k', 'q', ctx))],
+  'langchain-agents.createLangChainAgentsHandler': [(fn) => fire(() => fn())],
+  'langchain-agents.langchainGraph': [
+    (fn) => fire(() => fn('k', {})),
+    // The returned caller's methods run later; they must not add client.graph.* events.
+    (fn) => settle(fn('k', {}).invoke('q', ctx)),
+    (fn) => drainSettled(fn('k', {}).stream('q', ctx)),
+  ],
+  'langchain-agents.toLangGraph': [
+    (fn) => fire(() => fn(Promise.resolve({} as never))),
+    (fn) => settle(fn(Promise.resolve({ key: 'k', enabled: false } as never)).invoke('q')),
+  ],
+};
+
+const listRows = usageRows('ai-langchain-agents.txt', entry);
+
+const rows: Array<[string, () => Promise<void>]> = listRows.flatMap(({ id, fn }) =>
+  (CALLS[id] ?? []).map((call): [string, () => Promise<void>] => [id, () => call(fn)]),
+);
+
+it('has a call for every usage ID its list reports, and none it does not', () => {
+  expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());
+});
+
 describe('§3.27 langchain-agents helper usage', () => {
   let client: FakeClient;
 
@@ -72,37 +110,7 @@ describe('§3.27 langchain-agents helper usage', () => {
     await shutdown();
   });
 
-  it.each([
-    ['langchain-agents.langchainAgents', () => settle(langchainAgents('k', 'q', ctx))],
-    [
-      'langchain-agents.createLangChainAgentsHandler',
-      () => {
-        createLangChainAgentsHandler();
-        return Promise.resolve();
-      },
-    ],
-    [
-      'langchain-agents.langchainGraph',
-      () => {
-        langchainGraph('k', {});
-        return Promise.resolve();
-      },
-    ],
-    // The returned caller's methods run later; they must not add client.graph.* events.
-    ['langchain-agents.langchainGraph', () => settle(langchainGraph('k', {}).invoke('q', ctx))],
-    ['langchain-agents.langchainGraph', () => drainSettled(langchainGraph('k', {}).stream('q', ctx))],
-    [
-      'langchain-agents.toLangGraph',
-      () => {
-        toLangGraph(Promise.resolve({} as never));
-        return Promise.resolve();
-      },
-    ],
-    [
-      'langchain-agents.toLangGraph',
-      () => settle(toLangGraph(Promise.resolve({ key: 'k', enabled: false } as never)).invoke('q')),
-    ],
-  ] as Array<[string, () => Promise<void>]>)('%s sends one $ld:ai:sdk:usage event', async (helper, call) => {
+  it.each(rows)('%s sends one $ld:ai:sdk:usage event', async (helper, call) => {
     try {
       await call();
     } catch {

@@ -7,7 +7,7 @@ LangChain handler for `@launchdarkly/ai-server` using **LangGraph's `createReact
 ## Installation
 
 ```bash
-yarn add @launchdarkly/ai-server @launchdarkly/ai-langchain-agents
+yarn add @launchdarkly/ai-server @launchdarkly/ai-langchain-agents dotenv
 ```
 
 The default model is `ChatOpenAI`, so set `OPENAI_API_KEY` unless you pass a custom `BaseChatModel`.

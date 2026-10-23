@@ -48,6 +48,8 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
     ...actual,
     trace: {
       ...actual.trace,
+      // initClient() registers a tracer provider; the spread above drops TraceAPI's prototype methods.
+      setGlobalTracerProvider: vi.fn(),
       getTracer: vi.fn().mockReturnValue({
         startActiveSpan: vi.fn().mockImplementation((_name: string, fn: Function) => fn(mockSpan)),
       }),
@@ -76,6 +78,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
+import { initClient, resolveGraph } from '@launchdarkly/ai-server';
 import { toOpenAIAgents } from '../native-graph.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -107,7 +110,7 @@ function makeTwoNodeGraph() {
     getNode: (key: string) => (key === 'root-agent' ? rootNode : key === 'leaf-agent' ? leafNode : null),
     reverseTraverse: async <T>(fn: (node: any, ctx: Record<string, T>) => Promise<void>) => {
       const ctx: Record<string, T> = {};
-      await fn(leafNode, ctx); // leaf-first (reverse BFS)
+      await fn(leafNode, ctx); // leaf-first (post-order)
       await fn(rootNode, ctx);
     },
   };
@@ -161,6 +164,21 @@ describe('toOpenAIAgents', () => {
     expect(mockRunnerRun.mock.calls[0][2]).toEqual({ maxTurns: 7 });
   });
 
+  it("forwards only the cross-SDK OpenAI Agents keys from a node's model.parameters", async () => {
+    const def = makeTwoNodeGraph();
+    (def.root.config.model as any).parameters = {
+      temperature: 0.2,
+      verbosity: 'high',
+      store: true,
+      truncation: 'auto',
+      prompt_cache_retention: '24h',
+      context_management: [{ type: 'compaction' }],
+    };
+    await toOpenAIAgents(Promise.resolve(def as any)).invoke('hi');
+    const byName = Object.fromEntries(mockAgentConstructor.mock.calls.map(([args]) => [args.name, args]));
+    expect(byName['root-agent'].modelSettings).toEqual({ temperature: 0.2, text: { verbosity: 'high' } });
+  });
+
   it('sets no modelSettings and no run options when no node has model.parameters', async () => {
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
     for (const [args] of mockAgentConstructor.mock.calls) {
@@ -175,7 +193,7 @@ describe('toOpenAIAgents', () => {
     (def.getNode('leaf-agent')!.config.model as any).parameters = NEVER_FORWARDED_PARAMETERS;
     await toOpenAIAgents(Promise.resolve(def as any)).invoke('hi');
     for (const [args] of mockAgentConstructor.mock.calls) {
-      expectNoNeverForwardedValue(args);
+      expectNoNeverForwardedValue(args, ['instructions']);
     }
   });
 
@@ -513,5 +531,46 @@ describe('toOpenAIAgents', () => {
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.output_tokens', 3);
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.total_tokens', 10);
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.graph.path', expect.any(String));
+  });
+
+  // Real resolveGraph + reverseTraverse over a fake LD client; the topology is looked up by graph key.
+  const graphs: Record<string, Record<string, string[]>> = {
+    // P has a terminal child and a deeper one.
+    'uneven-graph': { root: ['P'], P: ['T1', 'Q'], Q: ['T2'] },
+    'cyclic-graph': { root: ['A'], A: ['B'], B: ['A'] },
+  };
+  const resolveRealGraph = async (key: string) => {
+    await initClient({
+      variation: async (k: string) =>
+        graphs[k]
+          ? {
+              root: 'root',
+              edges: Object.fromEntries(Object.entries(graphs[k]).map(([n, ts]) => [n, ts.map((t) => ({ key: t }))])),
+            }
+          : {
+              model: { name: 'gpt-4o' },
+              provider: { name: 'OpenAI' },
+              instructions: 'x',
+              _ldMeta: { enabled: true, variationKey: 'v1', version: 1 },
+            },
+      track: () => {},
+    } as any);
+    return resolveGraph(key, { context: ldContext });
+  };
+
+  it('builds a graph of uneven depth with the real reverseTraverse', async () => {
+    const def = await resolveRealGraph('uneven-graph');
+    await expect(toOpenAIAgents(Promise.resolve(def)).invoke('hi')).resolves.toBeDefined();
+    expect(createdAgents.map((a) => a.name)).toEqual(['T1', 'T2', 'Q', 'P', 'root']);
+  });
+
+  it('drops a cyclic edge with a warning instead of throwing', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const def = await resolveRealGraph('cyclic-graph');
+    await expect(toOpenAIAgents(Promise.resolve(def)).invoke('hi')).resolves.toBeDefined();
+    expect(createdAgents.map((a) => a.name)).toEqual(['B', 'A', 'root']);
+    expect(mockAgentConstructor.mock.calls[0][0].handoffs ?? []).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith('[LaunchDarkly] Dropping cyclic edge "B" -> "A"');
+    warn.mockRestore();
   });
 });
