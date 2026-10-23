@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-vercel-agents-0.2.0...@launchdarkly/ai-vercel-agents-0.3.0) (2026-10-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* forward the same model.parameters keys as the Python SDK ([#118](https://github.com/launchdarkly/js-ai-sdk/issues/118))
+
+### Features
+
+* **AIC-3623:** evals from code ([#143](https://github.com/launchdarkly/js-ai-sdk/issues/143)) ([dc74b48](https://github.com/launchdarkly/js-ai-sdk/commit/dc74b488b5c4f9918650c92e86d4cf45742504c5))
+
+
+### Bug Fixes
+
+* forward the same model.parameters keys as the Python SDK ([#118](https://github.com/launchdarkly/js-ai-sdk/issues/118)) ([f7883ce](https://github.com/launchdarkly/js-ai-sdk/commit/f7883cec93b05824cf772a790eee2d93c2246a1e))
+* give native graph spans their LaunchDarkly identity ([#101](https://github.com/launchdarkly/js-ai-sdk/issues/101)) ([4d97cfa](https://github.com/launchdarkly/js-ai-sdk/commit/4d97cfa4f81564f5389728dbd3e2d418e2f44f27))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.4.0 to ^0.5.0
+
 ## [0.2.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-vercel-agents-0.1.0...@launchdarkly/ai-vercel-agents-0.2.0) (2026-10-09)
 
 

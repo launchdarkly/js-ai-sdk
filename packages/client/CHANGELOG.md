@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.5.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.4.0...@launchdarkly/ai-server-0.5.0) (2026-10-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* forward the same model.parameters keys as the Python SDK ([#118](https://github.com/launchdarkly/js-ai-sdk/issues/118))
+* **client:** the client no longer loads .env. Add import 'dotenv/config' to your entrypoint (and install dotenv) if you relied on it.
+
+### Experimental
+
+* **evaluations:** hash eventId and contentHash as RFC 8785 canonical JSON, the same in every SDK ([c971649](https://github.com/launchdarkly/js-ai-sdk/commit/c97164991ee5b070c0d2a2970fadf74d63b3d5fb))
+* **evaluations:** Set JSON as standard for output to pass to judge ([#152](https://github.com/launchdarkly/js-ai-sdk/issues/152)) ([330da44](https://github.com/launchdarkly/js-ai-sdk/commit/330da44f899ea2581d1af10f7448ac7c89e1ca07))
+* **skills:** Correct the HTTP 403 advice now that server-side FDv2 is available to every account ([#141](https://github.com/launchdarkly/js-ai-sdk/issues/141)) ([5b7b732](https://github.com/launchdarkly/js-ai-sdk/commit/5b7b732c726dd701a84f7480848e71bfc1d50ff4))
+
+
+### Features
+
+* **AIC-3534:** add a TypeSafe Jev judge handler ([#122](https://github.com/launchdarkly/js-ai-sdk/issues/122)) ([0c1d6b7](https://github.com/launchdarkly/js-ai-sdk/commit/0c1d6b73261a17b83d11d29a28fcaa8facc11fc6))
+* **AIC-3623:** evals from code ([#143](https://github.com/launchdarkly/js-ai-sdk/issues/143)) ([dc74b48](https://github.com/launchdarkly/js-ai-sdk/commit/dc74b488b5c4f9918650c92e86d4cf45742504c5))
+
+
+### Bug Fixes
+
+* **AIC-3541:** accept a node-server-sdk client in initClient() without a cast ([#128](https://github.com/launchdarkly/js-ai-sdk/issues/128)) ([5819449](https://github.com/launchdarkly/js-ai-sdk/commit/58194493ebcea036115563ed2c2eda5aea303edd))
+* **AIC-3570:** re-resolve graph flags on every invoke and stream ([#145](https://github.com/launchdarkly/js-ai-sdk/issues/145)) ([ce4f72e](https://github.com/launchdarkly/js-ai-sdk/commit/ce4f72e1512db304710e42f5358238f8bc0aa8f8))
+* **AIC-3571:** visit every child before its parent in reverseTraverse ([#147](https://github.com/launchdarkly/js-ai-sdk/issues/147)) ([a17a2ce](https://github.com/launchdarkly/js-ai-sdk/commit/a17a2cebb973586bdfc0fa3fc8d79c9838d9a395))
+* **AIC-3576:** record deferred judge scores under the evaluated config ([#148](https://github.com/launchdarkly/js-ai-sdk/issues/148)) ([d9fbee6](https://github.com/launchdarkly/js-ai-sdk/commit/d9fbee654da27c97cfeb69ef694b33e2bbac2d16))
+* **AIC-3577:** send object tool results to the model as JSON ([#146](https://github.com/launchdarkly/js-ai-sdk/issues/146)) ([be41d87](https://github.com/launchdarkly/js-ai-sdk/commit/be41d876056fe84883207cd3f3ca74f42aaa42a0))
+* **AIC-3596:** point the missing-OTel warning and docs at @launchdarkly/ai-otel ([#144](https://github.com/launchdarkly/js-ai-sdk/issues/144)) ([9b5f32e](https://github.com/launchdarkly/js-ai-sdk/commit/9b5f32e26c7e98025ab53082da0b810026695b31))
+* **client:** show a judge an output of 0, false, {} or [] ([c971649](https://github.com/launchdarkly/js-ai-sdk/commit/c97164991ee5b070c0d2a2970fadf74d63b3d5fb))
+* **client:** stop loading dotenv from library code ([#69](https://github.com/launchdarkly/js-ai-sdk/issues/69)) ([fea34f3](https://github.com/launchdarkly/js-ai-sdk/commit/fea34f309dba7f94264efaf0d065b9d80b29a8c2))
+* forward the same model.parameters keys as the Python SDK ([#118](https://github.com/launchdarkly/js-ai-sdk/issues/118)) ([f7883ce](https://github.com/launchdarkly/js-ai-sdk/commit/f7883cec93b05824cf772a790eee2d93c2246a1e))
+* give native graph spans their LaunchDarkly identity ([#101](https://github.com/launchdarkly/js-ai-sdk/issues/101)) ([4d97cfa](https://github.com/launchdarkly/js-ai-sdk/commit/4d97cfa4f81564f5389728dbd3e2d418e2f44f27))
+* **judges:** a judge config's outputFormat must not reach the provider ([#56](https://github.com/launchdarkly/js-ai-sdk/issues/56)) ([8c6f4d2](https://github.com/launchdarkly/js-ai-sdk/commit/8c6f4d2c75a63bb39ec25e24a7c35abc5da2e4bc))
+
 ## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.3.0...@launchdarkly/ai-server-0.4.0) (2026-10-09)
 
 
