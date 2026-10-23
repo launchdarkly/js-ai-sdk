@@ -7,6 +7,21 @@ const { mockLdInit } = vi.hoisted(() => ({ mockLdInit: vi.fn() }));
 vi.mock('@launchdarkly/node-server-sdk', () => ({
   init: (...args: unknown[]) => mockLdInit(...args),
 }));
+// initClient(client) sets up telemetry, and shutdown() in afterEach would otherwise flush the
+// graph tests' spans to the real OTLP endpoint and time out on a slow network.
+vi.mock('@opentelemetry/exporter-trace-otlp-http', () => ({
+  OTLPTraceExporter: class {
+    export(_spans: unknown, done: (result: { code: number }) => void) {
+      done({ code: 0 });
+    }
+    shutdown() {
+      return Promise.resolve();
+    }
+    forceFlush() {
+      return Promise.resolve();
+    }
+  },
+}));
 
 import { usageRows } from '../../../../scripts/api-surface.mjs';
 import { config } from '../client.js';
