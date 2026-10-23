@@ -22,23 +22,37 @@ export const FORMATTING_INSTRUCTIONS = [
 /**
  * The conversation a judge is shown, as its `message_history` variable: what
  * was asked, what the agent did, what it answered, then how to format the
- * verdict. A part whose text is empty is skipped, so a unit with no tools gets
- * the history it got before trajectories existed.
+ * verdict. An empty part ({@link isEmptyPart}) is skipped, so a unit with no
+ * tools gets the history it got before trajectories existed.
  *
  * The formatting block is appended here, not by callers: judges built from the
  * AI Library's default templates read the JSON shape from
  * `{{message_history}}`, and a judge that stopped being told it would answer in
  * prose and fail every result as invalid output.
  *
- * Every part is rendered by the rule tool results follow, so a structured
- * output is shown as JSON and a rubric reads the same text in every SDK. An
- * output of `0`, `false` or `{}` is an answer, and is shown.
+ * Every other part is rendered by the rule tool results follow, so a
+ * structured output is shown as JSON and a rubric reads the same text in every
+ * SDK. An output of `0` or `false` is an answer, and is shown.
  */
 export function buildMessageHistory(parts: { userInput?: unknown; trajectory?: string; output?: unknown }): string {
   return [parts.userInput, parts.trajectory, parts.output, FORMATTING_INSTRUCTIONS]
+    .filter((part) => !isEmptyPart(part))
     .map(toolResultString)
-    .filter(Boolean)
     .join('\n\n');
+}
+
+/**
+ * `null`, `undefined`, `''`, an empty array or an empty plain object, tested
+ * before rendering. An empty container is skipped, as it was before structured
+ * outputs were rendered as JSON. JavaScript truthiness is not the test: it
+ * would also drop `0` and `false`, which are answers.
+ */
+function isEmptyPart(value: unknown): boolean {
+  if (value === null || value === undefined || value === '') return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value !== 'object') return false;
+  const proto = Object.getPrototypeOf(value);
+  return (proto === Object.prototype || proto === null) && Object.keys(value).length === 0;
 }
 
 /**
@@ -58,8 +72,9 @@ export function numericScore(score: unknown): number | undefined {
 /**
  * Parse a judge response into its score and reasoning. Accepts a JSON string,
  * optionally in markdown fences, or an already-decoded object. The reasoning is
- * the first of `reasoning` and `reason` whose text is not empty, rendered by
- * the tool-result rule: a string as it is, anything else as JSON. The score is
+ * the first of `reasoning` and `reason` that is not an empty part
+ * ({@link isEmptyPart}), rendered by the tool-result rule: a string as it is,
+ * anything else as JSON. The score is
  * returned untouched, for the caller to apply its own policy to, through
  * {@link numericScore}.
  *
@@ -71,7 +86,8 @@ export function parseJudgeResponse(raw: unknown): { score: unknown; reasoning: s
     return null;
   }
   const { score, reasoning, reason } = parsed as Record<string, unknown>;
-  return { score, reasoning: toolResultString(reasoning) || toolResultString(reason) };
+  const text = [reasoning, reason].find((value) => !isEmptyPart(value));
+  return { score, reasoning: toolResultString(text) };
 }
 
 /**

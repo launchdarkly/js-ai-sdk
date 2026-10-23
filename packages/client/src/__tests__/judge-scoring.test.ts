@@ -14,15 +14,14 @@ describe('buildMessageHistory', () => {
     expect(buildMessageHistory({ output: { city: 'Zürich' } })).toContain('{"city":"Zürich"}');
   });
 
-  it.each([null, undefined, ''])('skips an output of %j', (output) => {
+  // Tested before rendering, so an empty container adds no block.
+  it.each([null, undefined, '', {}, []])('skips an output of %j', (output) => {
     expect(buildMessageHistory({ userInput: 'q', output })).toBe(['q', FORMATTING_INSTRUCTIONS].join('\n\n'));
   });
 
   it.each([
     [0, '0'],
     [false, 'false'],
-    [{}, '{}'],
-    [[], '[]'],
   ])('shows an output of %j, which is an answer the judge has to grade', (output, text) => {
     expect(buildMessageHistory({ userInput: 'q', output })).toBe(['q', text, FORMATTING_INSTRUCTIONS].join('\n\n'));
   });
@@ -34,10 +33,11 @@ describe('parseJudgeResponse', () => {
     expect(parseJudgeResponse({ score: 1, reasoning: 0 })?.reasoning).toBe('0');
   });
 
-  it('falls back to reason only when reasoning has no text', () => {
-    expect(parseJudgeResponse({ score: 1, reasoning: '', reason: 'fallback' })?.reasoning).toBe('fallback');
-    expect(parseJudgeResponse({ score: 1, reasoning: null, reason: 'fallback' })?.reasoning).toBe('fallback');
-    expect(parseJudgeResponse({ score: 1, reasoning: [], reason: 'fallback' })?.reasoning).toBe('[]');
+  it.each([null, undefined, '', [], {}])('falls back to reason when reasoning is %j', (reasoning) => {
+    expect(parseJudgeResponse({ score: 1, reasoning, reason: 'fallback' })?.reasoning).toBe('fallback');
+  });
+
+  it('is empty when neither field has a value', () => {
     expect(parseJudgeResponse({ score: 1 })?.reasoning).toBe('');
   });
 });
