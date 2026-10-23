@@ -1,4 +1,8 @@
-.PHONY: start build clean test typecheck lint lint-fix lint-packages lint-packages-fix format format-fix code-check code-fix review size size-install
+.PHONY: start build clean test typecheck lint lint-fix lint-packages lint-packages-fix format format-fix code-check code-fix review size size-install audit
+
+# Report known high or critical vulnerabilities in runtime (non-dev) dependencies
+audit:
+	yarn audit --groups dependencies --level high
 
 # Run main.ts (yarn start)
 start:

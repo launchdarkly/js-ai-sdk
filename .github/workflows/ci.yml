@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly, so an advisory published against an unchanged lockfile still surfaces.
+  schedule:
+    - cron: '0 13 * * 1'
 
 # The `setup` job installs deps and builds @launchdarkly/ai-server (the core client),
 # then shares the compiled output with downstream jobs via the `client-dist`
@@ -88,6 +91,30 @@ jobs:
 
       - name: Package consistency (sherif)
         run: yarn lint:pkg
+
+  # ─── Dependency audit ───────────────────────────────────────────────────────
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    # A newly published advisory must not turn every open PR red; push and the weekly run still fail.
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Audit runtime dependencies
+        run: make audit
 
   # ─── Type check ─────────────────────────────────────────────────────────────
   typecheck:
