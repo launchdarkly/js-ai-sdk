@@ -17,7 +17,15 @@ import {
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
-import { buildPrompt, buildQueryPrompt, buildToolMCP, partitionTools } from './handler.js';
+import {
+  assertRunSucceeded,
+  buildPrompt,
+  buildQueryPrompt,
+  buildToolMCP,
+  type ClaudeAgentsHostOptions,
+  hostQueryOptions,
+  partitionTools,
+} from './handler.js';
 import { buildModelParameterQueryOptions } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
@@ -78,6 +86,8 @@ const runQuery = async (
   graphKey: string,
   runId: string,
   childSubAgentTools: ReturnType<typeof tool>[],
+  // From `hostQueryOptions`: the application's `cwd` and `settingSources`, `[]` unless given.
+  hostOptions: Record<string, unknown>,
   // Root-only: prior conversation turns, streamed to `query()` as multimodal-native
   // input. Sub-agents are reached through tool calls and never receive `history`.
   history?: Message[],
@@ -124,9 +134,15 @@ const runQuery = async (
       mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
       hooks,
       ...(systemPrompt ? { systemPrompt } : {}),
+      // Trusted application options, after `model.parameters` so a node config can't override them.
+      ...hostOptions,
     },
   })) {
-    if ('result' in message) {
+    // On `type`, not `'result' in message`: an error-subtype result has no `result` field, so that
+    // gate let a failed node answer with an empty string, and an API failure answered with its
+    // error text. Throwing fails the graph at the root, and fails the tool call at a sub-agent.
+    if (message.type === 'result') {
+      assertRunSucceeded(message);
       output = message.result;
       rawUsage = (message.usage as Record<string, unknown>) ?? {};
     }
@@ -169,11 +185,13 @@ export const toClaudeAgents = (
     toolHandlers?: Record<string, ToolHandlerFn | NativeTool>;
     /** LaunchDarkly context used for tracking events. Required for LD telemetry. */
     context?: LDContext;
-  },
+  } & ClaudeAgentsHostOptions,
 ): {
   invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 } => {
   reportUsage('claude-agents.toClaudeAgents', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  // Sent to every Anthropic node's `query()`, root and sub-agents alike.
+  const hostOptions = hostQueryOptions(opts ?? {});
   const invoke = async (
     input = '',
     variables: Record<string, unknown> = {},
@@ -222,6 +240,7 @@ export const toClaudeAgents = (
               def.key,
               runId,
               childSubAgentTools,
+              hostOptions,
               nodeHistory,
             );
           }
@@ -246,7 +265,16 @@ export const toClaudeAgents = (
           if (node.key === def.root?.key) return;
 
           const nodeKey = sanitizeName(node.key);
-          const childSubAgentTools = node.edges.map((e) => subAgentToolCtx[e.targetKey]).filter(Boolean);
+          const childSubAgentTools = node.edges.flatMap((e) => {
+            const childTool = subAgentToolCtx[e.targetKey];
+            // The root is never a tool, so only an edge back to the root or into a cycle lands here.
+            if (!childTool) {
+              // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a dropped edge must be visible
+              console.warn(`[LaunchDarkly] Dropping cyclic edge "${node.key}" -> "${e.targetKey}"`);
+              return [];
+            }
+            return [childTool];
+          });
 
           // Create a tool that wraps query() (or def.runNode for non-Anthropic) for this node.
           // The Claude SDK tool() takes a raw Zod shape (Record<string, ZodType>),

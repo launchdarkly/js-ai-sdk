@@ -27,7 +27,8 @@ output/
 spec.md
 tmp/
 integration-tests/**/.staging/
+integration-tests/**/.canary/
 
 .claude/
 # API Extractor working files
-packages/client/temp/
+packages/*/temp/

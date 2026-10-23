@@ -1,4 +1,13 @@
-import { createSdkMcpServer, type HookInput, query, type SDKUserMessage, tool } from '@anthropic-ai/claude-agent-sdk';
+import {
+  createSdkMcpServer,
+  type HookInput,
+  query,
+  type SDKResultMessage,
+  type SDKResultSuccess,
+  type SDKUserMessage,
+  type SettingSource,
+  tool,
+} from '@anthropic-ai/claude-agent-sdk';
 import {
   type AiConfigRep,
   addCachedTokensToInput,
@@ -32,6 +41,7 @@ import {
   type Tool,
   type ToolDefinitionInput,
   type ToolHandlerFn,
+  toolResultString,
   toSemconvFinishReason,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
@@ -337,7 +347,10 @@ class InferenceSpans {
   /** Feed every message of the run, in order. */
   record(message: { type: string }): void {
     if (message.type === 'assistant') {
-      this.absorb(message as AssistantResponse);
+      // Not a model response, so no span, no turn in the conversation and no usage. It can share
+      // the real response's `request_id`, which would otherwise append the error text to that
+      // response's output.
+      if (!isSynthetic(message as AssistantResponse)) this.absorb(message as AssistantResponse);
       return;
     }
     if (message.type === 'user') this.absorbUserTurn(message as UserTurn);
@@ -533,16 +546,41 @@ function failSpan(span: Span, error: unknown, endedSpans?: Set<Span>): void {
 }
 
 /**
- * Builds the error for a non-success result message.
+ * Throws when a `result` message reports a failed run, and narrows it to a success otherwise.
  *
- * `SDKResultError` has no `result` field, so the old `'result' in message` gate never matched one:
- * the loop simply ended, the run was reported OK with zeroed usage, and the real token spend and
- * `errors` were discarded. A run that hit `error_max_turns` or `error_max_budget_usd` genuinely
- * failed and has to surface as a failure.
+ * Two shapes fail. A non-`success` subtype is `SDKResultError`, which has no `result` field, so the
+ * old `'result' in message` gate never matched one: the loop simply ended, the run was reported OK
+ * with zeroed usage, and the real token spend and `errors` were discarded. A run that hit
+ * `error_max_turns` or `error_max_budget_usd` genuinely failed and has to surface as a failure.
+ *
+ * The other is a `success` subtype with `is_error` set, which is how the CLI reports a failed
+ * Anthropic API call. Measured against Agent SDK 0.3.220 with a key that had no credits: the run
+ * ends `success`, `is_error: true`, `api_error_status` set, and the error text in `result` — so a
+ * caller was handed "Credit balance is too low" as the model's answer. `is_error` is the test the
+ * agent SDK applies itself; it raises after the result, but this handler stops reading first.
  */
-function resultError(subtype: string, errors: ReadonlyArray<string> | undefined): Error {
-  const detail = errors?.length ? `: ${errors.join('; ')}` : '';
-  return new Error(`Claude agent run ended with ${subtype}${detail}`);
+export function assertRunSucceeded(message: SDKResultMessage): asserts message is SDKResultSuccess {
+  if (message.subtype !== 'success') {
+    const detail = message.errors?.length ? `: ${message.errors.join('; ')}` : '';
+    throw new Error(`Claude agent run ended with ${message.subtype}${detail}`);
+  }
+  if (message.is_error !== true) return;
+  const status = typeof message.api_error_status === 'number' ? ` (HTTP ${message.api_error_status})` : '';
+  const detail = message.result ? `: ${message.result}` : '';
+  throw new Error(`Claude agent run ended with an error result${status}${detail}`);
+}
+
+/**
+ * Whether an assistant message is one the CLI wrote itself rather than one the model returned.
+ *
+ * Measured against Agent SDK 0.3.220: a failed API call surfaces as an assistant message whose
+ * `model` is the literal `<synthetic>`, whose content is the error text and whose usage is zero, and
+ * the CLI emits the same after a response stops at `max_output_tokens`. Keyed on `model` rather than
+ * on the message's `error` field because the latter is set on both, and only the run's `result`
+ * says whether the run failed.
+ */
+function isSynthetic(message: AssistantResponse): boolean {
+  return message.message?.model === '<synthetic>';
 }
 
 /**
@@ -676,7 +714,7 @@ export const buildToolMCP = async (configTools: Record<string, Tool>, handlers: 
           throw new Error(`No handler registered for tool "${toolName}"`);
         }
         const result = await (handler as (...args: unknown[]) => unknown)(...args);
-        return { content: [{ type: 'text' as const, text: String(result) }] };
+        return { content: [{ type: 'text' as const, text: toolResultString(result) }] };
       },
     );
   });
@@ -923,15 +961,55 @@ function buildQueryOptions(
   };
 }
 
-export function createClaudeAgentsHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+/**
+ * Options for the Claude Agents handler factory.
+ *
+ * `cwd` and `settingSources` configure the host process the Agent SDK starts, not the model, so
+ * they come from the application and never from a config: `model.parameters` cannot set or
+ * override either. Each one given is passed to every `query()` call unchanged.
+ *
+ * Host settings load only when the application opts in. `settingSources` not given sends `[]`,
+ * because the Agent SDK's own default loads every source (`user`, `project`, `local`),
+ * including that host's plugins, skills, hooks, permission rules and `CLAUDE.md`, and its
+ * settings-file `env` (`ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX`, proxy
+ * variables), `apiKeyHelper` and `model`. Pass the sources to load them, e.g. `['user']`, or
+ * `['user', 'project', 'local']` for all. `cwd` not given is not sent, which leaves the process's
+ * working directory.
+ *
+ * `createClaudeAgentsHandler`, `claudeAgents`, `claudeGraph` and `toClaudeAgents` all take these.
+ */
+export type ClaudeAgentsHostOptions = {
+  /** Working directory for the Claude Code process. Defaults to `process.cwd()`. */
+  cwd?: string;
+  /**
+   * Which filesystem settings sources the CLI loads. Defaults to `[]`: none. The Agent SDK still
+   * reads the managed-settings policy tier, which no option turns off.
+   */
+  settingSources?: SettingSource[];
+};
+
+/** The host options for `query()`: `settingSources` always, `[]` unless given; `cwd` only if given. */
+export function hostQueryOptions({ cwd, settingSources }: ClaudeAgentsHostOptions): Record<string, unknown> {
+  return {
+    ...(cwd !== undefined && { cwd }),
+    settingSources: settingSources ?? [],
+  };
+}
+
+export function createClaudeAgentsHandler(
+  options: ContentCaptureOptions & ClaudeAgentsHostOptions = {},
+): ProviderHandler {
   reportUsage('claude-agents.createClaudeAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  return createClaudeAgentsHandlerInternal({ captureContent });
+  return createClaudeAgentsHandlerInternal(options);
 }
 
 /** `createClaudeAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createClaudeAgentsHandlerInternal({
   captureContent = false,
-}: ContentCaptureOptions = {}): ProviderHandler {
+  ...host
+}: ContentCaptureOptions & ClaudeAgentsHostOptions = {}): ProviderHandler {
+  // Trusted, so spread with the handler's own options, after `model.parameters`.
+  const hostOptions = hostQueryOptions(host);
   return createHandlerInternal(
     ['Anthropic', 'agent'],
     async (
@@ -1004,6 +1082,7 @@ export function createClaudeAgentsHandlerInternal({
               toolMCP,
               toolTelemetry?.hooks,
               buildModelParameterQueryOptions(config.model.parameters),
+              hostOptions,
             ),
           )) {
             recordConversationId(span, message);
@@ -1018,9 +1097,7 @@ export function createClaudeAgentsHandlerInternal({
               // The CLI's own run-level total is authoritative, so the catch below must not
               // overwrite it with the summed-per-response figure on the error-result path.
               rootUsageWritten = true;
-              if (message.subtype !== 'success') {
-                throw resultError(message.subtype, message.errors);
-              }
+              assertRunSucceeded(message);
               setOutputContentAttributes(span, captureContent, [
                 {
                   role: 'assistant',
@@ -1131,7 +1208,7 @@ export function createClaudeAgentsHandlerInternal({
             toolMCP,
             toolTelemetry?.hooks,
             buildModelParameterQueryOptions(config.model.parameters),
-            { includePartialMessages: true },
+            { ...hostOptions, includePartialMessages: true },
           ),
         )) {
           recordConversationId(span, message);
@@ -1159,9 +1236,7 @@ export function createClaudeAgentsHandlerInternal({
             finishRootSpan(span, config, rawUsage);
             // Authoritative: the paths below must not overwrite it with the per-response sum.
             rootUsageWritten = true;
-            if (message.subtype !== 'success') {
-              throw resultError(message.subtype, message.errors);
-            }
+            assertRunSucceeded(message);
             setOutputContentAttributes(span, captureContent, [
               // biome-ignore lint/suspicious/noExplicitAny: Claude SDK result field is not typed publicly
               { role: 'assistant', parts: [{ type: 'text', content: (message as any).result ?? fullOutput }] },
@@ -1220,16 +1295,19 @@ export const claudeAgents = (
   configKey: string,
   userInput: string,
   context: LDContext,
-  // Both `captureContent` and `variables` are lifted out of `options`: the first configures the
-  // handler, the second belongs to the invocation. Passing either through to `config()` drops it —
+  // `captureContent`, the host options and `variables` are lifted out of `options`: the first two
+  // configure the handler, the last belongs to the invocation. Passing either through to `config()` drops it —
   // which is how a `{{user_input}}` placeholder used to reach the model unsubstituted whenever a
   // caller used one of these wrappers instead of `config().invoke()`.
   {
     captureContent,
+    cwd,
+    settingSources,
     variables,
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
-    ContentCaptureOptions & {
+    ContentCaptureOptions &
+    ClaudeAgentsHostOptions & {
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
@@ -1238,6 +1316,6 @@ export const claudeAgents = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createClaudeAgentsHandlerInternal({ captureContent }),
+    handler: createClaudeAgentsHandlerInternal({ captureContent, cwd, settingSources }),
   }).invoke(userInput, context, variables);
 };

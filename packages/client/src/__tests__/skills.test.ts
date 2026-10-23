@@ -323,6 +323,19 @@ const EXPERIMENTAL_SKILLS_VALUES = [
   'writeSkills',
 ];
 
+/**
+ * The experimental entry point's runtime exports for Evaluations from Code.
+ * Listed here so the exact-equality check below covers the whole entry point.
+ */
+const EXPERIMENTAL_EVALUATIONS_VALUES = [
+  'EvalTool',
+  'EvaluationsError',
+  'EvaluationsModule',
+  'Judge',
+  'Scorer',
+  'initEvaluations',
+];
+
 /** The experimental entry point's type-only exports for Agent Skills. */
 const EXPERIMENTAL_SKILLS_TYPES = [
   'FDv2Mode',
@@ -405,14 +418,23 @@ const ROOT_VALUES = [
   'shutdown',
   'shutdownTelemetry',
   'textMessage',
+  'toolResultString',
   'toSemconvFinishReason',
   'waitForTelemetry',
   'withConversationId',
 ];
 
 describe('package exports', () => {
-  it('the experimental entry point exports exactly the documented skills values', () => {
-    expect(Object.keys(experimental).sort()).toEqual([...EXPERIMENTAL_SKILLS_VALUES].sort());
+  it('the experimental entry point exports exactly the documented skills and evaluations values', () => {
+    expect(Object.keys(experimental).sort()).toEqual(
+      [...EXPERIMENTAL_SKILLS_VALUES, ...EXPERIMENTAL_EVALUATIONS_VALUES].sort(),
+    );
+  });
+
+  it('no evaluations value is exported from the package root', () => {
+    for (const name of EXPERIMENTAL_EVALUATIONS_VALUES) {
+      expect(name in packageIndex, name).toBe(false);
+    }
   });
 
   it('the package root exports exactly the snapshotted values', () => {

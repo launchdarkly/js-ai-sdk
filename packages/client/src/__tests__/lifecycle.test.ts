@@ -108,8 +108,6 @@ vi.mock('@opentelemetry/api', () => ({
   },
 }));
 
-vi.mock('dotenv/config', () => ({}));
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeMockClient() {
@@ -1006,7 +1004,7 @@ describe('lifecycle', () => {
       const { initClient } = await import('../lifecycle.js');
       await expect(initClient()).resolves.toBeDefined();
 
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('npm install'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('npm install @launchdarkly/ai-otel'));
       warnSpy.mockRestore();
       vi.doMock('@opentelemetry/sdk-trace-node', mockNodeTracerProviderModule);
     });

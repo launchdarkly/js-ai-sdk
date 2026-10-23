@@ -7,7 +7,7 @@ This package carries all seven OpenTelemetry packages that [`@launchdarkly/ai-se
 ## Installation
 
 ```bash
-npm install @launchdarkly/ai-node @launchdarkly/ai-otel
+npm install @launchdarkly/ai-node @launchdarkly/ai-otel dotenv
 ```
 
 Add whichever handler package(s) your application uses:

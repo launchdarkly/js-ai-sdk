@@ -7,6 +7,10 @@ updates:
       interval: 'daily'
     cooldown:
       default-days: 7
+    ignore:
+      # vitest 5 drops vite as a dependency, which Yarn 1 then never installs (see #52).
+      - dependency-name: 'vitest'
+        update-types: ['version-update:semver-major']
   - package-ecosystem: 'github-actions'
     # '/' covers .github/workflows only; the composite actions pin their own actions.
     directories:

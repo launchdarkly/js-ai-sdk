@@ -9,6 +9,8 @@
  *
  * - **Agent Skills** — version-pinned skill references on AI Configs, verified
  *   skill content, and materialization to disk.
+ * - **Evaluations from Code** — run a dataset through local code and score
+ *   the outputs with LaunchDarkly judges or local scorers.
  */
 
 // ---------------------------------------------------------------------------
@@ -43,3 +45,24 @@ export type {
   SkillStore,
 } from './types.js';
 export { createSkill, createSkillOutcome, createSkillReference } from './types.js';
+
+// ---------------------------------------------------------------------------
+// Evaluations from Code
+// ---------------------------------------------------------------------------
+
+export type {
+  AIConfig,
+  DatasetRow,
+  EvalRunResult,
+  GenerationConfig,
+  GenerationMode,
+  GenerationOverrides,
+  InitEvaluationsOptions,
+  InlineDatasetRow,
+  RunOptions,
+  RunSummary,
+} from './evaluations.js';
+export { EvaluationsError, EvaluationsModule, initEvaluations } from './evaluations.js';
+export type { Criterion } from './evaluations-criteria.js';
+export { Judge, Scorer } from './evaluations-criteria.js';
+export { EvalTool } from './evaluations-tools.js';

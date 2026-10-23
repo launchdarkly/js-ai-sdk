@@ -47,7 +47,9 @@
     "build:watch": "tsup-node --watch",
     "clean": "rm -rf dist",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "api:check": "tsc --emitDeclarationOnly --declarationMap false --outDir temp/dts && api-extractor run",
+    "api:update": "tsc --emitDeclarationOnly --declarationMap false --outDir temp/dts && api-extractor run --local"
   },
   "dependencies": {
     "@launchdarkly/ai-server": "^0.4.0",
@@ -57,6 +59,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@microsoft/api-extractor": "^7.59.4",
     "@opentelemetry/context-async-hooks": "^2.8.0",
     "@opentelemetry/sdk-trace-base": "^2.8.0",
     "@types/node": "^22.0.0",

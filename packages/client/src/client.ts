@@ -1,7 +1,7 @@
 import { bindConversationId } from './conversation.js';
 import { buildJudgeTasksInternal, runJudges } from './judges.js';
 import { extractVariation } from './lifecycle.js';
-import { resolveHandlers, resolveTools } from './registry.js';
+import { findHandler, resolveHandlers, resolveTools } from './registry.js';
 import { reportUsage } from './sdk-usage.js';
 import { type ExecuteStreamDoneEvent, executeAndStream, executeAndTrack } from './tracking.js';
 import type {
@@ -43,11 +43,8 @@ function selectHandler(
   if (!provider) throw new Error('Provider not found');
   const normalizedMode = normalizeMode(mode);
 
-  const exact = resolvedHandlers?.find((h) => h.providesFor?.[0] === provider && h.providesFor?.[1] === normalizedMode);
-  if (exact) return exact;
-
-  const wildcard = resolvedHandlers?.find((h) => h.providesFor?.[0] === '*' && h.providesFor?.[1] === normalizedMode);
-  if (wildcard) return wildcard;
+  const selected = findHandler(resolvedHandlers, provider, normalizedMode);
+  if (selected) return selected;
 
   if (!resolvedHandlers?.some((h) => h.providesFor?.[0] === provider || h.providesFor?.[0] === '*')) {
     throw new Error(`Handler for provider ${provider} not found`);
@@ -85,6 +82,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       response: rawResponse,
       usage: llmUsage,
       trackData: baseTrackData,
+      trajectory,
     } = await executeAndTrack({
       configKey: key,
       config: aiConfig,
@@ -109,6 +107,8 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
         handlers: resolvedHandlerArray,
         llmResponse: llmResponseStr,
         baseTrackData,
+        userInput,
+        trajectory,
       });
       return {
         response: parsedResponse as T,
@@ -127,6 +127,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       llmResponse: llmResponseStr,
       baseTrackData,
       toolHandlers: resolvedTools,
+      trajectory,
     });
 
     return {
@@ -195,6 +196,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
             llmResponse: doneEvent.response,
             baseTrackData: doneEvent.trackData,
             toolHandlers: resolvedTools,
+            trajectory: doneEvent.trajectory,
           });
       yield {
         type: 'done',

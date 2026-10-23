@@ -7,7 +7,7 @@ Anthropic Claude handler for `@launchdarkly/ai-server` using the **Anthropic Mes
 ## Installation
 
 ```bash
-yarn add @launchdarkly/ai-server @launchdarkly/ai-claude-messages
+yarn add @launchdarkly/ai-server @launchdarkly/ai-claude-messages dotenv
 ```
 
 Set `ANTHROPIC_API_KEY` in your environment (the Anthropic SDK reads it automatically).

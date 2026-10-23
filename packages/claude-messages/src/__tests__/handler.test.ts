@@ -1458,7 +1458,8 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     await createClaudeMessagesHandler()(cfg as any, 'hi');
     expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
     for (const arg of mockMessagesCreate.mock.calls[0]) {
-      expectNoNeverForwardedValue(arg);
+      // The handler sets `system` itself; the deep check proves it does not carry the config's value.
+      expectNoNeverForwardedValue(arg, ['system']);
     }
   });
 
@@ -1495,7 +1496,7 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     expect(mockMessagesCreate.mock.calls[0][0].output_config).toEqual({ effort: 'low' });
   });
 
-  it('merges a renamed effort into an output_config that also sets other fields', async () => {
+  it('keeps only effort from an output_config that also sets other fields', async () => {
     mockMessagesCreate.mockResolvedValue(mockFinalResponse());
     const cfg = {
       ...baseConfig,
@@ -1503,7 +1504,7 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     };
     const handler = createClaudeMessagesHandler();
     await handler(cfg as any, 'hi');
-    expect(mockMessagesCreate.mock.calls[0][0].output_config).toEqual({ effort: 'high', format: { type: 'text' } });
+    expect(mockMessagesCreate.mock.calls[0][0].output_config).toEqual({ effort: 'high' });
   });
 
   it('leaves the call unchanged from today when model.parameters is absent', async () => {
@@ -1594,5 +1595,151 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     expect(call.model).toBe(baseConfig.model.name);
     expect(call.system).toBe('You are helpful.');
     expect(call.messages.at(-1).content).toBe('q');
+  });
+});
+
+describe('createClaudeMessagesHandler — cross-SDK allowlist (TESTING.md §1.12)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockChildSpans.length = 0;
+  });
+
+  // Every key on the Claude Messages list, each with a well-formed value. `effort` lands inside
+  // `output_config`, so it is not a top-level key of the request.
+  const CANONICAL_PARAMETERS = {
+    cache_control: { type: 'ephemeral' },
+    effort: 'high',
+    max_tokens: 2048,
+    output_config: { format: { type: 'json_schema', schema: {} } },
+    service_tier: 'auto',
+    stop_sequences: ['STOP'],
+    temperature: 0.5,
+    thinking: { type: 'enabled', budget_tokens: 1024 },
+    tool_choice: { type: 'auto' },
+    top_k: 40,
+    top_p: 0.9,
+  };
+  const EXPECTED_FORWARDED_KEYS = [
+    'cache_control',
+    'max_tokens',
+    'output_config',
+    'service_tier',
+    'stop_sequences',
+    'temperature',
+    'thinking',
+    'tool_choice',
+    'top_k',
+    'top_p',
+  ];
+  const HANDLER_OWNED_KEYS = ['messages', 'model', 'system', 'tools'];
+  const REMOVED = { container: 'cntr_1', inference_geo: 'us', metadata: { user_id: 'u' }, made_up_key: 1 };
+
+  const forwardedKeys = (call: Record<string, unknown>) =>
+    Object.keys(call)
+      .filter((key) => !HANDLER_OWNED_KEYS.includes(key))
+      .sort();
+
+  async function streamCall(parameters: Record<string, unknown>) {
+    mockMessagesStream.mockReturnValue({
+      [Symbol.asyncIterator]: async function* () {},
+      finalMessage: vi.fn().mockResolvedValue({
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'Hi' }],
+      }),
+    });
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters } };
+    for await (const _e of createClaudeMessagesHandler().stream?.(cfg as any, 'q', {}, {}) ?? []) {
+      // drain
+    }
+    return mockMessagesStream.mock.calls[0][0];
+  }
+
+  async function invokeCall(parameters: Record<string, unknown>) {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters } };
+    await createClaudeMessagesHandler()(cfg as any, 'q');
+    return mockMessagesCreate.mock.calls[0][0];
+  }
+
+  it('invoke forwards exactly the canonical keys', async () => {
+    const call = await invokeCall({ ...CANONICAL_PARAMETERS, ...REMOVED });
+    expect(forwardedKeys(call)).toEqual(EXPECTED_FORWARDED_KEYS);
+    expect(call.output_config).toEqual({ effort: 'high' });
+  });
+
+  it('stream forwards exactly the canonical keys, the same as invoke', async () => {
+    const streamed = await streamCall({ ...CANONICAL_PARAMETERS, ...REMOVED });
+    vi.clearAllMocks();
+    const invoked = await invokeCall({ ...CANONICAL_PARAMETERS, ...REMOVED });
+    expect(forwardedKeys(streamed)).toEqual(EXPECTED_FORWARDED_KEYS);
+    const pick = (call: Record<string, unknown>) =>
+      Object.fromEntries(EXPECTED_FORWARDED_KEYS.map((key) => [key, call[key]]));
+    expect(pick(streamed)).toEqual(pick(invoked));
+  });
+
+  it.each([
+    ['thinking', 'enabled'],
+    ['thinking', { budget_tokens: 1024 }],
+    ['thinking', { type: 'enabled' }],
+    ['thinking', { type: 'on', budget_tokens: 1024 }],
+    ['tool_choice', 'auto'],
+    ['tool_choice', {}],
+    ['tool_choice', { type: 'tool' }],
+    ['tool_choice', { type: 'required' }],
+    ['cache_control', ['ephemeral']],
+    ['cache_control', {}],
+    ['cache_control', { type: 'persistent' }],
+    ['output_config', 'high'],
+    ['output_config', {}],
+    ['output_config', { effort: 3 }],
+    ['output_config', { format: { type: 'json_schema', schema: {} } }],
+  ])('drops a malformed %s (%j) on invoke and stream', async (key, value) => {
+    const invoked = await invokeCall({ [key]: value });
+    expect(invoked).not.toHaveProperty(key);
+    vi.clearAllMocks();
+    const streamed = await streamCall({ [key]: value });
+    expect(streamed).not.toHaveProperty(key);
+  });
+
+  it.each([
+    ['thinking', { type: 'enabled', budget_tokens: 1024, x: 1 }, { type: 'enabled', budget_tokens: 1024 }],
+    ['thinking', { type: 'adaptive', display: 'omitted', budget_tokens: 1 }, { type: 'adaptive', display: 'omitted' }],
+    ['thinking', { type: 'disabled', budget_tokens: 1 }, { type: 'disabled' }],
+    [
+      'tool_choice',
+      { type: 'tool', name: 'lookup', disable_parallel_tool_use: true },
+      { type: 'tool', name: 'lookup', disable_parallel_tool_use: true },
+    ],
+    ['tool_choice', { type: 'auto', name: 'x' }, { type: 'auto' }],
+    ['cache_control', { type: 'ephemeral', ttl: '1h', scope: 'x' }, { type: 'ephemeral', ttl: '1h' }],
+  ])('keeps only the sub-keys a known %s type takes (%j)', async (key, value, expected) => {
+    const invoked = await invokeCall({ [key]: value });
+    expect(invoked[key]).toEqual(expected);
+    vi.clearAllMocks();
+    const streamed = await streamCall({ [key]: value });
+    expect(streamed[key]).toEqual(expected);
+  });
+
+  it('a malformed output_config does not stop a top-level effort from being forwarded', async () => {
+    const call = await invokeCall({ effort: 'low', output_config: 'nope' });
+    expect(call.output_config).toEqual({ effort: 'low' });
+  });
+
+  it('drops output_config.format on invoke and stream, so the API cannot enforce a schema the handler did not ask for', async () => {
+    const parameters = {
+      output_config: { effort: 'low', format: { type: 'json_schema', schema: { type: 'object' } } },
+    };
+    const invoked = await invokeCall(parameters);
+    expect(invoked.output_config).toEqual({ effort: 'low' });
+    vi.clearAllMocks();
+    const streamed = await streamCall(parameters);
+    expect(streamed.output_config).toEqual({ effort: 'low' });
+  });
+
+  it('drops a non-string top-level effort', async () => {
+    const call = await invokeCall({ effort: { level: 'high' } });
+    expect(call).not.toHaveProperty('output_config');
+    expect(call).not.toHaveProperty('effort');
   });
 });

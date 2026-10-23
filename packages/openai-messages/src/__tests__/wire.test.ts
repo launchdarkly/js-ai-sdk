@@ -84,7 +84,7 @@ describe('createOpenAIHandler — wire-level request body', () => {
     expect(capturedBody?.temperature).toBe(0.25);
   });
 
-  it('forwards store (no generation effect, but does not break the handler) and drops background (would break it)', async () => {
+  it('drops store (data retention) and background (would break the handler) from the request body', async () => {
     const { createOpenAIHandler } = await import('../handler.js');
     const config = {
       model: { name: 'gpt-4o', parameters: { store: true, background: true } },
@@ -95,7 +95,32 @@ describe('createOpenAIHandler — wire-level request body', () => {
     const handler = createOpenAIHandler();
     await handler(config as any, 'hi');
 
-    expect(capturedBody?.store).toBe(true);
+    expect(capturedBody).not.toHaveProperty('store');
     expect(capturedBody).not.toHaveProperty('background');
+  });
+
+  it('sends an object tool result to the model as JSON, not "[object Object]"', async () => {
+    const toolCallBody = {
+      ...finalResponseBody(),
+      output: [{ type: 'function_call', name: 'weather', call_id: 'call_1', arguments: '{}' }],
+      output_text: '',
+    };
+    const bodies: Array<Record<string, any>> = [];
+    fetchMock.mockImplementation(async (_url: unknown, init: RequestInit) => {
+      bodies.push(JSON.parse(init.body as string));
+      return mockFetchResponse(bodies.length === 1 ? toolCallBody : finalResponseBody());
+    });
+    const { createOpenAIHandler } = await import('../handler.js');
+    const config = {
+      model: { name: 'gpt-4o' },
+      provider: { name: 'OpenAI' },
+      instructions: 'You are helpful.',
+      tools: { weather: { name: 'weather', type: 'function' as const, parameters: {} } },
+    };
+
+    await createOpenAIHandler()(config as any, 'hi', { weather: () => ({ temp: 72, city: 'Zürich' }) });
+
+    const output = bodies[1].input.find((item: any) => item.type === 'function_call_output');
+    expect(output.output).toBe('{"temp":72,"city":"Zürich"}');
   });
 });

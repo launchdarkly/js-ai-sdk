@@ -104,7 +104,7 @@ const conversationIdFrom = (ctx: Context): string | undefined => {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 };
 
-const recordEvaluationOnSpan = (span: Span, evaluation: JudgeEvaluation): void => {
+const recordEvaluationOnSpan = (span: Span, evaluation: JudgeEvaluation, mirrorAttributes: boolean): void => {
   if (!span.isRecording()) return;
   const attrs: Attributes = {
     'gen_ai.evaluation.name': evaluation.name,
@@ -112,6 +112,9 @@ const recordEvaluationOnSpan = (span: Span, evaluation: JudgeEvaluation): void =
   };
   if (evaluation.explanation) attrs['gen_ai.evaluation.explanation'] = evaluation.explanation;
   span.addEvent('gen_ai.evaluation.result', attrs);
+  // A classifier records one event per label. Span attributes hold a single name and score,
+  // so only the first evaluation is mirrored. Later events keep their own attributes.
+  if (!mirrorAttributes) return;
   for (const [key, value] of Object.entries(attrs)) span.setAttribute(key, value as never);
 };
 
@@ -222,14 +225,15 @@ export function bindSpanContext<T, TReturn, TNext>(
  */
 export async function withJudgeEvaluation<T>(
   name: string,
-  fn: (record: (score: number, explanation?: string) => void) => Promise<T>,
+  fn: (record: (score: number, explanation?: string, name?: string) => void) => Promise<T>,
 ): Promise<T> {
   const capture: JudgeEvalCapture = { name, released: false };
   return context.with(context.active().setValue(JUDGE_EVAL_KEY, capture), async () => {
     try {
-      return await fn((score, explanation) => {
-        capture.evaluation = { name: capture.name, score, explanation };
-        if (capture.span) recordEvaluationOnSpan(capture.span, capture.evaluation);
+      return await fn((score, explanation, name) => {
+        const mirrorAttributes = capture.evaluation === undefined;
+        capture.evaluation = { name: name ?? capture.name, score, explanation };
+        if (capture.span) recordEvaluationOnSpan(capture.span, capture.evaluation, mirrorAttributes);
       });
     } finally {
       capture.released = true;

@@ -26,7 +26,7 @@ That call is the whole integration. Everything it does is configured in LaunchDa
 - Run agents and multi-step graphs, where each step can use a different provider
 - Score output quality with judges, including scoring that stays off the request path
 - See cost, latency, token usage, errors, and full conversations with no instrumentation code
-- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, Vercel AI SDK, or your own handler
+- Keep the providers and frameworks you already run: OpenAI, Anthropic, LangChain, Vercel AI SDK, LiteLLM, or your own handler
 
 - [What you get](#what-you-get)
 - [How It Works](#how-it-works)
@@ -92,6 +92,9 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-langchain-agents](packages/langchain-agents/README.md)`     | `*` (any) | `agent`    | LangGraph `createReactAgent` — managed ReAct loop     |
 | `[@launchdarkly/ai-vercel-messages](packages/vercel-messages/README.md)`       | `*` (any) | `messages` | AI SDK 7 `generateText` / `streamText` / `experimental_evaluate` via AI Gateway |
 | `[@launchdarkly/ai-vercel-agents](packages/vercel-agents/README.md)`           | `*` (any) | `agent`    | AI SDK 7 `ToolLoopAgent` and native graph runner      |
+| `[@launchdarkly/ai-litellm-messages](packages/litellm-messages/README.md)`     | `*` (any) | `messages` | OpenAI-compatible requests through a LiteLLM proxy    |
+| `[@launchdarkly/ai-litellm-agents](packages/litellm-agents/README.md)`         | `*` (any) | `agent`    | OpenAI Agents SDK through a LiteLLM proxy              |
+| `[@launchdarkly/ai-typesafe](packages/typesafe/README.md)`                     | TypeSafe  | `messages` | TypeSafe Jev judge handler                            |
 
 
 ## Module format support
@@ -115,7 +118,7 @@ Optional dependencies stay behind a runtime `import()` in both formats. This cov
 **Node.js** — single install, no peer dependency wiring:
 
 ```bash
-npm install @launchdarkly/ai-node @launchdarkly/ai-openai-messages
+npm install @launchdarkly/ai-node @launchdarkly/ai-openai-messages dotenv
 ```
 
 `@launchdarkly/ai-node` is a thin barrel that re-exports all of `@launchdarkly/ai-server` and carries `@launchdarkly/node-server-sdk` as a hard dependency. `initClient()` auto-discovers it at runtime — no extra setup required.
@@ -123,7 +126,7 @@ npm install @launchdarkly/ai-node @launchdarkly/ai-openai-messages
 **Edge / custom runtime** (Vercel, Cloudflare, etc.) — use the core package and pass your own client:
 
 ```bash
-npm install @launchdarkly/ai-server @launchdarkly/vercel-server-sdk @launchdarkly/ai-openai-messages
+npm install @launchdarkly/ai-server @launchdarkly/vercel-server-sdk @launchdarkly/ai-openai-messages dotenv
 ```
 
 Then call `initClient(preInitializedClient)` with your platform's LD client before the first AI call.
@@ -131,7 +134,7 @@ Then call `initClient(preInitializedClient)` with your platform's LD client befo
 **With telemetry** (recommended for production) — traces export to the LaunchDarkly Observability dashboard:
 
 ```bash
-npm install @launchdarkly/ai-node @launchdarkly/ai-otel @launchdarkly/ai-openai-messages
+npm install @launchdarkly/ai-node @launchdarkly/ai-otel @launchdarkly/ai-openai-messages dotenv
 ```
 
 No code changes are needed between the two — `initClient()` detects whether the OTel packages are present at runtime and configures the tracer provider automatically. If they are absent, the SDK logs a one-time `console.warn` with the exact install command and continues normally.
@@ -142,6 +145,12 @@ No code changes are needed between the two — `initClient()` detects whether th
 cp .env.example .env
 # Fill in LD_SDK_KEY and the API key for your provider
 ```
+
+LiteLLM integrations additionally require `LITELLM_BASE_URL` to point to the
+proxy's OpenAI-compatible `/v1` endpoint. Set `LITELLM_API_KEY` only when the
+proxy has authentication enabled. Provider credentials belong on the proxy.
+
+The SDK does not load `.env` itself; it only reads `process.env`. The examples below start with `import 'dotenv/config';` so that your app, not the library, decides whether a `.env` file is loaded. That import needs `dotenv` installed, which the install commands above include. Drop both if you set the environment another way.
 
 ### 3. Call a model
 
@@ -184,6 +193,8 @@ console.log(result.response);
 | `vercelMessages`    | `@launchdarkly/ai-vercel-messages`    | `ai`                             | `generateText` / `streamText` / `experimental_evaluate` |
 | `vercelEvaluate`    | `@launchdarkly/ai-vercel-messages`    | `ai`                             | `experimental_evaluate`      |
 | `vercelAgents`      | `@launchdarkly/ai-vercel-agents`      | `ai`                             | `ToolLoopAgent`              |
+| `litellmMessages`   | `@launchdarkly/ai-litellm-messages`   | `openai`                         | LiteLLM proxy chat completions |
+| `litellmAgents`     | `@launchdarkly/ai-litellm-agents`     | `@openai/agents`                 | OpenAI Agents via LiteLLM proxy |
 
 
 ---
@@ -296,7 +307,7 @@ await shutdown();
 
 `stream()` uses the same model-driven router and graph telemetry as `invoke()`, and yields `GraphStreamEvent` values (`node_start`, `chunk`+`nodeKey`, `node_done`, `handoff`, final `done`) so callers can render per-node UI.
 
-Provider packages also export single-provider conveniences (`claudeGraph`, `openaiGraph`, `langchainGraph`) that pre-bind their handler. For mixed-provider graphs, use the base `graph()` and pass multiple handlers.
+Provider packages also export single-provider conveniences (`claudeGraph`, `openaiGraph`, `langchainGraph`, `vercelGraph`, `litellmGraph`) that pre-bind their handler. For mixed-provider graphs, use the base `graph()` and pass multiple handlers.
 
 ---
 
@@ -353,6 +364,21 @@ import { toOpenAIAgents } from '@launchdarkly/ai-openai-agents';
 const result = await toOpenAIAgents(
   resolveGraph('support-graph', { context }),
   { toolHandlers: registry.tools, context }
+).invoke('I was double charged');
+```
+
+##### `toLiteLLMAgents` — OpenAI Agents SDK over LiteLLM
+
+Builds the same native Agents SDK handoff tree while binding each evaluated
+node model to the configured LiteLLM proxy.
+
+```ts
+import { resolveGraph } from '@launchdarkly/ai-server';
+import { toLiteLLMAgents } from '@launchdarkly/ai-litellm-agents';
+
+const result = await toLiteLLMAgents(
+  resolveGraph('support-graph', { context }),
+  { toolHandlers: registry.tools },
 ).invoke('I was double charged');
 ```
 
@@ -535,7 +561,7 @@ When running inside `graph()`, every node's events carry the graph key, tool inv
 
 ### Optional peer dependencies
 
-The OpenTelemetry SDK packages are **optional peer dependencies** of `@launchdarkly/ai-server`, detected at runtime via dynamic import. `@launchdarkly/node-server-sdk` is an optional peer dependency of `@launchdarkly/ai-server` but a **hard dependency** of `@launchdarkly/ai-node`.
+The OpenTelemetry SDK packages are **optional peer dependencies** of `@launchdarkly/ai-server`, detected at runtime via dynamic import. Install `@launchdarkly/ai-otel` to get all of them in one step. `@launchdarkly/node-server-sdk` is an optional peer dependency of `@launchdarkly/ai-server` but a **hard dependency** of `@launchdarkly/ai-node`.
 
 **`@launchdarkly/node-server-sdk`:**
 - **Via `@launchdarkly/ai-node`:** Always present — `initClient(options?)` auto-discovers it with no extra configuration.
@@ -543,7 +569,7 @@ The OpenTelemetry SDK packages are **optional peer dependencies** of `@launchdar
 
 **OTel SDK packages** (`sdk-trace-node`, `exporter-trace-otlp-http`, etc.):
 - **If installed:** `initClient()` sets up a `NodeTracerProvider` with a GZIP-compressed OTLP HTTP exporter, `AsyncLocalStorageContextManager`, and W3C trace-context/baggage propagators — no code changes needed.
-- **If not installed:** `initClient()` emits a single `console.warn` with the install command and continues. Feature flags and AI calls work normally; spans become no-ops.
+- **If not installed:** `initClient()` emits a single `console.warn` with the install command (`npm install @launchdarkly/ai-otel`) and continues. Feature flags and AI calls work normally; spans become no-ops.
 
 See [§1. Install](#1-install) for the exact commands.
 
@@ -607,6 +633,9 @@ yarn start [example] [flag-key] [user-input]
 | `vercel-messages`   | `yarn start vercel-messages` | Vercel AI SDK messages handler via AI Gateway                                    |
 | `vercel-direct`     | `yarn start vercel-direct` | Vercel messages handler with an injected `@ai-sdk/openai` model (no Gateway)    |
 | `vercel-evaluate`   | `yarn start vercel-evaluate` | Vercel generation followed by typed `experimental_evaluate`                     |
+| `litellm`           | `yarn start litellm` | `config()` routing both messages and agents through LiteLLM |
+| `litellm-agents`    | `yarn start litellm-agents` | `litellmAgents()` through the configured LiteLLM proxy |
+| `litellm-messages`  | `yarn start litellm-messages` | `litellmMessages()` through the configured LiteLLM proxy |
 
 
 **Examples:**
@@ -648,7 +677,9 @@ js-ai-sdk/
 │   ├── openai-agents/   # @launchdarkly/ai-openai-agents
 │   ├── openai-messages/ # @launchdarkly/ai-openai-messages
 │   ├── langchain-agents/   # @launchdarkly/ai-langchain-agents
-│   └── langchain-messages/ # @launchdarkly/ai-langchain-messages
+│   ├── langchain-messages/ # @launchdarkly/ai-langchain-messages
+│   ├── litellm-agents/     # @launchdarkly/ai-litellm-agents
+│   └── litellm-messages/   # @launchdarkly/ai-litellm-messages
 ├── .env.example         # Template — copy to .env and fill in your values
 └── agents.md            # Architecture reference for AI agents and contributors
 ```

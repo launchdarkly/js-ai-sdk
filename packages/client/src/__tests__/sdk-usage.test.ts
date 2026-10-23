@@ -8,10 +8,13 @@ vi.mock('@launchdarkly/node-server-sdk', () => ({
   init: (...args: unknown[]) => mockLdInit(...args),
 }));
 
+import { usageRows } from '../../../../scripts/api-surface.mjs';
 import { config } from '../client.js';
-import { graph, resolveGraph } from '../graph.js';
-import { buildJudgeTasks, runJudge } from '../judges.js';
-import { initClient, inspectConfig, shutdown } from '../lifecycle.js';
+import * as experimentalEntry from '../experimental.js';
+import { graph } from '../graph.js';
+import * as rootEntry from '../index.js';
+import { buildJudgeTasks } from '../judges.js';
+import { initClient, shutdown } from '../lifecycle.js';
 import { SDK_INFO_CONTEXT } from '../sdk-info.js';
 import { reportUsage } from '../sdk-usage.js';
 import type {
@@ -22,7 +25,6 @@ import type {
   ProviderHandler,
   TrackData,
 } from '../types.js';
-import { createHandler } from '../utils.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from '../version.js';
 
 const ctx: LDContext = { kind: 'user', key: 'user-1' };
@@ -141,35 +143,50 @@ function judgeArgs() {
   };
 }
 
-const rows: Array<[string, () => Promise<void>]> = [
-  ['client.config.invoke', () => settle(config({ key: 'k' }).invoke('q', ctx))],
-  [
-    'client.config.stream',
-    () => {
-      config({ key: 'k' }).stream('q', ctx);
-      return Promise.resolve();
-    },
-  ],
-  ['client.graph.invoke', () => settle(graph('k', {}).invoke('q', ctx))],
-  [
-    'client.graph.stream',
-    () => {
-      graph('k', {}).stream('q', ctx);
-      return Promise.resolve();
-    },
-  ],
-  ['client.resolveGraph', () => settle(resolveGraph('k', { context: ctx }))],
-  ['client.inspectConfig', () => settle(inspectConfig('k', ctx))],
-  ['client.runJudge', () => settle(runJudge({} as JudgeTask, []))],
-  ['client.buildJudgeTasks', () => settle(buildJudgeTasks(judgeArgs()))],
-  [
-    'client.createHandler',
-    () => {
-      createHandler(['OpenAI', 'messages'], async () => ({ output: '' }));
-      return Promise.resolve();
-    },
-  ],
+/** Each call receives the export the list names, whatever its signature. */
+type Call = (fn: any) => Promise<void>;
+
+const fire = (call: () => unknown): Promise<void> => {
+  call();
+  return Promise.resolve();
+};
+
+/**
+ * How to call each usage-reporting helper. Which helpers are tested comes from
+ * the approved lists' `usage=` fields, and each call receives the function the
+ * entry point exports under the name the list gives, so a row proves that
+ * name reports that ID.
+ */
+const CALLS: Record<string, Call> = {
+  'client.config.invoke': (config) => settle(config({ key: 'k' }).invoke('q', ctx)),
+  'client.config.stream': (config) => fire(() => config({ key: 'k' }).stream('q', ctx)),
+  'client.graph.invoke': (graph) => settle(graph('k', {}).invoke('q', ctx)),
+  'client.graph.stream': (graph) => fire(() => graph('k', {}).stream('q', ctx)),
+  'client.resolveGraph': (resolveGraph) => settle(resolveGraph('k', { context: ctx })),
+  'client.inspectConfig': (inspectConfig) => settle(inspectConfig('k', ctx)),
+  'client.runJudge': (runJudge) => settle(runJudge({} as JudgeTask, [])),
+  'client.buildJudgeTasks': (buildJudgeTasks) => settle(buildJudgeTasks(judgeArgs())),
+  'client.createHandler': (createHandler) =>
+    fire(() => createHandler(['OpenAI', 'messages'], async () => ({ output: '' }))),
+  // Throws on missing credentials; the report is the first statement, so it still lands.
+  'experimental.initEvaluations': (initEvaluations) =>
+    fire(() => {
+      try {
+        initEvaluations({ projectKey: 'p', apiKey: 't', sdkKey: 's' });
+      } catch {}
+    }),
+};
+
+const listRows = [
+  ...usageRows('ai-server.txt', rootEntry),
+  ...usageRows('ai-server.experimental.txt', experimentalEntry),
 ];
+
+const rows: Array<[string, () => Promise<void>]> = listRows.map(({ id, fn }) => [id, () => CALLS[id](fn)]);
+
+it('has a call for every usage ID the lists report, and none they do not', () => {
+  expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());
+});
 
 describe('§3.27 helper usage', () => {
   let client: FakeClient;

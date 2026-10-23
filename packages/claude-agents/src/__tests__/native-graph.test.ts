@@ -109,7 +109,7 @@ function makeGraphDef(overrides: Partial<GraphDefinition> = {}): GraphDefinition
 
 function makeResultMessage(result = 'done', usage = { input_tokens: 1, output_tokens: 2 }) {
   return async function* () {
-    yield { result, usage };
+    yield { type: 'result', subtype: 'success', result, usage };
   };
 }
 
@@ -122,6 +122,18 @@ describe('toClaudeAgents', () => {
     for (const key of Object.keys(mockGraphSpan)) {
       (mockGraphSpan as any)[key].mockReset?.();
     }
+  });
+
+  it("never forwards a node's output_format to its query()", async () => {
+    const def = makeGraphDef();
+    (def.root!.config.model as any).parameters = {
+      output_format: { type: 'json_schema', schema: { type: 'object' } },
+      max_turns: 3,
+    };
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+    const rootOptions = mockQuery.mock.calls[0][0].options;
+    expect(rootOptions.maxTurns).toBe(3);
+    expect(rootOptions.outputFormat).toBeUndefined();
   });
 
   it("forwards each node's allowlisted model.parameters, including maxTurns, to that node's query()", async () => {
@@ -159,7 +171,32 @@ describe('toClaudeAgents', () => {
     await (leafTool![3] as (args: { input: string }) => Promise<unknown>)({ input: 'sub task' });
     expect(mockQuery).toHaveBeenCalledTimes(2);
     for (const call of mockQuery.mock.calls) {
-      expectNoNeverForwardedValue(call[0].options, ['mcpServers', 'hooks']);
+      // `settingSources` is handler-owned: always sent, `[]` unless the application gives sources.
+      expectNoNeverForwardedValue(call[0].options, ['mcpServers', 'hooks', 'settingSources']);
+      expect(call[0].options.settingSources).toEqual([]);
+    }
+  });
+
+  /** Invokes the graph and calls the leaf's sub-agent tool, so both nodes' `query()` options exist. */
+  async function rootAndLeafOptions(opts?: Parameters<typeof toClaudeAgents>[1]) {
+    await toClaudeAgents(Promise.resolve(makeGraphDef()), opts).invoke('hi');
+    const leafTool = mockTool.mock.calls.find((call) => call[0] === 'leaf');
+    await (leafTool![3] as (args: { input: string }) => Promise<unknown>)({ input: 'sub task' });
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    return mockQuery.mock.calls.map((call) => call[0].options as Record<string, unknown>);
+  }
+
+  it('sends settingSources: [] and no cwd to every node when neither option is given', async () => {
+    for (const options of await rootAndLeafOptions()) {
+      expect(options.settingSources).toEqual([]);
+      expect(Object.hasOwn(options, 'cwd')).toBe(false);
+    }
+  });
+
+  it('forwards cwd and settingSources to every node', async () => {
+    for (const options of await rootAndLeafOptions({ cwd: '/srv/app', settingSources: ['user', 'project'] })) {
+      expect(options.cwd).toBe('/srv/app');
+      expect(options.settingSources).toEqual(['user', 'project']);
     }
   });
 
@@ -193,6 +230,25 @@ describe('toClaudeAgents', () => {
     await toClaudeAgents(Promise.resolve(def)).invoke('hello');
     expect(mockTool).toHaveBeenCalledTimes(1);
     expect(mockTool.mock.calls[0][0]).toBe('leaf');
+  });
+
+  it('drops a cyclic edge with a warning when the child was not built', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // root → A → B → A: post-order reaches B while A is still unbuilt.
+    const b = makeNode('B', [makeEdge('B', 'A')]);
+    const a = makeNode('A', [makeEdge('A', 'B')]);
+    const root = makeNode('root', [makeEdge('root', 'A')]);
+    const def = makeGraphDef({
+      root,
+      reverseTraverse: async (fn, ctx = {}) => {
+        for (const n of [b, a, root]) await fn(n, ctx);
+        return undefined;
+      },
+    });
+    await toClaudeAgents(Promise.resolve(def)).invoke('hello');
+    expect(mockTool.mock.calls.map((c) => c[0])).toEqual(['B', 'A']);
+    expect(warn).toHaveBeenCalledWith('[LaunchDarkly] Dropping cyclic edge "B" -> "A"');
+    warn.mockRestore();
   });
 
   // T6: root query allowedTools contains mcp__subagents__ prefix
@@ -347,6 +403,59 @@ describe('toClaudeAgents', () => {
     );
   });
 
+  // Measured against Agent SDK 0.3.220: an Anthropic API failure arrives as a `success` result with
+  // `is_error` set and the error text in `result`. The adapter used to return that text as the answer.
+  const apiErrorRun = async function* () {
+    yield {
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      api_error_status: 400,
+      result: 'Credit balance is too low',
+      usage: { input_tokens: 0, output_tokens: 0 },
+    };
+  };
+
+  it('fails the graph when the root result reports an API error', async () => {
+    const def = makeGraphDef();
+    mockQuery.mockImplementation(apiErrorRun);
+
+    await expect(
+      toClaudeAgents(Promise.resolve(def), { context: { kind: 'user', key: 'user-1' } }).invoke('hello'),
+    ).rejects.toThrow(/Credit balance is too low/);
+
+    const events = mockTrack.mock.calls.map((c: unknown[]) => c[0]);
+    expect(events).toContain('$ld:ai:graph:invocation_failure');
+    expect(events).not.toContain('$ld:ai:graph:invocation_success');
+  });
+
+  it('fails the graph when the root result has an error subtype', async () => {
+    const def = makeGraphDef();
+    mockQuery.mockImplementation(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'error_max_turns',
+        is_error: true,
+        errors: ['turn limit reached'],
+        usage: { input_tokens: 5, output_tokens: 1 },
+      };
+    });
+
+    await expect(toClaudeAgents(Promise.resolve(def)).invoke('hello')).rejects.toThrow(
+      /error_max_turns.*turn limit reached/,
+    );
+  });
+
+  it('fails a sub-agent tool call whose run reports an API error', async () => {
+    const def = makeGraphDef();
+    await toClaudeAgents(Promise.resolve(def)).invoke('hello');
+
+    mockQuery.mockImplementation(apiErrorRun);
+    const toolExecutor = mockTool.mock.calls[0][3] as (args: { input: string }) => Promise<unknown>;
+
+    await expect(toolExecutor({ input: 'subtask' })).rejects.toThrow(/Credit balance is too low/);
+  });
+
   // T10: system prompt forwarding from node instructions
   it('forwards config.instructions as systemPrompt to root query', async () => {
     const def = makeGraphDef();
@@ -398,7 +507,7 @@ describe('toClaudeAgents', () => {
     let capturedHooks: { PreToolUse?: Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }> } | undefined;
     mockQuery.mockImplementation(async function* (queryArgs: { options?: { hooks?: typeof capturedHooks } }) {
       capturedHooks = queryArgs.options?.hooks;
-      yield { result: 'ok', usage: { input_tokens: 1, output_tokens: 1 } };
+      yield { type: 'result', subtype: 'success', result: 'ok', usage: { input_tokens: 1, output_tokens: 1 } };
     });
 
     await toClaudeAgents(Promise.resolve(def), {

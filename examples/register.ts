@@ -5,6 +5,7 @@ import { createLangChainHandler } from '@launchdarkly/ai-langchain-messages';
 import { globalRegistry } from '@launchdarkly/ai-node';
 import { createOpenAIAgentHandler } from '@launchdarkly/ai-openai-agents';
 import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createTypesafeHandler } from '@launchdarkly/ai-typesafe';
 import { fetchLaunchDarklyDocumentation, getPreferences, searchLdDocumentation } from './tools';
 
 globalRegistry.register({
@@ -15,6 +16,7 @@ globalRegistry.register({
     createClaudeMessagesHandler(),
     createLangChainHandler(),
     createLangChainAgentsHandler(),
+    createTypesafeHandler(),
   ],
   tools: {
     'web-search': ClaudeWebSearch,
