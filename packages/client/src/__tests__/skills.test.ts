@@ -2142,7 +2142,7 @@ describe('telemetry seam, accessor half', () => {
     }
   });
 
-  it('makes no client.track call from any accessor', async () => {
+  it('makes no client.track call from any accessor beyond its helper-usage event', async () => {
     const mockClient = makeMockLdClient();
     const store = new InMemorySkillStore();
     store.put(rawSkill({ key: 'a' }));
@@ -2158,7 +2158,15 @@ describe('telemetry seam, accessor half', () => {
     await allSkills();
     skillRefs({ model: { name: 'm' }, provider: { name: 'p' }, instructions: 'i', skills: [{ key: 'a', version: 1 }] });
 
-    expect(mockClient.track).not.toHaveBeenCalled();
+    // Skills telemetry goes through the private emitter, never client.track. The only track calls
+    // are the $ld:ai:sdk:usage events for the helpers themselves (§3.27). Which helpers still
+    // report here depends on earlier tests, since each reports once per client.
+    const calls = mockClient.track.mock.calls as unknown[][];
+    const helpers = ['client.allSkills', 'client.getSkill', 'client.getSkills', 'client.skillRefs'];
+    for (const call of calls) {
+      expect(call[0]).toBe('$ld:ai:sdk:usage');
+      expect(helpers).toContain((call[2] as { helper?: string }).helper);
+    }
   });
 
   it('a throwing emitter never breaks the operation', async () => {

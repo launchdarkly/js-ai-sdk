@@ -8,7 +8,7 @@
 
 - addCachedTokensToInput
 AiConfigRep
-+ allSkills
++ allSkills  usage=client.allSkills
 - anyMultimodal
 - buildJudgeTasks  usage=client.buildJudgeTasks
 - camelizeModelParameters
@@ -38,9 +38,9 @@ createHandler  usage=client.createHandler
 + FDv2SkillStore
 + FDv2SkillStoreOptions
 getClient
-+ getSkill
-+ getSkillResult
-+ getSkills
++ getSkill  usage=client.getSkill
++ getSkillResult  usage=client.getSkillResult
++ getSkills  usage=client.getSkills
 globalRegistry
 graph  usage=client.graph.invoke,client.graph.stream
 GraphArgs
@@ -130,7 +130,7 @@ shutdown
 + SkillOutcome
 + SkillOutcomeReason
 + SkillReference
-+ skillRefs
++ skillRefs  usage=client.skillRefs
 + SKILLS_DEFAULT_BASE_URI
 + SKILLS_DEFAULT_DEBOUNCE_MS
 + SKILLS_DEFAULT_STREAM_URI
@@ -153,8 +153,8 @@ ToolHandlerFn
 TrackData
 - TraverseVisitor
 - waitForTelemetry  # internal: not needed to init, configure, execute or read results
-+ watchSkills
++ watchSkills  usage=client.watchSkills
 + WatchSkillsOptions
 withConversationId
-+ writeSkills
++ writeSkills  usage=client.writeSkills
 + WriteSkillsOptions
