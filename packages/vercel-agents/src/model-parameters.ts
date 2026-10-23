@@ -57,6 +57,16 @@ const _vercelModelParameterKeysExhaustive: Record<VercelUndecidedModelParameterK
   never
 >;
 
+/** A reasoning effort as the AI SDK's string, read from a string or from an object's `effort`. */
+function reasoningEffort(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const { effort } = value as { effort?: unknown };
+    if (typeof effort === 'string') return effort;
+  }
+  return undefined;
+}
+
 /**
  * `config.model.parameters` as AI SDK call settings. The LaunchDarkly UI writes provider names
  * in snake_case, so the bag is camelized (`top_p` becomes `topP`; nested values are left alone,
@@ -67,6 +77,13 @@ const _vercelModelParameterKeysExhaustive: Record<VercelUndecidedModelParameterK
  * - `reasoning_effort` (OpenAI's name) becomes `reasoning`, whose values it shares. An explicit
  *   `reasoning` wins.
  *
+ * `reasoning` is a string in the AI SDK. A `reasoning` object in the OpenAI shape
+ * (`{ effort: 'low' }`) is read as its `effort`; any other value that is not a string is dropped.
+ *
+ * `tool_choice` is forwarded only as a string (`auto`, `none`, `required`). The AI SDK reads any
+ * other value as `{ type: 'tool', toolName }`, so an object in another provider's shape, such as
+ * `{ type: 'auto' }`, would force a call to a tool named `undefined`; it is dropped instead.
+ *
  * Only `FORWARDED_MODEL_PARAMETER_KEYS` survive. A config that sets none of them produces `{}`,
  * so the call sees exactly what it always has.
  */
@@ -74,8 +91,11 @@ export function buildModelParameterOptions(parameters: AiConfigRep['model']['par
   const { max_tokens, max_completion_tokens, max_output_tokens, reasoning_effort, ...rest } =
     normalizeModelParameters(parameters);
   const renamed: Record<string, unknown> = { ...rest };
+  renamed.reasoning = reasoningEffort(rest.reasoning);
   const maxOutputTokens = max_output_tokens ?? max_completion_tokens ?? max_tokens;
   if (maxOutputTokens !== undefined) renamed.max_output_tokens = maxOutputTokens;
-  if (reasoning_effort !== undefined && renamed.reasoning === undefined) renamed.reasoning = reasoning_effort;
-  return pickForwardedModelParameters(camelizeModelParameters(renamed), FORWARDED_MODEL_PARAMETER_KEYS);
+  renamed.reasoning ??= reasoningEffort(reasoning_effort);
+  const options = pickForwardedModelParameters(camelizeModelParameters(renamed), FORWARDED_MODEL_PARAMETER_KEYS);
+  if (options.toolChoice !== undefined && typeof options.toolChoice !== 'string') delete options.toolChoice;
+  return options;
 }

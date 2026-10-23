@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FORMATTING_INSTRUCTIONS } from '../questions.js';
 
-const { mockSystemOne } = vi.hoisted(() => ({ mockSystemOne: vi.fn() }));
+const { clientArgs, mockSystemOne } = vi.hoisted(() => ({
+  clientArgs: [] as unknown[][],
+  mockSystemOne: vi.fn(),
+}));
 
 vi.mock('@typesafe-ai/sdk', () => ({
   TypeSafeClient: class {
     systemOne = mockSystemOne;
+    constructor(...args: unknown[]) {
+      clientArgs.push(args);
+    }
   },
   noul: (instructions: string, criteria?: unknown) => ({
     type: 'noul',
@@ -17,6 +23,7 @@ vi.mock('@typesafe-ai/sdk', () => ({
 }));
 
 import { createTypesafeHandler } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 const classifiers = [
   {
@@ -38,6 +45,7 @@ const classifiers = [
 describe('createTypesafeHandler', () => {
   beforeEach(() => {
     mockSystemOne.mockReset();
+    clientArgs.length = 0;
     mockSystemOne.mockResolvedValue({
       answers: {
         tone: { type: 'noul', noul: 0.25 },
@@ -97,5 +105,41 @@ describe('createTypesafeHandler', () => {
     await expect(
       handler({ model: { name: 'jev' }, provider: { name: 'TypeSafe' }, messages: [], classifiers }, 'output'),
     ).rejects.toThrow('typesafe down');
+  });
+
+  // TESTING.md §1.12: the TypeSafe table is empty. A Jev call takes the judge state, the
+  // questions, and the model name, and has no field for sampling or output settings.
+  it('forwards no model.parameters key to the client or the Jev request', async () => {
+    const handler = createTypesafeHandler();
+    await handler(
+      {
+        model: {
+          name: 'jev-latest',
+          parameters: {
+            ...NEVER_FORWARDED_PARAMETERS,
+            temperature: 0.2,
+            max_tokens: 100,
+            top_p: 0.9,
+            model: 'smuggled-model',
+            questions: { smuggled: true },
+            state: { smuggled: true },
+          },
+        },
+        provider: { name: 'TypeSafe' },
+        messages: [],
+        classifiers,
+      },
+      'assistant output',
+    );
+    expect(clientArgs).toEqual([[]]);
+    const request = mockSystemOne.mock.calls[0][0];
+    expect(Object.keys(request).sort()).toEqual(['model', 'questions', 'state']);
+    expect(request.model).toBe('jev-latest');
+    expect(JSON.stringify(request)).not.toContain('smuggled');
+    expectNoNeverForwardedValue(request);
+  });
+
+  it('has no stream path, so there is no second call to keep in agreement', () => {
+    expect(createTypesafeHandler().stream).toBeUndefined();
   });
 });

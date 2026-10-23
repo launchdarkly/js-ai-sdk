@@ -1,5 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { MessageCreateParamsBase } from '@anthropic-ai/sdk/resources/messages/messages';
+import type {
+  CacheControlEphemeral,
+  MessageCreateParamsBase,
+  ThinkingConfigParam,
+  ToolChoice,
+} from '@anthropic-ai/sdk/resources/messages/messages';
 import {
   type AiConfigRep,
   addCachedTokensToInput,
@@ -346,28 +351,28 @@ const buildMessages = (
 };
 
 /**
- * `MessageCreateParamsBase` keys this handler forwards verbatim from `config.model.parameters`
- * (after the `effort` rename below is folded into `output_config`), beyond `max_tokens`, which is
- * handled separately because it carries a default.
+ * `MessageCreateParamsBase` keys this handler forwards from `config.model.parameters` (after the
+ * `effort` rename below is folded into `output_config`), beyond `max_tokens`, which is handled
+ * separately because it carries a default of 1024.
  *
- * The rule for this list: exclude a key only if setting it would BREAK the handler; forward
- * everything else the API accepts, even settings with no obvious generation effect — those are
- * forwarded because a config that sets one still gets a working call.
+ * This is the Claude Messages list in the cross-SDK spec (ai-sdks-monorepo TESTING.md §1.12), the
+ * same list the Python SDK forwards: settings that shape what the model generates, and nothing
+ * else. Adding a key after 1.0 breaks nobody, and removing one does, so a key that does not
+ * clearly shape generation stays off.
  *
  * Handler-owned (this handler sets these itself, from the config and the call shape, so a
  * `model.parameters` value must not be able to override what it already decided): `model`,
  * `messages`, `system`, `tools`, `max_tokens`.
  *
- * Excluded (would break the handler): `stream` — this handler selects streaming by choosing
- * between `messages.create()` and `messages.stream()`, not by setting a field on the request
- * body, so a config value here would fight the method actually invoked rather than configure
- * anything.
+ * Not forwarded:
+ * - `stream`: this handler selects streaming by choosing between `messages.create()` and
+ *   `messages.stream()`, so a config value here would fight the method actually invoked.
+ * - `inference_geo`: decides where data is processed.
+ * - `container`: server-side state.
+ * - `metadata`: identity and attribution, not a generation setting.
  */
 const FORWARDED_MODEL_PARAMETER_KEYS = [
   'cache_control',
-  'container',
-  'inference_geo',
-  'metadata',
   'output_config',
   'service_tier',
   'stop_sequences',
@@ -379,7 +384,7 @@ const FORWARDED_MODEL_PARAMETER_KEYS = [
 ] as const;
 
 type AnthropicHandlerOwnedKeys = 'max_tokens' | 'messages' | 'model' | 'system' | 'tools';
-type AnthropicExcludedKeys = 'stream';
+type AnthropicExcludedKeys = 'container' | 'inference_geo' | 'metadata' | 'stream';
 // If a key of MessageCreateParamsBase is added to the SDK and not classified above as forwarded,
 // handler-owned, or excluded, this type resolves to something other than `never` and the
 // assignment below fails to compile, naming the unclassified key.
@@ -392,21 +397,90 @@ const _anthropicModelParameterKeysExhaustive: Record<AnthropicUndecidedModelPara
   never
 >;
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** The required and optional sub-keys of one variant of a typed object, besides `type`. */
+interface TypedObjectShape {
+  required: ReadonlyArray<string>;
+  optional: ReadonlyArray<string>;
+}
+
+/**
+ * The typed objects among the forwarded keys, as the Anthropic SDK declares them
+ * (`ThinkingConfigParam`, `ToolChoice`, `CacheControlEphemeral`): each `type` the API knows,
+ * mapped to that variant's sub-keys. The `satisfies` clauses fail to compile if the SDK adds or
+ * removes a variant. The Python SDK uses the same shapes.
+ */
+const TYPED_OBJECT_SHAPES: Record<string, Record<string, TypedObjectShape>> = {
+  thinking: {
+    enabled: { required: ['budget_tokens'], optional: ['display'] },
+    adaptive: { required: [], optional: ['display'] },
+    disabled: { required: [], optional: [] },
+  } satisfies Record<ThinkingConfigParam['type'], TypedObjectShape>,
+  tool_choice: {
+    auto: { required: [], optional: ['disable_parallel_tool_use'] },
+    any: { required: [], optional: ['disable_parallel_tool_use'] },
+    tool: { required: ['name'], optional: ['disable_parallel_tool_use'] },
+    none: { required: [], optional: [] },
+  } satisfies Record<ToolChoice['type'], TypedObjectShape>,
+  cache_control: {
+    ephemeral: { required: [], optional: ['ttl'] },
+  } satisfies Record<CacheControlEphemeral['type'], TypedObjectShape>,
+};
+
+/**
+ * `value` with only the sub-keys its `type` takes, or `undefined` when it is not an object, its
+ * `type` is missing or unknown, or a required sub-key is missing. The API rejects all of those.
+ */
+function rebuildTypedObject(
+  value: unknown,
+  shapes: Record<string, TypedObjectShape>,
+): Record<string, unknown> | undefined {
+  if (!isPlainObject(value) || typeof value.type !== 'string' || !Object.hasOwn(shapes, value.type)) return undefined;
+  const { required, optional } = shapes[value.type];
+  if (required.some((key) => value[key] === undefined || value[key] === null)) return undefined;
+  const rebuilt: Record<string, unknown> = { type: value.type };
+  for (const key of [...required, ...optional]) {
+    if (value[key] !== undefined && value[key] !== null) rebuilt[key] = value[key];
+  }
+  return rebuilt;
+}
+
+/**
+ * `output_config` rebuilt as `{ effort }`, or `undefined` when there is no string effort. An
+ * `output_config.effort` wins over a top-level `effort` (the shape the LaunchDarkly UI writes),
+ * since it is what the customer set explicitly for that field. Every other `output_config` sub-key
+ * is dropped: `format` is structured output, which the handler owns through `outputFormat`, and
+ * forwarding it would make the API enforce a schema the handler did not ask for.
+ */
+function toOutputConfig(effort: unknown, outputConfig: unknown): { effort: string } | undefined {
+  const explicit = isPlainObject(outputConfig) ? outputConfig.effort : undefined;
+  const chosen = typeof explicit === 'string' ? explicit : effort;
+  return typeof chosen === 'string' ? { effort: chosen } : undefined;
+}
+
 /**
  * Picks the subset of `config.model.parameters` that maps onto `MessageCreateParamsBase`, after
- * moving a top-level `effort` — the shape the LaunchDarkly UI writes — into `output_config.effort`,
- * the shape the Messages API actually accepts. An `output_config.effort` already present in the
- * config wins over the renamed value, since it is what the customer set explicitly for that field.
- * A config that sets nothing here produces `{}`, so the provider call sees exactly what it always
- * has.
+ * moving a top-level `effort` into `output_config.effort`, the shape the Messages API actually
+ * accepts (see `toOutputConfig`). Malformed nested values are dropped and typed objects rebuilt
+ * (see `TYPED_OBJECT_SHAPES`). A config that sets nothing here produces `{}`, so the provider call
+ * sees exactly what it always has.
  */
 function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters']): Record<string, unknown> {
   const normalized = normalizeModelParameters(parameters);
   const { effort, output_config, ...rest } = normalized;
-  const mergedOutputConfig =
-    effort !== undefined ? { effort, ...(output_config as Record<string, unknown> | undefined) } : output_config;
-  const withEffortMoved = mergedOutputConfig !== undefined ? { ...rest, output_config: mergedOutputConfig } : rest;
-  return pickForwardedModelParameters(withEffortMoved, FORWARDED_MODEL_PARAMETER_KEYS);
+  const outputConfig = toOutputConfig(effort, output_config);
+  const picked = pickForwardedModelParameters(rest, FORWARDED_MODEL_PARAMETER_KEYS);
+  if (outputConfig) picked.output_config = outputConfig;
+  for (const [key, shapes] of Object.entries(TYPED_OBJECT_SHAPES)) {
+    if (picked[key] === undefined) continue;
+    const rebuilt = rebuildTypedObject(picked[key], shapes);
+    if (rebuilt) picked[key] = rebuilt;
+    else delete picked[key];
+  }
+  return picked;
 }
 
 const MAX_STEPS = 10;

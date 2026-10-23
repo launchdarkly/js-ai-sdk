@@ -209,7 +209,8 @@ describe('toVercelAgents', () => {
     const rootSettings = aiMocks.agentArguments.find((options) => options.model === 'openai/root-model');
     expect(rootSettings.temperature).toBe(0.3);
     for (const settings of aiMocks.agentArguments) {
-      expectNoNeverForwardedValue(settings);
+      // The adapter sets `instructions` itself; the deep check proves it does not carry the config's value.
+      expectNoNeverForwardedValue(settings, ['instructions']);
     }
   });
 

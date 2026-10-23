@@ -115,6 +115,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 
 import { litellmGraph } from '../graph.js';
 import { createLiteLLMAgentsHandler, litellmAgents } from '../handler.js';
+import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 const baseConfig = {
   instructions: 'You are helpful.',
@@ -252,7 +253,7 @@ describe('createLiteLLMAgentsHandler', () => {
     expect(agentArgs[0].modelSettings).toEqual({ maxTokens: 250, temperature: 0.1 });
   });
 
-  it('maps verbosity to text.verbosity and keeps only effort and summary under reasoning', async () => {
+  it('maps verbosity to text.verbosity and keeps only effort under reasoning', async () => {
     mockRun.mockResolvedValue(result());
     await createLiteLLMAgentsHandler({ client: {} as never })(
       {
@@ -272,9 +273,39 @@ describe('createLiteLLMAgentsHandler', () => {
       'q',
     );
     expect(agentArgs[0].modelSettings).toEqual({
-      reasoning: { effort: 'high', summary: 'auto' },
+      reasoning: { effort: 'high' },
       text: { verbosity: 'low' },
     });
+  });
+
+  it.each([
+    ['auto', { temperature: 0.2, toolChoice: 'auto' }],
+    [{ type: 'function', name: 'f' }, { temperature: 0.2 }],
+  ])('forwards tool_choice %j only as a string', async (toolChoice, expected) => {
+    mockRun.mockResolvedValue(result());
+    await createLiteLLMAgentsHandler({ client: {} as never })(
+      {
+        ...baseConfig,
+        model: { name: 'proxy-alias', parameters: { tool_choice: toolChoice, temperature: 0.2 } },
+      } as never,
+      'q',
+    );
+    expect(agentArgs[0].modelSettings).toEqual(expected);
+  });
+
+  it('drops data retention settings', async () => {
+    mockRun.mockResolvedValue(result());
+    await createLiteLLMAgentsHandler({ client: {} as never })(
+      {
+        ...baseConfig,
+        model: {
+          name: 'proxy-alias',
+          parameters: { store: true, prompt_cache_retention: '24h', temperature: 0.2 },
+        },
+      } as never,
+      'q',
+    );
+    expect(agentArgs[0].modelSettings).toEqual({ temperature: 0.2 });
   });
 
   it.each([
@@ -462,6 +493,111 @@ describe('createLiteLLMAgentsHandler', () => {
     expect(mockRootSpan.recordException).toHaveBeenCalledWith(error);
     expect(mockRootSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
     expect(mockRootSpan.end).toHaveBeenCalledOnce();
+  });
+
+  describe('cross-SDK allowlist (TESTING.md §1.12)', () => {
+    // Every key on the LiteLLM Agents list, each with a well-formed value.
+    const CANONICAL_PARAMETERS = {
+      frequency_penalty: 0.1,
+      max_tokens: 256,
+      max_turns: 4,
+      parallel_tool_calls: false,
+      presence_penalty: 0.2,
+      reasoning: { effort: 'low', summary: 'auto' },
+      temperature: 0.4,
+      text: { verbosity: 'high' },
+      tool_choice: 'auto',
+      top_p: 0.9,
+      verbosity: 'low',
+    };
+    // The table in snake_case. `verbosity` is the same setting as `text.verbosity`, which is where
+    // the TypeScript `ModelSettings` takes it, and `max_turns` goes to the run.
+    const SPEC_TABLE = Object.keys(CANONICAL_PARAMETERS).sort();
+    const EXPECTED_MODEL_SETTINGS = {
+      frequencyPenalty: 0.1,
+      maxTokens: 256,
+      parallelToolCalls: false,
+      presencePenalty: 0.2,
+      reasoning: { effort: 'low' },
+      temperature: 0.4,
+      text: { verbosity: 'high' },
+      toolChoice: 'auto',
+      topP: 0.9,
+    };
+    const toSnake = (key: string) => key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+
+    async function invokeOptions(parameters: Record<string, unknown>) {
+      mockRun.mockResolvedValue(result());
+      const config = { ...baseConfig, model: { ...baseConfig.model, parameters } };
+      await createLiteLLMAgentsHandler({ client: {} as never })(config as never, 'q');
+      return { agent: agentArgs[0], run: mockRun.mock.calls[0][2] as Record<string, unknown> | undefined };
+    }
+
+    async function streamOptions(parameters: Record<string, unknown>) {
+      mockRun.mockResolvedValue({
+        finalOutput: '',
+        state: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+        async *[Symbol.asyncIterator]() {},
+      });
+      const config = { ...baseConfig, model: { ...baseConfig.model, parameters } };
+      await collect(
+        createLiteLLMAgentsHandler({ client: {} as never }).stream?.(
+          config as never,
+          'q',
+          {},
+          {},
+        ) as AsyncIterable<unknown>,
+      );
+      return { agent: agentArgs[0], run: mockRun.mock.calls[0][2] as Record<string, unknown> | undefined };
+    }
+
+    const reset = () => {
+      vi.clearAllMocks();
+      agentArgs.length = 0;
+    };
+
+    it('forwards exactly the keys in the spec table, compared in snake_case', async () => {
+      const { agent, run } = await invokeOptions({ ...CANONICAL_PARAMETERS, made_up_key: 1 });
+      const forwarded = [
+        ...Object.keys(agent.modelSettings as Record<string, unknown>).map(toSnake),
+        ...(run?.maxTurns !== undefined ? ['max_turns'] : []),
+        // Folded into text.verbosity.
+        ...((agent.modelSettings as { text?: { verbosity?: unknown } }).text?.verbosity !== undefined
+          ? ['verbosity']
+          : []),
+      ].sort();
+      expect(forwarded).toEqual(SPEC_TABLE);
+      expect(agent.modelSettings).toEqual(EXPECTED_MODEL_SETTINGS);
+      expect(run).toEqual({ maxTurns: 4 });
+    });
+
+    it('stream forwards the same model settings and turn limit as invoke', async () => {
+      const invoked = await invokeOptions(CANONICAL_PARAMETERS);
+      reset();
+      const streamed = await streamOptions(CANONICAL_PARAMETERS);
+      expect(streamed.agent.modelSettings).toEqual(invoked.agent.modelSettings);
+      expect(streamed.run).toMatchObject({ maxTurns: 4 });
+    });
+
+    it('never forwards a key from any never-forward category, on invoke or stream', async () => {
+      const parameters = { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 };
+      const invoked = await invokeOptions(parameters);
+      const invokedModel = modelArgs.at(-1);
+      reset();
+      modelArgs.length = 0;
+      const streamed = await streamOptions(parameters);
+      for (const { agent, run } of [invoked, streamed]) {
+        expect(agent.modelSettings).toEqual({ temperature: 0.3 });
+        // `model` is the handler's telemetry wrapper, which keeps a reference to the config for span
+        // names; what reaches the provider is the wrapped model's constructor, checked below. The
+        // handler sets `instructions` itself; the deep check proves it does not carry the config's value.
+        const { model: _telemetryWrapper, ...agentOptions } = agent;
+        expectNoNeverForwardedValue(agentOptions, ['instructions']);
+        expectNoNeverForwardedValue(run ?? {});
+      }
+      expectNoNeverForwardedValue(invokedModel);
+      expectNoNeverForwardedValue(modelArgs.at(-1));
+    });
   });
 
   describe('streaming lifecycle', () => {

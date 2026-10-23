@@ -1461,14 +1461,47 @@ describe('model source', () => {
     const cfg = {
       ...parameterized,
       provider: { name: 'Anthropic' },
-      model: { name: 'claude-sonnet-4-5', parameters: { temperature: 0.1, thinking: { type: 'enabled' } } },
+      model: {
+        name: 'claude-sonnet-4-5',
+        parameters: { temperature: 0.1, thinking: { type: 'enabled', budget_tokens: 1024 } },
+      },
     };
     await createLangChainHandler()(cfg as any, 'q');
     expect(ChatAnthropic).toHaveBeenCalledWith({
       temperature: 0.1,
-      thinking: { type: 'enabled' },
+      thinking: { type: 'enabled', budget_tokens: 1024 },
       model: 'claude-sonnet-4-5',
     });
+  });
+
+  it('keeps only effort in the default Anthropic outputConfig on invoke and stream', async () => {
+    vi.mocked(ChatAnthropic).mockClear();
+    vi.mocked(ChatAnthropic).mockImplementation(function MockChatAnthropic() {
+      return {
+        ...makeMockLLM('default-anthropic'),
+        stream: vi.fn().mockReturnValue(
+          (async function* () {
+            yield new AIMessage({ content: 'streamed' });
+          })(),
+        ),
+      } as any;
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: 'Anthropic' },
+      model: {
+        name: 'claude-sonnet-4-5',
+        parameters: { output_config: { effort: 'low', format: { type: 'json_schema', schema: { type: 'object' } } } },
+      },
+    };
+    await createLangChainHandler()(cfg as any, 'q');
+    for await (const _e of createLangChainHandler().stream?.(cfg as any, 'q', {}, {}) ?? []) {
+      // drain
+    }
+    expect(vi.mocked(ChatAnthropic).mock.calls.map(([args]) => args)).toEqual([
+      { outputConfig: { effort: 'low' }, model: 'claude-sonnet-4-5' },
+      { outputConfig: { effort: 'low' }, model: 'claude-sonnet-4-5' },
+    ]);
   });
 
   it('prepends model.region onto the Bedrock model id once', async () => {

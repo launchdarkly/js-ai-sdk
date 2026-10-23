@@ -280,7 +280,6 @@ describe('createClaudeAgentsHandler', () => {
 
   it('forwards every allowed key under the Claude Agent SDK name and shape', async () => {
     mockQuery.mockImplementation(makeResultMessage());
-    const schema = { type: 'object', properties: { answer_text: { type: 'string' } } };
     const config = {
       ...baseConfig,
       model: {
@@ -292,7 +291,6 @@ describe('createClaudeAgentsHandler', () => {
           effort: 'high',
           max_budget_usd: 1.5,
           fallback_model: 'claude-haiku',
-          output_format: { type: 'json_schema', schema, extra_key: 'dropped' },
           betas: ['context-1m-2025-08-07'],
         },
       },
@@ -309,8 +307,71 @@ describe('createClaudeAgentsHandler', () => {
     });
     // The SDK's ThinkingEnabled reads budgetTokens, not the Messages API's budget_tokens.
     expect(options.thinking).toEqual({ type: 'enabled', budgetTokens: 1024, display: 'summarized' });
-    // The JSON schema itself is passed through as written.
-    expect(options.outputFormat).toEqual({ type: 'json_schema', schema });
+  });
+
+  it('never forwards output_format, on invoke or stream: structured output comes from the config outputFormat', async () => {
+    const schema = { type: 'object', properties: { smuggled: { type: 'string' } } };
+    const parameters = {
+      output_format: { type: 'json_schema', schema },
+      outputFormat: { type: 'json_schema', schema },
+      temperature: 0.2,
+    };
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters } };
+    mockQuery.mockImplementation(makeResultMessage());
+    await createClaudeAgentsHandler()(config as any, 'q');
+    expect(mockQuery.mock.calls[0][0].options.outputFormat).toBeUndefined();
+    mockQuery.mockClear();
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+    });
+    await collectStream(createClaudeAgentsHandler().stream?.(config as any, 'q', {}, {}));
+    expect(mockQuery.mock.calls[0][0].options.outputFormat).toBeUndefined();
+  });
+
+  // The Claude Agents list in the cross-SDK spec (TESTING.md §1.12): the options a config adds on
+  // top of what the handler sets itself are exactly these, on invoke and on stream.
+  it('adds exactly the canonical query options, the same on invoke and stream', async () => {
+    const parameters = {
+      betas: ['context-1m-2025-08-07'],
+      effort: 'high',
+      fallback_model: 'claude-haiku',
+      max_budget_usd: 1.5,
+      max_thinking_tokens: 2048,
+      max_turns: 4,
+      output_format: { type: 'json_schema', schema: { type: 'object' } },
+      thinking: { type: 'enabled', budget_tokens: 1024 },
+      temperature: 0.2,
+      top_p: 0.9,
+      made_up_key: 1,
+    };
+    const optionsFor = async (params: Record<string, unknown> | undefined, path: 'invoke' | 'stream') => {
+      mockQuery.mockClear();
+      const config = { ...baseConfig, model: { ...baseConfig.model, parameters: params } };
+      if (path === 'invoke') {
+        mockQuery.mockImplementation(makeResultMessage());
+        await createClaudeAgentsHandler()(config as any, 'q');
+      } else {
+        mockQuery.mockImplementation(async function* () {
+          yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+        });
+        await collectStream(createClaudeAgentsHandler().stream?.(config as any, 'q', {}, {}));
+      }
+      return mockQuery.mock.calls[0][0].options as Record<string, unknown>;
+    };
+    const expected = ['betas', 'effort', 'fallbackModel', 'maxBudgetUsd', 'maxThinkingTokens', 'maxTurns', 'thinking'];
+    const added: Record<string, string[]> = {};
+    const forwarded: Record<string, Record<string, unknown>> = {};
+    for (const path of ['invoke', 'stream'] as const) {
+      const baseline = await optionsFor(undefined, path);
+      const options = await optionsFor(parameters, path);
+      added[path] = Object.keys(options)
+        .filter((key) => options[key] !== undefined && baseline[key] === undefined)
+        .sort();
+      forwarded[path] = Object.fromEntries(expected.map((key) => [key, options[key]]));
+    }
+    expect(added.invoke).toEqual(expected);
+    expect(added.stream).toEqual(expected);
+    expect(forwarded.stream).toEqual(forwarded.invoke);
   });
 
   it('accepts a camelCase thinking.budgetTokens and drops a thinking value without a type', async () => {
@@ -325,6 +386,22 @@ describe('createClaudeAgentsHandler', () => {
     expect(await run({ type: 'adaptive' })).toEqual({ type: 'adaptive' });
     expect(await run({ budget_tokens: 512 })).toBeUndefined();
     expect(await run('enabled')).toBeUndefined();
+  });
+
+  it('drops a thinking with an unknown type or an enabled thinking without a budget', async () => {
+    mockQuery.mockImplementation(makeResultMessage());
+    const run = async (thinking: unknown) => {
+      mockQuery.mockClear();
+      const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { thinking } } };
+      await createClaudeAgentsHandler()(config as any, 'q');
+      return mockQuery.mock.calls[0][0].options.thinking;
+    };
+    expect(await run({ type: 'enabled' })).toBeUndefined();
+    expect(await run({ type: 'enabled', budget_tokens: '1024' })).toBeUndefined();
+    expect(await run({ type: 'on', budget_tokens: 1024 })).toBeUndefined();
+    expect(await run({ type: 'disabled', budget_tokens: 1, display: 'omitted' })).toEqual({ type: 'disabled' });
+    expect(await run({ type: 'adaptive', display: 'verbose' })).toEqual({ type: 'adaptive' });
+    expect(await run({ type: 'adaptive', display: 'omitted' })).toEqual({ type: 'adaptive', display: 'omitted' });
   });
 
   it('does not let model.parameters override model, tools, allowedTools, mcpServers, hooks, or systemPrompt', async () => {
