@@ -9,7 +9,6 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateRows, generationPayload, type RowResult, SUMMARY_POLL_DEFAULTS } from '../evaluations-runner.js';
 import { EvalTool, type RunOptions } from '../experimental.js';
-import { pythonFloat } from '../python-format.js';
 import { NativeTool } from '../types.js';
 import {
   completion,
@@ -982,37 +981,6 @@ describe('generation events', () => {
     expect(generationPayload(ids, result).errorMessage).toBe('Unknown error');
   });
 
-  describe('pythonFloat', () => {
-    // Each value with the text Python's json.dumps writes for it.
-    it.each([
-      [1, '1.0'],
-      [-2, '-2.0'],
-      [0.1, '0.1'],
-      [-0, '-0.0'],
-      [0, '0.0'],
-      [1e16, '1e+16'],
-      [1e15, '1000000000000000.0'],
-      [123456789012345, '123456789012345.0'],
-      [1.5e16, '1.5e+16'],
-      [1e-4, '0.0001'],
-      [1e-5, '1e-05'],
-      [0.000123, '0.000123'],
-      [1e21, '1e+21'],
-      [1.5e300, '1.5e+300'],
-      [5e-324, '5e-324'],
-      [2 ** 53, '9007199254740992.0'],
-      [1 / 3, '0.3333333333333333'],
-      [-1e-7, '-1e-07'],
-      [12.5, '12.5'],
-      [1e100, '1e+100'],
-      [Number.NaN, 'NaN'],
-      [Number.POSITIVE_INFINITY, 'Infinity'],
-      [Number.NEGATIVE_INFINITY, '-Infinity'],
-    ])('writes %d as %s', (value, text) => {
-      expect(pythonFloat(value)).toBe(text);
-    });
-  });
-
   describe('contentHash', () => {
     const ids = {
       projectKey: 'p',
@@ -1030,12 +998,13 @@ describe('generation events', () => {
         ...fields,
       }) as RowResult;
 
-    // Reference values from Python: sha256(json.dumps(generated, sort_keys=True, separators=(",", ":"))).
+    // Shared with the Python SDK's test_canonical_json.py: sha256 of the RFC 8785 canonical JSON of
+    // what was generated, which must be the same in every language.
     it.each([
       [
         'a completed row with non-ASCII output and usage',
         rowResult({ output: 'café 東京 😀', usage: { input_tokens: 1, output_tokens: 2 } }),
-        'ec554441eaad49733ecd22ab582ffd31493d34bbdd9a99b56012091780bc5a2a',
+        'c413938130f9e5d632edbd07d529139b942e1c43c62fe3fb9ae09552dc7e7f71',
       ],
       [
         'an errored row',
@@ -1051,15 +1020,22 @@ describe('generation events', () => {
       expect(generationPayload(ids, result).contentHash).toBe(hash);
     });
 
-    it('reads numbers in output as json.loads would: safe integers as ints, the rest as floats', () => {
+    it('writes numbers as JSON.stringify does, so a float 1.0 from Python hashes as 1 does here', () => {
       const result = rowResult({
         output: { score: 1, p: 0.1, tiny: 1e-5, big: 1e16, list: [3, -0, 2.5e-7], neg: -2 },
         usage: { input_tokens: 7, output_tokens: 9 },
       });
-      // Python: json.dumps of json.loads('{"score": 1, ..., "big": 1e16, "list": [3, -0, 2.5e-07], "neg": -2}')
-      // {"error":null,"output":{"big":1e+16,"list":[3,0,2.5e-07],"neg":-2,"p":0.1,"score":1,"tiny":1e-05},...}
+      // {"error":null,"output":{"big":10000000000000000,"list":[3,0,2.5e-7],"neg":-2,"p":0.1,"score":1,"tiny":0.00001},...}
       expect(generationPayload(ids, result).contentHash).toBe(
-        '36e6b8c61c738f60f7a6921264274bf0644e509c7e9a0297b579338076bb1fb9',
+        'ae920410735c7fe62767503ea2121965d264b0d26abe396736d03be6aac77ae7',
+      );
+    });
+
+    it('sorts keys by UTF-16 code unit and writes non-ASCII as is', () => {
+      // U+1F600 is the surrogate pair D83D DE00, so it sorts before U+FF61.
+      const output = { z: 1, '\uff61': 2, '\u{1F600}': 3 };
+      expect(generationPayload(ids, rowResult({ output })).contentHash).toBe(
+        sha256('{"error":null,"output":{"z":1,"\u{1F600}":3,"\uff61":2},"status":"COMPLETE"}'),
       );
     });
 

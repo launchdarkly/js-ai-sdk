@@ -9,7 +9,6 @@
  */
 
 import { toolResultString } from './content.js';
-import { pythonStr, pythonTruthy } from './python-format.js';
 import type { AiConfigRep } from './types.js';
 import { parseJSONWithPossibleFences } from './utils.js';
 
@@ -23,21 +22,22 @@ export const FORMATTING_INSTRUCTIONS = [
 /**
  * The conversation a judge is shown, as its `message_history` variable: what
  * was asked, what the agent did, what it answered, then how to format the
- * verdict. Empty parts are skipped, so a unit with no tools gets the history it
- * got before trajectories existed.
+ * verdict. A part whose text is empty is skipped, so a unit with no tools gets
+ * the history it got before trajectories existed.
  *
  * The formatting block is appended here, not by callers: judges built from the
  * AI Library's default templates read the JSON shape from
  * `{{message_history}}`, and a judge that stopped being told it would answer in
  * prose and fail every result as invalid output.
+ *
+ * Every part is rendered by the rule tool results follow, so a structured
+ * output is shown as JSON and a rubric reads the same text in every SDK. An
+ * output of `0`, `false` or `{}` is an answer, and is shown.
  */
 export function buildMessageHistory(parts: { userInput?: unknown; trajectory?: string; output?: unknown }): string {
-  // Python's truthiness, so the same parts are skipped as in the Python SDK. A structured output is
-  // shown as JSON, by the rule tool results follow, so a rubric reads the same text in every SDK.
-  const output = pythonTruthy(parts.output) ? toolResultString(parts.output) : undefined;
-  return [parts.userInput, parts.trajectory, output, FORMATTING_INSTRUCTIONS]
-    .filter(pythonTruthy)
-    .map(pythonStr)
+  return [parts.userInput, parts.trajectory, parts.output, FORMATTING_INSTRUCTIONS]
+    .map(toolResultString)
+    .filter(Boolean)
     .join('\n\n');
 }
 
@@ -57,9 +57,11 @@ export function numericScore(score: unknown): number | undefined {
 
 /**
  * Parse a judge response into its score and reasoning. Accepts a JSON string,
- * optionally in markdown fences, or an already-decoded object. `reason` is
- * accepted as an alias for `reasoning`. The score is returned untouched, for
- * the caller to apply its own policy to, through {@link numericScore}.
+ * optionally in markdown fences, or an already-decoded object. The reasoning is
+ * the first of `reasoning` and `reason` whose text is not empty, rendered by
+ * the tool-result rule: a string as it is, anything else as JSON. The score is
+ * returned untouched, for the caller to apply its own policy to, through
+ * {@link numericScore}.
  *
  * Returns `null` when the response is not a non-empty JSON object.
  */
@@ -69,9 +71,7 @@ export function parseJudgeResponse(raw: unknown): { score: unknown; reasoning: s
     return null;
   }
   const { score, reasoning, reason } = parsed as Record<string, unknown>;
-  // `reasoning or reason or ""`, then str(), as the Python SDK reads it.
-  const text = pythonTruthy(reasoning) ? reasoning : pythonTruthy(reason) ? reason : '';
-  return { score, reasoning: pythonStr(text) };
+  return { score, reasoning: toolResultString(reasoning) || toolResultString(reason) };
 }
 
 /**
