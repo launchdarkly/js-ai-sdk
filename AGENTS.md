@@ -106,9 +106,17 @@ PRs are squash-merged with the PR title as the commit message, and release-pleas
 
 The rule is specified in `TESTING.md` §0.3 in `launchdarkly/ai-sdks-monorepo`.
 
+## Public API Reports
+
+Every public entry point has a committed API Extractor report at `packages/<package>/etc/<name>.api.md`: every exported name, type-only names included, with its full declaration. `<name>` is the package name without `@launchdarkly/`, plus `-experimental` for the `./experimental` entry point. The reports are the public API contract. `@launchdarkly/ai-node` re-exports `@launchdarkly/ai-server`, whose reports cover it, and `@launchdarkly/ai-otel` exports nothing, so neither has a report.
+
+- **Change a public name or signature, then run `yarn api:update`** and commit the updated report in the same PR. `yarn api:check`, which CI runs, fails while a report is out of date. Each package also has its own `api:check` / `api:update`.
+- **The reports are owned by `@launchdarkly/team-ai-agents`** in `.github/CODEOWNERS`, so their approval of the report diff is how public API changes are reviewed.
+- **Never edit a report by hand.** Each package's `api-extractor*.json` extends `api-extractor.base.json`; a new package or entry point adds its config and commits its report in the same PR.
+
 ## Public API Surface
 
-The approved public names of each entry point are the lists in `api-surface/`, copied in by sync PRs and never edited by hand. `yarn api:surface` compares each list with the names its entry point's API Extractor report (`packages/<package>/etc/*.api.md`) exports, type-only names included, and fails on an exported name the list does not allow or an unmarked name that is no longer exported. Regenerate the reports with `yarn workspace @launchdarkly/ai-server api:update` first. `API_SURFACE_DIR=<dir>` reads the lists from another directory, and `API_SURFACE_STRICT=1`, set for every major release, also fails on any `-` or `+` marker. The entry points it covers are listed in `ENTRY_POINTS` in `scripts/api-surface.mjs`; only `@launchdarkly/ai-server` has API reports today. `yarn test:api-surface` tests the check itself. CI runs both, after `api:check`.
+The approved public names of each entry point are the lists in `api-surface/`, copied in by sync PRs and never edited by hand. `yarn api:surface` compares each list with the names its entry point's API Extractor report (`packages/<package>/etc/*.api.md`) exports, type-only names included, and fails on an exported name the list does not allow or an unmarked name that is no longer exported. Regenerate the reports with `yarn api:update` first. `API_SURFACE_DIR=<dir>` reads the lists from another directory, and `API_SURFACE_STRICT=1`, set for every major release, also fails on any `-` or `+` marker. The entry points it covers are listed in `ENTRY_POINTS` in `scripts/api-surface.mjs`. `yarn test:api-surface` tests the check itself. CI runs both, after `api:check`.
 
 The `usage=` fields on the lists drive every package's `sdk-usage.test.ts` (§3.27): `usageRows()` from `scripts/api-surface.mjs` turns a list into one row per usage ID, and each suite's `CALLS` table says only how to call the function the package exports under that name. A usage ID with no entry in `CALLS`, or an entry for an ID the list no longer reports, fails the suite, so adding a reporting helper means adding its call there.
 

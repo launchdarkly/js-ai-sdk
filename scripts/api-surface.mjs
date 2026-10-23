@@ -36,6 +36,14 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const ENTRY_POINTS = [
   { list: 'ai-server.txt', report: 'packages/client/etc/ai-server.api.md' },
   { list: 'ai-server.experimental.txt', report: 'packages/client/etc/ai-server-experimental.api.md' },
+  { list: 'ai-claude-agents.txt', report: 'packages/claude-agents/etc/ai-claude-agents.api.md' },
+  { list: 'ai-claude-messages.txt', report: 'packages/claude-messages/etc/ai-claude-messages.api.md' },
+  { list: 'ai-langchain-agents.txt', report: 'packages/langchain-agents/etc/ai-langchain-agents.api.md' },
+  { list: 'ai-langchain-messages.txt', report: 'packages/langchain-messages/etc/ai-langchain-messages.api.md' },
+  { list: 'ai-openai-agents.txt', report: 'packages/openai-agents/etc/ai-openai-agents.api.md' },
+  { list: 'ai-openai-messages.txt', report: 'packages/openai-messages/etc/ai-openai-messages.api.md' },
+  { list: 'ai-vercel-agents.txt', report: 'packages/vercel-agents/etc/ai-vercel-agents.api.md' },
+  { list: 'ai-vercel-messages.txt', report: 'packages/vercel-messages/etc/ai-vercel-messages.api.md' },
 ];
 
 const LINE = /^(?<mark>[-+] )?(?<name>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)(?: {2}usage=(?<usage>\S+))?(?: {2}# .+)?$/;

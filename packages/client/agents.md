@@ -330,7 +330,7 @@ The stage rules (shared spec §0.3), which every change here must keep:
   `skills-core.ts`. A test asserts that loading the root registers no Agent Skills hook.
 - **Both entry points are in the API report.** `etc/ai-server.api.md` (root) and
   `etc/ai-server-experimental.api.md` are checked in; CI runs
-  `yarn workspace @launchdarkly/ai-server api:check`. After an intended surface change run
+  `yarn api:check` for every package. After an intended surface change run
   `yarn workspace @launchdarkly/ai-server api:update` (or `yarn api:update` from this directory) and
   commit both reports.
 - **Promotion to core** adds root exports and keeps these as `/** @deprecated use the root export */`
