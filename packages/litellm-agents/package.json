@@ -57,7 +57,7 @@
     "@openai/agents": "^0.11.6",
     "@opentelemetry/api": "^1.9.1",
     "openai": "^6.42.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@microsoft/api-extractor": "^7.59.4",
