@@ -343,35 +343,26 @@ describe('createOpenAIHandler', () => {
     expect(call).not.toHaveProperty('foo');
   });
 
-  // The rule is: exclude a key only if setting it would break the handler. These keys are real
-  // Responses API fields with no obvious generation effect, but a config that sets one still
-  // gets a working call, so they are forwarded rather than excluded.
-  it('forwards keys with no generation effect (store, user, safety_identifier, prompt_cache_key, prompt_cache_retention, include, context_management)', async () => {
+  // Not on the cross-SDK OpenAI Messages list (TESTING.md §1.12): retention, server-side state,
+  // response shape, prompt content and attribution settings are dropped like any unknown key.
+  it('drops store, user, safety_identifier, metadata, prompt_cache_retention, include, context_management, truncation, moderation and instructions', async () => {
     mockResponsesCreate.mockResolvedValue(mockFinalResponse());
-    const config = {
-      ...baseConfig,
-      model: {
-        ...baseConfig.model,
-        parameters: {
-          store: true,
-          user: 'user-123',
-          safety_identifier: 'user-123',
-          prompt_cache_key: 'cache-key',
-          prompt_cache_retention: '24h',
-          include: ['file_search_call.results'],
-          context_management: [{ type: 'compaction' }],
-        },
-      },
+    const dropped = {
+      store: true,
+      user: 'user-123',
+      safety_identifier: 'user-123',
+      metadata: { team: 'a' },
+      prompt_cache_retention: '24h',
+      include: ['file_search_call.results'],
+      context_management: [{ type: 'compaction' }],
+      truncation: 'auto',
+      moderation: { mode: 'strict' },
+      instructions: 'evil instructions',
     };
+    const config = { ...baseConfig, model: { ...baseConfig.model, parameters: dropped } };
     await createOpenAIHandler()(config as any, 'q');
     const call = mockResponsesCreate.mock.calls[0][0];
-    expect(call.store).toBe(true);
-    expect(call.user).toBe('user-123');
-    expect(call.safety_identifier).toBe('user-123');
-    expect(call.prompt_cache_key).toBe('cache-key');
-    expect(call.prompt_cache_retention).toBe('24h');
-    expect(call.include).toEqual(['file_search_call.results']);
-    expect(call.context_management).toEqual([{ type: 'compaction' }]);
+    for (const key of Object.keys(dropped)) expect(call).not.toHaveProperty(key);
   });
 
   it('drops background, conversation, and prompt, which would break the handler', async () => {
@@ -1435,5 +1426,122 @@ describe('createOpenAIHandler — MAX_STEPS cap (§1.10)', () => {
     await expect(
       collectStream(createOpenAIHandler().stream?.(cfg as any, 'q', { myTool: toolFn }, {})),
     ).rejects.toThrow(/maximum number of steps/);
+  });
+});
+
+describe('createOpenAIHandler — cross-SDK allowlist (TESTING.md §1.12)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockChildSpans.length = 0;
+  });
+
+  // Every key on the OpenAI Messages list, each with a well-formed value. `max_tool_calls` is on
+  // the list but not on ResponseCreateParamsBase in the installed openai package, so it is not
+  // forwarded; `max_tokens` and `max_completion_tokens` land as `max_output_tokens`.
+  const CANONICAL_PARAMETERS = {
+    max_completion_tokens: 200,
+    max_output_tokens: 300,
+    max_tokens: 100,
+    parallel_tool_calls: false,
+    prompt_cache_key: 'k',
+    reasoning: { effort: 'low', summary: 'auto' },
+    service_tier: 'flex',
+    temperature: 0.4,
+    tool_choice: 'auto',
+    top_logprobs: 2,
+    top_p: 0.9,
+  };
+  const EXPECTED_FORWARDED_KEYS = [
+    'max_output_tokens',
+    'parallel_tool_calls',
+    'prompt_cache_key',
+    'reasoning',
+    'service_tier',
+    'temperature',
+    'tool_choice',
+    'top_logprobs',
+    'top_p',
+  ];
+  const HANDLER_OWNED_KEYS = ['input', 'model', 'previous_response_id', 'text', 'tools'];
+  const REMOVED = {
+    context_management: [{ type: 'compaction' }],
+    include: ['reasoning.encrypted_content'],
+    instructions: 'x',
+    max_tool_calls: 3,
+    metadata: { a: 'b' },
+    moderation: { mode: 'strict' },
+    prompt_cache_retention: '24h',
+    safety_identifier: 's',
+    store: true,
+    truncation: 'auto',
+    user: 'u',
+    made_up_key: 1,
+  };
+
+  const forwardedKeys = (call: Record<string, unknown>) =>
+    Object.keys(call)
+      .filter((key) => !HANDLER_OWNED_KEYS.includes(key) && call[key] !== undefined)
+      .sort();
+
+  async function invokeCall(parameters: Record<string, unknown>) {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters } };
+    await createOpenAIHandler()(cfg as any, 'q');
+    return mockResponsesCreate.mock.calls[0][0];
+  }
+
+  async function streamCall(parameters: Record<string, unknown>) {
+    const asyncIterable = (async function* () {})();
+    mockResponsesStream.mockReturnValue({
+      [Symbol.asyncIterator]: () => asyncIterable[Symbol.asyncIterator](),
+      finalResponse: vi.fn().mockResolvedValue({
+        id: 'resp-1',
+        model: 'gpt-4o',
+        usage: { input_tokens: 1, output_tokens: 1 },
+        output: [],
+        output_text: 'hi',
+      }),
+    });
+    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters } };
+    for await (const _e of createOpenAIHandler().stream?.(cfg as any, 'q', {}, {}) ?? []) {
+      // drain
+    }
+    return mockResponsesStream.mock.calls[0][0];
+  }
+
+  it('invoke forwards exactly the canonical keys', async () => {
+    const call = await invokeCall({ ...CANONICAL_PARAMETERS, ...REMOVED });
+    expect(forwardedKeys(call)).toEqual(EXPECTED_FORWARDED_KEYS);
+    expect(call.max_output_tokens).toBe(300);
+    expect(call.reasoning).toEqual({ effort: 'low', summary: 'auto' });
+  });
+
+  it('stream forwards exactly the canonical keys, the same as invoke', async () => {
+    const streamed = await streamCall({ ...CANONICAL_PARAMETERS, ...REMOVED });
+    vi.clearAllMocks();
+    const invoked = await invokeCall({ ...CANONICAL_PARAMETERS, ...REMOVED });
+    expect(forwardedKeys(streamed)).toEqual(EXPECTED_FORWARDED_KEYS);
+    const pick = (call: Record<string, unknown>) =>
+      Object.fromEntries(EXPECTED_FORWARDED_KEYS.map((key) => [key, call[key]]));
+    expect(pick(streamed)).toEqual(pick(invoked));
+  });
+
+  it('reasoning keeps only effort and summary', async () => {
+    const call = await invokeCall({ reasoning: { effort: 'high', summary: 'auto', generate_summary: 'x', extra: 1 } });
+    expect(call.reasoning).toEqual({ effort: 'high', summary: 'auto' });
+  });
+
+  it.each([
+    ['reasoning', 'high'],
+    ['reasoning', { other: 1 }],
+    ['reasoning', ['high']],
+    ['tool_choice', 42],
+    ['tool_choice', { name: 'f' }],
+  ])('drops a malformed %s (%j) on invoke and stream', async (key, value) => {
+    const invoked = await invokeCall({ [key]: value });
+    expect(invoked).not.toHaveProperty(key);
+    vi.clearAllMocks();
+    const streamed = await streamCall({ [key]: value });
+    expect(streamed).not.toHaveProperty(key);
   });
 });

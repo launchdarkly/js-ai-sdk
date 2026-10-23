@@ -6,6 +6,7 @@ import { extractVariation, getClient, initClient } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
 import { reportUsage } from './sdk-usage.js';
 import { executeAndStream, modelStampsFromMeta, tryGetEnvironmentId } from './tracking.js';
+import { HANDOFF_TOOL_PREFIX } from './trajectory.js';
 import type { LDContext, Message, ToolHandlerFn } from './types.js';
 import {
   type AiConfigRep,
@@ -240,7 +241,7 @@ const buildGraph = async (
 
     for (const edge of outgoing) {
       const target = nodes.get(edge.targetKey);
-      const toolName = `__handoff_${sanitizeName(edge.targetKey)}`;
+      const toolName = `${HANDOFF_TOOL_PREFIX}${sanitizeName(edge.targetKey)}`;
       // The prefix is unconditional: without it, a description sourced from the target's own
       // instructions reads as a tool that does the target's work, and the model calls it
       // instead of the node's real tools.
@@ -308,6 +309,7 @@ const buildGraph = async (
         providerName: node.config.provider?.name ?? '',
         graphKey: key,
       };
+      let trajectory = '';
 
       for await (const event of executeAndStream({
         configKey: node.key,
@@ -327,6 +329,7 @@ const buildGraph = async (
           response = event.response;
           usage = event.usage;
           trackData = event.trackData;
+          trajectory = event.trajectory;
         }
       }
 
@@ -340,6 +343,9 @@ const buildGraph = async (
         baseTrackData: trackData,
         toolHandlers,
         graphKey: key,
+        // This node's own calls. A graph-level judge gets none: splicing nodes'
+        // trajectories together would describe a conversation that never happened.
+        trajectory,
       });
 
       if (opts.from) {
@@ -410,6 +416,7 @@ const buildGraph = async (
         providerName: node.config.provider?.name ?? '',
         graphKey: key,
       };
+      let trajectory = '';
 
       for await (const event of executeAndStream({
         configKey: node.key,
@@ -429,6 +436,7 @@ const buildGraph = async (
           response = event.response;
           usage = event.usage;
           trackData = event.trackData;
+          trajectory = event.trajectory;
         }
       }
 
@@ -442,6 +450,9 @@ const buildGraph = async (
         baseTrackData: trackData,
         toolHandlers,
         graphKey: key,
+        // This node's own calls. A graph-level judge gets none: splicing nodes'
+        // trajectories together would describe a conversation that never happened.
+        trajectory,
       });
 
       const chosenKey = chosen();
@@ -541,34 +552,17 @@ const buildGraph = async (
   ): Promise<T | undefined> => {
     if (!rootNode) return undefined;
 
-    const terminals = terminalNodes();
-    if (terminals.length === 0) return undefined;
-
+    // Post-order DFS: every child is visited before its parent, each node once, root last.
     const visited = new Set<string>();
-    let frontier: string[] = terminals.map((n) => n.key);
-    let iterations = 0;
+    const visit = async (nodeKey: string): Promise<void> => {
+      if (visited.has(nodeKey)) return;
+      visited.add(nodeKey);
+      for (const child of getChildNodes(nodeKey)) await visit(child.key);
+      const node = nodes.get(nodeKey);
+      if (node) ctx[nodeKey] = await fn(node, ctx);
+    };
 
-    while (frontier.length > 0 && iterations < MAX_TRAVERSAL_DEPTH) {
-      iterations += 1;
-      const next: string[] = [];
-      for (const nodeKey of frontier) {
-        if (visited.has(nodeKey)) continue;
-        visited.add(nodeKey);
-
-        // Defer the root: it is always visited last in a reverse traversal.
-        if (nodeKey === rootNode.key) continue;
-
-        const node = nodes.get(nodeKey);
-        if (node) ctx[nodeKey] = await fn(node, ctx);
-
-        for (const parent of getParentNodes(nodeKey)) {
-          if (!visited.has(parent.key)) next.push(parent.key);
-        }
-      }
-      frontier = next;
-    }
-
-    ctx[rootNode.key] = await fn(rootNode, ctx);
+    await visit(rootNode.key);
     return ctx[rootNode.key] as T | undefined;
   };
 
@@ -655,20 +649,6 @@ export const graph = (key: string, options: GraphOptions): GraphCaller => {
  * call {@link graph}.
  */
 export const graphInternal = (key: string, options: GraphOptions): GraphCaller => {
-  // Resolution is cached per context reference so multiple invoke()/stream()
-  // invocations with the same context do not re-evaluate all node configurations from LD.
-  type BuiltGraph = Awaited<ReturnType<typeof buildGraph>>;
-  const nodeCache = new WeakMap<LDContext, Promise<BuiltGraph>>();
-
-  const resolveBuilt = async (context: LDContext, resolvedOptions: GraphOptions): Promise<BuiltGraph> => {
-    let buildPromise = nodeCache.get(context);
-    if (!buildPromise) {
-      buildPromise = buildGraph(key, context, resolvedOptions);
-      nodeCache.set(context, buildPromise);
-    }
-    return buildPromise;
-  };
-
   const invoke = async (
     input: string | undefined,
     context: LDContext,
@@ -687,12 +667,8 @@ export const graphInternal = (key: string, options: GraphOptions): GraphCaller =
       );
     }
 
-    const { def } = await resolveBuilt(context, resolvedOptions);
-    if (!def.enabled) {
-      throw new Error(`Agent graph "${key}" is disabled`);
-    }
-
-    // Same walk as stream(). Events are discarded; the done payload is the blocking result.
+    // Same walk as stream(), which resolves the graph and throws if it is disabled. Events are
+    // discarded; the done payload is the blocking result.
     let done: Extract<GraphStreamEvent, { type: 'done' }> | undefined;
     for await (const event of stream(input, context, variables, history)) {
       if (event.type === 'done') done = event;
@@ -742,13 +718,12 @@ export const graphInternal = (key: string, options: GraphOptions): GraphCaller =
       );
     }
 
-    const { def, graphTrackData: builtTrackData, streamRoute } = await resolveBuilt(context, resolvedOptions);
+    const { def, graphTrackData: builtTrackData, streamRoute } = await buildGraph(key, context, resolvedOptions);
     if (!def.enabled) {
       throw new Error(`Agent graph "${key}" is disabled`);
     }
 
-    // The built graph is cached per context, so each invocation mints its own run id for the
-    // span and every graph event it emits.
+    // Each invocation mints its own run id for the span and every graph event it emits.
     const graphTrackData: TrackData = { ...builtTrackData, runId: crypto.randomUUID() };
 
     const span = trace.getTracer('@launchdarkly/ai-server').startSpan('launchdarkly.graph', undefined, callerContext);

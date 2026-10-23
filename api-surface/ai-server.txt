@@ -1,0 +1,125 @@
+# Public names of @launchdarkly/ai-server (package root; @launchdarkly/ai-node re-exports it).
+# Approved public names for the API-surface check. Owned in CODEOWNERS.
+# One name per line, sorted case-insensitively. A trailing "# ..." is a note.
+#
+#   Name      public; must be exported
+#   - Name    leaving the public surface; may be exported or not
+#   + Name    joining the public surface; may be exported or not
+
+- addCachedTokensToInput
+AiConfigRep
+- anyMultimodal
+- buildJudgeTasks  usage=client.buildJudgeTasks
+- camelizeModelParameters
+- CanonicalTurn
+- collapseMessagesToInstructions
+compose
+- composeHistory
+config  usage=client.config.invoke,client.config.stream
+ConfigArgs
++ ConfigInstance  # type-only export
+- configInternal  # internal: plumbing for the handler packages; moves to the internal entry point
+ConfigMessage
+- ConfigTurn
++ configure
+ContentBlock
+ContentCaptureOptions
+- contentToText
+ConversationIdSpanProcessor
+createHandler  usage=client.createHandler
+- createHandlerInternal  # internal: plumbing for the handler packages; moves to the internal entry point
+- createRunUsage
+- endSpanOnce
+getClient
+globalRegistry
+graph  usage=client.graph.invoke,client.graph.stream
+GraphArgs
+GraphDefinition
+GraphEdge
++ GraphInstance  # type-only export
+- graphInternal  # internal: plumbing for the handler packages; moves to the internal entry point
+GraphNode
+GraphOptions
+GraphStreamEvent
+- GraphTopology
+- GraphTopologySchema
++ HandlerFn
++ HandlerResult
+HandlerStreamEvent
+- hasMultimodalContent
+- imageBlockToUrl
+ImageContentBlock
+initClient
++ InitClientOptions
++ InputTokenDetails
+inspectConfig  usage=client.inspectConfig
+- inspectConfigInternal  # internal: plumbing for the handler packages; moves to the internal entry point
+InspectConfigResult
+- isContentBlocks
+- JudgeCallResult  # renamed to JudgeResult
++ JudgeResult  # rename of JudgeCallResult
+JudgeRunResult
+JudgeTask
+- langChainContentText
+- langChainFinishReasons
+- langChainSpanMessages
+- langChainSpanUsage
+LDClientInterface
+LDContext
+- LDMultiKindContext
+- LDSingleKindContext
+- LDUser
+LDVariationMeta
+- makeGraphTrackData
+- makeNodeTrackData
+- makeRunTrackData
+Message
+MessageContent
+- NATIVE_TOOL_KEY
+NativeTool
+- normalizeModelParameters
+- omitModelStamps
+- parseJSONWithPossibleFences
+parseTemplate
+- pickForwardedModelParameters
+ProviderGraphResponse
+ProviderHandler
+ProviderResponse
+- ProviderSetupFn
+- registerAiSdkPackage
+Registry
+- RegistryInput  # internal: alias of Registry; ConfigArgs.registry and GraphOptions.registry take Registry
+- reportUsage  # internal: plumbing for the handler packages; moves to the internal entry point
+resolveGraph  usage=client.resolveGraph
+- RouteResult
+runJudge  usage=client.runJudge
+- RunNodeOptions
+- RunUsage
++ SDKOptions
+- setConversationIdIfAbsent
+- setInputContentAttributes
+- setLdSpanAttributes
+- setModelIdentityAttributes
+- setOutputContentAttributes
+- setToolCallContentAttributes
+- setToolDefinitionAttributes
+- setUsageSpanAttributes
+shutdown
+- shutdownTelemetry  # internal: not needed to init, configure, execute or read results
+- SpanMessage
+- SpanMessagePart
+- SpanUsage
+StreamEvent
++ StreamHandlerFn
+TextContentBlock
+- textMessage
+TokenUsage
+Tool
+- ToolDefinitionInput
+ToolHandlerFn
+- toolResultString
+- toSemconvFinishReason
+TrackData
+- TraverseVisitor
+- waitForTelemetry  # internal: not needed to init, configure, execute or read results
+withConversationId

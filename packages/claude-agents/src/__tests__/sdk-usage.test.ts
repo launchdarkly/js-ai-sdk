@@ -5,14 +5,14 @@
 import type { LDClientInterface, LDContext } from '@launchdarkly/ai-server';
 import { initClient, shutdown } from '@launchdarkly/ai-server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { usageRows } from '../../../../scripts/api-surface.mjs';
 import {
   LD_AI_PACKAGE_NAME as AI_SDK_NAME,
   LD_AI_PACKAGE_VERSION as AI_SDK_VERSION,
 } from '../../../client/src/version.js';
 import { createClaudeAgentsSkillsHandler } from '../experimental.js';
-import { claudeGraph } from '../graph.js';
-import { claudeAgents, createClaudeAgentsHandler } from '../handler.js';
-import { toClaudeAgents } from '../native-graph.js';
+import { createClaudeAgentsHandler } from '../handler.js';
+import * as entry from '../index.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from '../version.js';
 
 const ctx: LDContext = { kind: 'user', key: 'user-1' };
@@ -59,6 +59,49 @@ async function drainSettled(stream: AsyncGenerator<unknown>): Promise<void> {
   }
 }
 
+/** Each call receives the export the list names, whatever its signature. */
+type Call = (fn: any) => Promise<void>;
+
+const fire = (call: () => unknown): Promise<void> => {
+  call();
+  return Promise.resolve();
+};
+
+/**
+ * How to call each usage-reporting helper. Which helpers are tested comes from
+ * this package's approved list (`usage=` fields), and each call receives the
+ * function the package exports under the name the list gives.
+ */
+const CALLS: Record<string, Call[]> = {
+  'claude-agents.claudeAgents': [(fn) => settle(fn('k', 'q', ctx))],
+  'claude-agents.createClaudeAgentsHandler': [(fn) => fire(() => fn())],
+  'claude-agents.claudeGraph': [
+    (fn) => fire(() => fn('k', {})),
+    // The returned caller's methods run later; they must not add client.graph.* events.
+    (fn) => settle(fn('k', {}).invoke('q', ctx)),
+    (fn) => drainSettled(fn('k', {}).stream('q', ctx)),
+  ],
+  'claude-agents.toClaudeAgents': [
+    (fn) => fire(() => fn(Promise.resolve({} as never))),
+    (fn) => settle(fn(Promise.resolve({ key: 'k', enabled: false } as never)).invoke('q')),
+  ],
+};
+
+const listRows = usageRows('ai-claude-agents.txt', entry);
+
+const rows: Array<[string, () => Promise<void>]> = [
+  ...listRows.flatMap(({ id, fn }) =>
+    (CALLS[id] ?? []).map((call): [string, () => Promise<void>] => [id, () => call(fn)]),
+  ),
+  // `./experimental` has no approved list yet, so its helper is called directly. It reports its
+  // own ID and not the core factory's.
+  ['experimental.createClaudeAgentsSkillsHandler', () => fire(() => createClaudeAgentsSkillsHandler())],
+];
+
+it('has a call for every usage ID its list reports, and none it does not', () => {
+  expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());
+});
+
 describe('§3.27 claude-agents helper usage', () => {
   let client: FakeClient;
 
@@ -73,45 +116,7 @@ describe('§3.27 claude-agents helper usage', () => {
     await shutdown();
   });
 
-  it.each([
-    ['claude-agents.claudeAgents', () => settle(claudeAgents('k', 'q', ctx))],
-    [
-      'claude-agents.createClaudeAgentsHandler',
-      () => {
-        createClaudeAgentsHandler();
-        return Promise.resolve();
-      },
-    ],
-    // The experimental factory reports its own ID and not the core factory's.
-    [
-      'experimental.createClaudeAgentsSkillsHandler',
-      () => {
-        createClaudeAgentsSkillsHandler();
-        return Promise.resolve();
-      },
-    ],
-    [
-      'claude-agents.claudeGraph',
-      () => {
-        claudeGraph('k', {});
-        return Promise.resolve();
-      },
-    ],
-    // The returned caller's methods run later; they must not add client.graph.* events.
-    ['claude-agents.claudeGraph', () => settle(claudeGraph('k', {}).invoke('q', ctx))],
-    ['claude-agents.claudeGraph', () => drainSettled(claudeGraph('k', {}).stream('q', ctx))],
-    [
-      'claude-agents.toClaudeAgents',
-      () => {
-        toClaudeAgents(Promise.resolve({} as never));
-        return Promise.resolve();
-      },
-    ],
-    [
-      'claude-agents.toClaudeAgents',
-      () => settle(toClaudeAgents(Promise.resolve({ key: 'k', enabled: false } as never)).invoke('q')),
-    ],
-  ] as Array<[string, () => Promise<void>]>)('%s sends one $ld:ai:sdk:usage event', async (helper, call) => {
+  it.each(rows)('%s sends one $ld:ai:sdk:usage event', async (helper, call) => {
     try {
       await call();
     } catch {

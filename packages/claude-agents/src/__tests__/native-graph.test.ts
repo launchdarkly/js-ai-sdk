@@ -124,6 +124,18 @@ describe('toClaudeAgents', () => {
     }
   });
 
+  it("never forwards a node's output_format to its query()", async () => {
+    const def = makeGraphDef();
+    (def.root!.config.model as any).parameters = {
+      output_format: { type: 'json_schema', schema: { type: 'object' } },
+      max_turns: 3,
+    };
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+    const rootOptions = mockQuery.mock.calls[0][0].options;
+    expect(rootOptions.maxTurns).toBe(3);
+    expect(rootOptions.outputFormat).toBeUndefined();
+  });
+
   it("forwards each node's allowlisted model.parameters, including maxTurns, to that node's query()", async () => {
     const def = makeGraphDef();
     (def.root!.config.model as any).parameters = {
@@ -218,6 +230,25 @@ describe('toClaudeAgents', () => {
     await toClaudeAgents(Promise.resolve(def)).invoke('hello');
     expect(mockTool).toHaveBeenCalledTimes(1);
     expect(mockTool.mock.calls[0][0]).toBe('leaf');
+  });
+
+  it('drops a cyclic edge with a warning when the child was not built', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // root → A → B → A: post-order reaches B while A is still unbuilt.
+    const b = makeNode('B', [makeEdge('B', 'A')]);
+    const a = makeNode('A', [makeEdge('A', 'B')]);
+    const root = makeNode('root', [makeEdge('root', 'A')]);
+    const def = makeGraphDef({
+      root,
+      reverseTraverse: async (fn, ctx = {}) => {
+        for (const n of [b, a, root]) await fn(n, ctx);
+        return undefined;
+      },
+    });
+    await toClaudeAgents(Promise.resolve(def)).invoke('hello');
+    expect(mockTool.mock.calls.map((c) => c[0])).toEqual(['B', 'A']);
+    expect(warn).toHaveBeenCalledWith('[LaunchDarkly] Dropping cyclic edge "B" -> "A"');
+    warn.mockRestore();
   });
 
   // T6: root query allowedTools contains mcp__subagents__ prefix

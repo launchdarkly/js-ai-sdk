@@ -1,0 +1,22 @@
+# Public names of @launchdarkly/ai-claude-agents (package root).
+# Approved public names for the API-surface check. Owned in CODEOWNERS.
+# One name per line, sorted case-insensitively. A trailing "# ..." is a note.
+#
+#   Name      public; must be exported
+#   - Name    leaving the public surface; may be exported or not
+#   + Name    joining the public surface; may be exported or not
+
+claudeAgents  usage=claude-agents.claudeAgents
+ClaudeBash
+ClaudeEdit
+ClaudeGlob
+claudeGraph  usage=claude-agents.claudeGraph
+ClaudeGrep
+ClaudeNotebookEdit
+ClaudeRead
+ClaudeTodoWrite
+ClaudeWebFetch
+ClaudeWebSearch
+ClaudeWrite
+createClaudeAgentsHandler  usage=claude-agents.createClaudeAgentsHandler
+toClaudeAgents  usage=claude-agents.toClaudeAgents

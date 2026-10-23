@@ -14,13 +14,13 @@ vi.mock('ai', () => ({
   ToolLoopAgent: class ToolLoopAgent {},
 }));
 
+import { usageRows } from '../../../../scripts/api-surface.mjs';
 import {
   LD_AI_PACKAGE_NAME as AI_SDK_NAME,
   LD_AI_PACKAGE_VERSION as AI_SDK_VERSION,
 } from '../../../client/src/version.js';
-import { vercelGraph } from '../graph.js';
-import { createVercelAgentsHandler, vercelAgents } from '../handler.js';
-import { toVercelAgents } from '../native-graph.js';
+import { createVercelAgentsHandler } from '../handler.js';
+import * as entry from '../index.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from '../version.js';
 
 const ctx: LDContext = { kind: 'user', key: 'user-1' };
@@ -67,6 +67,44 @@ async function drainSettled(stream: AsyncGenerator<unknown>): Promise<void> {
   }
 }
 
+/** Each call receives the export the list names, whatever its signature. */
+type Call = (fn: any) => Promise<void>;
+
+const fire = (call: () => unknown): Promise<void> => {
+  call();
+  return Promise.resolve();
+};
+
+/**
+ * How to call each usage-reporting helper. Which helpers are tested comes from
+ * this package's approved list (`usage=` fields), and each call receives the
+ * function the package exports under the name the list gives.
+ */
+const CALLS: Record<string, Call[]> = {
+  'vercel-agents.vercelAgents': [(fn) => settle(fn('k', 'q', ctx))],
+  'vercel-agents.createVercelAgentsHandler': [(fn) => fire(() => fn())],
+  'vercel-agents.vercelGraph': [
+    (fn) => fire(() => fn('k', {})),
+    // The returned caller's methods run later; they must not add client.graph.* events.
+    (fn) => settle(fn('k', {}).invoke('q', ctx)),
+    (fn) => drainSettled(fn('k', {}).stream('q', ctx)),
+  ],
+  'vercel-agents.toVercelAgents': [
+    (fn) => fire(() => fn(Promise.resolve({} as never))),
+    (fn) => settle(fn(Promise.resolve({ key: 'k', enabled: false } as never)).invoke('q')),
+  ],
+};
+
+const listRows = usageRows('ai-vercel-agents.txt', entry);
+
+const rows: Array<[string, () => Promise<void>]> = listRows.flatMap(({ id, fn }) =>
+  (CALLS[id] ?? []).map((call): [string, () => Promise<void>] => [id, () => call(fn)]),
+);
+
+it('has a call for every usage ID its list reports, and none it does not', () => {
+  expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());
+});
+
 describe('§3.27 vercel-agents helper usage', () => {
   let client: FakeClient;
 
@@ -81,37 +119,7 @@ describe('§3.27 vercel-agents helper usage', () => {
     await shutdown();
   });
 
-  it.each([
-    ['vercel-agents.vercelAgents', () => settle(vercelAgents('k', 'q', ctx))],
-    [
-      'vercel-agents.createVercelAgentsHandler',
-      () => {
-        createVercelAgentsHandler();
-        return Promise.resolve();
-      },
-    ],
-    [
-      'vercel-agents.vercelGraph',
-      () => {
-        vercelGraph('k', {});
-        return Promise.resolve();
-      },
-    ],
-    // The returned caller's methods run later; they must not add client.graph.* events.
-    ['vercel-agents.vercelGraph', () => settle(vercelGraph('k', {}).invoke('q', ctx))],
-    ['vercel-agents.vercelGraph', () => drainSettled(vercelGraph('k', {}).stream('q', ctx))],
-    [
-      'vercel-agents.toVercelAgents',
-      () => {
-        toVercelAgents(Promise.resolve({} as never));
-        return Promise.resolve();
-      },
-    ],
-    [
-      'vercel-agents.toVercelAgents',
-      () => settle(toVercelAgents(Promise.resolve({ key: 'k', enabled: false } as never)).invoke('q')),
-    ],
-  ] as Array<[string, () => Promise<void>]>)('%s sends one $ld:ai:sdk:usage event', async (helper, call) => {
+  it.each(rows)('%s sends one $ld:ai:sdk:usage event', async (helper, call) => {
     try {
       await call();
     } catch {

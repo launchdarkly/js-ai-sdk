@@ -116,4 +116,24 @@ describe('buildModelParameterOptions allowlist', () => {
       toolChoice: 'auto',
     });
   });
+
+  it.each([
+    [{ reasoning: { effort: 'low', summary: 'auto' } }, { reasoning: 'low' }],
+    [{ reasoning: { summary: 'auto' } }, {}],
+    [{ reasoning: 3 }, {}],
+    [{ reasoning: { summary: 'auto' }, reasoning_effort: 'high' }, { reasoning: 'high' }],
+    [{ reasoning: 'medium', reasoning_effort: 'high' }, { reasoning: 'medium' }],
+  ])('reads reasoning effort from %j', (parameters, expected) => {
+    expect(buildModelParameterOptions(parameters as never)).toEqual(expected);
+  });
+
+  it.each([
+    { type: 'auto' },
+    { type: 'function', name: 'f' },
+    { type: 'tool', toolName: 'f' },
+  ])('drops a tool_choice that is not a string: %j', (toolChoice) => {
+    expect(buildModelParameterOptions({ tool_choice: toolChoice, temperature: 0.2 } as never)).toEqual({
+      temperature: 0.2,
+    });
+  });
 });
