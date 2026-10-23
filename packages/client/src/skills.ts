@@ -262,6 +262,14 @@ function skillsFieldRejectionReason(raw: unknown): string | null {
  * including `skills: null`.
  */
 export function skillRefs(config: AiConfigRep | null | undefined): SkillReference[] {
+  return skillRefsInternal(config);
+}
+
+/**
+ * {@link skillRefs} for SDK code. `configSkills` projects through this one, so
+ * a read of its source is never counted as an application call to `skillRefs`.
+ */
+export function skillRefsInternal(config: AiConfigRep | null | undefined): SkillReference[] {
   if (typeof config !== 'object' || config === null || Array.isArray(config)) {
     throw new TypeError(
       `skillRefs needs a resolved AI Config object, got ${

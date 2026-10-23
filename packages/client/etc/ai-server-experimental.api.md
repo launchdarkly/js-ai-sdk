@@ -13,6 +13,11 @@ export type AIConfig = {
 // @public
 export function allSkills(): Promise<Skill[]>;
 
+// Warning: (ae-forgotten-export) The symbol "LDContext" needs to be exported by the entry point experimental.d.ts
+//
+// @public
+export function configSkills(key: string, context: LDContext): SkillSource;
+
 // @public
 export function createSkill(init: {
     key: string;
@@ -35,6 +40,12 @@ export function createSkillReference(init: {
     key: string;
     version: number;
 }): SkillReference;
+
+// @public
+export function createSkillSource(init: {
+    refs: SkillSource['refs'];
+    configKeys?: readonly string[];
+}): SkillSource;
 
 // @public
 export type Criterion = Judge | Scorer;
@@ -334,6 +345,12 @@ export const SKILLS_DEFAULT_DEBOUNCE_MS = 500;
 export const SKILLS_DEFAULT_STREAM_URI = "https://stream.launchdarkly.com";
 
 // @public
+export interface SkillSource {
+    readonly configKeys: readonly string[];
+    readonly refs: () => ReadonlyArray<SkillReference | string> | PromiseLike<ReadonlyArray<SkillReference | string>>;
+}
+
+// @public
 export type SkillStore = {
     getObject(kind: string, key: string, version?: number | null): RawSkillObject | null | undefined;
     allObjects(kind: string): Record<string, RawSkillObject>;
@@ -344,7 +361,7 @@ export type SkillStore = {
 
 // @public
 export class SkillWatcher {
-    constructor(store: SkillStore, request: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options: WriteSkillsOptions, debounceMs: number, onReconcile?: ((report: ReconcileReport) => unknown) | undefined);
+    constructor(store: SkillStore, request: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource, root: string, options: WriteSkillsOptions, debounceMs: number, onReconcile?: ((report: ReconcileReport) => unknown) | undefined);
     close(): Promise<void>;
     readonly notify: () => void;
     get reconciles(): number;
@@ -364,7 +381,7 @@ export type StoreDiagnostics = {
 };
 
 // @public
-export function watchSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options?: WatchSkillsOptions): Promise<{
+export function watchSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource, root: string, options?: WatchSkillsOptions): Promise<{
     report: ReconcileReport;
     watcher: SkillWatcher;
 }>;
@@ -376,7 +393,7 @@ export type WatchSkillsOptions = WriteSkillsOptions & {
 };
 
 // @public
-export function writeSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options?: WriteSkillsOptions): Promise<ReconcileReport>;
+export function writeSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource, root: string, options?: WriteSkillsOptions): Promise<ReconcileReport>;
 
 // @public
 export type WriteSkillsOptions = {
