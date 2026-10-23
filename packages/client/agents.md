@@ -519,6 +519,7 @@ When `enabled` is `false`, `config` is always `null`. When `enabled` is `true` b
   const ldClient = await createYourEdgeSdkClient(process.env.LD_SDK_KEY!);
   await initClient(ldClient);
   ```
+  The runtime must provide Node's built-in modules. Since Agent Skills moved to core, the package root imports `node:fs`, `node:fs/promises`, `node:path`, `node:os` (through `skills-fs` and `safe-fs`) and `node:crypto` (through `skills-core`) at load, so a runtime without them fails at import. This is a known 1.0 limitation, tracked in AIC-3674. Don't add another top-level `node:` import to a root-reachable module, because that would widen it.
 - **Pre-warm the connection** — call at startup to eliminate cold-start latency on the first request.
 
 `initClient()` is idempotent — calling it twice is a no-op. It returns `Promise<LDClientInterface>`; the return value may be discarded. See full invariants below.

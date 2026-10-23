@@ -67,7 +67,9 @@ const client = await initClient({
 // Or skip initClient() and let the first model/graph call initialize lazily.
 
 // Edge / custom runtime path — pass an already-initialized client.
-// @launchdarkly/node-server-sdk is NOT required in this case.
+// @launchdarkly/node-server-sdk is NOT required in this case. The runtime must still
+// provide Node's built-in modules (node:fs, node:path, node:os, node:crypto): the
+// package root imports them for Agent Skills when it loads.
 // import { init } from '@launchdarkly/vercel-server-sdk';
 // const vercelClient = init(clientSideId, edgeConfigClient);
 // await initClient(vercelClient);
