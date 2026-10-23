@@ -159,7 +159,32 @@ describe('toClaudeAgents', () => {
     await (leafTool![3] as (args: { input: string }) => Promise<unknown>)({ input: 'sub task' });
     expect(mockQuery).toHaveBeenCalledTimes(2);
     for (const call of mockQuery.mock.calls) {
-      expectNoNeverForwardedValue(call[0].options, ['mcpServers', 'hooks']);
+      // `settingSources` is handler-owned: always sent, `[]` unless the application gives sources.
+      expectNoNeverForwardedValue(call[0].options, ['mcpServers', 'hooks', 'settingSources']);
+      expect(call[0].options.settingSources).toEqual([]);
+    }
+  });
+
+  /** Invokes the graph and calls the leaf's sub-agent tool, so both nodes' `query()` options exist. */
+  async function rootAndLeafOptions(opts?: Parameters<typeof toClaudeAgents>[1]) {
+    await toClaudeAgents(Promise.resolve(makeGraphDef()), opts).invoke('hi');
+    const leafTool = mockTool.mock.calls.find((call) => call[0] === 'leaf');
+    await (leafTool![3] as (args: { input: string }) => Promise<unknown>)({ input: 'sub task' });
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    return mockQuery.mock.calls.map((call) => call[0].options as Record<string, unknown>);
+  }
+
+  it('sends settingSources: [] and no cwd to every node when neither option is given', async () => {
+    for (const options of await rootAndLeafOptions()) {
+      expect(options.settingSources).toEqual([]);
+      expect(Object.hasOwn(options, 'cwd')).toBe(false);
+    }
+  });
+
+  it('forwards cwd and settingSources to every node', async () => {
+    for (const options of await rootAndLeafOptions({ cwd: '/srv/app', settingSources: ['user', 'project'] })) {
+      expect(options.cwd).toBe('/srv/app');
+      expect(options.settingSources).toEqual(['user', 'project']);
     }
   });
 
