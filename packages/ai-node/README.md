@@ -121,7 +121,8 @@ you need no direct dependency on `@launchdarkly/ai-server`. For example:
 import { InMemorySkillStore, setSkillStore } from '@launchdarkly/ai-node/experimental';
 ```
 
-Names there may change in a minor release. See the
+Names there may change in a minor release. Agent Skills requires `@launchdarkly/ai-node` 0.3.0 or
+later, which depends on `@launchdarkly/ai-server` 0.4.0 or later. See the
 [Agent Skills guide](../client/README.md#agent-skills-experimental).
 
 ## Full API reference
