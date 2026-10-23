@@ -10,13 +10,14 @@
  * Internal: nothing here is exported from an entry point.
  */
 
+import { toolResultString } from './content.js';
 import type { DatasetRow } from './evaluations.js';
 import { EvaluationsError, errorMessage, isPlainObject } from './evaluations-api.js';
 import { type Criterion, criterionType, Judge, type Scorer } from './evaluations-criteria.js';
 import { eventIdFor, mapBounded, type RowResult, type RunIdentity, rowIdentity } from './evaluations-runner.js';
 import { buildMessageHistory, FORMATTING_INSTRUCTIONS, numericScore, parseJudgeResponse } from './judge-scoring.js';
 import { extractVariation } from './lifecycle.js';
-import { pythonRepr, pythonStr } from './python-format.js';
+import { pythonRepr } from './python-format.js';
 import { findHandler } from './registry.js';
 import { renderTrajectory } from './trajectory.js';
 import type { AiConfigRep, LDContext, ProviderHandler } from './types.js';
@@ -122,11 +123,6 @@ export async function resolveJudges(
   return resolved;
 }
 
-/** Text a judge reads as the output: Python's str(), as the Python SDK renders it, or `''` when there is none. */
-function outputText(output: unknown): string {
-  return output === undefined || output === null ? '' : pythonStr(output);
-}
-
 /** A criterion score: a finite number, by the shared rule, and in 0–1, which ingest enforces. */
 function unitScore(value: unknown): number | undefined {
   const score = numericScore(value);
@@ -140,7 +136,6 @@ function unitScore(value: unknown): number | undefined {
  */
 export function judgeVariables(result: RowResult, judge: Judge): Record<string, unknown> {
   const { row } = result;
-  const output = outputText(result.output);
   const groundTruth =
     judge.groundTruthContext !== undefined
       ? parseTemplate(judge.groundTruthContext, row.variables)
@@ -148,7 +143,7 @@ export function judgeVariables(result: RowResult, judge: Judge): Record<string, 
   return {
     ...row.variables,
     input: row.input ?? '',
-    response_to_evaluate: output,
+    response_to_evaluate: toolResultString(result.output),
     expected_output: row.expectedOutput ?? '',
     ground_truth_context: groundTruth,
     message_history: buildMessageHistory({
@@ -194,7 +189,7 @@ async function runJudge(result: RowResult, resolved: ResolvedJudge): Promise<Cri
     // Judges get no tools.
     response = await resolved.handler(
       resolved.config,
-      outputText(result.output),
+      toolResultString(result.output),
       {},
       judgeVariables(result, resolved.judge),
     );

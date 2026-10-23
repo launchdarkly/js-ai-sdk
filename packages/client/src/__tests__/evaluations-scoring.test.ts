@@ -379,6 +379,18 @@ describe('judge invocation', () => {
     expect(history).toBe(buildMessageHistory({ userInput: 'question 0', output: 'out:question 0' }));
   });
 
+  it('shows a structured output as the same JSON in the input, response_to_evaluate and message_history', async () => {
+    const handler = stubHandler('OpenAI', 'messages', async (_config, _input, _tools, variables) =>
+      variables && 'response_to_evaluate' in variables ? judgeReply() : { output: { answer: 'oui', ok: true } },
+    );
+    await makeModule(routeHostedRun(new FakeApi())).run(run({ handler }));
+    const [, input, , variables] = judgeCalls(handler)[0] as [unknown, unknown, unknown, Record<string, unknown>];
+    const json = '{"answer":"oui","ok":true}';
+    expect(input).toBe(json);
+    expect(variables.response_to_evaluate).toBe(json);
+    expect(variables.message_history).toBe(['question 0', json, FORMATTING_INSTRUCTIONS].join('\n\n'));
+  });
+
   it('places the trajectory between input and output, with a tool result kept literal', async () => {
     const handler = stubHandler('OpenAI', 'messages', async (_config, input, tools, variables) => {
       if (variables && 'response_to_evaluate' in variables) return judgeReply();
@@ -577,7 +589,7 @@ describe('scorers', () => {
         run({ handler, concurrency, criteria: [mutate, read, new Judge('accuracy')] }),
       );
       expect(seen).toEqual([{ answer: 'original', tags: ['a'] }]);
-      expect(judged).toBe("{'answer': 'original', 'tags': ['a']}");
+      expect(judged).toBe('{"answer":"original","tags":["a"]}');
       expect(criterionEvents().every((event) => event.data.status === 'COMPLETE')).toBe(true);
     });
   });
