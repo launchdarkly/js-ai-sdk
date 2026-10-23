@@ -21,15 +21,20 @@ import { ProviderResponse } from '@launchdarkly/ai-server';
 import { ToolHandlerFn } from '@launchdarkly/ai-server';
 
 // @public
-export function createLangChainAgentsHandler(llm?: LangChainModelSource, options?: ContentCaptureOptions): ProviderHandler;
+export function createLangChainAgentsHandler(llm?: LangChainModelSource, options?: ContentCaptureOptions & {
+    providers?: readonly string[];
+}): ProviderHandler;
 
 // @public (undocumented)
 export const langchainAgents: (configKey: string, userInput: string, context: LDContext, input?: Omit<Parameters<typeof config>[0], "handler" | "key"> & ContentCaptureOptions & {
+    providers?: readonly string[];
     variables?: Record<string, unknown>;
 }) => Promise<ProviderResponse<string>>;
 
 // @public
-export const langchainGraph: (key: string, options: Omit<GraphOptions, "handlers">, llm?: BaseChatModel) => {
+export const langchainGraph: (key: string, options?: Omit<GraphOptions, "handlers"> & {
+    providers?: readonly string[];
+}, llm?: BaseChatModel) => {
     invoke: (input: string | undefined, context: LDContext, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
     stream: (input: string | undefined, context: LDContext, variables?: Record<string, unknown>, history?: Message[]) => AsyncGenerator<GraphStreamEvent>;
 };
