@@ -470,11 +470,11 @@ describe('judge invocation', () => {
     [
       'a string score',
       () => judgeReply('high (0.9)'),
-      /^judge score must be a number between 0 and 1, got 'high \(0.9\)'$/,
+      /^judge score must be a number between 0 and 1, got "high \(0.9\)"$/,
     ],
     ['a score of 3', () => judgeReply(3), /got 3$/],
-    ['a NaN score', () => ({ output: { score: Number.NaN, reasoning: 'x' } }), /got nan$/],
-    ['a boolean score', () => judgeReply(true), /got True$/],
+    ['a NaN score', () => ({ output: { score: Number.NaN, reasoning: 'x' } }), /got NaN$/],
+    ['a boolean score', () => judgeReply(true), /got true$/],
   ])('records %s as an ERROR result with no score, and the run still completes', async (_name, reply, message) => {
     const handler = dualHandler('OpenAI', 'messages', reply as () => ReturnType<typeof judgeReply>);
     const api = routeHostedRun(new FakeApi());
@@ -554,10 +554,10 @@ describe('scorers', () => {
   });
 
   it.each([
-    ['a boolean', () => true, /^scorer fn must return a finite number, got True$/],
-    ['NaN', () => Number.NaN, /^scorer fn must return a finite number, got nan$/],
+    ['a boolean', () => true, /^scorer fn must return a finite number, got true$/],
+    ['NaN', () => Number.NaN, /^scorer fn must return a finite number, got NaN$/],
     ['an out-of-range number', () => 1.5, /^scorer fn score must be between 0 and 1, got 1.5$/],
-    ['a string', () => '0.5', /^scorer fn must return a finite number, got '0.5'$/],
+    ['a string', () => '0.5', /^scorer fn must return a finite number, got "0.5"$/],
   ])('records %s as an invalid score naming the value', async (_name, fn, message) => {
     await makeModule(routeHostedRun(new FakeApi())).run(run({ criteria: [new Scorer('exact', fn as never)] }));
     const { data } = criterionEvents()[0];

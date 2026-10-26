@@ -45,7 +45,7 @@ vi.mock('@launchdarkly/node-server-sdk', () => ({ init: (...args: unknown[]) => 
 
 import * as experimental from '../experimental.js';
 import * as packageIndex from '../index.js';
-import { initClient, shutdown } from '../lifecycle.js';
+import { INIT_CLIENT_OPTIONS, initClient, shutdown } from '../lifecycle.js';
 import {
   _clearState,
   _setEmitterForTesting,
@@ -294,13 +294,13 @@ describe('ReconcileReport ok and errors', () => {
 // ─── Package exports ───────────────────────────────────────────────────
 
 /**
- * The experimental entry point's runtime exports for Agent Skills, exactly.
+ * The package root's runtime exports for Agent Skills, exactly.
  *
- * An allowlist rather than a denylist: anything added to the entry point —
+ * An allowlist rather than a denylist: anything added to the root —
  * including a reader over `Skill.content` that nobody thought to deny — fails
- * the equality below until it is added here on purpose.
+ * the equalities below until it is added here on purpose.
  */
-const EXPERIMENTAL_SKILLS_VALUES = [
+const SKILLS_VALUES = [
   'FDv2SkillStore',
   'InMemorySkillStore',
   'MANIFEST_FILENAME',
@@ -336,8 +336,8 @@ const EXPERIMENTAL_EVALUATIONS_VALUES = [
   'initEvaluations',
 ];
 
-/** The experimental entry point's type-only exports for Agent Skills. */
-const EXPERIMENTAL_SKILLS_TYPES = [
+/** The package root's type-only exports for Agent Skills. */
+const SKILLS_TYPES = [
   'FDv2Mode',
   'FDv2SkillStoreOptions',
   'OnUnavailable',
@@ -356,8 +356,8 @@ const EXPERIMENTAL_SKILLS_TYPES = [
 ];
 
 /**
- * Every runtime value the package root exports. A snapshot, so a new root
- * export (a `frontmatter` reader, a leaked Skills name) fails here rather than
+ * Every runtime value the package root exports besides Agent Skills'. A snapshot, so a new root
+ * export (a `frontmatter` reader, a leaked internal Skills name) fails here rather than
  * depending on someone reading the API report diff. Update it deliberately,
  * in the change that adds or removes a root export.
  */
@@ -425,10 +425,8 @@ const ROOT_VALUES = [
 ];
 
 describe('package exports', () => {
-  it('the experimental entry point exports exactly the documented skills and evaluations values', () => {
-    expect(Object.keys(experimental).sort()).toEqual(
-      [...EXPERIMENTAL_SKILLS_VALUES, ...EXPERIMENTAL_EVALUATIONS_VALUES].sort(),
-    );
+  it('the experimental entry point exports exactly the documented evaluations values', () => {
+    expect(Object.keys(experimental).sort()).toEqual([...EXPERIMENTAL_EVALUATIONS_VALUES].sort());
   });
 
   it('no evaluations value is exported from the package root', () => {
@@ -437,48 +435,40 @@ describe('package exports', () => {
     }
   });
 
-  it('the package root exports exactly the snapshotted values', () => {
-    expect(Object.keys(packageIndex).sort()).toEqual([...ROOT_VALUES].sort());
+  it('the package root exports exactly the snapshotted values and the skills values', () => {
+    expect(Object.keys(packageIndex).sort()).toEqual([...ROOT_VALUES, ...SKILLS_VALUES].sort());
   });
 
-  it('no skills value is exported from the package root', () => {
-    for (const name of EXPERIMENTAL_SKILLS_VALUES) {
-      expect(name in packageIndex, name).toBe(false);
-    }
-  });
-
-  it('no skills type is named by the package root API report', () => {
+  it('names every skills export in the root API report and none in the experimental one', () => {
     // Types leave nothing to enumerate at runtime, so the checked-in API
-    // Extractor report for the root is what pins their absence there. A core
-    // type that mentioned one (e.g. `AiConfigRep.skills: SkillReference[]`)
-    // would also show up here.
+    // Extractor reports are what pin them.
     const report = readFileSync(new URL('../../etc/ai-server.api.md', import.meta.url), 'utf-8');
-    for (const name of EXPERIMENTAL_SKILLS_TYPES) {
-      expect(report, name).not.toMatch(new RegExp(`\\b${name}\\b`));
-    }
     const experimentalReport = readFileSync(
       new URL('../../etc/ai-server-experimental.api.md', import.meta.url),
       'utf-8',
     );
-    for (const name of [...EXPERIMENTAL_SKILLS_TYPES, ...EXPERIMENTAL_SKILLS_VALUES]) {
-      expect(experimentalReport, name).toMatch(new RegExp(`\\b${name}\\b`));
+    for (const name of [...SKILLS_TYPES, ...SKILLS_VALUES]) {
+      // Anchored on the declaration, so a name that only appears in another export's signature
+      // (`Skill` in `getSkill(): Promise<Skill | null>`) does not count as exported.
+      const declaration = new RegExp(`^export (declare )?(type|interface|class|function|const|enum) ${name}\\b`, 'm');
+      expect(report, name).toMatch(declaration);
+      expect(experimentalReport, name).not.toMatch(declaration);
     }
   });
 
   it('initClient options do not name the skill store', () => {
-    // Core never names experimental (§0.3): the store has its own setter.
-    const report = readFileSync(new URL('../../etc/ai-server.api.md', import.meta.url), 'utf-8');
-    expect(report).not.toMatch(/skillStore/);
-    expect(report).not.toMatch(/setSkillStore/);
+    // The store has its own setter, `setSkillStore`, not an initClient option. INIT_CLIENT_OPTIONS
+    // is typed against the options type, so it lists every option and only those.
+    expect(Object.keys(INIT_CLIENT_OPTIONS).filter((key) => /skill/i.test(key))).toEqual([]);
   });
 
-  it('exports the three fixed values from the experimental entry point with exact values', () => {
+  it('exports the three fixed values from the package root with exact values', () => {
     // These three are API, not implementation detail: a caller needs
     // MANIFEST_FILENAME to gitignore the manifest, and all three describe an
     // on-disk layout this SDK defines and a caller may have to agree with.
-    expect(experimental.SKILL_FILENAME).toBe('SKILL.md');
-    expect(experimental.MANIFEST_FILENAME).toBe('.launchdarkly-skills.json');
-    expect(experimental.MANIFEST_VERSION).toBe(1);
+    expect(packageIndex.SKILL_FILENAME).toBe('SKILL.md');
+    expect(packageIndex.MANIFEST_FILENAME).toBe('.launchdarkly-skills.json');
+    expect(packageIndex.MANIFEST_VERSION).toBe(1);
   });
 
   it('does not export the object kind or the content cap from either entry point', () => {
@@ -504,24 +494,24 @@ describe('package exports', () => {
     expect(MAX_SKILL_CONTENT_BYTES).toBe(10 * 1024 * 1024);
   });
 
-  it('exports the skills functions and the in-memory store from the experimental entry point', () => {
-    expect(typeof experimental.skillRefs).toBe('function');
-    expect(typeof experimental.getSkill).toBe('function');
-    expect(typeof experimental.getSkills).toBe('function');
-    expect(typeof experimental.allSkills).toBe('function');
-    expect(typeof experimental.writeSkills).toBe('function');
-    expect(typeof experimental.createSkill).toBe('function');
-    expect(typeof experimental.createSkillReference).toBe('function');
-    expect(typeof experimental.InMemorySkillStore).toBe('function');
-    expect(typeof experimental.setSkillStore).toBe('function');
+  it('exports the skills functions and the in-memory store from the package root', () => {
+    expect(typeof packageIndex.skillRefs).toBe('function');
+    expect(typeof packageIndex.getSkill).toBe('function');
+    expect(typeof packageIndex.getSkills).toBe('function');
+    expect(typeof packageIndex.allSkills).toBe('function');
+    expect(typeof packageIndex.writeSkills).toBe('function');
+    expect(typeof packageIndex.createSkill).toBe('function');
+    expect(typeof packageIndex.createSkillReference).toBe('function');
+    expect(typeof packageIndex.InMemorySkillStore).toBe('function');
+    expect(typeof packageIndex.setSkillStore).toBe('function');
   });
 
   it('the ReconcileActionKind union admits exactly the five action strings', () => {
     // The record is exhaustive over the union, but `yarn typecheck` covers only
     // `src/*.ts`, so nothing compiles this file: the guard against a sixth
-    // member is `api:check`, which diffs the union in the experimental API
+    // member is `api:check`, which diffs the union in the root API
     // report. This test pins the runtime spelling of the five strings.
-    const exhaustive: Record<experimental.ReconcileActionKind, true> = {
+    const exhaustive: Record<packageIndex.ReconcileActionKind, true> = {
       written: true,
       updated: true,
       skipped_current: true,
@@ -532,24 +522,24 @@ describe('package exports', () => {
   });
 
   it('the OnUnavailable union admits exactly keep and raise', () => {
-    const exhaustive: Record<experimental.OnUnavailable, true> = { keep: true, raise: true };
+    const exhaustive: Record<packageIndex.OnUnavailable, true> = { keep: true, raise: true };
     expect(Object.keys(exhaustive).sort()).toEqual(['keep', 'raise']);
   });
 
-  it('exports the delivery transport, the watcher, and their defaults from the experimental entry point', () => {
-    // The transport and the watcher are experimental exports in both languages;
+  it('exports the delivery transport, the watcher, and their defaults from the package root', () => {
+    // The transport and the watcher are root exports in both languages;
     // the base-URI and debounce defaults are TypeScript-only.
-    expect(typeof experimental.FDv2SkillStore).toBe('function');
-    expect(typeof experimental.watchSkills).toBe('function');
-    expect(typeof experimental.SkillWatcher).toBe('function');
-    expect(experimental.SKILLS_DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
-    expect(experimental.SKILLS_DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
-    expect(experimental.SKILLS_DEFAULT_DEBOUNCE_MS).toBe(500);
+    expect(typeof packageIndex.FDv2SkillStore).toBe('function');
+    expect(typeof packageIndex.watchSkills).toBe('function');
+    expect(typeof packageIndex.SkillWatcher).toBe('function');
+    expect(packageIndex.SKILLS_DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
+    expect(packageIndex.SKILLS_DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
+    expect(packageIndex.SKILLS_DEFAULT_DEBOUNCE_MS).toBe(500);
   });
 
-  it('exports getSkillResult and the outcome factory from the experimental entry point', () => {
-    expect(typeof experimental.getSkillResult).toBe('function');
-    expect(typeof experimental.createSkillOutcome).toBe('function');
+  it('exports getSkillResult and the outcome factory from the package root', () => {
+    expect(typeof packageIndex.getSkillResult).toBe('function');
+    expect(typeof packageIndex.createSkillOutcome).toBe('function');
   });
 
   it('the SkillOutcomeReason union admits exactly the five reason tokens', () => {
@@ -557,10 +547,10 @@ describe('package exports', () => {
     // publishes the same five for the same conditions. Adding a sixth here
     // should force a matching change in the other SDKs, not just a green test.
     //
-    // Named through the experimental entry point rather than through types.js:
+    // Named through the package root rather than through types.js:
     // it is the published export that is fixed, and a union reachable only from
     // the implementation module is not reachable by a supported import.
-    const exhaustive: Record<experimental.SkillOutcomeReason, true> = {
+    const exhaustive: Record<packageIndex.SkillOutcomeReason, true> = {
       absent: true,
       integrity_failure: true,
       ok: true,
@@ -967,8 +957,8 @@ describe('store configuration', () => {
   });
 
   it('is not configured by an initClient option', async () => {
-    // Core client options never name an experimental type (§0.3), so a
-    // `skillStore` smuggled into the options bag must not be read.
+    // The store has its own setter, so a `skillStore` smuggled into the
+    // options bag must not be read.
     const store = new InMemorySkillStore();
     store.put(rawSkill({ key: 'a' }));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -978,8 +968,8 @@ describe('store configuration', () => {
       await initClient({ skillStore: store } as unknown as Parameters<typeof initClient>[0]);
 
       await expect(getSkill('a')).rejects.toThrow(/skill store/i);
-      // ...and reports the ignored key generically, without core naming the
-      // experimental feature or its setter.
+      // ...and reports the ignored key generically, without naming the feature
+      // or its setter.
       expect(warn.mock.calls).toEqual([
         ['[LaunchDarkly] Ignoring unrecognized initClient option(s): skillStore'],
         ['[LaunchDarkly] Ignoring unrecognized initClient option(s): skillStore'],
@@ -1005,7 +995,8 @@ describe('store configuration', () => {
     // Assert the message content, not just the raise: a bare "not implemented"
     // would otherwise satisfy the test.
     await expect(getSkill('a')).rejects.toThrow(/setSkillStore/);
-    await expect(getSkill('a')).rejects.toThrow(/@launchdarkly\/ai-server\/experimental/);
+    await expect(getSkill('a')).rejects.toThrow(/from @launchdarkly\/ai-server —/);
+    await expect(getSkill('a')).rejects.not.toThrow(/experimental/);
     await expect(getSkill('a')).rejects.toThrow(/InMemorySkillStore/);
     await expect(getSkill('a')).rejects.not.toThrow(/initClient/);
   });
@@ -1109,7 +1100,7 @@ describe('store configuration', () => {
     // (lifecycle.test.ts covers the registry's isolation of a throwing hook).
     const hooks = (globalThis as Record<symbol, unknown>)[Symbol.for('@launchdarkly/ai-server:shutdown-hooks')];
     expect(hooks).toBeInstanceOf(Map);
-    expect((hooks as Map<string, unknown>).get('experimental Agent Skills')).toBe(clearState);
+    expect((hooks as Map<string, unknown>).get('Agent Skills')).toBe(clearState);
   });
 
   it('the test-state reset clears the store and the emitter', async () => {
@@ -2151,7 +2142,7 @@ describe('telemetry seam, accessor half', () => {
     }
   });
 
-  it('makes no client.track call from any accessor', async () => {
+  it('makes no client.track call from any accessor beyond its helper-usage event', async () => {
     const mockClient = makeMockLdClient();
     const store = new InMemorySkillStore();
     store.put(rawSkill({ key: 'a' }));
@@ -2167,7 +2158,15 @@ describe('telemetry seam, accessor half', () => {
     await allSkills();
     skillRefs({ model: { name: 'm' }, provider: { name: 'p' }, instructions: 'i', skills: [{ key: 'a', version: 1 }] });
 
-    expect(mockClient.track).not.toHaveBeenCalled();
+    // Skills telemetry goes through the private emitter, never client.track. The only track calls
+    // are the $ld:ai:sdk:usage events for the helpers themselves (§3.27). Which helpers still
+    // report here depends on earlier tests, since each reports once per client.
+    const calls = mockClient.track.mock.calls as unknown[][];
+    const helpers = ['client.allSkills', 'client.getSkill', 'client.getSkills', 'client.skillRefs'];
+    for (const call of calls) {
+      expect(call[0]).toBe('$ld:ai:sdk:usage');
+      expect(helpers).toContain((call[2] as { helper?: string }).helper);
+    }
   });
 
   it('a throwing emitter never breaks the operation', async () => {
@@ -2364,7 +2363,7 @@ describe('integrity-failure log record', () => {
     // closed sets in one place is what keeps a well-meaning "consistency" fix
     // from collapsing them into one spelling.
     const codes = cases.map(([code]) => code);
-    const outcomes: experimental.SkillOutcomeReason[] = [
+    const outcomes: packageIndex.SkillOutcomeReason[] = [
       'absent',
       'integrity_failure',
       'ok',
@@ -2375,7 +2374,7 @@ describe('integrity-failure log record', () => {
     expect(codes).toContain('version_mismatch');
     expect(codes).not.toContain('wrong_version');
     expect(outcomes).toContain('wrong_version');
-    expect(outcomes).not.toContain('version_mismatch' as experimental.SkillOutcomeReason);
+    expect(outcomes).not.toContain('version_mismatch' as packageIndex.SkillOutcomeReason);
     // Ten codes, five outcomes. The finer vocabulary grew; the public one did not.
     expect(codes).toHaveLength(10);
     expect(outcomes).toHaveLength(5);
@@ -2914,7 +2913,7 @@ describe('getSkillResult', () => {
    * different construction site in `resolveFromStore`, which is what makes the
    * mapping — not just the union — the thing under test.
    */
-  const cases: Array<[experimental.SkillOutcomeReason, () => SkillStore, () => Promise<unknown>]> = [
+  const cases: Array<[packageIndex.SkillOutcomeReason, () => SkillStore, () => Promise<unknown>]> = [
     ['ok', () => storeHolding(rawSkill({ key: 'a' })), () => getSkillResult('a')],
     ['absent', () => new InMemorySkillStore(), () => getSkillResult('a')],
     [
