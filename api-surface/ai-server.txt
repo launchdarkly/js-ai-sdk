@@ -131,6 +131,7 @@ shutdown
 + SkillOutcomeReason
 + SkillReference
 + skillRefs  usage=client.skillRefs
+- skillRefsInternal  # internal: plumbing for the handler packages; moves to the internal entry point
 + SKILLS_DEFAULT_BASE_URI
 + SKILLS_DEFAULT_DEBOUNCE_MS
 + SKILLS_DEFAULT_STREAM_URI
@@ -157,4 +158,5 @@ TrackData
 + WatchSkillsOptions
 withConversationId
 + writeSkills  usage=client.writeSkills
+- writeSkillsInternal  # internal: plumbing for the handler packages; moves to the internal entry point
 + WriteSkillsOptions

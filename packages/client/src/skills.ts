@@ -264,6 +264,14 @@ function skillsFieldRejectionReason(raw: unknown): string | null {
  */
 export function skillRefs(config: AiConfigRep | null | undefined): SkillReference[] {
   reportUsage('client.skillRefs');
+  return skillRefsInternal(config);
+}
+
+/**
+ * `skillRefs` without the helper-usage report (TESTING.md §3.27). Handler packages call this, so
+ * a run that reads its config's skills doesn't report a `skillRefs` call the application never made.
+ */
+export function skillRefsInternal(config: AiConfigRep | null | undefined): SkillReference[] {
   if (typeof config !== 'object' || config === null || Array.isArray(config)) {
     throw new TypeError(
       `skillRefs needs a resolved AI Config object, got ${

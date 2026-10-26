@@ -417,11 +417,14 @@ const ROOT_VALUES = [
   'setUsageSpanAttributes',
   'shutdown',
   'shutdownTelemetry',
+  // Non-reporting skills plumbing for the handler packages (TESTING.md §3.27).
+  'skillRefsInternal',
   'textMessage',
   'toolResultString',
   'toSemconvFinishReason',
   'waitForTelemetry',
   'withConversationId',
+  'writeSkillsInternal',
 ];
 
 describe('package exports', () => {

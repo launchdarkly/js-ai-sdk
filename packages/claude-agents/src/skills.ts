@@ -12,8 +12,8 @@ import {
   type ReconcileReport,
   reportUsage,
   type SkillReference,
-  skillRefs,
-  writeSkills,
+  skillRefsInternal,
+  writeSkillsInternal,
 } from '@launchdarkly/ai-server';
 import { type ClaudeAgentsHostOptions, createClaudeAgentsHandlerInternal, type QueryPreparation } from './handler.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
@@ -70,7 +70,8 @@ async function removeRunDirectory(dir: string): Promise<void> {
  * skill, so running without it would run a different agent from the one configured.
  */
 async function prepareSkills(config: AiConfigRep, parent: string): Promise<QueryPreparation | undefined> {
-  const refs = skillRefs(config);
+  // The non-reporting versions: the application called this handler, not `skillRefs` or `writeSkills`.
+  const refs = skillRefsInternal(config);
   if (refs.length === 0) return undefined;
 
   // Resolve the parent first: a realpath failure after mkdtemp would leak the new directory.
@@ -80,7 +81,7 @@ async function prepareSkills(config: AiConfigRep, parent: string): Promise<Query
     const pluginRoot = join(dir, PLUGIN_NAME);
     await mkdir(pluginRoot);
     // A fresh directory: there is nothing to prune, and nothing else writes here.
-    const report = await writeSkills(refs, join(pluginRoot, 'skills'), { prune: false });
+    const report = await writeSkillsInternal(refs, join(pluginRoot, 'skills'), { prune: false });
     if (!report.ok) throw materializationError(report, refs);
     return {
       options: {

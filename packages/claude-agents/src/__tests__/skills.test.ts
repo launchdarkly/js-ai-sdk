@@ -13,6 +13,8 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import {
   InMemorySkillStore,
+  initClient,
+  type LDClientInterface,
   NATIVE_TOOL_KEY,
   NativeTool,
   type RawSkillObject,
@@ -486,5 +488,34 @@ describe('query() options', () => {
     mockQuery.mockImplementation(recordingQuery(seen));
     await handlerFor()(withSkills(refs) as any, 'q');
     expect(seen[0].options.hooks?.PreToolUse).toBeDefined();
+  });
+});
+
+// ─── Helper usage (TESTING.md §3.27) ──────────────────────────────────────────
+
+describe('helper usage', () => {
+  it('reports only its own ID on a run with skills, not skillRefs or writeSkills', async () => {
+    const fakeClient = (track = vi.fn()) =>
+      ({
+        variation: vi.fn(),
+        track,
+        flush: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+      }) as unknown as LDClientInterface;
+    // Earlier tests build factories with no client, and those reports are held until one exists.
+    // A shutdown with a client drops them, so this client hears only what the run below reports.
+    await initClient(fakeClient());
+    await shutdown();
+    setSkillStore(store);
+    const track = vi.fn();
+    await initClient(fakeClient(track));
+    store.put(rawSkill('a', 1));
+    mockQuery.mockImplementation(recordingQuery([]));
+    const handler = handlerFor();
+    const config = withSkills([{ key: 'a', version: 1 }]);
+    await handler(config as any, 'q');
+    await drain(handler.stream?.(config as any, 'q'));
+    const helpers = track.mock.calls.filter((call) => call[0] === '$ld:ai:sdk:usage').map((call) => call[2]?.helper);
+    expect(helpers).toEqual(['claude-agents.createClaudeAgentsSkillsHandler']);
   });
 });
