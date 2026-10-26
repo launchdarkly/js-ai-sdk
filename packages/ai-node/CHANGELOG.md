@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-node-0.3.0...@launchdarkly/ai-node-0.4.0) (2026-10-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **skills:** promote Agent Skills to core ([#159](https://github.com/launchdarkly/js-ai-sdk/issues/159))
+* **client:** the client no longer loads .env. Add import 'dotenv/config' to your entrypoint (and install dotenv) if you relied on it.
+
+### Features
+
+* **skills:** promote Agent Skills to core ([#159](https://github.com/launchdarkly/js-ai-sdk/issues/159)) ([c7135cd](https://github.com/launchdarkly/js-ai-sdk/commit/c7135cd90e1893dac959cca3bc762ff4862ffc25))
+
+
+### Bug Fixes
+
+* **client:** stop loading dotenv from library code ([#69](https://github.com/launchdarkly/js-ai-sdk/issues/69)) ([fea34f3](https://github.com/launchdarkly/js-ai-sdk/commit/fea34f309dba7f94264efaf0d065b9d80b29a8c2))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.4.0 to ^0.5.0
+
 ## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-node-0.2.0...@launchdarkly/ai-node-0.3.0) (2026-10-09)
 
 
