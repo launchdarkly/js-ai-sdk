@@ -32,6 +32,7 @@ import {
   tempNamePattern,
   unlinkNoFollow,
 } from './safe-fs.js';
+import { reportUsage } from './sdk-usage.js';
 import {
   allRawObjects,
   getStore,
@@ -196,6 +197,19 @@ type PendingWrite = {
  * other's manifest entries.
  */
 export async function writeSkills(
+  skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource,
+  root: string,
+  options: WriteSkillsOptions = {},
+): Promise<ReconcileReport> {
+  reportUsage('client.writeSkills');
+  return writeSkillsInternal(skills, root, options);
+}
+
+/**
+ * `writeSkills` without the helper-usage report (TESTING.md §3.27). The watcher's
+ * initial and repeat reconciles call this, so `watchSkills` reports only itself.
+ */
+export async function writeSkillsInternal(
   skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource,
   root: string,
   options: WriteSkillsOptions = {},

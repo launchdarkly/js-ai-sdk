@@ -107,7 +107,7 @@ async function readConfigSkills(key: string, context: LDContext): Promise<SkillR
  * @throws TypeError if `key` is not a non-empty string.
  */
 export function configSkills(key: string, context: LDContext): SkillSource {
-  reportUsage('experimental.configSkills');
+  reportUsage('client.configSkills');
   if (typeof key !== 'string' || key.length === 0) {
     throw new TypeError(`configSkills needs a non-empty AI Config key, got ${JSON.stringify(key) ?? typeof key}`);
   }

@@ -176,10 +176,8 @@ export type AiConfigRep = {
   /**
    * Optional version-pinned skill references attached to this variation, as
    * delivered. `parseAiConfig` does not validate it, so a malformed field never
-   * fails a core call; read it with `skillRefs` from
-   * `@launchdarkly/ai-server/experimental`, which does. Typed `unknown` because
-   * it is unvalidated, and because Agent Skills is experimental, so this core
-   * type does not name its types.
+   * fails a config call; read it with `skillRefs`, which does. Typed
+   * `unknown` because it is unvalidated.
    */
   skills?: unknown;
 };
@@ -555,9 +553,8 @@ export function parseAiConfig(raw: unknown): ParseResult<AiConfigRep> {
     return { success: false, error: { message: 'outputFormat must be an object (JSON Schema)' } };
   }
 
-  // `skills` is passed through unvalidated. Agent Skills is experimental, so a
-  // malformed field must not fail a core config call (TESTING.md §0.3);
-  // `skillRefs` rejects it where the references are used.
+  // `skills` is passed through unvalidated, so a malformed field never fails a
+  // config call; `skillRefs` rejects it where the references are used.
 
   return { success: true, data: raw as AiConfigRep };
 }

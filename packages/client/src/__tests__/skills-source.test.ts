@@ -275,12 +275,12 @@ describe('createSkillSource', () => {
 });
 
 describe('entry points', () => {
-  it('exports SkillSource, createSkillSource and configSkills from the experimental entry point only', () => {
-    expect(typeof experimentalEntry.createSkillSource).toBe('function');
-    expect(typeof experimentalEntry.configSkills).toBe('function');
-    expect('createSkillSource' in rootEntry).toBe(false);
-    expect('configSkills' in rootEntry).toBe(false);
-    // `SkillSource` is a type; the API report check covers its absence from the root.
+  it('exports SkillSource, createSkillSource and configSkills from the package root only', () => {
+    expect(typeof rootEntry.createSkillSource).toBe('function');
+    expect(typeof rootEntry.configSkills).toBe('function');
+    expect('createSkillSource' in experimentalEntry).toBe(false);
+    expect('configSkills' in experimentalEntry).toBe(false);
+    // `SkillSource` is a type; the API report check covers its absence from the experimental entry point.
   });
 });
 
@@ -389,7 +389,7 @@ describe('configSkills telemetry', () => {
     );
   }
 
-  it('reports experimental.configSkills when called, and nothing per read', async () => {
+  it('reports client.configSkills when called, and nothing per read', async () => {
     const records: string[] = [];
     _setEmitterForTesting({ record: (signal) => records.push(signal) });
     fake.value = aiConfig([{ key: 'a', version: 1 }]);
@@ -397,7 +397,7 @@ describe('configSkills telemetry', () => {
     fake.track.mockClear();
 
     const source = configSkills(CONFIG_KEY, ctx);
-    expect(usage('experimental.configSkills')).toHaveLength(1);
+    expect(usage('client.configSkills')).toHaveLength(1);
     const after = fake.track.mock.calls.length;
 
     for (let i = 0; i < 3; i += 1) await source.refs();
@@ -406,7 +406,7 @@ describe('configSkills telemetry', () => {
     expect(records).toEqual([]);
   });
 
-  it('adds no usage event, and no experimental.skillRefs, when writeSkills or watchSkills reads it', async () => {
+  it('adds no usage event, and no client.skillRefs, when writeSkills or watchSkills reads it', async () => {
     fake.value = aiConfig([{ key: 'a', version: 1 }]);
     await initClient(fake);
     const store = new MutableStore([rawSkill('a', 1)]);
@@ -423,8 +423,8 @@ describe('configSkills telemetry', () => {
       await watcher.close();
     }
     const helpers = usage().map((call) => (call[2] as { helper: string }).helper);
-    expect(helpers).not.toContain('experimental.skillRefs');
-    expect(helpers).not.toContain('experimental.configSkills');
+    expect(helpers).not.toContain('client.skillRefs');
+    expect(helpers).not.toContain('client.configSkills');
     expect(fake.track.mock.calls.filter((call) => String(call[0]).startsWith('$ld:ai:'))).toEqual(usage());
   });
 });

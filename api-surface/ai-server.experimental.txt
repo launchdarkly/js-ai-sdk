@@ -7,57 +7,19 @@
 #   + Name    joining the public surface; may be exported or not
 
 + AIConfig
-allSkills
-+ configSkills  usage=experimental.configSkills
-createSkill
-createSkillOutcome
-createSkillReference
-+ createSkillSource
 + Criterion
 + DatasetRow
 + EvalRunResult
 + EvalTool
 + EvaluationsError
 + EvaluationsModule
-FDv2Mode
-FDv2SkillStore
-FDv2SkillStoreOptions
 + GenerationConfig
 + GenerationMode
 + GenerationOverrides
-getSkill
-getSkillResult
-getSkills
 + initEvaluations  usage=experimental.initEvaluations
 + InitEvaluationsOptions
 + InlineDatasetRow
-InMemorySkillStore
 + Judge
-MANIFEST_FILENAME
-MANIFEST_VERSION
-OnUnavailable
-RawSkillObject
-ReconcileAction
-ReconcileActionKind
-ReconcileReport
 + RunOptions
 + RunSummary
 + Scorer
-setSkillStore
-Skill
-SKILL_FILENAME
-SkillOutcome
-SkillOutcomeReason
-SkillReference
-skillRefs
-SKILLS_DEFAULT_BASE_URI
-SKILLS_DEFAULT_DEBOUNCE_MS
-SKILLS_DEFAULT_STREAM_URI
-+ SkillSource
-SkillStore
-SkillWatcher
-StoreDiagnostics
-watchSkills
-WatchSkillsOptions
-writeSkills
-WriteSkillsOptions
