@@ -39,6 +39,23 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   createSdkMcpServer: vi.fn().mockReturnValue({}),
 }));
 
+/** While `on`, removing a run's directory (an `ld-skills-*` entry) fails; every other `rm` is real. */
+const failRunDirRemoval = vi.hoisted(() => ({ on: false }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const { basename } = await import('node:path');
+  return {
+    ...actual,
+    rm: async (...args: Parameters<typeof actual.rm>) => {
+      if (failRunDirRemoval.on && basename(String(args[0])).startsWith('ld-skills-')) {
+        throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+      }
+      return actual.rm(...args);
+    },
+  };
+});
+
 import { createClaudeAgentsHandler } from '../handler.js';
 import * as packageRoot from '../index.js';
 import { createClaudeAgentsSkillsHandler } from '../skills.js';
@@ -289,6 +306,46 @@ describe('materialization', () => {
         failOnEnd.on = false;
       }
       parentIsEmpty();
+    });
+  });
+
+  describe('a failed removal is logged and does not replace the run outcome', () => {
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      failRunDirRemoval.on = true;
+    });
+    afterEach(() => {
+      failRunDirRemoval.on = false;
+      warn.mockRestore();
+    });
+
+    const expectRemovalWarning = () => {
+      const [runDir] = readdirSync(parent);
+      expect(runDir.startsWith('ld-skills-')).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain(join(parent, runDir));
+    };
+
+    it('after a successful run', async () => {
+      store.put(rawSkill('a', 1));
+      mockQuery.mockImplementation(recordingQuery([]));
+      const result = await handlerFor()(withSkills([{ key: 'a', version: 1 }]) as any, 'q');
+      expect(result.output).toBe('ok');
+      expectRemovalWarning();
+    });
+
+    it('after the run fails closed', async () => {
+      store.put(rawSkill('a', 1));
+      store.put({ ...rawSkill('b', 1), contentHash: sha256('tampered') });
+      mockQuery.mockImplementation(recordingQuery([]));
+      const both = withSkills([
+        { key: 'a', version: 1 },
+        { key: 'b', version: 1 },
+      ]);
+      await expect(handlerFor()(both as any, 'q')).rejects.toThrow(/could not be written.*\bb\b/);
+      expect(mockQuery).not.toHaveBeenCalled();
+      expectRemovalWarning();
     });
   });
 

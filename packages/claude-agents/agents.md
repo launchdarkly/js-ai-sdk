@@ -268,11 +268,11 @@ On error: `span.recordException(err)`, status set to ERROR, span ended, error re
 
 For a variation with skills, `prepareSkills`:
 
-1. `mkdtemp(<skillsTempDir>/ld-skills-)`, then `realpath`, then `mkdir <dir>/launchdarkly`.
-2. `writeSkills(skillRefs(config), <dir>/launchdarkly/skills, { prune: false })`. A report that is not `ok` throws, naming each failed key, and `query()` is never called.
+1. `realpath(<skillsTempDir>)`, then `mkdtemp(<parent>/ld-skills-)`, then `mkdir <dir>/launchdarkly`. The parent is resolved first because a `realpath` failure after `mkdtemp` would leak the new directory.
+2. `writeSkillsInternal(skillRefsInternal(config), <dir>/launchdarkly/skills, { prune: false })`: the non-reporting versions, so a run reports only `claude-agents.createClaudeAgentsSkillsHandler`. A report that is not `ok` throws, naming each failed key, and `query()` is never called.
 3. Returns `plugins: [{ type: 'local', path: <dir>/launchdarkly, skipMcpDiscovery: true }]`, `skills: ['launchdarkly:<key>', …]` and `extraBuiltins: ['Skill']`.
 
-The plugin's name comes from its directory's base name, so no manifest is written. The skill names are qualified because a bare name would also match a host plugin's skill. The tool hooks are installed whenever `Skill` is in `tools`, so a `Skill` call gets an `execute_tool Skill` span. There's no shared root, no watcher and no prune: every run writes exactly its own variation's references, which is also how detaching a skill takes effect.
+The plugin's name comes from its directory's base name, so no manifest is written. The skill names are qualified because a bare name would also match a host plugin's skill. The tool hooks are installed whenever `Skill` is in `tools`, so a `Skill` call gets an `execute_tool Skill` span. There's no shared root, no watcher and no prune: every run writes exactly its own variation's references, which is also how detaching a skill takes effect. `cleanup` removes the run's directory; a failed removal is logged with `console.warn` and never replaces the run's own outcome.
 
 ---
 
