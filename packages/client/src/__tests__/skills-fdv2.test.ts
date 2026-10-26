@@ -4457,8 +4457,22 @@ describe('timeouts', () => {
 // ─── Endpoints ───────────────────────────────────────────────────────────────
 
 describe('endpoints', () => {
+  // A developer shell with either variable set would otherwise move every default
+  // asserted in this block, so both are cleared around each test and restored.
+  const ENDPOINT_VARS = ['LD_BASE_URI', 'LD_STREAM_URI'] as const;
+  const savedEndpointVars: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const name of ENDPOINT_VARS) {
+      savedEndpointVars[name] = process.env[name];
+      delete process.env[name];
+    }
+  });
   afterEach(() => {
     vi.restoreAllMocks();
+    for (const name of ENDPOINT_VARS) {
+      if (savedEndpointVars[name] === undefined) delete process.env[name];
+      else process.env[name] = savedEndpointVars[name];
+    }
   });
 
   /** Runs one poll and one stream connect through a stubbed `fetch`; returns the URLs requested. */
@@ -4504,6 +4518,69 @@ describe('endpoints', () => {
     const requester = requesterOf(new FDv2SkillStore(SDK_KEY, { streamUri: 'https://stream.example.com' }));
     expect(requester.baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
     expect(requester.streamUri).toBe('https://stream.example.com');
+  });
+
+  describe('from LD_BASE_URI and LD_STREAM_URI', () => {
+    it('sends both endpoints to LD_BASE_URI when it is set alone', async () => {
+      process.env.LD_BASE_URI = 'https://sdk.catfood.example.com';
+      const { poll, stream } = await requestedUrls(requesterOf(new FDv2SkillStore(SDK_KEY)));
+      expect(poll).toBe('https://sdk.catfood.example.com/sdk/poll?kinds=agent-skill');
+      expect(stream).toBe('https://sdk.catfood.example.com/sdk/stream?kinds=agent-skill');
+    });
+
+    it('sets each endpoint from its own variable when both are set', async () => {
+      process.env.LD_BASE_URI = 'https://sdk.catfood.example.com';
+      process.env.LD_STREAM_URI = 'https://stream.catfood.example.com/';
+      const { poll, stream } = await requestedUrls(requesterOf(new FDv2SkillStore(SDK_KEY)));
+      expect(poll).toBe('https://sdk.catfood.example.com/sdk/poll?kinds=agent-skill');
+      expect(stream).toBe('https://stream.catfood.example.com/sdk/stream?kinds=agent-skill');
+    });
+
+    it('keeps the default poll host when only LD_STREAM_URI is set', () => {
+      process.env.LD_STREAM_URI = 'https://stream.catfood.example.com';
+      const requester = requesterOf(new FDv2SkillStore(SDK_KEY));
+      expect(requester.baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
+      expect(requester.streamUri).toBe('https://stream.catfood.example.com');
+    });
+
+    it('reads neither variable when a URI option is given', () => {
+      process.env.LD_BASE_URI = 'https://sdk.catfood.example.com';
+      process.env.LD_STREAM_URI = 'https://stream.catfood.example.com';
+      const fromBase = requesterOf(new FDv2SkillStore(SDK_KEY, { baseUri: 'https://relay.example.com' }));
+      expect(fromBase.baseUri).toBe('https://relay.example.com');
+      expect(fromBase.streamUri).toBe('https://relay.example.com');
+      const fromStream = requesterOf(new FDv2SkillStore(SDK_KEY, { streamUri: 'https://stream.example.com' }));
+      expect(fromStream.baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
+      expect(fromStream.streamUri).toBe('https://stream.example.com');
+    });
+
+    it.each(['', '   '])('treats a blank value (%j) as unset', (blank) => {
+      process.env.LD_BASE_URI = blank;
+      process.env.LD_STREAM_URI = blank;
+      const requester = requesterOf(new FDv2SkillStore(SDK_KEY));
+      expect(requester.baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
+      expect(requester.streamUri).toBe(SKILLS_DEFAULT_STREAM_URI);
+    });
+
+    it.each(['LD_BASE_URI', 'LD_STREAM_URI'] as const)('refuses a plain http:// %s and names the variable', (name) => {
+      process.env[name] = 'http://sdk.catfood.example.com';
+      expect(() => new FDv2SkillStore(SDK_KEY)).toThrow(new RegExp(`${name}.*https://|https://.*${name}`));
+    });
+
+    it('reads the variables once, at construction', () => {
+      process.env.LD_BASE_URI = 'https://sdk.catfood.example.com';
+      const requester = requesterOf(new FDv2SkillStore(SDK_KEY));
+      process.env.LD_BASE_URI = 'https://sdk.elsewhere.example.com';
+      expect(requester.baseUri).toBe('https://sdk.catfood.example.com');
+      expect(requester.streamUri).toBe('https://sdk.catfood.example.com');
+    });
+
+    it('leaves the published defaults at the production hosts', () => {
+      process.env.LD_BASE_URI = 'https://sdk.catfood.example.com';
+      new FDv2SkillStore(SDK_KEY);
+      expect(SKILLS_DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
+      expect(SKILLS_DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
+    });
   });
 
   it('carries the basis to whichever host the request goes to', async () => {
