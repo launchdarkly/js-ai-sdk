@@ -48,7 +48,14 @@ describe('@launchdarkly/ai-node/experimental re-exports', () => {
 
   it('exports Agent Skills from the package root only', async () => {
     const nodeExperimental = await import('../experimental.js');
-    for (const key of ['getSkill', 'setSkillStore', 'InMemorySkillStore', 'FDv2SkillStore'] as const) {
+    for (const key of [
+      'getSkill',
+      'setSkillStore',
+      'InMemorySkillStore',
+      'FDv2SkillStore',
+      'configSkills',
+      'createSkillSource',
+    ] as const) {
       expect((node as any)[key], key).toBe((server as any)[key]);
       expect(key in nodeExperimental, key).toBe(false);
     }

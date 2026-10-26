@@ -21,6 +21,7 @@ ConfigArgs
 + ConfigInstance  # type-only export
 - configInternal  # internal: plumbing for the handler packages; moves to the internal entry point
 ConfigMessage
++ configSkills  usage=client.configSkills
 - ConfigTurn
 + configure
 ContentBlock
@@ -33,6 +34,7 @@ createHandler  usage=client.createHandler
 + createSkill
 + createSkillOutcome
 + createSkillReference
++ createSkillSource
 - endSpanOnce
 + FDv2Mode
 + FDv2SkillStore
@@ -135,6 +137,7 @@ shutdown
 + SKILLS_DEFAULT_BASE_URI
 + SKILLS_DEFAULT_DEBOUNCE_MS
 + SKILLS_DEFAULT_STREAM_URI
++ SkillSource
 + SkillStore
 + SkillWatcher
 - SpanMessage

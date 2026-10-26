@@ -5,16 +5,20 @@
  * `watchSkills` re-runs it whenever the store reports a change, so with `'*'` a
  * skill revoked in LaunchDarkly is removed from disk within a debounce interval
  * rather than at the next restart. With an explicit list, an `absent` skill stays
- * requested (an `error` action, not pruned), and flag changes are not watched.
+ * requested (an `error` action, not pruned), and config changes are not watched.
+ * With a `SkillSource`, the watcher also re-reads the source whenever one of its
+ * `configKeys` changes, so the files follow the config.
  *
  * `onUnavailable: 'keep'` remains the default, so an outage never deletes the
  * application's skill files.
  */
 
+import { getClient } from './lifecycle.js';
 import { reportUsage } from './sdk-usage.js';
 import { getStore, SKILL_OBJECT_KIND } from './skills-core.js';
 import { type WriteSkillsOptions, writeSkillsInternal } from './skills-fs.js';
-import type { ReconcileReport, Skill, SkillReference, SkillStore } from './types.js';
+import type { LDClientInterface, ReconcileReport, Skill, SkillReference, SkillSource, SkillStore } from './types.js';
+import { createSkillSource, isSkillSource } from './types.js';
 
 /**
  * Default debounce, in milliseconds: how long to wait after a change before
@@ -57,7 +61,7 @@ export class SkillWatcher {
 
   constructor(
     private readonly store: SkillStore,
-    private readonly request: ReadonlyArray<Skill | SkillReference | string> | '*',
+    private readonly request: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource,
     private readonly root: string,
     private readonly options: WriteSkillsOptions,
     private readonly debounceMs: number,
@@ -65,10 +69,13 @@ export class SkillWatcher {
   ) {}
 
   /**
-   * The store's change listener. Schedules a reconcile; runs nothing inline.
+   * Schedules a reconcile through the same debounce as a store or config
+   * change; runs nothing inline. Safe to call with no argument.
    *
-   * Called from the delivery task, so it must not block on filesystem work.
-   * The argument is ignored: any change triggers a full reconcile.
+   * The watcher's own store and config listeners call it. Call it yourself to
+   * reconcile on a change the watcher cannot see, for example from your own
+   * listener when you follow a config with an empty `configKeys`. Any argument
+   * is ignored: every trigger runs a full reconcile. No-op once closed.
    */
   readonly notify = (): void => {
     if (this.closed) return;
@@ -140,9 +147,10 @@ export class SkillWatcher {
   /**
    * Stops watching. Idempotent; leaves files on disk as they are.
    *
-   * Detaches from the store (when it has `removeListener`; a throw there is
-   * logged, not rethrown), then awaits any in-flight reconcile rather than
-   * interrupting it mid-write.
+   * Detaches from the store (when it has `removeListener`) and from the base
+   * client's config changes (when it has `off`); a throw there is logged, not
+   * rethrown. Then awaits any in-flight reconcile rather than interrupting it
+   * mid-write.
    */
   async close(): Promise<void> {
     if (this.closed) {
@@ -155,6 +163,8 @@ export class SkillWatcher {
       this.timer = null;
     }
     this.detach();
+    for (const detach of configDetachers.get(this) ?? []) detach();
+    configDetachers.delete(this);
     await this.running;
   }
 
@@ -173,6 +183,88 @@ export class SkillWatcher {
 }
 
 /**
+ * How each watcher unsubscribes from config changes, run by `close`. Kept off
+ * the class so following a config adds nothing to the watcher's public shape.
+ */
+const configDetachers = new WeakMap<SkillWatcher, Array<() => void>>();
+
+/** The remedy every no-change-signal error names. */
+const CONFIG_SIGNAL_REMEDY =
+  'Initialize the AI client with a LaunchDarkly server SDK client (initClient()), or pass a SkillSource with an ' +
+  'empty configKeys and call watcher.notify() from your own change listener.';
+
+/**
+ * The base client a source's `configKeys` are followed through.
+ *
+ * @throws Error when there is none, it has no `on`, or it reports itself
+ *   offline: a watcher that never hears about config changes looks exactly like
+ *   one whose config never changed.
+ */
+function configSignalClient(configKeys: readonly string[]): LDClientInterface {
+  const shown = configKeys.map((key) => `'${key}'`).join(', ');
+  let client: LDClientInterface;
+  try {
+    client = getClient();
+  } catch {
+    throw new Error(
+      `watchSkills cannot follow changes to AI Config ${shown}: no AI client is initialized. ${CONFIG_SIGNAL_REMEDY}`,
+    );
+  }
+  if (typeof client.on !== 'function') {
+    throw new Error(
+      `watchSkills cannot follow changes to AI Config ${shown}: the AI client has no on(event, listener) method, ` +
+        `so it cannot report config changes. ${CONFIG_SIGNAL_REMEDY}`,
+    );
+  }
+  let offline: boolean;
+  try {
+    offline = typeof client.isOffline === 'function' && client.isOffline() === true;
+  } catch {
+    offline = true;
+  }
+  if (offline) {
+    throw new Error(
+      `watchSkills cannot follow changes to AI Config ${shown}: the base client is offline, so it never reports ` +
+        `config changes. ${CONFIG_SIGNAL_REMEDY}`,
+    );
+  }
+  return client;
+}
+
+/** Subscribes `watcher` to `update:<key>` for each key, and records how to undo it. */
+function followConfigs(watcher: SkillWatcher, client: LDClientInterface, configKeys: readonly string[]): void {
+  // Only signals: the source is read on the watcher's chain, after the listener returns.
+  const listener = (): void => watcher.notify();
+  const on = client.on as NonNullable<LDClientInterface['on']>;
+  const off = (
+    typeof client.off === 'function'
+      ? client.off
+      : (client as { removeListener?: (event: string, fn: () => void) => unknown }).removeListener
+  ) as ((event: string, fn: () => void) => unknown) | undefined;
+
+  const detachers: Array<() => void> = [];
+  configDetachers.set(watcher, detachers);
+  for (const key of new Set(configKeys)) {
+    const event = `update:${key}`;
+    // Recorded before `on`, so if a later `on` throws, `close` still detaches this one.
+    if (typeof off === 'function') {
+      detachers.push(() => {
+        try {
+          off.call(client, event, listener);
+        } catch (cause) {
+          error(
+            `The AI client's off threw while a watcher was closing; the watcher is closed regardless: ${
+              cause instanceof Error ? cause.message : String(cause)
+            }`,
+          );
+        }
+      });
+    }
+    on.call(client, event, listener);
+  }
+}
+
+/**
  * Reconciles now, then re-reconciles whenever delivery changes.
  *
  * Takes the same arguments as `writeSkills`, plus `debounceMs` and `onReconcile`
@@ -181,6 +273,23 @@ export class SkillWatcher {
  * Errors from the initial `writeSkills` (e.g. a bad root) propagate, so you can
  * fail fast exactly as with `writeSkills`. If the store has no `removeListener`,
  * a closed watcher stays registered with the store for the store's lifetime.
+ *
+ * What reaches disk depends on the form of `skills`:
+ *
+ * - `'*'` follows the skill library: a deleted skill is pruned, and each key
+ *   tracks its newest version.
+ * - A fixed list never changes. If an AI Config moves a skill from v2 to v3,
+ *   v2 stays on disk reported `error`, and v3 is never written. Use it only for
+ *   a set that does not change for the process lifetime.
+ * - A `SkillSource` (`configSkills` for one AI Config) is read again on every
+ *   reconcile, and a change to one of its `configKeys` triggers one, through the
+ *   base client's `update:<key>` events. A new version replaces the old file,
+ *   and a skill the config stops referencing is pruned.
+ *
+ * A source with `configKeys` needs a base client that reports changes, and
+ * the watcher subscribes before the initial reconcile. A client in daemon mode
+ * (`useLdd: true`) passes that check but never reports changes, so the watcher
+ * then follows skill-store changes only.
  *
  * @returns The initial reconcile's report and a {@link SkillWatcher} to close
  *   when done:
@@ -197,9 +306,14 @@ export class SkillWatcher {
  * @throws Error if no store is configured, or the store has no `addListener`
  *   (use `writeSkills` for a one-shot reconcile).
  * @throws Error if `debounceMs` is negative, `NaN`, or infinite.
+ * @throws Error if `skills` is a source with `configKeys` and no initialized AI
+ *   client can report their changes: none is initialized, the client has no
+ *   `on`, or `isOffline()` is true.
+ * @throws TypeError if `skills` is a source whose `configKeys` is not an array
+ *   of non-empty strings.
  */
 export async function watchSkills(
-  skills: ReadonlyArray<Skill | SkillReference | string> | '*',
+  skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource,
   root: string,
   options: WatchSkillsOptions = {},
 ): Promise<{ report: ReconcileReport; watcher: SkillWatcher }> {
@@ -224,11 +338,26 @@ export async function watchSkills(
     throw new Error(`debounceMs must be a non-negative, finite number of milliseconds, got ${shown}`);
   }
 
-  const watcher = new SkillWatcher(store, skills, root, writeOptions, debounceMs, onReconcile);
+  // Re-validated, so a hand-built source with a bare-string `configKeys` fails
+  // here rather than following one-character keys.
+  const request = isSkillSource(skills) ? createSkillSource(skills) : skills;
+  const configKeys = isSkillSource(request) ? request.configKeys : [];
+  // Before anything is attached, so a raise leaves nothing registered.
+  const configClient = configKeys.length > 0 ? configSignalClient(configKeys) : null;
 
-  // Attach the listener before the initial reconcile, so a change delivered
+  const watcher = new SkillWatcher(store, request, root, writeOptions, debounceMs, onReconcile);
+
+  // Attach the listeners before the initial reconcile, so a change delivered
   // during it is still seen (nothing re-reconciles on a timer).
   store.addListener(SKILL_OBJECT_KIND, watcher.notify);
+  if (configClient !== null) {
+    try {
+      followConfigs(watcher, configClient, configKeys);
+    } catch (cause) {
+      await watcher.close();
+      throw cause;
+    }
+  }
 
   // A failed initial reconcile throws to the caller, who gets no watcher to
   // close, so detach the listener here.

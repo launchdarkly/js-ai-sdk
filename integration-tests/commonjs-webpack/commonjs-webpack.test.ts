@@ -51,11 +51,15 @@ const RESOLVED_SYMBOLS = {
   aiNodeExperimentalInitEvaluations: 'function',
   aiNodeExperimentalGetSkill: 'undefined',
   aiNodeRootGetSkill: 'function',
+  aiNodeExperimentalConfigSkills: 'undefined',
+  aiNodeRootConfigSkills: 'function',
   aiServerConfig: 'function',
   // The experimental subpath resolves; Agent Skills is on the root, not the subpath.
   aiServerExperimentalInitEvaluations: 'function',
   aiServerExperimentalGetSkill: 'undefined',
   aiServerRootGetSkill: 'function',
+  aiServerExperimentalConfigSkills: 'undefined',
+  aiServerRootConfigSkills: 'function',
   openaiMessages: 'function',
   langchainMessages: 'function',
 };

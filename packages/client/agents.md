@@ -34,8 +34,9 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/skills-core.ts` | Agent Skills internals shared by the two layers above it: the store and telemetry seams, module state, integrity verification, store resolution |
 | `src/skills.ts` | `skillRefs`, the content accessors, `InMemorySkillStore`, and the documented test-injection hooks |
 | `src/skills-fdv2.ts` | Agent Skills delivery transport — the FDv2 protocol, the wire-key/`version` translation, the held object set, and `FDv2SkillStore`. Sits **below** the store seam; imports `skills-core` only, and nothing imports it |
-| `src/skills-watch.ts` | Agent Skills eager re-reconcile — `watchSkills` / `SkillWatcher`, wiring the store's change listener to `writeSkills`. Sits **above** `skills-fs` and modifies none of it |
-| `src/skills-fs.ts` | `writeSkills` — the manifest format, on-disk filenames, and reconcile semantics |
+| `src/skills-watch.ts` | Agent Skills eager re-reconcile — `watchSkills` / `SkillWatcher`, wiring the store's change listener, and for a `SkillSource` the base client's `update:<key>` events, to `writeSkills`. Sits **above** `skills-fs` and modifies none of it |
+| `src/skills-source.ts` | `configSkills` — the `SkillSource` that evaluates one AI Config. With `skills-watch`, the only skills module that imports `lifecycle`, and only for `getClient` |
+| `src/skills-fs.ts` | `writeSkills` — the manifest format, on-disk filenames, and reconcile semantics. Recognizes a `SkillSource` by shape alone and never imports `skills-source` |
 | `src/evaluations.ts` | Evaluations from Code — `initEvaluations`, `EvaluationsModule.run()` and its argument validation and orchestration, the public option and result types |
 | `src/evaluations-api.ts` | Evaluations from Code — the retrying management API client, its injectable `Transport` seam, `EvaluationsError`, and the strict-JSON check |
 | `src/evaluations-runner.ts` | Evaluations from Code — the management API operations, row rendering, handler config, the generation phase, event payloads and flushing, and summary parsing. `canonicalJson` is RFC 8785 (JCS), the form `eventId` and `contentHash` hash in every SDK; the Python SDK's `evaluations/canonical_json.py` produces the same bytes |
@@ -219,6 +220,7 @@ export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills
 export { FDv2SkillStore, SKILLS_DEFAULT_BASE_URI, SKILLS_DEFAULT_STREAM_URI } from './skills-fdv2.js';
 export type { WriteSkillsOptions } from './skills-fs.js';
 export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
+export { configSkills } from './skills-source.js';
 export type { WatchSkillsOptions } from './skills-watch.js';
 export { SKILLS_DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
 export { makeGraphTrackData, makeNodeTrackData, makeRunTrackData } from './tracking.js';
@@ -261,6 +263,7 @@ export type {
   SkillOutcome,
   SkillOutcomeReason,
   SkillReference,
+  SkillSource,
   SkillStore,
   StreamEvent,
   TextContentBlock,
@@ -275,6 +278,7 @@ export {
   createSkill,
   createSkillOutcome,
   createSkillReference,
+  createSkillSource,
   GraphTopologySchema,
   NATIVE_TOOL_KEY,
   NativeTool,
@@ -606,9 +610,26 @@ Run one reconcile per root at a time. Two interleaved runs read the same manifes
 
 ### 4d. Expecting revocation to reach a boot-only `writeSkills` deployment
 
-With an explicit list, `watchSkills` does not close the gap either. A requested skill the store answers `absent` for stays in the requested set as an `error` action and is not pruned, and the watcher listens only to the skill store, so unpinning a skill from an AI Config is not seen. Only `watchSkills('*', …)` removes a revoked skill from disk without a re-run.
+With a fixed list, `watchSkills` does not close the gap either. A requested skill the store answers `absent` for stays in the requested set as an `error` action and is not pruned, and a fixed list never re-reads the config, so a config moving to a new version or unpinning a skill is not seen. `watchSkills('*', …)` removes a deleted skill from disk without a re-run, and `watchSkills(configSkills(key, context), …)` follows the config: a new version replaces the old file, and an unpinned skill is pruned.
 
 Without `watchSkills`, the revocation bound is process lifetime: a skill revoked after boot stays on disk until the process reconciles again, so a restart (or an explicit re-run of `writeSkills`) is the incident-response action — and content an agent has already read into a conversation is out of reach at this layer either way.
+
+### 4e. Feeding `skillRefs(inspectConfig(...).config)` to `watchSkills`
+
+That list is fixed when the call is made, so the watcher never follows the config. Use `configSkills(key, context)`; at boot either form is safe, because `skillRefs` throws on a failed evaluation. No README or doc example may show the `skillRefs` form under a watcher.
+
+### 4f. Letting a failed source read become `[]`
+
+An empty requested set prunes every managed skill, so a source read that fails must throw, never answer `[]`:
+
+- `configSkills` passes `null` as the `variation` default, **not** the `{ enabled: false }` that `extractVariation` and `inspectConfig` use. That default reads as a disabled variation, which answers "no skills", so a client that is not ready yet would prune everything. A default value, a non-object, and a value with no boolean `_ldMeta.enabled` all throw.
+- `configSkills` never calls `initClient`. An uninitialized client is a failed read; a reconcile is the wrong place to build a base client.
+- `writeSkills` treats a source that throws, rejects, or answers anything but an array of valid references and key strings as an unavailable retrieval (`unavailableRun`). One invalid entry fails the whole read; dropping it would shorten the set and prune that skill.
+- `configSkills` projects through `skillRefsInternal`, so a read is never counted as an application call to `skillRefs`. It reports `client.configSkills` once, when called.
+
+### 4g. Doing work in the config-change listener
+
+The `update:<key>` listener only calls `watcher.notify()`. The source is read on the watcher's chain, after the listener returns, and store and config changes share one debounce. The listener is registered before the initial reconcile, like the store's, and with a non-empty `configKeys` `watchSkills` throws before attaching anything when there is no client, no `on`, or `isOffline()` is true. The base Node client detects changes only while an `update*` listener is registered, so registering is what turns detection on.
 
 ### 5. Relaxing a path or manifest check in `skills-fs.ts`
 
@@ -664,7 +685,7 @@ Two decisions here look like unfinished work and are not. Do not reverse either 
 - Do not weaken the `parseAiConfig` validation — handler packages rely on `config` being valid when they receive it. The `skills` array fails **closed**: one malformed reference fails the whole parse, rather than silently materializing a partial skill set.
 - Do not interpret skill content anywhere — no frontmatter parsing, no YAML dependency, no encoding assumption beyond the one wire-string encode inside integrity verification. See pitfall 3.
 - Skills telemetry goes through the private emitter seam in `skills-core.ts` and nowhere else.
-  - **Never** call `client.track()` for a skills operation: these are LaunchDarkly product signals, and `track()` would need an LD context, spend the customer's event volume, and land in their data export.
+  - **Never** call `client.track()` for a skills operation: these are LaunchDarkly product signals, and `track()` would need an LD context, spend the customer's event volume, and land in their data export. The one `track` a skills function makes is the `$ld:ai:sdk:usage` report (`reportUsage`), which `configSkills` sends once per client.
   - Exactly three signal names exist (`AgentControl Skill Integrity Failure`, `AgentControl Skill Materialized`, `AgentControl Skill Revoked Received`), an allowlist, not a floor. `AgentControl Skill SDK Reference Returned` and `AgentControl Skill Content Retrieved` must **never** be emitted.
   - Every signal is built by a `record*` function in `skills-core.ts`, so the allowlist is enforced in one place.
 - No filesystem paths and no skill content in telemetry — hashes and byte counts only. Paths belong in the `ReconcileReport`, which is user-facing API.

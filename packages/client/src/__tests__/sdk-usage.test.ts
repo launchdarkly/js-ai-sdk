@@ -223,6 +223,8 @@ const CALLS: Record<string, Call> = {
     setSkillStore(skillStore());
     return settle(getSkills(['usage-skill']));
   },
+  // Builds a source and does not read it.
+  'client.configSkills': (configSkills) => fire(() => configSkills('k', ctx)),
   'client.allSkills': (allSkills) => {
     setSkillStore(skillStore());
     return settle(allSkills());
@@ -570,7 +572,7 @@ describe('§3.27 Agent Skills helper usage', () => {
 
   it('every skills usage ID on the lists is client.*', () => {
     const skillsIds = listRows.map(({ id }) => id).filter((id) => /skill/i.test(id));
-    expect(skillsIds).toHaveLength(7);
+    expect(skillsIds).toHaveLength(8);
     expect(skillsIds.filter((id) => !id.startsWith('client.'))).toEqual([]);
   });
 });

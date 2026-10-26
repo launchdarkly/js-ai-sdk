@@ -107,6 +107,9 @@ export type ConfigMessage = {
 };
 
 // @public
+export function configSkills(key: string, context: LDContext): SkillSource;
+
+// @public
 export type ConfigTurn = {
     role: 'user' | 'assistant';
     content: string;
@@ -171,6 +174,12 @@ export function createSkillReference(init: {
     key: string;
     version: number;
 }): SkillReference;
+
+// @public
+export function createSkillSource(init: {
+    refs: SkillSource['refs'];
+    configKeys?: readonly string[];
+}): SkillSource;
 
 // @public
 export function endSpanOnce(span: Span, tracker: Set<Span>, abandoned?: boolean): void;
@@ -455,6 +464,9 @@ export interface LDClientInterface {
     close(): void | Promise<void>;
     // (undocumented)
     flush(): Promise<void>;
+    isOffline?(): boolean;
+    off?(event: string, listener: (...args: unknown[]) => void): unknown;
+    on?(event: string, listener: (...args: unknown[]) => void): unknown;
     // (undocumented)
     track(eventName: string, context: LDContext, data?: unknown, metricValue?: number): void;
     // (undocumented)
@@ -761,6 +773,12 @@ export const SKILLS_DEFAULT_DEBOUNCE_MS = 500;
 export const SKILLS_DEFAULT_STREAM_URI = "https://stream.launchdarkly.com";
 
 // @public
+export interface SkillSource {
+    readonly configKeys: readonly string[];
+    readonly refs: () => ReadonlyArray<SkillReference | string> | PromiseLike<ReadonlyArray<SkillReference | string>>;
+}
+
+// @public
 export type SkillStore = {
     getObject(kind: string, key: string, version?: number | null): RawSkillObject | null | undefined;
     allObjects(kind: string): Record<string, RawSkillObject>;
@@ -771,7 +789,7 @@ export type SkillStore = {
 
 // @public
 export class SkillWatcher {
-    constructor(store: SkillStore, request: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options: WriteSkillsOptions, debounceMs: number, onReconcile?: ((report: ReconcileReport) => unknown) | undefined);
+    constructor(store: SkillStore, request: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource, root: string, options: WriteSkillsOptions, debounceMs: number, onReconcile?: ((report: ReconcileReport) => unknown) | undefined);
     close(): Promise<void>;
     readonly notify: () => void;
     get reconciles(): number;
@@ -908,7 +926,7 @@ export type TraverseVisitor<T = any> = (node: GraphNode, ctx: Record<string, unk
 export function waitForTelemetry(timeoutMs?: number): Promise<void>;
 
 // @public
-export function watchSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options?: WatchSkillsOptions): Promise<{
+export function watchSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource, root: string, options?: WatchSkillsOptions): Promise<{
     report: ReconcileReport;
     watcher: SkillWatcher;
 }>;
@@ -923,10 +941,10 @@ export type WatchSkillsOptions = WriteSkillsOptions & {
 export function withConversationId<T>(id: string, fn: () => T): T;
 
 // @public
-export function writeSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options?: WriteSkillsOptions): Promise<ReconcileReport>;
+export function writeSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource, root: string, options?: WriteSkillsOptions): Promise<ReconcileReport>;
 
 // @public
-export function writeSkillsInternal(skills: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options?: WriteSkillsOptions): Promise<ReconcileReport>;
+export function writeSkillsInternal(skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource, root: string, options?: WriteSkillsOptions): Promise<ReconcileReport>;
 
 // @public
 export type WriteSkillsOptions = {
@@ -938,7 +956,7 @@ export type WriteSkillsOptions = {
 // Warnings were encountered during analysis:
 //
 // temp/dts/skills-fdv2.d.ts:460:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point index.d.ts
-// temp/dts/types.d.ts:379:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
+// temp/dts/types.d.ts:426:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 
