@@ -1309,22 +1309,26 @@ export function createClaudeAgentsHandlerInternal(
         failSpan(span, err, endedSpans);
         throw err;
       } finally {
-        // Idempotent, and a no-op on the success path where the result message already closed the
-        // last response. On the error and abandonment paths it is the only thing that ends a chat
-        // span still open — and the exporter only receives ended spans.
-        inference.finish();
-        // A no-op on the success and failure paths; on abandonment it is the only chance to close
-        // the tree, including any tool span whose PostToolUse hook never fired — and the only
-        // chance to report what the responses that did arrive cost.
-        if (!endedSpans.has(span)) {
-          toolTelemetry?.closeOpenSpans(new Error('stream abandoned before completion'));
-          if (!rootUsageWritten && inference.runUsage.reported) {
-            finishRootSpan(span, config, inference.runUsage.total);
+        try {
+          // Idempotent, and a no-op on the success path where the result message already closed the
+          // last response. On the error and abandonment paths it is the only thing that ends a chat
+          // span still open — and the exporter only receives ended spans.
+          inference.finish();
+          // A no-op on the success and failure paths; on abandonment it is the only chance to close
+          // the tree, including any tool span whose PostToolUse hook never fired — and the only
+          // chance to report what the responses that did arrive cost.
+          if (!endedSpans.has(span)) {
+            toolTelemetry?.closeOpenSpans(new Error('stream abandoned before completion'));
+            if (!rootUsageWritten && inference.runUsage.reported) {
+              finishRootSpan(span, config, inference.runUsage.total);
+            }
           }
+          endSpanOnce(span, endedSpans, true);
+        } finally {
+          // Its own finally, after the span tree is closed: a throw while closing it (a span
+          // processor's `onEnd`, say) still removes the run's skills directory.
+          await prepared?.cleanup();
         }
-        endSpanOnce(span, endedSpans, true);
-        // Last, after the span tree is closed: the run is over however it ended.
-        await prepared?.cleanup();
       }
     },
     captureContent,

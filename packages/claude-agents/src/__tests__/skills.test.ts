@@ -21,7 +21,12 @@ import {
 } from '@launchdarkly/ai-server';
 import { context, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
-import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+  type SpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockQuery = vi.fn();
@@ -39,7 +44,19 @@ import { createClaudeAgentsSkillsHandler } from '../skills.js';
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 const exporter = new InMemorySpanExporter();
-const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
+/** While `on`, `onEnd` throws, as an application's span processor might. The SDK doesn't catch it. */
+const failOnEnd = { on: false };
+const throwingProcessor: SpanProcessor = {
+  onStart: () => undefined,
+  onEnd: () => {
+    if (failOnEnd.on) throw new Error('span processor failed');
+  },
+  forceFlush: async () => undefined,
+  shutdown: async () => undefined,
+};
+const provider = new BasicTracerProvider({
+  spanProcessors: [new SimpleSpanProcessor(exporter), throwingProcessor],
+});
 const contextManager = new AsyncLocalStorageContextManager();
 
 beforeAll(() => {
@@ -256,6 +273,19 @@ describe('materialization', () => {
       const stream = handlerFor().stream?.(config as any, 'q');
       await stream?.next();
       await stream?.return(undefined);
+      parentIsEmpty();
+    });
+
+    it('after closing the stream spans throws', async () => {
+      mockQuery.mockImplementation(recordingQuery([]));
+      const stream = handlerFor().stream?.(config as any, 'q');
+      await stream?.next();
+      failOnEnd.on = true;
+      try {
+        await expect(stream?.return(undefined)).rejects.toThrow('span processor failed');
+      } finally {
+        failOnEnd.on = false;
+      }
       parentIsEmpty();
     });
   });
