@@ -1,13 +1,6 @@
 /**
- * Experimental features of `@launchdarkly/ai-claude-agents`.
- *
- * Import from `@launchdarkly/ai-claude-agents/experimental`. Every name here is published, but may
- * change in a minor release. None of these names is exported from the package root.
- *
- * Current experimental features:
- *
- * - **Agent Skills for Claude Agents** — a handler that gives each run the skills attached to its
- *   variation.
+ * Agent Skills for Claude Agents: a handler that gives each run the skills attached to its
+ * variation. Exported from the package root.
  */
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,21 +9,14 @@ import {
   type AiConfigRep,
   type ContentCaptureOptions,
   type ProviderHandler,
-  registerAiSdkPackage,
-  reportUsage,
-} from '@launchdarkly/ai-server';
-import {
   type ReconcileReport,
+  reportUsage,
   type SkillReference,
   skillRefs,
   writeSkills,
-} from '@launchdarkly/ai-server/experimental';
+} from '@launchdarkly/ai-server';
 import { type ClaudeAgentsHostOptions, createClaudeAgentsHandlerInternal, type QueryPreparation } from './handler.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
-
-export type { ClaudeAgentsHostOptions } from './handler.js';
-
-registerAiSdkPackage(LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
 
 /**
  * The local plugin's directory name, and so its name: the CLI names a plugin with no manifest
@@ -125,9 +111,8 @@ async function prepareSkills(config: AiConfigRep, parent: string): Promise<Query
  * the run throws before the model is called.
  *
  * ```ts
- * import { config } from '@launchdarkly/ai-server';
- * import { FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server/experimental';
- * import { createClaudeAgentsSkillsHandler } from '@launchdarkly/ai-claude-agents/experimental';
+ * import { config, FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server';
+ * import { createClaudeAgentsSkillsHandler } from '@launchdarkly/ai-claude-agents';
  *
  * const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
  * await store.waitForSkills({ timeoutSeconds: 10 });
@@ -137,7 +122,7 @@ async function prepareSkills(config: AiConfigRep, parent: string): Promise<Query
  * ```
  */
 export function createClaudeAgentsSkillsHandler(options: ClaudeAgentsSkillsHandlerOptions = {}): ProviderHandler {
-  reportUsage('experimental.createClaudeAgentsSkillsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  reportUsage('claude-agents.createClaudeAgentsSkillsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   const { skillsTempDir, ...handlerOptions } = options;
   return createClaudeAgentsHandlerInternal(handlerOptions, {
     prepare: (config) => prepareSkills(config, skillsTempDir ?? tmpdir()),

@@ -10,7 +10,6 @@ import {
   LD_AI_PACKAGE_NAME as AI_SDK_NAME,
   LD_AI_PACKAGE_VERSION as AI_SDK_VERSION,
 } from '../../../client/src/version.js';
-import { createClaudeAgentsSkillsHandler } from '../experimental.js';
 import { createClaudeAgentsHandler } from '../handler.js';
 import * as entry from '../index.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from '../version.js';
@@ -75,6 +74,8 @@ const fire = (call: () => unknown): Promise<void> => {
 const CALLS: Record<string, Call[]> = {
   'claude-agents.claudeAgents': [(fn) => settle(fn('k', 'q', ctx))],
   'claude-agents.createClaudeAgentsHandler': [(fn) => fire(() => fn())],
+  // Reports its own ID and not the core factory's.
+  'claude-agents.createClaudeAgentsSkillsHandler': [(fn) => fire(() => fn())],
   'claude-agents.claudeGraph': [
     (fn) => fire(() => fn('k', {})),
     // The returned caller's methods run later; they must not add client.graph.* events.
@@ -89,14 +90,9 @@ const CALLS: Record<string, Call[]> = {
 
 const listRows = usageRows('ai-claude-agents.txt', entry);
 
-const rows: Array<[string, () => Promise<void>]> = [
-  ...listRows.flatMap(({ id, fn }) =>
-    (CALLS[id] ?? []).map((call): [string, () => Promise<void>] => [id, () => call(fn)]),
-  ),
-  // `./experimental` has no approved list yet, so its helper is called directly. It reports its
-  // own ID and not the core factory's.
-  ['experimental.createClaudeAgentsSkillsHandler', () => fire(() => createClaudeAgentsSkillsHandler())],
-];
+const rows: Array<[string, () => Promise<void>]> = listRows.flatMap(({ id, fn }) =>
+  (CALLS[id] ?? []).map((call): [string, () => Promise<void>] => [id, () => call(fn)]),
+);
 
 it('has a call for every usage ID its list reports, and none it does not', () => {
   expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());

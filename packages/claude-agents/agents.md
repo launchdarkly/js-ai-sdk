@@ -260,11 +260,11 @@ emitted as a span event.
 
 On error: `span.recordException(err)`, status set to ERROR, span ended, error re-thrown.
 
-### 5. Agent Skills (experimental, `src/experimental.ts`)
+### 5. Agent Skills (`src/skills.ts`)
 
-`createClaudeAgentsSkillsHandler(options)` is exported only from `@launchdarkly/ai-claude-agents/experimental` (a second tsup entry, a `./experimental` `exports` subpath and a `typesVersions` entry). It reports `experimental.createClaudeAgentsSkillsHandler` and builds the handler through `createClaudeAgentsHandlerInternal(options, { prepare })`.
+`createClaudeAgentsSkillsHandler(options)` is exported from the package root. It reports `claude-agents.createClaudeAgentsSkillsHandler` and builds the handler through `createClaudeAgentsHandlerInternal(options, { prepare })`.
 
-`prepare` is a package-internal hook: a parameter of the internal factory only, never a field of the public options, so core names nothing experimental. It runs at the start of every invoke and stream, inside the `invoke_agent` span, and returns `undefined` (the run is exactly the core handler's) or a `QueryPreparation`: extra `query()` options, extra built-ins appended to `tools` (never to `allowedTools`), and a `cleanup` the handler awaits in `finally` on both paths.
+`prepare` is a package-internal hook: a parameter of the internal factory only, never a field of the public options, so `createClaudeAgentsHandler`'s options stay unchanged. It runs at the start of every invoke and stream, inside the `invoke_agent` span, and returns `undefined` (the run is exactly the core handler's) or a `QueryPreparation`: extra `query()` options, extra built-ins appended to `tools` (never to `allowedTools`), and a `cleanup` the handler awaits in `finally` on both paths.
 
 For a variation with skills, `prepareSkills`:
 

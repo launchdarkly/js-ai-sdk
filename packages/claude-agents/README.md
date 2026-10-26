@@ -100,16 +100,13 @@ const result = await claudeGraph('support-graph', {}).invoke(
 );
 ```
 
-## Agent Skills (experimental)
-
-> **Experimental.** Imported from `@launchdarkly/ai-claude-agents/experimental`. The name and behavior may change in a minor release, and each change is listed under **Experimental** in the changelog.
+## Agent Skills
 
 `createClaudeAgentsHandler` doesn't give the model a variation's skills. `createClaudeAgentsSkillsHandler` does. It takes the same options, plus `skillsTempDir`.
 
 ```ts
-import { config } from '@launchdarkly/ai-server';
-import { FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server/experimental';
-import { createClaudeAgentsSkillsHandler } from '@launchdarkly/ai-claude-agents/experimental';
+import { config, FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server';
+import { createClaudeAgentsSkillsHandler } from '@launchdarkly/ai-claude-agents';
 
 const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
 await store.waitForSkills({ timeoutSeconds: 10 });

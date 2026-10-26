@@ -1,5 +1,5 @@
 /**
- * TESTING.md §2.x "Claude Agents Skills Integration" (experimental), A.17.
+ * TESTING.md §2.x "Claude Agents Skills Integration", A.21.
  *
  * `query()` is mocked; everything else is real: the skills store, `writeSkills`, the filesystem
  * under a per-test temp directory, and an OTel tracer provider for the span assertion. What the
@@ -11,8 +11,14 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { NATIVE_TOOL_KEY, NativeTool, shutdown } from '@launchdarkly/ai-server';
-import { InMemorySkillStore, type RawSkillObject, setSkillStore } from '@launchdarkly/ai-server/experimental';
+import {
+  InMemorySkillStore,
+  NATIVE_TOOL_KEY,
+  NativeTool,
+  type RawSkillObject,
+  setSkillStore,
+  shutdown,
+} from '@launchdarkly/ai-server';
 import { context, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
@@ -26,10 +32,9 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   createSdkMcpServer: vi.fn().mockReturnValue({}),
 }));
 
-import * as experimental from '../experimental.js';
-import { createClaudeAgentsSkillsHandler } from '../experimental.js';
 import { createClaudeAgentsHandler } from '../handler.js';
 import * as packageRoot from '../index.js';
+import { createClaudeAgentsSkillsHandler } from '../skills.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -158,12 +163,8 @@ describe('routing and options', () => {
 });
 
 describe('entry points', () => {
-  it('exports exactly the integration from the experimental entry point', () => {
-    expect(Object.keys(experimental).sort()).toEqual(['createClaudeAgentsSkillsHandler']);
-  });
-
-  it('keeps the integration off the package root', () => {
-    expect(Object.keys(packageRoot)).not.toContain('createClaudeAgentsSkillsHandler');
+  it('exports the integration from the package root', () => {
+    expect(packageRoot.createClaudeAgentsSkillsHandler).toBe(createClaudeAgentsSkillsHandler);
   });
 });
 

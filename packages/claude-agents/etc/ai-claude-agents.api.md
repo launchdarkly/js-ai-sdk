@@ -30,6 +30,11 @@ export type ClaudeAgentsHostOptions = {
 };
 
 // @public
+export type ClaudeAgentsSkillsHandlerOptions = ContentCaptureOptions & ClaudeAgentsHostOptions & {
+    skillsTempDir?: string;
+};
+
+// @public
 export const ClaudeBash: NativeTool;
 
 // @public (undocumented)
@@ -67,6 +72,9 @@ export const ClaudeWrite: NativeTool;
 
 // @public (undocumented)
 export function createClaudeAgentsHandler(options?: ContentCaptureOptions & ClaudeAgentsHostOptions): ProviderHandler;
+
+// @public
+export function createClaudeAgentsSkillsHandler(options?: ClaudeAgentsSkillsHandlerOptions): ProviderHandler;
 
 // @public
 export const toClaudeAgents: (defPromise: Promise<GraphDefinition>, opts?: {
