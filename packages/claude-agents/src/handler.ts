@@ -701,7 +701,10 @@ function buildToolHooks(nativeToolMap: Map<string, ToolHandlerFn>, parentContext
   };
 }
 
-export const buildToolMCP = async (configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn>) => {
+export const buildToolMCP = async (
+  configTools: Record<string, Tool>,
+  handlers: Record<string, ToolHandlerFn | NativeTool>,
+) => {
   const toolRepository = Object.keys(configTools).map((toolName) => {
     return tool(
       toolName,
@@ -710,7 +713,8 @@ export const buildToolMCP = async (configTools: Record<string, Tool>, handlers: 
       // biome-ignore lint/suspicious/noExplicitAny: Claude SDK tool() callback receives typed args from zod schema at runtime
       async (...args: any[]) => {
         const handler = handlers[toolName];
-        if (!handler) {
+        // A NativeTool reaches here unwrapped on the offline evaluations path.
+        if (typeof handler !== 'function') {
           throw new Error(`No handler registered for tool "${toolName}"`);
         }
         const result = await (handler as (...args: unknown[]) => unknown)(...args);
@@ -736,7 +740,7 @@ export const buildToolMCP = async (configTools: Record<string, Tool>, handlers: 
  */
 export const partitionTools = (
   configTools: Record<string, Tool> | undefined,
-  toolHandlers: Record<string, ToolHandlerFn>,
+  toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
 ): {
   nativeToolMap: Map<string, ToolHandlerFn>;
   userConfigTools: Record<string, Tool>;
@@ -757,7 +761,8 @@ export const partitionTools = (
   for (const [ldName, stub] of Object.entries(toolHandlers)) {
     const nativeTool = (stub as unknown as Record<symbol, unknown>)[NATIVE_TOOL_KEY] as NativeTool | undefined;
     if (nativeTool) {
-      nativeToolMap.set(nativeTool.toolName, stub);
+      // Carrying NATIVE_TOOL_KEY makes it the wrapper's callable stub, not the NativeTool.
+      nativeToolMap.set(nativeTool.toolName, stub as ToolHandlerFn);
       nativeToolAliases.set(ldName, nativeTool.toolName);
     } else if (configTools?.[ldName]) {
       userConfigTools[ldName] = configTools[ldName];
@@ -1015,7 +1020,7 @@ export function createClaudeAgentsHandlerInternal({
     async (
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ToolHandlerFn> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
@@ -1145,7 +1150,7 @@ export function createClaudeAgentsHandlerInternal({
     async function* streamHandler(
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ToolHandlerFn> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {

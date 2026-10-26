@@ -711,15 +711,11 @@ export type ProviderHandler = ((
    * this instead of the blocking handler and forwards `chunk` events to the
    * caller in real time. When absent, `model().stream()` falls back to calling
    * the blocking handler and emitting its output as a single chunk.
-   *
-   * toolHandlers uses Record<string, any> to avoid a contravariant mismatch
-   * when handler implementations narrow to Record<string, Function>.
    */
   stream?: (
     config: AiConfigRep,
     userInput?: string,
-    // biome-ignore lint/suspicious/noExplicitAny: avoids contravariant mismatch with narrowed handler implementations
-    toolHandlers?: Record<string, any>,
+    toolHandlers?: Record<string, ToolHandlerFn | NativeTool>,
     variables?: Record<string, unknown>,
     history?: Message[],
   ) => AsyncGenerator<HandlerStreamEvent>;
