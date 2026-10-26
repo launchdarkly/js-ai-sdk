@@ -1,6 +1,10 @@
 /**
  * TESTING.md §3.27 — `$ld:ai:sdk:usage`.
  */
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { mockLdInit } = vi.hoisted(() => ({ mockLdInit: vi.fn() }));
@@ -17,12 +21,16 @@ import { buildJudgeTasks } from '../judges.js';
 import { initClient, shutdown } from '../lifecycle.js';
 import { SDK_INFO_CONTEXT } from '../sdk-info.js';
 import { reportUsage } from '../sdk-usage.js';
+import { getSkill, InMemorySkillStore, setSkillStore, skillRefs } from '../skills.js';
+import { watchSkills } from '../skills-watch.js';
 import type {
   HandlerStreamEvent,
   JudgeTask,
   LDClientInterface,
   LDContext,
   ProviderHandler,
+  RawSkillObject,
+  ReconcileReport,
   TrackData,
 } from '../types.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from '../version.js';
@@ -143,6 +151,31 @@ function judgeArgs() {
   };
 }
 
+const SKILL_CONTENT = '---\nname: Usage Skill\n---\nDo the thing.\n';
+
+/** A store holding one valid skill, `usage-skill` v1. */
+function skillStore(): InMemorySkillStore {
+  return new InMemorySkillStore({
+    'usage-skill': {
+      key: 'usage-skill',
+      version: 1,
+      content: SKILL_CONTENT,
+      contentHash: createHash('sha256').update(SKILL_CONTENT, 'utf-8').digest('hex'),
+      name: 'Usage Skill',
+      description: 'A skill used in the usage tests.',
+    } as RawSkillObject,
+  });
+}
+
+async function withSkillsRoot(run: (root: string) => Promise<void>): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), 'ld-usage-skills-'));
+  try {
+    await run(root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 /** Each call receives the export the list names, whatever its signature. */
 type Call = (fn: any) => Promise<void>;
 
@@ -175,6 +208,38 @@ const CALLS: Record<string, Call> = {
         initEvaluations({ projectKey: 'p', apiKey: 't', sdkKey: 's' });
       } catch {}
     }),
+  // Agent Skills (§3.27). install() runs shutdown(), which clears the store, so each call sets one.
+  'client.skillRefs': (skillRefs) =>
+    fire(() => skillRefs({ ...enabledConfig, skills: [{ key: 'usage-skill', version: 1 }] })),
+  'client.getSkill': (getSkill) => {
+    setSkillStore(skillStore());
+    return settle(getSkill('usage-skill'));
+  },
+  'client.getSkillResult': (getSkillResult) => {
+    setSkillStore(skillStore());
+    return settle(getSkillResult('usage-skill'));
+  },
+  'client.getSkills': (getSkills) => {
+    setSkillStore(skillStore());
+    return settle(getSkills(['usage-skill']));
+  },
+  'client.allSkills': (allSkills) => {
+    setSkillStore(skillStore());
+    return settle(allSkills());
+  },
+  'client.writeSkills': (writeSkills) => {
+    setSkillStore(skillStore());
+    return withSkillsRoot(async (root) => {
+      await writeSkills(['usage-skill'], root);
+    });
+  },
+  'client.watchSkills': (watchSkills) => {
+    setSkillStore(skillStore());
+    return withSkillsRoot(async (root) => {
+      const { watcher } = await watchSkills(['usage-skill'], root);
+      await watcher.close();
+    });
+  },
 };
 
 const listRows = [
@@ -433,5 +498,79 @@ describe('§3.27 a helper called from application code inside a call still repor
     };
     await drain(config({ key: 'flag', handler, toolHandlers: { lookup } }).stream('q', ctx));
     expect(usageHelpers(client)).toEqual(['client.config.stream', 'client.buildJudgeTasks']);
+  });
+});
+
+describe('§3.27 Agent Skills helper usage', () => {
+  let client: FakeClient;
+
+  beforeEach(async () => {
+    client = await install();
+  });
+
+  afterEach(async () => {
+    await shutdown();
+  });
+
+  it('getSkill reports once per client, and once more after shutdown and a new client', async () => {
+    setSkillStore(skillStore());
+    await getSkill('usage-skill');
+    await getSkill('usage-skill');
+    expectUsage(client, 'client.getSkill');
+
+    await shutdown();
+    client = await install();
+    // shutdown clears the store (§3.21), so configure it again.
+    setSkillStore(skillStore());
+    await getSkill('usage-skill');
+    expectUsage(client, 'client.getSkill');
+  });
+
+  it('skillRefs called before a client exists reports once the client exists', async () => {
+    await shutdown();
+    // skillRefs needs neither a client nor a store (§3.20).
+    skillRefs({ ...enabledConfig, skills: [{ key: 'usage-skill', version: 1 }] });
+    client = fakeClient();
+    expect(usageCalls(client, 'client.skillRefs')).toHaveLength(0);
+    await initClient(client);
+    expectUsage(client, 'client.skillRefs');
+  });
+
+  it('a getSkill that raises with no store configured still reports', async () => {
+    await expect(getSkill('usage-skill')).rejects.toThrow();
+    expectUsage(client, 'client.getSkill');
+  });
+
+  it('watchSkills reports only itself, including when the watcher reconciles again', async () => {
+    const store = skillStore();
+    setSkillStore(store);
+    await withSkillsRoot(async (root) => {
+      let reconciled: (report: ReconcileReport) => void = () => {};
+      const again = new Promise<ReconcileReport>((resolve) => {
+        reconciled = resolve;
+      });
+      const { watcher } = await watchSkills(['usage-skill'], root, { debounceMs: 0, onReconcile: reconciled });
+      try {
+        const content = `${SKILL_CONTENT}Again.\n`;
+        store.put({
+          key: 'usage-skill',
+          version: 2,
+          content,
+          contentHash: createHash('sha256').update(content, 'utf-8').digest('hex'),
+          name: 'Usage Skill',
+          description: 'A skill used in the usage tests.',
+        } as RawSkillObject);
+        await again;
+      } finally {
+        await watcher.close();
+      }
+    });
+    expect(usageHelpers(client)).toEqual(['client.watchSkills']);
+  });
+
+  it('every skills usage ID on the lists is client.*', () => {
+    const skillsIds = listRows.map(({ id }) => id).filter((id) => /skill/i.test(id));
+    expect(skillsIds).toHaveLength(7);
+    expect(skillsIds.filter((id) => !id.startsWith('client.'))).toEqual([]);
   });
 });

@@ -147,8 +147,7 @@ describe('parseAiConfig', () => {
   // skill set without telling anyone.
 
   describe('skills', () => {
-    // Agent Skills is experimental, so a malformed `skills` field must not fail
-    // a core config call (TESTING.md §0.3). The field is passed through
+    // A malformed `skills` field must not fail a config call. The field is passed through
     // unvalidated, and `skillRefs` rejects it where the references are used
     // (see skills.test.ts).
     const valid = { ...base, instructions: 'You are helpful.' };

@@ -74,7 +74,7 @@ export type IntegrityReasonCode =
  */
 export const NO_STORE_MESSAGE =
   'No skill store is configured, so skill content cannot be retrieved. Configure one with ' +
-  'setSkillStore(store) from @launchdarkly/ai-server/experimental — FDv2SkillStore receives content from LaunchDarkly, and ' +
+  'setSkillStore(store) from @launchdarkly/ai-server — FDv2SkillStore receives content from LaunchDarkly, and ' +
   'InMemorySkillStore is available for local development and testing.';
 
 // ---------------------------------------------------------------------------
@@ -138,9 +138,9 @@ export function clearState(): void {
   current.emitter = null;
 }
 
-// Registered on load, so core's `shutdown()` clears this state without
+// Registered on load, so `shutdown()` clears this state without `lifecycle.ts`
 // importing any Agent Skills module.
-registerShutdownHook('experimental Agent Skills', clearState);
+registerShutdownHook('Agent Skills', clearState);
 
 /** The configured store, or `null`. The only reader of the slot. */
 export function getStore(): SkillStore | null {

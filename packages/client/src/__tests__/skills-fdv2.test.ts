@@ -817,10 +817,10 @@ describe('protocol reader', () => {
   });
 
   it('ignores a delete with no usable key, and commits the rest of its transfer', () => {
-    // Pins TESTING.md §3.25's experimental-stage rule: warned and ignored, not
-    // an interruption, so the revocation it carried is lost and `revoked` stays
-    // served. Base ldclient interrupts instead. The choice is to be revisited
-    // before 1.0, and changing it should fail this test.
+    // Pins TESTING.md §3.25's keyless put/delete rule, kept at promotion: warned
+    // and ignored, not an interruption, so the revocation it carried is lost and
+    // `revoked` stays served. Base ldclient interrupts instead. Changing the rule
+    // should fail this test.
     const held = new SkillObjectSet();
     const reader = new ProtocolReader(held);
     drive(
