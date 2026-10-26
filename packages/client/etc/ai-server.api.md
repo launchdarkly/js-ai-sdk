@@ -749,6 +749,9 @@ export type SkillReference = {
 export function skillRefs(config: AiConfigRep | null | undefined): SkillReference[];
 
 // @public
+export function skillRefsInternal(config: AiConfigRep | null | undefined): SkillReference[];
+
+// @public
 export const SKILLS_DEFAULT_BASE_URI = "https://sdk.launchdarkly.com";
 
 // @public
@@ -921,6 +924,9 @@ export function withConversationId<T>(id: string, fn: () => T): T;
 
 // @public
 export function writeSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options?: WriteSkillsOptions): Promise<ReconcileReport>;
+
+// @public
+export function writeSkillsInternal(skills: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options?: WriteSkillsOptions): Promise<ReconcileReport>;
 
 // @public
 export type WriteSkillsOptions = {
