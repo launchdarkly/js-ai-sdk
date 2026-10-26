@@ -19,5 +19,6 @@ export {
   ClaudeWrite,
 } from './builtins.js';
 export { claudeGraph } from './graph.js';
-export { claudeAgents, createClaudeAgentsHandler } from './handler.js';
+export { type ClaudeAgentsHostOptions, claudeAgents, createClaudeAgentsHandler } from './handler.js';
 export { toClaudeAgents } from './native-graph.js';
+export { type ClaudeAgentsSkillsHandlerOptions, createClaudeAgentsSkillsHandler } from './skills.js';

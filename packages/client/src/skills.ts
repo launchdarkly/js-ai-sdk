@@ -268,8 +268,9 @@ export function skillRefs(config: AiConfigRep | null | undefined): SkillReferenc
 }
 
 /**
- * {@link skillRefs} for SDK code. `configSkills` projects through this one, so
- * a read of its source is never counted as an application call to `skillRefs`.
+ * `skillRefs` without the helper-usage report (TESTING.md §3.27). Handler packages call this, so
+ * a run that reads its config's skills doesn't report a `skillRefs` call the application never made.
+ * `configSkills` projects through it too, so a read of its source never reports `skillRefs`.
  */
 export function skillRefsInternal(config: AiConfigRep | null | undefined): SkillReference[] {
   if (typeof config !== 'object' || config === null || Array.isArray(config)) {
