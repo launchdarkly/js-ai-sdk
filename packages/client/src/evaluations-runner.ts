@@ -19,7 +19,6 @@ import {
 } from './evaluations-api.js';
 import { type Criterion, criterionWire } from './evaluations-criteria.js';
 import { createBodyTools, type EvalTool, handlerConfigTools } from './evaluations-tools.js';
-import { pythonJsonNumber } from './python-format.js';
 import { TrajectoryRecorder } from './trajectory.js';
 import type {
   AiConfigRep,
@@ -576,22 +575,26 @@ export function generateRows(
 // Events
 // ---------------------------------------------------------------------------
 
-/** JSON with object keys sorted at every level: the canonical form `eventId` hashes. */
-export function canonicalJson(value: unknown, formatNumber: (n: number) => string = JSON.stringify): string {
+/**
+ * RFC 8785 canonical JSON (JCS): `JSON.stringify`'s spelling of strings and
+ * numbers, no whitespace, and object keys sorted by UTF-16 code unit at every
+ * level, which is what `sort()` compares. The form `eventId` and `contentHash`
+ * hash, and the one every SDK can produce.
+ */
+export function canonicalJson(value: unknown): string {
   // A value JSON cannot hold is handled as JSON.stringify handles it, so the
   // hash covers the same JSON the tracked event carries: `null` in an array,
   // and no key in an object. Python, which has no undefined, writes None as null.
   if (Array.isArray(value)) {
-    return `[${value.map((item) => (omittedByJson(item) ? 'null' : canonicalJson(item, formatNumber))).join(',')}]`;
+    return `[${value.map((item) => (omittedByJson(item) ? 'null' : canonicalJson(item))).join(',')}]`;
   }
   if (isPlainObject(value)) {
     const entries = Object.keys(value)
       .sort()
       .filter((key) => !omittedByJson(value[key]))
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key], formatNumber)}`);
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`);
     return `{${entries.join(',')}}`;
   }
-  if (typeof value === 'number') return formatNumber(value);
   return JSON.stringify(value);
 }
 
@@ -714,35 +717,10 @@ function generatedContent(result: RowResult): GeneratedContent {
 }
 
 /**
- * Escape every non-ASCII UTF-16 code unit as `\uXXXX`, as Python's
- * `json.dumps` does by default, so the same content hashes the same in every
- * language. An astral character becomes its surrogate pair in both.
- */
-function asciiJson(json: string): string {
-  let out = '';
-  for (let i = 0; i < json.length; i++) {
-    const code = json.charCodeAt(i);
-    out += code > 0x7f ? `\\u${code.toString(16).padStart(4, '0')}` : json[i];
-  }
-  return out;
-}
-
-/**
- * SHA-256 of what a row generated, serialized as the Python SDK serializes it:
- * canonical JSON with non-ASCII escaped. Numbers in `output` are read as
- * `json.loads` reads the JSON they usually come from: a safe integer is an
- * int, anything else a float ({@link pythonJsonNumber}), the same reading the
- * judge text uses. `usage` counts and the error code are integers.
+ * SHA-256 of the UTF-8 canonical JSON ({@link canonicalJson}) of what a row
+ * generated. Every SDK hashes the same form, so the same content hashes the
+ * same whichever language generated it.
  */
 export function contentHashFor(generated: GeneratedContent): string {
-  const entries = Object.keys(generated)
-    .sort()
-    .filter((key) => generated[key as keyof GeneratedContent] !== undefined)
-    .map((key) => {
-      const value = generated[key as keyof GeneratedContent];
-      return `${JSON.stringify(key)}:${canonicalJson(value, key === 'output' ? pythonJsonNumber : undefined)}`;
-    });
-  return createHash('sha256')
-    .update(asciiJson(`{${entries.join(',')}}`))
-    .digest('hex');
+  return createHash('sha256').update(canonicalJson(generated)).digest('hex');
 }

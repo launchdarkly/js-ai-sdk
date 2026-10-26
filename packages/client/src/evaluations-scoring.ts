@@ -23,7 +23,6 @@ import {
   withoutOutputFormat,
 } from './judge-scoring.js';
 import { extractVariation } from './lifecycle.js';
-import { pythonRepr } from './python-format.js';
 import { findHandler } from './registry.js';
 import { renderTrajectory } from './trajectory.js';
 import type { AiConfigRep, LDContext, ProviderHandler } from './types.js';
@@ -164,6 +163,20 @@ export function judgeVariables(result: RowResult, judge: Judge): Record<string, 
   };
 }
 
+/**
+ * A value in an error message, as JSON rather than a language repr, so it reads
+ * the same in every SDK. Absent is `null`, a non-finite number is `NaN` /
+ * `Infinity`, and a value JSON cannot hold is its `String()`.
+ */
+function describeValue(value: unknown): string {
+  if (typeof value === 'number' && !Number.isFinite(value)) return String(value);
+  try {
+    return JSON.stringify(value ?? null) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
 /** A clock for one criterion result. `evaluatedAt` never precedes `startedAt`, which ingest would reject. */
 function startClock() {
   const startedMs = Date.now();
@@ -213,7 +226,7 @@ async function runJudge(result: RowResult, resolved: ResolvedJudge): Promise<Cri
   if (!parsed.reasoning) return fail('invalid_judge_output', 'judge output has no reasoning');
   const score = unitScore(parsed.score);
   if (score === undefined) {
-    return fail('invalid_score', `judge score must be a number between 0 and 1, got ${pythonRepr(parsed.score)}`);
+    return fail('invalid_score', `judge score must be a number between 0 and 1, got ${describeValue(parsed.score)}`);
   }
   const done: CriterionResult = {
     ...base,
@@ -263,8 +276,8 @@ async function runScorer(result: RowResult, scorer: Scorer): Promise<CriterionRe
     // The Python SDK's two messages, without its boolean shortcut: a boolean is not a score.
     const message =
       numericScore(score) === undefined
-        ? `scorer fn must return a finite number, got ${pythonRepr(score)}`
-        : `scorer fn score must be between 0 and 1, got ${pythonRepr(score)}`;
+        ? `scorer fn must return a finite number, got ${describeValue(score)}`
+        : `scorer fn score must be between 0 and 1, got ${describeValue(score)}`;
     return { ...base, status: 'ERROR', error: { cause: 'invalid_score', message }, ...clock.stop() };
   }
   return { ...base, status: 'COMPLETE', score: valid, ...clock.stop() };

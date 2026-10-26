@@ -341,7 +341,7 @@ function isLDClient(value: unknown): value is LDClientInterface {
  * Every `InitBaseClientOptions` key `initClient` reads. Typed against the
  * options type, so adding an option without listing it here fails to compile.
  */
-const INIT_CLIENT_OPTIONS: Record<keyof InitBaseClientOptions, true> = {
+export const INIT_CLIENT_OPTIONS: Record<keyof InitBaseClientOptions, true> = {
   sdkKey: true,
   baseUri: true,
   streamUri: true,
@@ -489,7 +489,7 @@ export function getClient(): LDClientInterface {
 
 export async function shutdown(): Promise<void> {
   const singleton = getSingleton();
-  // Experimental state (e.g. an Agent Skills store) can exist without a client,
+  // Feature state (e.g. an Agent Skills store) can exist without a client,
   // and an init can be in flight without one, so shutdown() always leaves the
   // next initClient() starting from scratch. Dropping the init promise abandons
   // that attempt: it closes its own client when it finishes (see `startInit`).

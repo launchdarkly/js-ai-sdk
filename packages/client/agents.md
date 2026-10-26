@@ -30,7 +30,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/types.ts` | All shared TypeScript types — including owned `LDContext`, `LDClientInterface`, `LDClientInterface` — plus the Agent Skills value types, their freezing factories, and `parseAiConfig`'s validators |
 | `src/utils.ts` | `parseTemplate`, `parseJSONWithPossibleFences`, `createHandler` |
 | `src/registry.ts` | `Registry`, `globalRegistry`, `compose` |
-| `src/shutdown-hooks.ts` | The cleanup hooks `shutdown()` runs — how core clears experimental state without importing it |
+| `src/shutdown-hooks.ts` | The cleanup hooks `shutdown()` runs — how `lifecycle.ts` clears feature state (Agent Skills') without importing it |
 | `src/skills-core.ts` | Agent Skills internals shared by the two layers above it: the store and telemetry seams, module state, integrity verification, store resolution |
 | `src/skills.ts` | `skillRefs`, the content accessors, `InMemorySkillStore`, and the documented test-injection hooks |
 | `src/skills-fdv2.ts` | Agent Skills delivery transport — the FDv2 protocol, the wire-key/`version` translation, the held object set, and `FDv2SkillStore`. Sits **below** the store seam; imports `skills-core` only, and nothing imports it |
@@ -38,16 +38,15 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/skills-fs.ts` | `writeSkills` — the manifest format, on-disk filenames, and reconcile semantics |
 | `src/evaluations.ts` | Evaluations from Code — `initEvaluations`, `EvaluationsModule.run()` and its argument validation and orchestration, the public option and result types |
 | `src/evaluations-api.ts` | Evaluations from Code — the retrying management API client, its injectable `Transport` seam, `EvaluationsError`, and the strict-JSON check |
-| `src/evaluations-runner.ts` | Evaluations from Code — the management API operations, row rendering, handler config, the generation phase, event payloads and flushing, and summary parsing |
+| `src/evaluations-runner.ts` | Evaluations from Code — the management API operations, row rendering, handler config, the generation phase, event payloads and flushing, and summary parsing. `canonicalJson` is RFC 8785 (JCS), the form `eventId` and `contentHash` hash in every SDK; the Python SDK's `evaluations/canonical_json.py` produces the same bytes |
 | `src/evaluations-tools.ts` | Evaluations from Code — `EvalTool` (inline and library), tool validation, and `tools.get()` |
 | `src/evaluations-criteria.ts` | Evaluations from Code — `Judge`, `Scorer`, `Criterion`, validated where constructed, and the `criteria` entries pinned on the create body |
 | `src/evaluations-scoring.ts` | Evaluations from Code — the evaluation phase: judge resolution and handler selection, judge and scorer invocation, criterion event payloads |
-| `src/judge-scoring.ts` | The judge contract every judge path shares: `FORMATTING_INSTRUCTIONS`, the one `message_history` builder, and `{score, reasoning}` parsing. `judges.ts` and the evaluations harness both use it, so the paths cannot drift |
-| `src/python-format.ts` | Python's text forms (`str()`, `repr()`, truthiness, and the `json.dumps` float format), for text that must read the same as the Python SDK's: `contentHash`, judge `message_history` and reasoning, and offline criterion error messages |
+| `src/judge-scoring.ts` | The judge contract every judge path shares: `FORMATTING_INSTRUCTIONS`, the one `message_history` builder, and `{score, reasoning}` parsing. `judges.ts` and the evaluations harness both use it, so the paths cannot drift. Non-string values are rendered by `toolResultString` (JSON), never in another language's text form |
 | `src/trajectory.ts` | Tool-call trajectory capture and rendering — `TrajectoryRecorder` (one per online invocation in `tracking.ts`, one per evaluation row offline), `exposedToolKeys`, and `renderTrajectory`, the text a judge reads in `message_history`. `HANDOFF_TOOL_PREFIX` is defined here once and used by `tracking.ts` and `graph.ts` |
 | `src/safe-fs.ts` | Symlink-refusing filesystem primitives. Knows nothing about skills; owns the single interceptable rename and unlink call sites |
 | `src/index.ts` | Public barrel — the package root, and the only surface handler packages import from |
-| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Agent Skills and Evaluations from Code are exported here and only here |
+| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Evaluations from Code is exported here and only here |
 
 The Agent Skills module dependencies run **one way only**:
 
@@ -117,7 +116,7 @@ The `3` after the delimiter is what a `{key, version}` reference pins; it become
 - `iterSse` wraps read failures (a reset, a truncated chunk, the read deadline) as `RecoverableTransportError`, since a live stream dies mid-body far more often than it refuses to open. The delivery loop treats anything else as a bug and stops for the process lifetime.
 - A known streamed event whose `data` is not JSON is a `RecoverableTransportError` too, never skipped. Skipping it let the `payload-transferred` after it commit the transfer without it and advance `basis` past it, so a lost `delete-object` kept a revoked skill served and the reconnect never asked for it again, and a lost `put-object` in an `xfer-full` revoked that skill by omission. Ending the connection abandons the in-flight payload, and the reconnect resumes from the last committed basis, as js-sdk-common's `PayloadStreamReader` does (it reports `InvalidData` and the streaming processor stops the source). Both cases have a store-level test.
 - Only the events in `EVENTS_WITH_DATA` (the six `ProtocolReader.handle` reads) are parsed. A `heart-beat` or an unknown event is yielded with `null` data, so its data cannot end the connection: unknown events are ignored by contract, and `PayloadStreamReader` attaches handlers to those six only. Empty data on one of the six is not JSON either and ends the connection the same way (`PayloadStreamReader` reports a known event with no data as an error too): read as `null`, a `delete-object` would be ignored and a `payload-transferred` would commit with no selector.
-- A put or delete that is valid JSON but has no usable `key` is warned and ignored, for the experimental stage. Its transfer still commits, so a keyless `delete-object` loses its revocation, and a keyless `put-object` in an `xfer-full` revokes that skill by omission (and `writeSkills('*')` prunes it). Base `ldclient` interrupts instead. Interrupting is not strictly safer, because a server that keeps resending the object would then block every later change, so the choice is to be revisited before 1.0 (TESTING.md §3.25). Two protocol-reader tests pin the current rule, so changing it fails them.
+- A put or delete that is valid JSON but has no usable `key` is warned and ignored. Its transfer still commits, so a keyless `delete-object` loses its revocation, and a keyless `put-object` in an `xfer-full` revokes that skill by omission (and `writeSkills('*')` prunes it). Base `ldclient` interrupts instead. Interrupting is not strictly safer, because a server that keeps resending the object would then block every later change, so the rule was kept at promotion (TESTING.md §3.25). Two protocol-reader tests pin it, so changing it fails them.
 - An error thrown by the consumer's loop body while the generator is suspended at a `yield` passes through unwrapped, so a bug still surfaces as one.
 - A poll body or streamed event over `MAX_RESPONSE_CHARS` is a `FatalTransportError`, not a read failure, and takes the give-up path like a 422 (`failed` and `lastError` set, `connectionFailures` untouched). The size belongs to the environment, so a retry would re-download up to 64 Mi characters on every backoff step, from every process, and never set `failed`.
 - Every retry delay is clamped to `maxBackoffSeconds` and floored at `initialBackoffSeconds`, so `Retry-After: 0` cannot cause a tight reconnect loop. A blank `Retry-After` means "no delay given", not zero (`Number("")` is `0`).
@@ -164,7 +163,7 @@ summary. Regenerate it rather than hand-editing, or it drifts from `index.ts`.
 
 ```ts
 export type { AiConfigRep } from './client.js';
-export { config } from './client.js';
+export { config, configInternal } from './client.js';
 export type { ContentCaptureOptions, SpanMessage, SpanMessagePart, ToolDefinitionInput } from './content.js';
 export {
   langChainContentText,
@@ -175,6 +174,7 @@ export {
   setToolCallContentAttributes,
   setToolDefinitionAttributes,
   textMessage,
+  toolResultString,
   toSemconvFinishReason,
 } from './content.js';
 export {
@@ -182,7 +182,7 @@ export {
   setConversationIdIfAbsent,
   withConversationId,
 } from './conversation.js';
-export { graph, resolveGraph } from './graph.js';
+export { graph, graphInternal, resolveGraph } from './graph.js';
 export type { CanonicalTurn, ConfigTurn } from './history.js';
 export {
   anyMultimodal,
@@ -194,10 +194,34 @@ export {
 } from './history.js';
 export { buildJudgeTasks, runJudge } from './judges.js';
 export type { InspectConfigResult } from './lifecycle.js';
-export { getClient, initClient, inspectConfig, shutdown, shutdownTelemetry, waitForTelemetry } from './lifecycle.js';
+export {
+  getClient,
+  initClient,
+  inspectConfig,
+  inspectConfigInternal,
+  shutdown,
+  shutdownTelemetry,
+  waitForTelemetry,
+} from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';
 export { registerAiSdkPackage } from './sdk-info.js';
-export { makeNodeTrackData, makeRunTrackData } from './tracking.js';
+export { reportUsage } from './sdk-usage.js';
+export {
+  allSkills,
+  getSkill,
+  getSkillResult,
+  getSkills,
+  InMemorySkillStore,
+  setSkillStore,
+  skillRefs,
+} from './skills.js';
+export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills-fdv2.js';
+export { FDv2SkillStore, SKILLS_DEFAULT_BASE_URI, SKILLS_DEFAULT_STREAM_URI } from './skills-fdv2.js';
+export type { WriteSkillsOptions } from './skills-fs.js';
+export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
+export type { WatchSkillsOptions } from './skills-watch.js';
+export { SKILLS_DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
+export { makeGraphTrackData, makeNodeTrackData, makeRunTrackData } from './tracking.js';
 export type {
   ConfigArgs,
   ConfigMessage,
@@ -221,13 +245,23 @@ export type {
   LDUser,
   Message,
   MessageContent,
+  OnUnavailable,
   ProviderGraphResponse,
   ProviderHandler,
   ProviderResponse,
   ProviderSetupFn,
+  RawSkillObject,
+  ReconcileAction,
+  ReconcileActionKind,
+  ReconcileReport,
   RegistryInput,
   RouteResult,
   RunNodeOptions,
+  Skill,
+  SkillOutcome,
+  SkillOutcomeReason,
+  SkillReference,
+  SkillStore,
   StreamEvent,
   TextContentBlock,
   TokenUsage,
@@ -238,6 +272,9 @@ export type {
   VariationMeta as LDVariationMeta,
 } from './types.js';
 export {
+  createSkill,
+  createSkillOutcome,
+  createSkillReference,
   GraphTopologySchema,
   NATIVE_TOOL_KEY,
   NativeTool,
@@ -245,14 +282,18 @@ export {
 export type { RunUsage, SpanUsage } from './utils.js';
 export {
   addCachedTokensToInput,
+  camelizeModelParameters,
   collapseMessagesToInstructions,
   createHandler,
+  createHandlerInternal,
   createRunUsage,
   endSpanOnce,
   langChainSpanUsage,
+  normalizeModelParameters,
   omitModelStamps,
   parseJSONWithPossibleFences,
   parseTemplate,
+  pickForwardedModelParameters,
   setLdSpanAttributes,
   setModelIdentityAttributes,
   setUsageSpanAttributes,
@@ -263,39 +304,11 @@ export {
 
 Published as `@launchdarkly/ai-server/experimental` (a subpath in `package.json` `exports`, built
 alongside the root by `tsup.config.ts`). Names here may change in a minor release and are **absent
-from the package root**. `@launchdarkly/ai-node/experimental` re-exports this entry point. Generated from
+from the package root**. Agent Skills was promoted to core and is exported from the root only.
+`@launchdarkly/ai-node/experimental` re-exports this entry point. Generated from
 `src/experimental.ts` the same way as the block above.
 
 ```ts
-export {
-  allSkills,
-  getSkill,
-  getSkillResult,
-  getSkills,
-  InMemorySkillStore,
-  setSkillStore,
-  skillRefs,
-} from './skills.js';
-export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills-fdv2.js';
-export { FDv2SkillStore, SKILLS_DEFAULT_BASE_URI, SKILLS_DEFAULT_STREAM_URI } from './skills-fdv2.js';
-export type { WriteSkillsOptions } from './skills-fs.js';
-export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
-export type { WatchSkillsOptions } from './skills-watch.js';
-export { SKILLS_DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
-export type {
-  OnUnavailable,
-  RawSkillObject,
-  ReconcileAction,
-  ReconcileActionKind,
-  ReconcileReport,
-  Skill,
-  SkillOutcome,
-  SkillOutcomeReason,
-  SkillReference,
-  SkillStore,
-} from './types.js';
-export { createSkill, createSkillOutcome, createSkillReference } from './types.js';
-
 export type {
   AIConfig,
   DatasetRow,
@@ -314,27 +327,32 @@ export { Judge, Scorer } from './evaluations-criteria.js';
 export { EvalTool } from './evaluations-tools.js';
 ```
 
-The stage rules (shared spec §0.3), which every change here must keep:
+The stage rules, which every change here must keep:
 
 - **Core never names experimental.** No root export, core type, function signature, or option may
-  mention an experimental name. `AiConfigRep.skills` is therefore typed `unknown` rather than as
-  `SkillReference[]`, and the store is set with `setSkillStore`, not an `initClient` option.
-- **An experimental field never fails a core call.** `parseAiConfig` passes `skills` through
-  unvalidated; `skillRefs` validates it and throws on a present but malformed field, rather than
-  returning a partial list that would authorize a prune.
-  Experimental code may import core freely.
-- **Core reaches experimental only through an internal hook**, and a failure there is caught and
-  logged, never thrown into the core call. Core never imports an experimental module: an experimental
-  module registers its cleanup with `registerShutdownHook` (`src/shutdown-hooks.ts`) when it loads,
-  and `shutdown()` runs whatever is registered. Today the one hook is Agent Skills', registered by
-  `skills-core.ts`. A test asserts that loading the root registers no Agent Skills hook.
+  mention an experimental name (today, an Evaluations from Code name).
+- **An experimental field never fails a core call.** Experimental code may import core freely.
+- **Core reaches feature state only through an internal hook**, and a failure there is caught and
+  logged, never thrown into the core call. `lifecycle.ts` never imports a feature module: the module
+  registers its cleanup with `registerShutdownHook` (`src/shutdown-hooks.ts`) when it loads, and
+  `shutdown()` runs whatever is registered. Today the one hook is Agent Skills', registered by
+  `skills-core.ts` under the name `Agent Skills`; the root loads it, and a test asserts so.
 - **Both entry points are in the API report.** `etc/ai-server.api.md` (root) and
   `etc/ai-server-experimental.api.md` are checked in; CI runs
   `yarn api:check` for every package. After an intended surface change run
   `yarn workspace @launchdarkly/ai-server api:update` (or `yarn api:update` from this directory) and
   commit both reports.
-- **Promotion to core** adds root exports and keeps these as `/** @deprecated use the root export */`
-  re-exports until the next major.
+- **Promotion to core** (done for Agent Skills, before 1.0) moves the feature's names from
+  `src/experimental.ts` to `src/index.ts` with the same spelling, and removes them from the
+  experimental entry point; this is a breaking change (`!` in the PR title). Also remove the
+  feature's rows from `changelog-sections` in `release-please-config.json`, and update both API
+  reports. A test asserts the skills names are in the root report and not in the experimental one.
+
+Agent Skills still keeps one rule from its experimental stage: `AiConfigRep.skills` is typed
+`unknown` and `parseAiConfig` passes it through unvalidated, so a malformed field never fails a
+config call; `skillRefs` validates it and throws on a present but malformed field, rather than
+returning a partial list that would authorize a prune. The store is set with `setSkillStore`, not
+an `initClient` option.
 
 When adding a new export, add it here. Handler packages must never deep-import build paths (e.g. `@launchdarkly/ai-server/dist/client`). The only sub-path anyone may import is the published `@launchdarkly/ai-server/experimental`, and a handler package does so only for an experimental feature it integrates with; everything else comes from the package root.
 
@@ -500,6 +518,7 @@ When `enabled` is `false`, `config` is always `null`. When `enabled` is `true` b
   const ldClient = await createYourEdgeSdkClient(process.env.LD_SDK_KEY!);
   await initClient(ldClient);
   ```
+  The runtime must provide Node's built-in modules. Since Agent Skills moved to core, the package root imports `node:fs`, `node:fs/promises`, `node:path`, `node:os` (through `skills-fs` and `safe-fs`) and `node:crypto` (through `skills-core`) at load, so a runtime without them fails at import. This is a known 1.0 limitation, tracked in AIC-3674. Don't add another top-level `node:` import to a root-reachable module, because that would widen it.
 - **Pre-warm the connection** — call at startup to eliminate cold-start latency on the first request.
 
 `initClient()` is idempotent — calling it twice is a no-op. It returns `Promise<LDClientInterface>`; the return value may be discarded. See full invariants below.
@@ -511,7 +530,7 @@ When `enabled` is `false`, `config` is always `null`. When `enabled` is `true` b
 - **Lazy initialization.** Importing the package does not initialize the LD client. The first API call that needs LaunchDarkly (`extractVariation`, graph resolution, etc.) calls `initClient()` internally, provided `LD_SDK_KEY` is set.
 - **Explicit initialization — Node SDK path.** `initClient(options?)` dynamically imports `@launchdarkly/node-server-sdk` at runtime (optional peer dep). If the package is not installed it throws with a clear message.
 - **Explicit initialization — BYOC path.** `initClient(client, options?)` accepts any pre-initialized object that satisfies `LDClientInterface` — this is the path for Vercel, Cloudflare, or other edge runtimes whose SDK has different init semantics. No `@launchdarkly/node-server-sdk` is required. The optional second argument is the same options bag as the other overload, passed whole to telemetry setup (`otlpEndpoint`, `serviceName` and `environment` mean the same thing). Once a client is set, a repeat call — with the same client or a different one — returns the existing client and ignores the new telemetry options; call `shutdown()` first to swap clients.
-- **Options are ignored once the client singleton exists.** The skill store is not an option: `setSkillStore(store)` (experimental entry point) sets it independently of `initClient`, on every call, so a client that initialized lazily can be given one later. A nullish argument never clears a configured store; only `shutdown()` does, and it clears skills state unconditionally, because that state can exist without a client. A throw from that clearing is logged and does not fail `shutdown()`. Any options key `initClient` does not read, a `skillStore` key included, is ignored with a generic warning that names the key but not the feature or its setter.
+- **Options are ignored once the client singleton exists.** The skill store is not an option: `setSkillStore(store)` sets it independently of `initClient`, on every call, so a client that initialized lazily can be given one later. A nullish argument never clears a configured store; only `shutdown()` does, and it clears skills state unconditionally, because that state can exist without a client. A throw from that clearing is logged and does not fail `shutdown()`. Any options key `initClient` does not read, a `skillStore` key included, is ignored with a generic warning that names the key but not the feature or its setter.
 - **Return value.** `initClient()` returns `Promise<LDClientInterface>`. Callers that don't need the instance may discard the return value — this is a non-breaking change from the previous `Promise<void>` signature.
 - `getClient()` throws if `initClient()` has not resolved — any code that calls `getClient()` directly must ensure initialization has occurred.
 - `shutdown()` must be called before process exit. It flushes OTel spans, flushes LD events, and closes the LD client. `client.close()` runs even when `flush()` throws.

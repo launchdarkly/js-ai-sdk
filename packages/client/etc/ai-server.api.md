@@ -43,6 +43,9 @@ export type AiConfigRep = {
 };
 
 // @public
+export function allSkills(): Promise<Skill[]>;
+
+// @public
 export function anyMultimodal(turns: ReadonlyArray<{
     content: MessageContent;
 }>): boolean;
@@ -147,10 +150,81 @@ export function createHandlerInternal(providesFor: [string, 'agent' | 'messages'
 export function createRunUsage(): RunUsage;
 
 // @public
+export function createSkill(init: {
+    key: string;
+    version: number;
+    content: Uint8Array;
+    contentHash: string;
+    name?: string | null;
+    description?: string | null;
+}): Skill;
+
+// @public
+export function createSkillOutcome(init: {
+    skill?: Skill | null;
+    reason: SkillOutcomeReason;
+    detail?: string | null;
+}): SkillOutcome;
+
+// @public
+export function createSkillReference(init: {
+    key: string;
+    version: number;
+}): SkillReference;
+
+// @public
 export function endSpanOnce(span: Span, tracker: Set<Span>, abandoned?: boolean): void;
 
 // @public (undocumented)
+export type FDv2Mode = 'stream' | 'poll';
+
+// @public
+export class FDv2SkillStore implements SkillStore {
+    constructor(sdkKey: string, options?: FDv2SkillStoreOptions);
+    addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    // (undocumented)
+    allObjects(kind: string): Record<string, RawSkillObject>;
+    _backoffResetIntervalMs: number;
+    close(): Promise<void>;
+    get diagnostics(): StoreDiagnostics;
+    get failed(): string | null;
+    // (undocumented)
+    getObject(kind: string, key: string, version?: number | null): RawSkillObject | null;
+    isInitialized(): boolean;
+    removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    start(): this;
+    waitForSkills(options?: {
+        readonly timeoutSeconds?: number;
+    }): Promise<boolean>;
+}
+
+// @public (undocumented)
+export type FDv2SkillStoreOptions = {
+    readonly mode?: FDv2Mode;
+    readonly baseUri?: string;
+    readonly streamUri?: string;
+    readonly pollIntervalSeconds?: number;
+    readonly readTimeoutSeconds?: number;
+    readonly initialBackoffSeconds?: number;
+    readonly maxBackoffSeconds?: number;
+    readonly requester?: Requester;
+};
+
+// @public (undocumented)
 export function getClient(): LDClientInterface;
+
+// @public
+export function getSkill(key: string, options?: {
+    version?: number;
+}): Promise<Skill | null>;
+
+// @public
+export function getSkillResult(key: string, options?: {
+    version?: number;
+}): Promise<SkillOutcome>;
+
+// @public
+export function getSkills(refs: ReadonlyArray<SkillReference | string>): Promise<Skill[]>;
 
 // @public (undocumented)
 export const globalRegistry: Registry;
@@ -289,6 +363,16 @@ export function initClient(client: LDClientInterface, options?: InitBaseClientOp
 
 // @public (undocumented)
 export function initClient(options?: InitBaseClientOptions): Promise<LDClientInterface>;
+
+// @public
+export class InMemorySkillStore implements SkillStore {
+    constructor(objects?: Record<string, RawSkillObject>);
+    addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    allObjects(kind: string): Record<string, RawSkillObject>;
+    getObject(kind: string, key: string, version?: number | null): RawSkillObject | null;
+    put(raw: RawSkillObject): void;
+    removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+}
 
 // @public
 export function inspectConfig(key: string, context: LDContext): Promise<InspectConfigResult>;
@@ -430,6 +514,12 @@ export const makeRunTrackData: (input: {
 }) => TrackData;
 
 // @public
+export const MANIFEST_FILENAME = ".launchdarkly-skills.json";
+
+// @public
+export const MANIFEST_VERSION = 1;
+
+// @public
 export type Message = {
     role: 'user' | 'assistant' | 'system';
     content: MessageContent;
@@ -458,6 +548,9 @@ export const omitModelStamps: <T extends {
     modelKey?: string;
     modelVersion?: number;
 }>(trackData: T) => Omit<T, "modelKey" | "modelVersion">;
+
+// @public
+export type OnUnavailable = 'keep' | 'raise';
 
 // @public
 export function parseJSONWithPossibleFences<T>(rawText: string): T | null;
@@ -496,6 +589,36 @@ export type ProviderResponse<T = string> = {
 
 // @public (undocumented)
 export type ProviderSetupFn = () => ProviderHandler;
+
+// @public
+export type RawSkillObject = {
+    key?: unknown;
+    version?: unknown;
+    content?: unknown;
+    contentHash?: unknown;
+    name?: unknown;
+    description?: unknown;
+    [field: string]: unknown;
+};
+
+// @public
+export type ReconcileAction = {
+    readonly key: string;
+    readonly action: ReconcileActionKind;
+    readonly version: number | null;
+    readonly path: string | null;
+    readonly error: string | null;
+};
+
+// @public
+export type ReconcileActionKind = 'written' | 'updated' | 'skipped_current' | 'removed' | 'error';
+
+// @public
+export type ReconcileReport = {
+    readonly actions: readonly ReconcileAction[];
+    readonly ok: boolean;
+    readonly errors: readonly ReconcileAction[];
+};
 
 // @public
 export function registerAiSdkPackage(name: string, version: string): void;
@@ -573,6 +696,9 @@ export function setModelIdentityAttributes(span: Span, providerName: string, req
 export function setOutputContentAttributes(span: Span, capture: boolean, messages: SpanMessage[]): void;
 
 // @public
+export function setSkillStore(store: SkillStore | null | undefined): void;
+
+// @public
 export function setToolCallContentAttributes(span: Span, capture: boolean, io: {
     arguments?: unknown;
     result?: unknown;
@@ -589,6 +715,65 @@ export function shutdown(): Promise<void>;
 
 // @public
 export function shutdownTelemetry(): Promise<void>;
+
+// @public
+export type Skill = {
+    readonly key: string;
+    readonly version: number;
+    readonly content: Uint8Array;
+    readonly contentHash: string;
+    readonly name: string | null;
+    readonly description: string | null;
+};
+
+// @public
+export const SKILL_FILENAME = "SKILL.md";
+
+// @public
+export type SkillOutcome = {
+    readonly skill: Skill | null;
+    readonly reason: SkillOutcomeReason;
+    readonly detail: string | null;
+};
+
+// @public
+export type SkillOutcomeReason = 'absent' | 'integrity_failure' | 'ok' | 'store_unavailable' | 'wrong_version';
+
+// @public
+export type SkillReference = {
+    readonly key: string;
+    readonly version: number;
+};
+
+// @public
+export function skillRefs(config: AiConfigRep | null | undefined): SkillReference[];
+
+// @public
+export const SKILLS_DEFAULT_BASE_URI = "https://sdk.launchdarkly.com";
+
+// @public
+export const SKILLS_DEFAULT_DEBOUNCE_MS = 500;
+
+// @public
+export const SKILLS_DEFAULT_STREAM_URI = "https://stream.launchdarkly.com";
+
+// @public
+export type SkillStore = {
+    getObject(kind: string, key: string, version?: number | null): RawSkillObject | null | undefined;
+    allObjects(kind: string): Record<string, RawSkillObject>;
+    addListener?(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    removeListener?(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    isInitialized?(): boolean;
+};
+
+// @public
+export class SkillWatcher {
+    constructor(store: SkillStore, request: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options: WriteSkillsOptions, debounceMs: number, onReconcile?: ((report: ReconcileReport) => unknown) | undefined);
+    close(): Promise<void>;
+    readonly notify: () => void;
+    get reconciles(): number;
+    runInitial(): Promise<ReconcileReport>;
+}
 
 // @public
 export interface SpanMessage {
@@ -623,6 +808,18 @@ export type SpanUsage = {
     output: number;
     cacheRead: number;
     cacheCreation: number;
+};
+
+// @public
+export type StoreDiagnostics = {
+    readonly payloadsTransferred: number;
+    readonly skillObjectsReceived: number;
+    readonly objectsIgnored: number;
+    readonly objectsRevoked: number;
+    readonly payloadsIgnored: number;
+    readonly hashlessObjects: number;
+    readonly connectionFailures: number;
+    readonly lastError: string | null;
 };
 
 // @public
@@ -708,11 +905,34 @@ export type TraverseVisitor<T = any> = (node: GraphNode, ctx: Record<string, unk
 export function waitForTelemetry(timeoutMs?: number): Promise<void>;
 
 // @public
+export function watchSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options?: WatchSkillsOptions): Promise<{
+    report: ReconcileReport;
+    watcher: SkillWatcher;
+}>;
+
+// @public
+export type WatchSkillsOptions = WriteSkillsOptions & {
+    debounceMs?: number;
+    onReconcile?: (report: ReconcileReport) => unknown;
+};
+
+// @public
 export function withConversationId<T>(id: string, fn: () => T): T;
+
+// @public
+export function writeSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*', root: string, options?: WriteSkillsOptions): Promise<ReconcileReport>;
+
+// @public
+export type WriteSkillsOptions = {
+    prune?: boolean;
+    timeout?: number;
+    onUnavailable?: OnUnavailable;
+};
 
 // Warnings were encountered during analysis:
 //
-// temp/dts/types.d.ts:381:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
+// temp/dts/skills-fdv2.d.ts:460:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point index.d.ts
+// temp/dts/types.d.ts:379:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 
