@@ -598,13 +598,13 @@ function promptToSpanMessages(prompt: string | OpenAIInputItem[]): SpanMessage[]
   }));
 }
 
-export function createOpenAIAgentHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createOpenAIAgentsHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('openai-agents.createOpenAIAgentHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  return createOpenAIAgentHandlerInternal({ captureContent });
+  return createOpenAIAgentsHandlerInternal({ captureContent });
 }
 
-/** `createOpenAIAgentHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
-export function createOpenAIAgentHandlerInternal({
+/** `createOpenAIAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createOpenAIAgentsHandlerInternal({
   captureContent = false,
 }: ContentCaptureOptions = {}): ProviderHandler {
   return createHandlerInternal(
@@ -799,6 +799,6 @@ export const openaiAgents = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createOpenAIAgentHandlerInternal({ captureContent }),
+    handler: createOpenAIAgentsHandlerInternal({ captureContent }),
   }).invoke(userInput, context, variables);
 };

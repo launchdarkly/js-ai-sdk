@@ -95,7 +95,7 @@ The primary entry point for AI config invocations. Accepts either a single handl
 ```ts
 import { config } from '@launchdarkly/ai-server';
 import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
-import { createOpenAIAgentHandler } from '@launchdarkly/ai-openai-agents';
+import { createOpenAIAgentsHandler } from '@launchdarkly/ai-openai-agents';
 import { createClaudeAgentsHandler } from '@launchdarkly/ai-claude-agents';
 
 // Single handler — must match the flag variation's provider+mode, or throws.
@@ -119,7 +119,7 @@ const router = config({
   toolHandlers: { search: searchFn },
   handler: [
     createOpenAIHandler(),        // providesFor: ['OpenAI', 'messages']
-    createOpenAIAgentHandler(),   // providesFor: ['OpenAI', 'agent']
+    createOpenAIAgentsHandler(),   // providesFor: ['OpenAI', 'agent']
     createClaudeAgentsHandler(),  // providesFor: ['Anthropic', 'agent']
   ],
 });

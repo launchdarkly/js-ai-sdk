@@ -31,9 +31,9 @@ That means the LaunchDarkly flag variation must have `provider.name === "OpenAI"
 
 ```ts
 // Factory — returns a ProviderHandler with providesFor attached
-export function createOpenAIAgentHandler(): ProviderHandler
+export function createOpenAIAgentsHandler(): ProviderHandler
 
-// Convenience wrapper — identical to config({ ...options, key: configKey, handler: createOpenAIAgentHandler() }).invoke(userInput, context)
+// Convenience wrapper — identical to config({ ...options, key: configKey, handler: createOpenAIAgentsHandler() }).invoke(userInput, context)
 export const openaiAgents: (
   configKey: string,
   userInput: string,
@@ -41,7 +41,7 @@ export const openaiAgents: (
   options?: Omit<ConfigArgs, 'handler' | 'key'>
 ) => Promise<ProviderResponse>
 
-// Graph convenience wrapper — identical to graph(key, { ...options, handlers: [createOpenAIAgentHandler()] })
+// Graph convenience wrapper — identical to graph(key, { ...options, handlers: [createOpenAIAgentsHandler()] })
 export function openaiGraph(key: string, options: Omit<GraphOptions, 'handlers'>): { invoke(input, context, variables?): Promise<ProviderGraphResponse> }
 
 // Native graph adapter — builds an OpenAI Agents SDK swarm from a resolved GraphDefinition

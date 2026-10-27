@@ -518,7 +518,7 @@ Each handler package must export a **factory function** that:
 - Initializes any provider-specific resources.
 - Returns the handler callable with `providesFor` attached via `createHandler`.
 
-The naming convention is `create<Provider>Handler()`. For example: `createClaudeAgentsHandler()`, `createOpenAIAgentHandler()`.
+The naming convention is `create<Provider>Handler()`. For example: `createClaudeAgentsHandler()`, `createOpenAIAgentsHandler()`.
 
 **Always use `createHandler` to build and return the handler.** It attaches `providesFor` in place and returns the same function reference as a properly typed `ProviderHandler`. Do not manually assign `handler.providesFor` — `createHandler` is the single canonical path.
 
