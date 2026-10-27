@@ -891,4 +891,4 @@ All types are re-exported from this package. Handler packages import them from h
 | `LaunchDarklySkillStoreMode` | `'stream' \| 'poll'` — the `mode` option of `LaunchDarklySkillStore` |
 | `LaunchDarklySkillStoreOptions` | Options accepted by the `LaunchDarklySkillStore` constructor (`mode`, `baseUri`, `streamUri`, `pollIntervalSeconds`, `readTimeoutSeconds`, `initialBackoffSeconds`, `maxBackoffSeconds`, all in seconds) |
 | `StoreDiagnostics` | The read-only counters `LaunchDarklySkillStore.diagnostics` returns |
-| `FDv2SkillStore`, `FDv2SkillStoreOptions`, `FDv2Mode` | **Deprecated** aliases of `LaunchDarklySkillStore`, `LaunchDarklySkillStoreOptions` and `LaunchDarklySkillStoreMode`, kept so 0.5.0 code still compiles. They will be removed in a future release |
+| `FDv2SkillStore`, `FDv2SkillStoreOptions`, `FDv2Mode` | **Deprecated** aliases of `LaunchDarklySkillStore`, `LaunchDarklySkillStoreOptions` and `LaunchDarklySkillStoreMode`, kept so 0.5.0 code still compiles. They are removed in the next major release |

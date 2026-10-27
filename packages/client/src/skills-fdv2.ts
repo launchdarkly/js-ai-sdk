@@ -2078,11 +2078,11 @@ export class LaunchDarklySkillStore implements SkillStore {
 // Deprecated names
 // ---------------------------------------------------------------------------
 
-/** @deprecated Renamed to {@link LaunchDarklySkillStore}. This alias will be removed in a future release. */
+/** @deprecated Renamed to {@link LaunchDarklySkillStore}. Kept until the next major release. */
 export const FDv2SkillStore = LaunchDarklySkillStore;
-/** @deprecated Renamed to {@link LaunchDarklySkillStore}. This alias will be removed in a future release. */
+/** @deprecated Renamed to {@link LaunchDarklySkillStore}. Kept until the next major release. */
 export type FDv2SkillStore = LaunchDarklySkillStore;
-/** @deprecated Renamed to {@link LaunchDarklySkillStoreOptions}. This alias will be removed in a future release. */
+/** @deprecated Renamed to {@link LaunchDarklySkillStoreOptions}. Kept until the next major release. */
 export type FDv2SkillStoreOptions = LaunchDarklySkillStoreOptions;
-/** @deprecated Renamed to {@link LaunchDarklySkillStoreMode}. This alias will be removed in a future release. */
+/** @deprecated Renamed to {@link LaunchDarklySkillStoreMode}. Kept until the next major release. */
 export type FDv2Mode = LaunchDarklySkillStoreMode;
