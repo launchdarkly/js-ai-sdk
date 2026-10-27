@@ -176,6 +176,7 @@ ToolHandlerFn
 - toSemconvFinishReason
 TrackData
 - TraverseVisitor
++ validateMaxRetries  # checks a messages handler factory's maxRetries option (A.22)
 - waitForTelemetry  # internal: not needed to init, configure, execute or read results
 + watchSkills  usage=client.watchSkills
 + WatchSkillsOptions

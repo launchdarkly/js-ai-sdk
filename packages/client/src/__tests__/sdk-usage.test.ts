@@ -11,6 +11,18 @@ const { mockLdInit } = vi.hoisted(() => ({ mockLdInit: vi.fn() }));
 vi.mock('@launchdarkly/node-server-sdk', () => ({
   init: (...args: unknown[]) => mockLdInit(...args),
 }));
+// `initClient` builds a real tracer provider, and every `shutdown()` in these hooks flushes the
+// spans a graph or config call left behind. Without this the flush goes to the real LaunchDarkly
+// OTLP endpoint, which on a CI runner can stall past the hook timeout. Spans are still created.
+vi.mock('@opentelemetry/exporter-trace-otlp-http', () => ({
+  OTLPTraceExporter: class {
+    export(_spans: unknown, done: (result: { code: number }) => void) {
+      done({ code: 0 });
+    }
+    async forceFlush() {}
+    async shutdown() {}
+  },
+}));
 
 import { usageRows } from '../../../../scripts/api-surface.mjs';
 import { config } from '../client.js';

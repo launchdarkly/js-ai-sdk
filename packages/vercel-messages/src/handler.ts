@@ -24,6 +24,7 @@ import {
   type ToolDefinitionInput,
   type ToolHandlerFn,
   textMessage,
+  validateMaxRetries,
 } from '@launchdarkly/ai-server';
 import { context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import {
@@ -49,6 +50,15 @@ export type VercelModelSource = LanguageModel | ((config: AiConfigRep) => Langua
 export interface VercelMessagesOptions extends ContentCaptureOptions {
   model?: LanguageModel;
   modelFactory?: (config: AiConfigRep) => LanguageModel | Promise<LanguageModel>;
+  /**
+   * How many times the AI SDK retries a failed model call (a rate limit, a timeout, a 5xx) before
+   * the error reaches the handler. It is passed to every `generateText` / `streamText` call, so it
+   * applies whichever `model` or `modelFactory` supplies the model. Omit it to keep the AI SDK's
+   * own default of 2. Raise it when many calls share one rate-limit window, as an evaluation run
+   * with many concurrent workers does: two retries is thin when a whole batch hits the same window
+   * at once.
+   */
+  maxRetries?: number;
 }
 
 type Usage = { input: number; output: number; total: number };
@@ -81,6 +91,15 @@ async function resolveModel(config: AiConfigRep, options: VercelMessagesOptions)
   if (options.modelFactory) return options.modelFactory(config);
   if (options.model) return options.model;
   return gatewayModelId(config);
+}
+
+/**
+ * The call's retry setting, from the handler options only. Spread after the model parameters so
+ * nothing in `model.parameters` can replace it, and omitted when unset so the AI SDK keeps its own
+ * default rather than a copy of it.
+ */
+function retryOptions(options: VercelMessagesOptions): { maxRetries?: number } {
+  return options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {};
 }
 
 function systemInstructions(config: AiConfigRep, variables: Record<string, unknown>): string | undefined {
@@ -260,6 +279,8 @@ export function createVercelMessagesHandler(options: VercelMessagesOptions = {})
 
 function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}): ProviderHandler {
   const { captureContent = false } = options;
+  // Checked at construction: the AI SDK would refuse a bad value too, but only on the first call.
+  validateMaxRetries(options.maxRetries);
   return createHandlerInternal(
     ['*', 'messages'],
     async (configRep, userInput = '', toolHandlers = {}, variables = {}, history) =>
@@ -286,6 +307,7 @@ function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}
           const output = requestOutput(configRep.outputFormat);
           const result = await generateText({
             ...buildModelParameterOptions(configRep.model.parameters),
+            ...retryOptions(options),
             model: await resolveModel(configRep, options),
             messages,
             ...(system ? { system } : {}),
@@ -335,6 +357,7 @@ function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}
         chatSpan = startChatSpan(configRep, rootSpan);
         const result = streamText({
           ...buildModelParameterOptions(configRep.model.parameters),
+          ...retryOptions(options),
           model: await resolveModel(configRep, options),
           messages,
           ...(system ? { system } : {}),
@@ -386,6 +409,7 @@ export const vercelMessages = (
   context: LDContext,
   {
     captureContent,
+    maxRetries,
     model,
     modelFactory,
     variables,
@@ -397,6 +421,6 @@ export const vercelMessages = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createVercelMessagesHandlerInternal({ captureContent, model, modelFactory }),
+    handler: createVercelMessagesHandlerInternal({ captureContent, maxRetries, model, modelFactory }),
   }).invoke(userInput, context, variables);
 };

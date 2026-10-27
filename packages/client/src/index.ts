@@ -173,4 +173,5 @@ export {
   setLdSpanAttributes,
   setModelIdentityAttributes,
   setUsageSpanAttributes,
+  validateMaxRetries,
 } from './utils.js';

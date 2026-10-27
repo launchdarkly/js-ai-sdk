@@ -6,6 +6,6 @@
 #   - Name    leaving the public surface; may be exported or not
 #   + Name    joining the public surface; may be exported or not
 
-createLangChainMessagesHandler  usage=langchain-messages.createLangChainHandler
+createLangChainMessagesHandler  usage=langchain-messages.createLangChainMessagesHandler
 langchainMessages  usage=langchain-messages.langchainMessages
 LangChainModelSource
