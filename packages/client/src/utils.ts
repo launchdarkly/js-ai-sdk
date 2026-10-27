@@ -1,18 +1,24 @@
 import type { Span } from '@opentelemetry/api';
 import { reportUsage } from './sdk-usage.js';
-import type { AiConfigRep, HandlerStreamEvent, Message, ProviderHandler, TokenUsage, TrackData } from './types.js';
+import type {
+  AiConfigRep,
+  HandlerStreamEvent,
+  Message,
+  NativeTool,
+  ProviderHandler,
+  TokenUsage,
+  ToolHandlerFn,
+  TrackData,
+} from './types.js';
 
 /**
  * The callable shape of a provider handler before `providesFor` is attached.
- * Uses `Record<string, any>` for `toolHandlers` so that handler
- * implementations typed as `Record<string, Function>` are accepted without a
- * contravariant mismatch at the call site.
+ * `toolHandlers` may hold a `NativeTool`: offline evaluations pass one through unwrapped.
  */
 type HandlerInput = (
   config: AiConfigRep,
   userInput?: string,
-  // biome-ignore lint/suspicious/noExplicitAny: avoids contravariant mismatch with narrowed handler implementations
-  toolHandlers?: Record<string, any>,
+  toolHandlers?: Record<string, ToolHandlerFn | NativeTool>,
   variables?: Record<string, unknown>,
   history?: Message[],
 ) => Promise<{ output?: unknown; usage?: Record<string, unknown> }>;
@@ -20,8 +26,7 @@ type HandlerInput = (
 type StreamHandlerInput = (
   config: AiConfigRep,
   userInput?: string,
-  // biome-ignore lint/suspicious/noExplicitAny: avoids contravariant mismatch with narrowed handler implementations
-  toolHandlers?: Record<string, any>,
+  toolHandlers?: Record<string, ToolHandlerFn | NativeTool>,
   variables?: Record<string, unknown>,
   history?: Message[],
 ) => AsyncGenerator<HandlerStreamEvent>;

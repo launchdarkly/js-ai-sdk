@@ -10,6 +10,7 @@ import {
   type LDContext,
   type Message,
   type MessageContent,
+  type NativeTool,
   type ProviderHandler,
   parseTemplate,
   reportUsage,
@@ -186,7 +187,7 @@ function buildMessages(
   return messages;
 }
 
-function buildTools(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn>) {
+function buildTools(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn | NativeTool>) {
   return Object.entries(configTools)
     .filter(([name]) => typeof handlers[name] === 'function')
     .map(([name, definition]) => ({
@@ -279,7 +280,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
     async (
       configRep: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ToolHandlerFn> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) =>
@@ -375,7 +376,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
     async function* streamHandler(
       configRep: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ToolHandlerFn> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {

@@ -42,6 +42,15 @@ export interface LDClientInterface {
   flush(): Promise<void>;
   // Server SDKs return void; a custom client may return a Promise, and shutdown() awaits either.
   close(): void | Promise<void>;
+  /**
+   * Registers a change listener. `watchSkills` uses `update:<key>` to follow an
+   * AI Config. Optional: a client without it cannot be followed.
+   */
+  on?(event: string, listener: (...args: unknown[]) => void): unknown;
+  /** Unregisters a listener added with `on`. Optional. */
+  off?(event: string, listener: (...args: unknown[]) => void): unknown;
+  /** Whether the client is offline, and so never reports changes. Optional; absent means online. */
+  isOffline?(): boolean;
 }
 
 export type RegistryInput = Registry;
@@ -167,10 +176,8 @@ export type AiConfigRep = {
   /**
    * Optional version-pinned skill references attached to this variation, as
    * delivered. `parseAiConfig` does not validate it, so a malformed field never
-   * fails a core call; read it with `skillRefs` from
-   * `@launchdarkly/ai-server/experimental`, which does. Typed `unknown` because
-   * it is unvalidated, and because Agent Skills is experimental, so this core
-   * type does not name its types.
+   * fails a config call; read it with `skillRefs`, which does. Typed
+   * `unknown` because it is unvalidated.
    */
   skills?: unknown;
 };
@@ -335,6 +342,70 @@ export type SkillStore = {
   isInitialized?(): boolean;
 };
 
+/**
+ * A requested skill set that is read when it is needed, rather than fixed when
+ * `writeSkills` or `watchSkills` is called. Frozen; build one with
+ * {@link createSkillSource}, or use `configSkills` for the skills one AI Config
+ * pins.
+ *
+ * `writeSkills` reads it once per call. `watchSkills` reads it on every
+ * reconcile, and also reconciles when one of the `configKeys` changes, so the
+ * files on disk follow the config.
+ */
+export interface SkillSource {
+  /**
+   * Returns the current references, synchronously or as a promise. A throw,
+   * a rejection, or any answer that is not an array of `SkillReference` values
+   * and key strings is a failed read: nothing on disk changes. It is never
+   * treated as an empty list.
+   */
+  readonly refs: () => ReadonlyArray<SkillReference | string> | PromiseLike<ReadonlyArray<SkillReference | string>>;
+  /** The AI Configs whose changes make a watcher read `refs` again. Frozen. */
+  readonly configKeys: readonly string[];
+}
+
+/**
+ * Builds a frozen {@link SkillSource}. `configKeys` defaults to `[]`, and is
+ * copied, so changing the array passed in changes nothing.
+ *
+ * @throws TypeError if `refs` is not a function, or `configKeys` is not an
+ *   array of non-empty strings. A bare string is rejected rather than read as
+ *   one key per character.
+ */
+export function createSkillSource(init: { refs: SkillSource['refs']; configKeys?: readonly string[] }): SkillSource {
+  const { refs, configKeys = [] } = init ?? ({} as typeof init);
+  if (typeof refs !== 'function') {
+    throw new TypeError(`a SkillSource needs a refs function, got ${refs === null ? 'null' : typeof refs}`);
+  }
+  if (typeof configKeys === 'string') {
+    throw new TypeError(
+      `configKeys takes an array of AI Config keys; pass [key] rather than a bare string. Got ${JSON.stringify(configKeys)}.`,
+    );
+  }
+  if (!Array.isArray(configKeys)) {
+    throw new TypeError(`configKeys must be an array of AI Config keys, got ${typeof configKeys}`);
+  }
+  for (const [index, key] of configKeys.entries()) {
+    if (typeof key !== 'string' || key.length === 0) {
+      throw new TypeError(`configKeys[${index}] must be a non-empty string, got ${JSON.stringify(key) ?? typeof key}`);
+    }
+  }
+  return Object.freeze({ refs, configKeys: Object.freeze([...configKeys]) });
+}
+
+/**
+ * Whether `value` is a {@link SkillSource}, by shape: an object with a `refs`
+ * function. Arrays, `'*'` and skill values never have one.
+ */
+export function isSkillSource(value: unknown): value is SkillSource {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof (value as { refs?: unknown }).refs === 'function'
+  );
+}
+
 /** Builds a frozen {@link SkillReference}. */
 export function createSkillReference(init: { key: string; version: number }): SkillReference {
   return Object.freeze({ key: init.key, version: init.version });
@@ -482,9 +553,8 @@ export function parseAiConfig(raw: unknown): ParseResult<AiConfigRep> {
     return { success: false, error: { message: 'outputFormat must be an object (JSON Schema)' } };
   }
 
-  // `skills` is passed through unvalidated. Agent Skills is experimental, so a
-  // malformed field must not fail a core config call (TESTING.md §0.3);
-  // `skillRefs` rejects it where the references are used.
+  // `skills` is passed through unvalidated, so a malformed field never fails a
+  // config call; `skillRefs` rejects it where the references are used.
 
   return { success: true, data: raw as AiConfigRep };
 }
@@ -719,15 +789,11 @@ export type ProviderHandler = ((
    * this instead of the blocking handler and forwards `chunk` events to the
    * caller in real time. When absent, `model().stream()` falls back to calling
    * the blocking handler and emitting its output as a single chunk.
-   *
-   * toolHandlers uses Record<string, any> to avoid a contravariant mismatch
-   * when handler implementations narrow to Record<string, Function>.
    */
   stream?: (
     config: AiConfigRep,
     userInput?: string,
-    // biome-ignore lint/suspicious/noExplicitAny: avoids contravariant mismatch with narrowed handler implementations
-    toolHandlers?: Record<string, any>,
+    toolHandlers?: Record<string, ToolHandlerFn | NativeTool>,
     variables?: Record<string, unknown>,
     history?: Message[],
   ) => AsyncGenerator<HandlerStreamEvent>;

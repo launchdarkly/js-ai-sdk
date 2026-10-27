@@ -32,6 +32,7 @@ import {
   tempNamePattern,
   unlinkNoFollow,
 } from './safe-fs.js';
+import { reportUsage } from './sdk-usage.js';
 import {
   allRawObjects,
   getStore,
@@ -55,11 +56,14 @@ import type {
   ReconcileReport,
   Skill,
   SkillReference,
+  SkillSource,
   SkillStore,
 } from './types.js';
 import {
   createReconcileAction,
   createReconcileReport,
+  createSkillReference,
+  isSkillSource,
   isValidSkillKey,
   isValidSkillVersion,
   SKILL_KEY_MAX_LENGTH,
@@ -164,18 +168,25 @@ type PendingWrite = {
 /**
  * Materializes skills under a managed root at `<root>/<key>/SKILL.md`.
  *
- * `skills` is an array of `Skill` / `SkillReference` / key strings, or `'*'` for
- * every skill the store holds. `Skill` values are written as-is; references and
+ * `skills` is an array of `Skill` / `SkillReference` / key strings, `'*'` for
+ * every skill the store holds, or a `SkillSource`, whose `refs` is read once to
+ * produce the requested set. `Skill` values are written as-is; references and
  * keys resolve through the configured store.
+ *
+ * A source that throws, rejects, or answers with anything but an array of
+ * references and valid key strings is an unavailable retrieval: nothing is
+ * written or removed, exactly as when the store is unavailable.
  *
  * The reconcile is driven by a manifest, `<root>/.launchdarkly-skills.json`: it
  * only overwrites or deletes files the manifest records as written by the SDK.
  *
  * - `prune`: remove previously managed skills that are no longer requested. This
  *   is how revocation takes effect.
- * - `timeout`: **seconds**, non-negative and finite. Bounds retrieval, writes and
- *   pruning; checked between steps, not mid-operation. The manifest rewrite
- *   always runs.
+ * - `timeout`: **seconds**, non-negative and finite. Bounds reading a source,
+ *   retrieval, writes and pruning; checked between steps, not mid-operation.
+ *   `timeout: 0` never calls `refs`. A source's promise still pending at the
+ *   deadline is abandoned, not cancelled, and its eventual result discarded; a
+ *   synchronous `refs` cannot be interrupted. The manifest rewrite always runs.
  * - `onUnavailable`: `'keep'` reports content that could not be retrieved and
  *   leaves existing files alone; `'raise'` throws.
  *
@@ -186,7 +197,20 @@ type PendingWrite = {
  * other's manifest entries.
  */
 export async function writeSkills(
-  skills: ReadonlyArray<Skill | SkillReference | string> | '*',
+  skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource,
+  root: string,
+  options: WriteSkillsOptions = {},
+): Promise<ReconcileReport> {
+  reportUsage('client.writeSkills');
+  return writeSkillsInternal(skills, root, options);
+}
+
+/**
+ * `writeSkills` without the helper-usage report (TESTING.md §3.27). The watcher's
+ * initial and repeat reconciles call this, so `watchSkills` reports only itself.
+ */
+export async function writeSkillsInternal(
+  skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource,
   root: string,
   options: WriteSkillsOptions = {},
 ): Promise<ReconcileReport> {
@@ -231,7 +255,7 @@ export async function writeSkills(
 /** Everything `writeSkills` does once the managed root is pinned. */
 async function reconcile(
   root: PinnedDirectory,
-  skills: ReadonlyArray<Skill | SkillReference | string> | '*',
+  skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource,
   options: { prune: boolean; timeout: number; onUnavailable: OnUnavailable; deadline: number },
 ): Promise<ReconcileReport> {
   const { prune, timeout, onUnavailable, deadline } = options;
@@ -416,10 +440,20 @@ function isSkill(item: Skill | SkillReference | string): item is Skill {
  * suppresses pruning, so an outage never deletes managed files.
  */
 async function resolveRequests(
-  skills: ReadonlyArray<Skill | SkillReference | string> | '*',
+  input: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource,
   deadline: number,
   onUnavailable: OnUnavailable,
 ): Promise<{ requests: PendingWrite[]; incomplete: boolean }> {
+  let skills: ReadonlyArray<Skill | SkillReference | string> | '*';
+  if (isSkillSource(input)) {
+    const read = await readSource(input, deadline);
+    // A source that cannot answer is never an empty set, which would prune everything.
+    if ('error' in read) return unavailableRun(read.error, onUnavailable);
+    skills = read.refs;
+  } else {
+    skills = input;
+  }
+
   if (typeof skills === 'string') {
     // Already checked by `writeSkills`; repeated here to narrow the type.
     if (skills !== '*') {
@@ -446,6 +480,92 @@ async function resolveRequests(
   }
 
   return { requests, incomplete };
+}
+
+/** What {@link beforeDeadline} resolves to when the deadline wins. */
+const timedOut: unique symbol = Symbol('timedOut');
+
+/** Resolves `promise`, or `timedOut` once `deadline` passes. The promise itself is left running. */
+async function beforeDeadline<T>(promise: PromiseLike<T>, deadline: number): Promise<T | typeof timedOut> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<typeof timedOut>((resolve) => {
+    timer = setTimeout(() => resolve(timedOut), Math.max(0, deadline - performance.now()));
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+  try {
+    // `race` subscribes to both, so a late rejection of `promise` is handled, not unhandled.
+    return await Promise.race([Promise.resolve(promise), expiry]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === 'object' || typeof value === 'function') &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
+}
+
+/** Why one entry of a source's answer is unusable, or `null` when it is a valid reference or key. */
+function sourceEntryRejection(entry: unknown, index: number): string | null {
+  if (typeof entry === 'string') {
+    return isValidSkillKey(entry) ? null : `entry ${index} is not a valid skill key: ${JSON.stringify(entry)}`;
+  }
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+    return `entry ${index} is ${entry === null ? 'null' : Array.isArray(entry) ? 'an array' : typeof entry}, not a SkillReference or key string`;
+  }
+  if (isSkill(entry as Skill)) return `entry ${index} is a Skill, not a SkillReference or key string`;
+  const { key, version } = entry as { key?: unknown; version?: unknown };
+  if (!isValidSkillKey(key)) return `entry ${index} has no valid skill key`;
+  if (!isValidSkillVersion(version)) return `entry ${index} ('${key}') has no integer version >= 1`;
+  return null;
+}
+
+/**
+ * Reads a source once, bounded by the deadline.
+ *
+ * Any failure is an `error`, never an empty list. One invalid entry fails the
+ * whole read: dropping it would shorten the requested set and prune that skill.
+ */
+async function readSource(
+  source: SkillSource,
+  deadline: number,
+): Promise<{ refs: Array<SkillReference | string> } | { error: string }> {
+  if (performance.now() >= deadline) {
+    return { error: unavailable('the timeout was exhausted before the skill source could be read') };
+  }
+
+  let answer: unknown;
+  try {
+    const result: unknown = source.refs();
+    if (isThenable(result)) {
+      // A promise cannot be cancelled: one still pending at the deadline is abandoned.
+      const settled = await beforeDeadline(result, deadline);
+      if (settled === timedOut) {
+        return { error: unavailable('the timeout was exhausted while the skill source was being read') };
+      }
+      answer = settled;
+    } else {
+      answer = result;
+    }
+  } catch (error) {
+    return { error: unavailable(`the skill source failed: ${messageOf(error)}`) };
+  }
+
+  if (!Array.isArray(answer)) {
+    const shown = typeof answer === 'string' ? JSON.stringify(answer) : answer === null ? 'null' : typeof answer;
+    return { error: unavailable(`the skill source answered ${shown}, not an array of skill references`) };
+  }
+  const refs: Array<SkillReference | string> = [];
+  for (const [index, entry] of answer.entries()) {
+    const rejection = sourceEntryRejection(entry, index);
+    if (rejection !== null) return { error: unavailable(`the skill source answered an invalid list: ${rejection}`) };
+    // Copied, so the caller's objects cannot change under the reconcile.
+    refs.push(typeof entry === 'string' ? entry : createSkillReference(entry as SkillReference));
+  }
+  return { refs };
 }
 
 /** Retrieval could not happen at all; `blocked` is the caller-facing reason. */

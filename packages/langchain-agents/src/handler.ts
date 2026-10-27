@@ -18,6 +18,7 @@ import {
   langChainSpanMessages,
   langChainSpanUsage,
   type Message,
+  type NativeTool,
   type ProviderHandler,
   parseTemplate,
   reportUsage,
@@ -301,7 +302,7 @@ async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSourc
   return new ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o', 'openai') as any);
 }
 
-const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record<string, ToolHandlerFn>) =>
+const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record<string, ToolHandlerFn | NativeTool>) =>
   Object.entries(configTools)
     .filter(([name]) => typeof toolHandlers[name] === 'function')
     .map(([name, toolConfig]) =>
@@ -401,7 +402,7 @@ export function createLangChainAgentsHandlerInternal(
     async (
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ToolHandlerFn> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
@@ -474,7 +475,7 @@ export function createLangChainAgentsHandlerInternal(
     async function* streamHandler(
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ToolHandlerFn> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {

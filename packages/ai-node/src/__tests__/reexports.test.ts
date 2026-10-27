@@ -43,7 +43,21 @@ describe('@launchdarkly/ai-node/experimental re-exports', () => {
   });
 
   it('keeps experimental names off the package root', () => {
-    expect('getSkill' in node).toBe(false);
-    expect('setSkillStore' in node).toBe(false);
+    expect('initEvaluations' in node).toBe(false);
+  });
+
+  it('exports Agent Skills from the package root only', async () => {
+    const nodeExperimental = await import('../experimental.js');
+    for (const key of [
+      'getSkill',
+      'setSkillStore',
+      'InMemorySkillStore',
+      'FDv2SkillStore',
+      'configSkills',
+      'createSkillSource',
+    ] as const) {
+      expect((node as any)[key], key).toBe((server as any)[key]);
+      expect(key in nodeExperimental, key).toBe(false);
+    }
   });
 });

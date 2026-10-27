@@ -701,7 +701,10 @@ function buildToolHooks(nativeToolMap: Map<string, ToolHandlerFn>, parentContext
   };
 }
 
-export const buildToolMCP = async (configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn>) => {
+export const buildToolMCP = async (
+  configTools: Record<string, Tool>,
+  handlers: Record<string, ToolHandlerFn | NativeTool>,
+) => {
   const toolRepository = Object.keys(configTools).map((toolName) => {
     return tool(
       toolName,
@@ -710,7 +713,8 @@ export const buildToolMCP = async (configTools: Record<string, Tool>, handlers: 
       // biome-ignore lint/suspicious/noExplicitAny: Claude SDK tool() callback receives typed args from zod schema at runtime
       async (...args: any[]) => {
         const handler = handlers[toolName];
-        if (!handler) {
+        // A NativeTool reaches here unwrapped on the offline evaluations path.
+        if (typeof handler !== 'function') {
           throw new Error(`No handler registered for tool "${toolName}"`);
         }
         const result = await (handler as (...args: unknown[]) => unknown)(...args);
@@ -736,7 +740,7 @@ export const buildToolMCP = async (configTools: Record<string, Tool>, handlers: 
  */
 export const partitionTools = (
   configTools: Record<string, Tool> | undefined,
-  toolHandlers: Record<string, ToolHandlerFn>,
+  toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
 ): {
   nativeToolMap: Map<string, ToolHandlerFn>;
   userConfigTools: Record<string, Tool>;
@@ -757,7 +761,8 @@ export const partitionTools = (
   for (const [ldName, stub] of Object.entries(toolHandlers)) {
     const nativeTool = (stub as unknown as Record<symbol, unknown>)[NATIVE_TOOL_KEY] as NativeTool | undefined;
     if (nativeTool) {
-      nativeToolMap.set(nativeTool.toolName, stub);
+      // Carrying NATIVE_TOOL_KEY makes it the wrapper's callable stub, not the NativeTool.
+      nativeToolMap.set(nativeTool.toolName, stub as ToolHandlerFn);
       nativeToolAliases.set(ldName, nativeTool.toolName);
     } else if (configTools?.[ldName]) {
       userConfigTools[ldName] = configTools[ldName];
@@ -944,6 +949,12 @@ function buildQueryOptions(
   /** Options this handler sets for itself, e.g. `includePartialMessages` on the streaming
    * path. Trusted, so these are spread LAST and win over everything. */
   internalOptions?: Record<string, unknown>,
+  /**
+   * Built-ins the handler itself turns on, after the config's native tools, because a per-invoke
+   * preparation asked for them (`Skill`, for example). `tools` only, never `allowedTools`: a
+   * built-in the Agent SDK enables through its own option needs no permission entry here.
+   */
+  extraBuiltins: string[] = [],
 ) {
   const allAllowedTools = [...mcpAllowedTools, ...nativeToolNames];
   return {
@@ -951,7 +962,7 @@ function buildQueryOptions(
     options: {
       ...modelParameters,
       model: config.model.name,
-      tools: nativeToolNames.length > 0 ? nativeToolNames : [],
+      tools: [...nativeToolNames, ...extraBuiltins],
       allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
       mcpServers: toolMCP ? { [TOOL_MCP_NAME]: toolMCP } : undefined,
       hooks,
@@ -988,6 +999,27 @@ export type ClaudeAgentsHostOptions = {
   settingSources?: SettingSource[];
 };
 
+/**
+ * What a per-invoke preparation adds to one run. Package-internal and generic: it names no
+ * feature, so code at a later stage can register through it without this module importing or
+ * naming that code (TESTING.md §0.3).
+ */
+export type QueryPreparation = {
+  /** Extra `query()` options, spread with the handler's own, after `model.parameters`. */
+  options: Record<string, unknown>;
+  /** Built-in tool names appended to the config's native tools. */
+  extraBuiltins: string[];
+  /** Runs once when the run ends, however it ends. Must not throw. */
+  cleanup(): Promise<void>;
+};
+
+/**
+ * Called at the start of every invoke and stream, inside the run's span, so a throw fails the
+ * run like any other error. `undefined` means nothing to add, and the run is exactly the core
+ * handler's.
+ */
+export type PrepareQuery = (config: AiConfigRep) => Promise<QueryPreparation | undefined>;
+
 /** The host options for `query()`: `settingSources` always, `[]` unless given; `cwd` only if given. */
 export function hostQueryOptions({ cwd, settingSources }: ClaudeAgentsHostOptions): Record<string, unknown> {
   return {
@@ -1004,10 +1036,11 @@ export function createClaudeAgentsHandler(
 }
 
 /** `createClaudeAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
-export function createClaudeAgentsHandlerInternal({
-  captureContent = false,
-  ...host
-}: ContentCaptureOptions & ClaudeAgentsHostOptions = {}): ProviderHandler {
+export function createClaudeAgentsHandlerInternal(
+  { captureContent = false, ...host }: ContentCaptureOptions & ClaudeAgentsHostOptions = {},
+  /** Package-internal hooks; never part of the public factory's options. */
+  { prepare }: { prepare?: PrepareQuery } = {},
+): ProviderHandler {
   // Trusted, so spread with the handler's own options, after `model.parameters`.
   const hostOptions = hostQueryOptions(host);
   return createHandlerInternal(
@@ -1015,7 +1048,7 @@ export function createClaudeAgentsHandlerInternal({
     async (
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ToolHandlerFn> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
@@ -1061,12 +1094,15 @@ export function createClaudeAgentsHandlerInternal({
         // Set wherever the root's usage is written, so the failure path can tell whether the CLI
         // already reported an authoritative run-level total and must not be overwritten.
         let rootUsageWritten = false;
+        let prepared: QueryPreparation | undefined;
         try {
+          prepared = await prepare?.(config);
+          const extraBuiltins = prepared?.extraBuiltins ?? [];
           const toolMCP =
             Object.keys(userConfigTools).length > 0 ? await buildToolMCP(userConfigTools, toolHandlers) : undefined;
           const mcpAllowedTools = Object.keys(userConfigTools).map((n) => MCP_TOOL_PREFIX + n);
           toolTelemetry =
-            nativeToolNames.length > 0 || mcpAllowedTools.length > 0
+            nativeToolNames.length > 0 || mcpAllowedTools.length > 0 || extraBuiltins.length > 0
               ? buildToolHooks(nativeToolMap, parentContext, captureContent)
               : undefined;
 
@@ -1082,7 +1118,8 @@ export function createClaudeAgentsHandlerInternal({
               toolMCP,
               toolTelemetry?.hooks,
               buildModelParameterQueryOptions(config.model.parameters),
-              hostOptions,
+              { ...hostOptions, ...prepared?.options },
+              extraBuiltins,
             ),
           )) {
             recordConversationId(span, message);
@@ -1139,13 +1176,15 @@ export function createClaudeAgentsHandlerInternal({
           }
           failSpan(span, err);
           throw err;
+        } finally {
+          await prepared?.cleanup();
         }
       });
     },
     async function* streamHandler(
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ToolHandlerFn> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
@@ -1187,12 +1226,15 @@ export function createClaudeAgentsHandlerInternal({
       // Set wherever the root's usage is written, so the failure and abandonment paths can tell
       // whether the CLI already reported an authoritative run-level total.
       let rootUsageWritten = false;
+      let prepared: QueryPreparation | undefined;
       try {
+        prepared = await prepare?.(config);
+        const extraBuiltins = prepared?.extraBuiltins ?? [];
         const toolMCP =
           Object.keys(userConfigTools).length > 0 ? await buildToolMCP(userConfigTools, toolHandlers) : undefined;
         const mcpAllowedTools = Object.keys(userConfigTools).map((n) => MCP_TOOL_PREFIX + n);
         toolTelemetry =
-          nativeToolNames.length > 0 || mcpAllowedTools.length > 0
+          nativeToolNames.length > 0 || mcpAllowedTools.length > 0 || extraBuiltins.length > 0
             ? buildToolHooks(nativeToolMap, parentContext, captureContent)
             : undefined;
 
@@ -1208,7 +1250,8 @@ export function createClaudeAgentsHandlerInternal({
             toolMCP,
             toolTelemetry?.hooks,
             buildModelParameterQueryOptions(config.model.parameters),
-            { ...hostOptions, includePartialMessages: true },
+            { ...hostOptions, ...prepared?.options, includePartialMessages: true },
+            extraBuiltins,
           ),
         )) {
           recordConversationId(span, message);
@@ -1271,20 +1314,26 @@ export function createClaudeAgentsHandlerInternal({
         failSpan(span, err, endedSpans);
         throw err;
       } finally {
-        // Idempotent, and a no-op on the success path where the result message already closed the
-        // last response. On the error and abandonment paths it is the only thing that ends a chat
-        // span still open — and the exporter only receives ended spans.
-        inference.finish();
-        // A no-op on the success and failure paths; on abandonment it is the only chance to close
-        // the tree, including any tool span whose PostToolUse hook never fired — and the only
-        // chance to report what the responses that did arrive cost.
-        if (!endedSpans.has(span)) {
-          toolTelemetry?.closeOpenSpans(new Error('stream abandoned before completion'));
-          if (!rootUsageWritten && inference.runUsage.reported) {
-            finishRootSpan(span, config, inference.runUsage.total);
+        try {
+          // Idempotent, and a no-op on the success path where the result message already closed the
+          // last response. On the error and abandonment paths it is the only thing that ends a chat
+          // span still open — and the exporter only receives ended spans.
+          inference.finish();
+          // A no-op on the success and failure paths; on abandonment it is the only chance to close
+          // the tree, including any tool span whose PostToolUse hook never fired — and the only
+          // chance to report what the responses that did arrive cost.
+          if (!endedSpans.has(span)) {
+            toolTelemetry?.closeOpenSpans(new Error('stream abandoned before completion'));
+            if (!rootUsageWritten && inference.runUsage.reported) {
+              finishRootSpan(span, config, inference.runUsage.total);
+            }
           }
+          endSpanOnce(span, endedSpans, true);
+        } finally {
+          // Its own finally, after the span tree is closed: a throw while closing it (a span
+          // processor's `onEnd`, say) still removes the run's skills directory.
+          await prepared?.cleanup();
         }
-        endSpanOnce(span, endedSpans, true);
       }
     },
     captureContent,

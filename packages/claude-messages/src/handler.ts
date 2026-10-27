@@ -35,6 +35,7 @@ import {
   setUsageSpanAttributes,
   type Tool,
   type ToolDefinitionInput,
+  type ToolHandlerFn,
   toolResultString,
   toSemconvFinishReason,
 } from '@launchdarkly/ai-server';
@@ -227,14 +228,14 @@ function createRawRunUsage(): RawRunUsage {
 
 const buildTools = (
   configTools: Record<string, Tool>,
-  toolHandlers: Record<string, ((...args: unknown[]) => unknown) | NativeTool>,
+  toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
 ): { tools: AnthropicTool[]; executableTools: Map<string, (...args: unknown[]) => unknown> } => {
   const executableTools = new Map<string, (...args: unknown[]) => unknown>();
   const tools = Object.entries(configTools).flatMap(([name, toolConfig]) => {
     if (!Object.hasOwn(toolHandlers, name)) return [];
     const handler = toolHandlers[name];
     if (typeof handler !== 'function') return [];
-    executableTools.set(name, handler);
+    executableTools.set(name, handler as (...args: unknown[]) => unknown);
     return [
       {
         name,
@@ -497,7 +498,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
     config: AiConfigRep,
     messages: MessageParam[],
     system: string | undefined,
-    toolHandlers: Record<string, ((...args: unknown[]) => unknown) | NativeTool>,
+    toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
     parentContext: Context,
     runUsage: RawRunUsage,
   ) {
@@ -596,7 +597,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
     async (
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ((...args: unknown[]) => unknown) | NativeTool> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
@@ -638,7 +639,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
     async function* streamHandler(
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ((...args: unknown[]) => unknown) | NativeTool> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {

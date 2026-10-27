@@ -57,6 +57,16 @@ export const SKILLS_DEFAULT_BASE_URI = 'https://sdk.launchdarkly.com';
  */
 export const SKILLS_DEFAULT_STREAM_URI = 'https://stream.launchdarkly.com';
 
+/**
+ * Reads `LD_BASE_URI` or `LD_STREAM_URI`, the variables `initClient` reads for
+ * the base SDK. Blank counts as unset, as it does there: copied `.env` templates
+ * ship these empty.
+ */
+function endpointEnv(name: 'LD_BASE_URI' | 'LD_STREAM_URI'): string | undefined {
+  const value = typeof process === 'undefined' ? undefined : process.env?.[name]?.trim();
+  return value ? value : undefined;
+}
+
 export const POLL_PATH = '/sdk/poll';
 export const STREAM_PATH = '/sdk/stream';
 
@@ -195,7 +205,10 @@ const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '
  * host (`localhost`, `127.0.0.1`, `::1`) for local test doubles. Applies even
  * when a custom `requester` is supplied.
  */
-export function requireHttpsUri(uri: unknown, option: 'baseUri' | 'streamUri' = 'baseUri'): string {
+export function requireHttpsUri(
+  uri: unknown,
+  option: 'baseUri' | 'streamUri' | 'LD_BASE_URI' | 'LD_STREAM_URI' = 'baseUri',
+): string {
   if (typeof uri !== 'string' || uri.trim() === '') {
     throw new Error(`FDv2SkillStore requires an https:// URI for ${option}; none was given.`);
   }
@@ -1492,8 +1505,13 @@ export type FDv2SkillStoreOptions = {
    */
   readonly mode?: FDv2Mode;
   /**
-   * Origin for `GET /sdk/poll` (default {@link SKILLS_DEFAULT_BASE_URI}). Given without
-   * `streamUri`, it is used for streaming too (relays and private instances).
+   * Origin for `GET /sdk/poll`. Given without `streamUri`, it is used for
+   * streaming too (relays and private instances).
+   *
+   * When neither URI option is given, `LD_BASE_URI` and `LD_STREAM_URI` are read
+   * in their place, once, at construction, so a process pointed at a
+   * non-production instance sends skill delivery there too. Then the default is
+   * {@link SKILLS_DEFAULT_BASE_URI}.
    *
    * Must be `https://`; `http://` is accepted only for `localhost`, `127.0.0.1`
    * or `::1`. The constructor throws otherwise.
@@ -1501,7 +1519,8 @@ export type FDv2SkillStoreOptions = {
   readonly baseUri?: string;
   /**
    * Origin for `GET /sdk/stream` (default {@link SKILLS_DEFAULT_STREAM_URI}, or
-   * `baseUri` when that is given). Same `https://` rule as `baseUri`.
+   * the base URI when one is given or read from `LD_BASE_URI`). Same `https://`
+   * rule as `baseUri`.
    */
   readonly streamUri?: string;
   /** Seconds between polls; positive and finite. Default `30`. */
@@ -1654,12 +1673,23 @@ export class FDv2SkillStore implements SkillStore {
           `(${this.maxBackoffSeconds})`,
       );
     }
-    const baseUri = requireHttpsUri(options.baseUri ?? SKILLS_DEFAULT_BASE_URI);
-    // A lone `baseUri` serves both endpoints.
-    const streamUri = requireHttpsUri(
-      options.streamUri ?? (options.baseUri === undefined ? SKILLS_DEFAULT_STREAM_URI : baseUri),
-      'streamUri',
-    );
+    // The environment stands in for the options only when neither is given, so
+    // an explicit host is never joined with one read from the environment.
+    const fromEnv = options.baseUri === undefined && options.streamUri === undefined;
+    const base = fromEnv
+      ? { value: endpointEnv('LD_BASE_URI'), name: 'LD_BASE_URI' as const }
+      : { value: options.baseUri, name: 'baseUri' as const };
+    const stream = fromEnv
+      ? { value: endpointEnv('LD_STREAM_URI'), name: 'LD_STREAM_URI' as const }
+      : { value: options.streamUri, name: 'streamUri' as const };
+    const baseUri = requireHttpsUri(base.value ?? SKILLS_DEFAULT_BASE_URI, base.name);
+    // A lone base URI serves both endpoints.
+    const streamUri =
+      stream.value !== undefined
+        ? requireHttpsUri(stream.value, stream.name)
+        : base.value === undefined
+          ? SKILLS_DEFAULT_STREAM_URI
+          : baseUri;
     this.requester = options.requester ?? new FetchRequester(key, baseUri, readTimeoutSeconds, streamUri);
   }
 

@@ -218,3 +218,13 @@ jobs:
 
       - name: Build all packages
         run: yarn build
+
+      - name: Test the packaging check
+        run: yarn test:check-packaging
+
+      # Fails when a package imports something it does not declare, or when the
+      # packed tarballs do not install together and load through require() and
+      # import() in an empty project. The workspace tests cannot catch either,
+      # because the workspace installs every package's dependencies at once.
+      - name: Check the packed packages install and load
+        run: yarn check:packaging

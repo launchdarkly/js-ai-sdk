@@ -9,6 +9,7 @@
  * Writing skills to disk lives in `skills-fs.ts` (`writeSkills`).
  */
 
+import { reportUsage } from './sdk-usage.js';
 import {
   allRawObjects,
   clearState,
@@ -69,7 +70,7 @@ export function _clearState(): void {
  * replacement.
  *
  * ```ts
- * import { FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server/experimental';
+ * import { FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server';
  *
  * setSkillStore(new FDv2SkillStore(process.env.LD_SDK_KEY!).start());
  * ```
@@ -262,6 +263,16 @@ function skillsFieldRejectionReason(raw: unknown): string | null {
  * including `skills: null`.
  */
 export function skillRefs(config: AiConfigRep | null | undefined): SkillReference[] {
+  reportUsage('client.skillRefs');
+  return skillRefsInternal(config);
+}
+
+/**
+ * `skillRefs` without the helper-usage report (TESTING.md §3.27). Handler packages call this, so
+ * a run that reads its config's skills doesn't report a `skillRefs` call the application never made.
+ * `configSkills` projects through it too, so a read of its source never reports `skillRefs`.
+ */
+export function skillRefsInternal(config: AiConfigRep | null | undefined): SkillReference[] {
   if (typeof config !== 'object' || config === null || Array.isArray(config)) {
     throw new TypeError(
       `skillRefs needs a resolved AI Config object, got ${
@@ -299,6 +310,7 @@ export function skillRefs(config: AiConfigRep | null | undefined): SkillReferenc
  * @throws Error if no skill store is configured.
  */
 export async function getSkill(key: string, options: { version?: number } = {}): Promise<Skill | null> {
+  reportUsage('client.getSkill');
   return resolveFromStore(requireStore(), key, options.version ?? null).skill ?? null;
 }
 
@@ -322,6 +334,7 @@ export async function getSkill(key: string, options: { version?: number } = {}):
  * @throws Error if no skill store is configured.
  */
 export async function getSkillResult(key: string, options: { version?: number } = {}): Promise<SkillOutcome> {
+  reportUsage('client.getSkillResult');
   const resolved = resolveFromStore(requireStore(), key, options.version ?? null);
   return createSkillOutcome({
     skill: resolved.skill ?? null,
@@ -342,6 +355,7 @@ export async function getSkillResult(key: string, options: { version?: number } 
  * @throws Error if no skill store is configured.
  */
 export async function getSkills(refs: ReadonlyArray<SkillReference | string>): Promise<Skill[]> {
+  reportUsage('client.getSkills');
   if (typeof refs === 'string') {
     // A string is iterable and would be looked up per character.
     throw new TypeError(
@@ -374,6 +388,7 @@ export async function getSkills(refs: ReadonlyArray<SkillReference | string>): P
  * @throws Error if no skill store is configured.
  */
 export async function allSkills(): Promise<Skill[]> {
+  reportUsage('client.allSkills');
   const { objects, error } = allRawObjects(requireStore());
   if (error !== null) return [];
 

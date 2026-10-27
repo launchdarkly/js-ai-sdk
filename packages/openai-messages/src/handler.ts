@@ -13,6 +13,7 @@ import {
   isContentBlocks,
   type LDContext,
   type Message,
+  type NativeTool,
   normalizeModelParameters,
   type ProviderHandler,
   parseTemplate,
@@ -29,6 +30,7 @@ import {
   setUsageSpanAttributes,
   type Tool,
   type ToolDefinitionInput,
+  type ToolHandlerFn,
   toolResultString,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
@@ -128,14 +130,14 @@ type FunctionTool = {
 
 const buildTools = (
   configTools: Record<string, Tool>,
-  toolHandlers: Record<string, (...args: unknown[]) => unknown>,
+  toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
 ): { tools: FunctionTool[]; executableTools: Map<string, (...args: unknown[]) => unknown> } => {
   const executableTools = new Map<string, (...args: unknown[]) => unknown>();
   const tools = Object.entries(configTools).flatMap<FunctionTool>(([name, toolConfig]) => {
     if (!Object.hasOwn(toolHandlers, name)) return [];
     const handler = toolHandlers[name];
     if (typeof handler !== 'function') return [];
-    executableTools.set(name, handler);
+    executableTools.set(name, handler as (...args: unknown[]) => unknown);
     return [
       {
         type: 'function',
@@ -497,7 +499,7 @@ function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureO
     async (
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, (...args: unknown[]) => unknown> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
@@ -643,7 +645,7 @@ function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureO
     async function* streamHandler(
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, (...args: unknown[]) => unknown> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {

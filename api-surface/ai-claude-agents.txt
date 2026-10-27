@@ -7,6 +7,8 @@
 #   + Name    joining the public surface; may be exported or not
 
 claudeAgents  usage=claude-agents.claudeAgents
++ ClaudeAgentsHostOptions
++ ClaudeAgentsSkillsHandlerOptions
 ClaudeBash
 ClaudeEdit
 ClaudeGlob
@@ -19,4 +21,5 @@ ClaudeWebFetch
 ClaudeWebSearch
 ClaudeWrite
 createClaudeAgentsHandler  usage=claude-agents.createClaudeAgentsHandler
++ createClaudeAgentsSkillsHandler  usage=claude-agents.createClaudeAgentsSkillsHandler
 toClaudeAgents  usage=claude-agents.toClaudeAgents

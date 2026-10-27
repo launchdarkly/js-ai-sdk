@@ -74,6 +74,8 @@ const fire = (call: () => unknown): Promise<void> => {
 const CALLS: Record<string, Call[]> = {
   'claude-agents.claudeAgents': [(fn) => settle(fn('k', 'q', ctx))],
   'claude-agents.createClaudeAgentsHandler': [(fn) => fire(() => fn())],
+  // Reports its own ID and not the core factory's.
+  'claude-agents.createClaudeAgentsSkillsHandler': [(fn) => fire(() => fn())],
   'claude-agents.claudeGraph': [
     (fn) => fire(() => fn('k', {})),
     // The returned caller's methods run later; they must not add client.graph.* events.

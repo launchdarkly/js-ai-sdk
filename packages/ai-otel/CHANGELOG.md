@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-otel-0.2.0...@launchdarkly/ai-otel-0.3.0) (2026-10-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** the client no longer loads .env. Add import 'dotenv/config' to your entrypoint (and install dotenv) if you relied on it.
+
+### Bug Fixes
+
+* **client:** stop loading dotenv from library code ([#69](https://github.com/launchdarkly/js-ai-sdk/issues/69)) ([fea34f3](https://github.com/launchdarkly/js-ai-sdk/commit/fea34f309dba7f94264efaf0d065b9d80b29a8c2))
+
 ## [0.2.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-otel-0.1.1...@launchdarkly/ai-otel-0.2.0) (2026-10-09)
 
 

@@ -1037,6 +1037,15 @@ describe('buildToolMCP', () => {
     await expect(execute({ query: 'x' })).rejects.toThrow(/search/i);
   });
 
+  it('does not call a NativeTool, which offline evaluations pass through unwrapped', async () => {
+    const configTools = {
+      search: { name: 'search', type: 'function' as const, parameters: { type: 'object', properties: {} } },
+    };
+    await buildToolMCP(configTools, { search: new NativeTool(Symbol('search'), 'WebSearch') });
+    const execute = mockTool.mock.calls[0][3] as (...args: unknown[]) => Promise<unknown>;
+    await expect(execute({ query: 'x' })).rejects.toThrow('No handler registered for tool "search"');
+  });
+
   // T1: multiple tools
   it('registers all tools when config.tools has multiple entries', async () => {
     const configTools = {
