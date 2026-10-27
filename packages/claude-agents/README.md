@@ -105,10 +105,10 @@ const result = await claudeGraph('support-graph', {}).invoke(
 `createClaudeAgentsHandler` doesn't give the model a variation's skills. `createClaudeAgentsSkillsHandler` does. It takes the same options, plus `skillsTempDir`.
 
 ```ts
-import { config, FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server';
+import { config, LaunchDarklySkillStore, setSkillStore } from '@launchdarkly/ai-server';
 import { createClaudeAgentsSkillsHandler } from '@launchdarkly/ai-claude-agents';
 
-const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
+const store = new LaunchDarklySkillStore(process.env.LD_SDK_KEY!).start();
 await store.waitForSkills({ timeoutSeconds: 10 });
 setSkillStore(store);
 

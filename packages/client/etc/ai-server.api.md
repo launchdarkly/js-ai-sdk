@@ -184,40 +184,17 @@ export function createSkillSource(init: {
 // @public
 export function endSpanOnce(span: Span, tracker: Set<Span>, abandoned?: boolean): void;
 
-// @public (undocumented)
-export type FDv2Mode = 'stream' | 'poll';
+// @public @deprecated (undocumented)
+export type FDv2Mode = LaunchDarklySkillStoreMode;
 
-// @public
-export class FDv2SkillStore implements SkillStore {
-    constructor(sdkKey: string, options?: FDv2SkillStoreOptions);
-    addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
-    // (undocumented)
-    allObjects(kind: string): Record<string, RawSkillObject>;
-    _backoffResetIntervalMs: number;
-    close(): Promise<void>;
-    get diagnostics(): StoreDiagnostics;
-    get failed(): string | null;
-    // (undocumented)
-    getObject(kind: string, key: string, version?: number | null): RawSkillObject | null;
-    isInitialized(): boolean;
-    removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
-    start(): this;
-    waitForSkills(options?: {
-        readonly timeoutSeconds?: number;
-    }): Promise<boolean>;
-}
+// @public @deprecated (undocumented)
+export const FDv2SkillStore: typeof LaunchDarklySkillStore;
 
-// @public (undocumented)
-export type FDv2SkillStoreOptions = {
-    readonly mode?: FDv2Mode;
-    readonly baseUri?: string;
-    readonly streamUri?: string;
-    readonly pollIntervalSeconds?: number;
-    readonly readTimeoutSeconds?: number;
-    readonly initialBackoffSeconds?: number;
-    readonly maxBackoffSeconds?: number;
-    readonly requester?: Requester;
-};
+// @public @deprecated (undocumented)
+export type FDv2SkillStore = LaunchDarklySkillStore;
+
+// @public @deprecated (undocumented)
+export type FDv2SkillStoreOptions = LaunchDarklySkillStoreOptions;
 
 // @public (undocumented)
 export function getClient(): LDClientInterface;
@@ -457,6 +434,41 @@ export function langChainSpanMessages(messages: ReadonlyArray<unknown>): {
 
 // @public
 export function langChainSpanUsage(usage: Record<string, unknown> | undefined): SpanUsage | undefined;
+
+// @public
+export class LaunchDarklySkillStore implements SkillStore {
+    constructor(sdkKey: string, options?: LaunchDarklySkillStoreOptions);
+    addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    // (undocumented)
+    allObjects(kind: string): Record<string, RawSkillObject>;
+    _backoffResetIntervalMs: number;
+    close(): Promise<void>;
+    get diagnostics(): StoreDiagnostics;
+    get failed(): string | null;
+    // (undocumented)
+    getObject(kind: string, key: string, version?: number | null): RawSkillObject | null;
+    isInitialized(): boolean;
+    removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    start(): this;
+    waitForSkills(options?: {
+        readonly timeoutSeconds?: number;
+    }): Promise<boolean>;
+}
+
+// @public (undocumented)
+export type LaunchDarklySkillStoreMode = 'stream' | 'poll';
+
+// @public (undocumented)
+export type LaunchDarklySkillStoreOptions = {
+    readonly mode?: LaunchDarklySkillStoreMode;
+    readonly baseUri?: string;
+    readonly streamUri?: string;
+    readonly pollIntervalSeconds?: number;
+    readonly readTimeoutSeconds?: number;
+    readonly initialBackoffSeconds?: number;
+    readonly maxBackoffSeconds?: number;
+    readonly requester?: Requester;
+};
 
 // @public (undocumented)
 export interface LDClientInterface {
