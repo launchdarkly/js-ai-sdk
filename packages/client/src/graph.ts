@@ -258,16 +258,19 @@ const buildGraph = async (
       };
       handoffHandlers[toolName] = () => {
         if (!chosen) chosen = edge.targetKey;
-        // Selecting an edge does not end the turn; execution continues until the model
-        // produces its final text. A "transferring now" reply reads as though control has
-        // already left, and the model stops short of its own work.
-        return `Handoff to ${edge.targetKey} recorded. Finish your own work and provide your final response.`;
+        // Selecting an edge does not end the turn, so this result has two jobs. It must not
+        // read as though control has already left: with "Transferring to <key>", nodes that
+        // had a real tool skipped it (#59). And it must not ask for a final answer: a pure
+        // router has none of its own, so it writes the target's answer instead, which
+        // stream() emits as chunks and the target receives as its previous agent response
+        // (AIC-3601). The graph has no router role, so the text cannot branch on one.
+        return `Handoff to ${edge.targetKey} recorded. ${edge.targetKey} takes over when your turn ends. Finish your own part, then end your turn. Do not answer for ${edge.targetKey}.`;
       };
     }
 
     const routedConfig: AiConfigRep = {
       ...node.config,
-      instructions: `${node.config.instructions ?? ''}\n\nComplete your task using your available tools first. Only once you have your final answer, call exactly one transfer tool to route to the next agent.`,
+      instructions: `${node.config.instructions ?? ''}\n\nComplete your task using your available tools first. Only once your own part is done, call exactly one transfer tool to route to the next agent. Do not answer the parts of the request that belong to the agent you route to.`,
       tools: { ...(node.config.tools ?? {}), ...handoffTools },
     };
 
