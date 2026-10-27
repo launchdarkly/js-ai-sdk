@@ -229,7 +229,7 @@ Returns `{ invoke(...): Promise<ProviderResponse>, stream(...): AsyncGenerator<S
 import 'dotenv/config';
 import { config, createHandler, shutdown } from '@launchdarkly/ai-server';
 import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
-import { createOpenAIAgentHandler } from '@launchdarkly/ai-openai-agents';
+import { createOpenAIAgentsHandler } from '@launchdarkly/ai-openai-agents';
 import { createClaudeAgentsHandler } from '@launchdarkly/ai-claude-agents';
 import { createClaudeMessagesHandler } from '@launchdarkly/ai-claude-messages';
 
@@ -256,7 +256,7 @@ const result = await config({
   },
   handler: [
     createOpenAIMessagesHandler(),
-    createOpenAIAgentHandler(),
+    createOpenAIAgentsHandler(),
     createClaudeAgentsHandler(),
     createClaudeMessagesHandler(),
   ],
@@ -507,10 +507,10 @@ Scoping configurations allows you to define registries that have only a subset o
 ```ts
 import { Registry } from '@launchdarkly/ai-server';
 import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
-import { createOpenAIAgentHandler } from '@launchdarkly/ai-openai-agents';
+import { createOpenAIAgentsHandler } from '@launchdarkly/ai-openai-agents';
 
 const openaiRegistry = new Registry({
-  handlers: [createOpenAIMessagesHandler(), createOpenAIAgentHandler()],
+  handlers: [createOpenAIMessagesHandler(), createOpenAIAgentsHandler()],
   tools: { 'get-prefs': getPreferencesFn },
 });
 ```

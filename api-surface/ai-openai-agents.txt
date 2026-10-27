@@ -6,7 +6,7 @@
 #   - Name    leaving the public surface; may be exported or not
 #   + Name    joining the public surface; may be exported or not
 
-createOpenAIAgentHandler  usage=openai-agents.createOpenAIAgentHandler  # open: singular; other packages use *AgentsHandler
+createOpenAIAgentsHandler  usage=openai-agents.createOpenAIAgentHandler
 openaiAgents  usage=openai-agents.openaiAgents
 openaiGraph  usage=openai-agents.openaiGraph
 toOpenAIAgents  usage=openai-agents.toOpenAIAgents
