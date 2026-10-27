@@ -302,6 +302,7 @@ describe('ReconcileReport ok and errors', () => {
  */
 const SKILLS_VALUES = [
   'FDv2SkillStore',
+  'LaunchDarklySkillStore',
   'InMemorySkillStore',
   'MANIFEST_FILENAME',
   'MANIFEST_VERSION',
@@ -342,6 +343,8 @@ const EXPERIMENTAL_EVALUATIONS_VALUES = [
 const SKILLS_TYPES = [
   'FDv2Mode',
   'FDv2SkillStoreOptions',
+  'LaunchDarklySkillStoreMode',
+  'LaunchDarklySkillStoreOptions',
   'OnUnavailable',
   'RawSkillObject',
   'ReconcileAction',
@@ -535,12 +538,18 @@ describe('package exports', () => {
   it('exports the delivery transport, the watcher, and their defaults from the package root', () => {
     // The transport and the watcher are root exports in both languages;
     // the base-URI and debounce defaults are TypeScript-only.
-    expect(typeof packageIndex.FDv2SkillStore).toBe('function');
+    expect(typeof packageIndex.LaunchDarklySkillStore).toBe('function');
     expect(typeof packageIndex.watchSkills).toBe('function');
     expect(typeof packageIndex.SkillWatcher).toBe('function');
     expect(packageIndex.SKILLS_DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
     expect(packageIndex.SKILLS_DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
     expect(packageIndex.SKILLS_DEFAULT_DEBOUNCE_MS).toBe(500);
+  });
+
+  it('keeps the deprecated FDv2SkillStore name as an alias of LaunchDarklySkillStore', () => {
+    expect(packageIndex.FDv2SkillStore).toBe(packageIndex.LaunchDarklySkillStore);
+    const store: packageIndex.LaunchDarklySkillStore = new packageIndex.FDv2SkillStore('sdk-test-key');
+    expect(store).toBeInstanceOf(packageIndex.LaunchDarklySkillStore);
   });
 
   it('exports getSkillResult and the outcome factory from the package root', () => {
@@ -1014,9 +1023,9 @@ describe('store configuration', () => {
       () => '',
       (cause: Error) => cause.message,
     );
-    expect(message).toContain('FDv2SkillStore');
+    expect(message).toContain('LaunchDarklySkillStore');
     expect(message).toContain('InMemorySkillStore');
-    expect(message.indexOf('FDv2SkillStore')).toBeLessThan(message.indexOf('InMemorySkillStore'));
+    expect(message.indexOf('LaunchDarklySkillStore')).toBeLessThan(message.indexOf('InMemorySkillStore'));
     expect(message).not.toContain('follow-up release');
   });
 
@@ -1656,7 +1665,7 @@ describe('allSkills', () => {
     //
     // The seam never promised a map key spells a skill key, either: a store
     // holding several versions of one key has reason to spell it `key:version`,
-    // which is exactly what FDv2SkillStore does. Pinned because the asymmetry
+    // which is exactly what LaunchDarklySkillStore does. Pinned because the asymmetry
     // with the pinned path is surprising enough to invite a "fix" that would
     // break every multi-version store.
     const emitter = new RecordingEmitter();
@@ -1686,7 +1695,7 @@ describe('allSkills', () => {
     // `resolveFromStore`'s equality check is only reached with a pin.
     //
     // The map key is the thing that invites a "fix" here, because
-    // `FDv2SkillStore` spells it `key:version` — so a store whose map key says
+    // `LaunchDarklySkillStore` spells it `key:version` — so a store whose map key says
     // version 3 while the object says 5 looks like a disagreement and is not
     // one. Pinned because a check added on the listing path would report a
     // mismatch for every store that spells its map keys that way.
@@ -2278,7 +2287,7 @@ describe('integrity-failure log record', () => {
    * A store that answers a pin with a well-formed object at another version.
    *
    * Hand-built on purpose: neither shipped store can produce this outcome.
-   * `FDv2SkillStore` and `InMemorySkillStore` both answer a pin with exactly
+   * `LaunchDarklySkillStore` and `InMemorySkillStore` both answer a pin with exactly
    * that version or with `null`, so a pin that misses reads as `absent` — a
    * test that tried to provoke this from a shipped store would get `absent`
    * instead and silently stop covering the case. Only `getObject` is

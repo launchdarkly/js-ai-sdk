@@ -52,7 +52,7 @@ describe('@launchdarkly/ai-node/experimental re-exports', () => {
       'getSkill',
       'setSkillStore',
       'InMemorySkillStore',
-      'FDv2SkillStore',
+      'LaunchDarklySkillStore',
       'configSkills',
       'createSkillSource',
     ] as const) {

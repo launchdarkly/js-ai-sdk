@@ -1,7 +1,7 @@
 /**
  * Agent Skills — the FDv2 delivery transport.
  *
- * `FDv2SkillStore` is the `SkillStore` that receives skills from LaunchDarkly
+ * `LaunchDarklySkillStore` is the `SkillStore` that receives skills from LaunchDarkly
  * over `GET /sdk/poll` or `GET /sdk/stream`, authenticated with the
  * environment's server-side SDK key. It holds raw wire objects and serves them to
  * the accessors; it uses only platform globals (`fetch`, `AbortController`,
@@ -131,7 +131,7 @@ const ENVELOPE_FIELDS = ['contentType', 'content', 'contentHash', 'name', 'descr
  */
 const PAYLOAD_SELECTOR = /\(p:([^:()]+):\d+\)/;
 
-export type FDv2Mode = 'stream' | 'poll';
+export type LaunchDarklySkillStoreMode = 'stream' | 'poll';
 
 const MOBILE_KEY_PREFIX = 'mob-';
 const SERVER_KEY_PREFIX = 'sdk-';
@@ -167,19 +167,19 @@ function error(message: string): void {
  */
 export function requireServerSideCredential(sdkKey: unknown): string {
   if (typeof sdkKey !== 'string' || sdkKey.trim() === '') {
-    throw new Error('FDv2SkillStore requires a LaunchDarkly server-side SDK key (sdk-...); none was given.');
+    throw new Error('LaunchDarklySkillStore requires a LaunchDarkly server-side SDK key (sdk-...); none was given.');
   }
   const key = sdkKey.trim();
   if (key.startsWith(MOBILE_KEY_PREFIX)) {
     throw new Error(
-      'FDv2SkillStore was given a mobile key (mob-...). Agent Skills are a server-side feature: skill content is ' +
+      'LaunchDarklySkillStore was given a mobile key (mob-...). Agent Skills are a server-side feature: skill content is ' +
         "customer-confidential and is never delivered to a mobile or client-side process. Use the environment's " +
         'server-side SDK key (sdk-...).',
     );
   }
   if (CLIENT_SIDE_ID.test(key)) {
     throw new Error(
-      'FDv2SkillStore was given what looks like a client-side environment ID. Agent Skills are a server-side ' +
+      'LaunchDarklySkillStore was given what looks like a client-side environment ID. Agent Skills are a server-side ' +
         'feature: skill content is customer-confidential and is never delivered to a client-side process. Use the ' +
         "environment's server-side SDK key (sdk-...).",
     );
@@ -187,7 +187,7 @@ export function requireServerSideCredential(sdkKey: unknown): string {
   if (!key.startsWith(SERVER_KEY_PREFIX)) {
     // Warn only: private instances and test doubles may use unprefixed keys.
     warn(
-      'The credential given to FDv2SkillStore does not look like a LaunchDarkly server-side SDK key (sdk-...). ' +
+      'The credential given to LaunchDarklySkillStore does not look like a LaunchDarkly server-side SDK key (sdk-...). ' +
         'Skills are delivered only to server-side credentials; if this is a client-side or mobile credential the ' +
         'connection will be rejected or will deliver nothing.',
     );
@@ -210,7 +210,7 @@ export function requireHttpsUri(
   option: 'baseUri' | 'streamUri' | 'LD_BASE_URI' | 'LD_STREAM_URI' = 'baseUri',
 ): string {
   if (typeof uri !== 'string' || uri.trim() === '') {
-    throw new Error(`FDv2SkillStore requires an https:// URI for ${option}; none was given.`);
+    throw new Error(`LaunchDarklySkillStore requires an https:// URI for ${option}; none was given.`);
   }
   const trimmed = uri.trim();
   let parsed: URL | null = null;
@@ -225,14 +225,14 @@ export function requireHttpsUri(
   if (parsed?.protocol === 'http:' && LOOPBACK_HOSTS.has(hostname)) return trimmed;
   if (parsed?.protocol === 'http:') {
     throw new Error(
-      `FDv2SkillStore refuses ${option} ${JSON.stringify(trimmed)}: a plain http:// URI would send the server-side ` +
+      `LaunchDarklySkillStore refuses ${option} ${JSON.stringify(trimmed)}: a plain http:// URI would send the server-side ` +
         'SDK key in cleartext. Use https:// (the defaults are https://sdk.launchdarkly.com for polling and ' +
         'https://stream.launchdarkly.com for streaming). Plain http:// is allowed only for a loopback host ' +
         '(localhost, 127.0.0.1, ::1) serving a local test double.',
     );
   }
   throw new Error(
-    `FDv2SkillStore refuses ${option} ${JSON.stringify(trimmed)}: expected an https:// URI with a host, such as ` +
+    `LaunchDarklySkillStore refuses ${option} ${JSON.stringify(trimmed)}: expected an https:// URI with a host, such as ` +
       'https://sdk.launchdarkly.com.',
   );
 }
@@ -1498,12 +1498,12 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 // The store
 // ---------------------------------------------------------------------------
 
-export type FDv2SkillStoreOptions = {
+export type LaunchDarklySkillStoreOptions = {
   /**
    * `'stream'` (default, recommended: revocations arrive in seconds) or
    * `'poll'` (revocations arrive within one `pollIntervalSeconds`).
    */
-  readonly mode?: FDv2Mode;
+  readonly mode?: LaunchDarklySkillStoreMode;
   /**
    * Origin for `GET /sdk/poll`. Given without `streamUri`, it is used for
    * streaming too (relays and private instances).
@@ -1554,7 +1554,7 @@ export type FDv2SkillStoreOptions = {
  * and passed to `setSkillStore`:
  *
  * ```ts
- * const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
+ * const store = new LaunchDarklySkillStore(process.env.LD_SDK_KEY!).start();
  * await store.waitForSkills({ timeoutSeconds: 10 });
  * setSkillStore(store);
  *
@@ -1576,12 +1576,12 @@ export type FDv2SkillStoreOptions = {
  *   `contentHash` is held and then withheld; see
  *   {@link StoreDiagnostics.hashlessObjects}.
  */
-export class FDv2SkillStore implements SkillStore {
+export class LaunchDarklySkillStore implements SkillStore {
   private readonly objects = new SkillObjectSet();
   private readonly reader = new ProtocolReader(this.objects);
   private readonly listeners = new Map<string, Array<(raw: RawSkillObject) => unknown>>();
   private readonly requester: Requester;
-  private readonly mode: FDv2Mode;
+  private readonly mode: LaunchDarklySkillStoreMode;
   private readonly pollIntervalSeconds: number;
   private readonly initialBackoffSeconds: number;
   private readonly maxBackoffSeconds: number;
@@ -1614,7 +1614,7 @@ export class FDv2SkillStore implements SkillStore {
   /** {@link BACKOFF_RESET_INTERVAL_MS}. Exposed for tests; not API. */
   _backoffResetIntervalMs = BACKOFF_RESET_INTERVAL_MS;
 
-  constructor(sdkKey: string, options: FDv2SkillStoreOptions = {}) {
+  constructor(sdkKey: string, options: LaunchDarklySkillStoreOptions = {}) {
     const key = requireServerSideCredential(sdkKey);
     this.mode = options.mode ?? 'stream';
     if (this.mode !== 'stream' && this.mode !== 'poll') {
@@ -1707,7 +1707,7 @@ export class FDv2SkillStore implements SkillStore {
   start(): this {
     if (this.closed) {
       throw new Error(
-        'this FDv2SkillStore has been closed and cannot be restarted; construct a new FDv2SkillStore instead. ' +
+        'this LaunchDarklySkillStore has been closed and cannot be restarted; construct a new LaunchDarklySkillStore instead. ' +
           'A closed store still answers from the content it received, so retrieval needs no restart.',
       );
     }
@@ -1868,7 +1868,7 @@ export class FDv2SkillStore implements SkillStore {
   addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void {
     if (kind !== SKILL_OBJECT_KIND) {
       throw new Error(
-        `FDv2SkillStore notifies only '${SKILL_OBJECT_KIND}' changes, so a listener on ${JSON.stringify(kind)} ` +
+        `LaunchDarklySkillStore notifies only '${SKILL_OBJECT_KIND}' changes, so a listener on ${JSON.stringify(kind)} ` +
           `would never fire. Register it on '${SKILL_OBJECT_KIND}'.`,
       );
     }
@@ -2073,3 +2073,16 @@ export class FDv2SkillStore implements SkillStore {
     throw new RecoverableTransportError('the FDv2 stream closed unexpectedly');
   }
 }
+
+// ---------------------------------------------------------------------------
+// Deprecated names
+// ---------------------------------------------------------------------------
+
+/** @deprecated Renamed to {@link LaunchDarklySkillStore}. Kept until the next major release. */
+export const FDv2SkillStore = LaunchDarklySkillStore;
+/** @deprecated Renamed to {@link LaunchDarklySkillStore}. Kept until the next major release. */
+export type FDv2SkillStore = LaunchDarklySkillStore;
+/** @deprecated Renamed to {@link LaunchDarklySkillStoreOptions}. Kept until the next major release. */
+export type FDv2SkillStoreOptions = LaunchDarklySkillStoreOptions;
+/** @deprecated Renamed to {@link LaunchDarklySkillStoreMode}. Kept until the next major release. */
+export type FDv2Mode = LaunchDarklySkillStoreMode;

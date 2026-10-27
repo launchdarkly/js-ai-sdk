@@ -49,10 +49,10 @@ import {
   FDV2_KEY_DELIMITER,
   FDV2_OBJECT_KIND,
   FDV2_PAYLOAD_KIND,
-  FDv2SkillStore,
   FetchRequester,
   isSkillEvent,
   iterSse,
+  LaunchDarklySkillStore,
   MAX_RESPONSE_CHARS,
   type PollResult,
   ProtocolReader,
@@ -324,7 +324,7 @@ class FakeFDv2Endpoint {
 let endpoint: FakeFDv2Endpoint;
 /** Extra hosts a test opened, to stand for wherever a `Location` header points. */
 let extraEndpoints: FakeFDv2Endpoint[];
-let openStores: FDv2SkillStore[];
+let openStores: LaunchDarklySkillStore[];
 let tempRoots: string[];
 let warnSpy: ReturnType<typeof vi.spyOn>;
 let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -351,8 +351,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-function pollStore(options: Record<string, unknown> = {}): FDv2SkillStore {
-  const store = new FDv2SkillStore(SDK_KEY, {
+function pollStore(options: Record<string, unknown> = {}): LaunchDarklySkillStore {
+  const store = new LaunchDarklySkillStore(SDK_KEY, {
     baseUri: endpoint.baseUri,
     mode: 'poll',
     pollIntervalSeconds: 0.02,
@@ -364,8 +364,8 @@ function pollStore(options: Record<string, unknown> = {}): FDv2SkillStore {
   return store;
 }
 
-function streamStore(options: Record<string, unknown> = {}): FDv2SkillStore {
-  const store = new FDv2SkillStore(SDK_KEY, {
+function streamStore(options: Record<string, unknown> = {}): LaunchDarklySkillStore {
+  const store = new LaunchDarklySkillStore(SDK_KEY, {
     baseUri: endpoint.baseUri,
     mode: 'stream',
     initialBackoffSeconds: 0.005,
@@ -2285,8 +2285,8 @@ const retryDelays = (): number[] =>
     .filter((delay): delay is string => delay !== undefined)
     .map(Number);
 
-function scriptedStreamStore(requester: Requester, options: Record<string, unknown> = {}): FDv2SkillStore {
-  const store = new FDv2SkillStore(SDK_KEY, {
+function scriptedStreamStore(requester: Requester, options: Record<string, unknown> = {}): LaunchDarklySkillStore {
+  const store = new LaunchDarklySkillStore(SDK_KEY, {
     mode: 'stream',
     initialBackoffSeconds: 0.001,
     maxBackoffSeconds: 0.002,
@@ -2373,7 +2373,7 @@ describe('failure handling', () => {
     // outage into a process that receives no updates, and no revocations, for
     // the rest of its life.
     const requester = new ScriptedRequester([asPairs(fullPayload([['put-object', putSkill()]]))]);
-    const store = new FDv2SkillStore(SDK_KEY, {
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalSeconds: 0.005,
       initialBackoffSeconds: 0.001,
@@ -2532,7 +2532,7 @@ describe('failure handling', () => {
       new RecoverableTransportError('y'),
       new Promise(() => {}),
     ]);
-    const store = new FDv2SkillStore(SDK_KEY, {
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalSeconds: 0.005,
       initialBackoffSeconds: 0.1,
@@ -2717,7 +2717,7 @@ describe('failure handling', () => {
       new RecoverableTransportError('slow down', 0),
       asPairs(fullPayload([['put-object', putSkill()]])),
     ]);
-    const store = new FDv2SkillStore(SDK_KEY, {
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalSeconds: 10,
       initialBackoffSeconds: 0.2,
@@ -2813,7 +2813,7 @@ describe('failure handling', () => {
       new RecoverableTransportError('slow down', 3_600_000),
       asPairs(fullPayload([['put-object', putSkill()]])),
     ]);
-    const store = new FDv2SkillStore(SDK_KEY, {
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalSeconds: 10,
       initialBackoffSeconds: 0.02,
@@ -3036,7 +3036,7 @@ describe('failure handling', () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockImplementation(async () => new Response(oversizedBody('{"events": ['), { status: 200 }));
-    const store = new FDv2SkillStore(SDK_KEY, {
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
       baseUri: 'https://sdk.example.com',
       mode: 'poll',
       pollIntervalSeconds: 0.02,
@@ -3068,7 +3068,7 @@ describe('failure handling', () => {
       .mockImplementation(
         async () => new Response(oversizedBody(`${committed}event: put-object\ndata: `), { status: 200 }),
       );
-    const store = new FDv2SkillStore(SDK_KEY, {
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
       baseUri: 'https://sdk.example.com',
       mode: 'stream',
       initialBackoffSeconds: 0.005,
@@ -3433,29 +3433,29 @@ describe('the missing contentHash', () => {
 
 describe('server-side only', () => {
   it('refuses a mobile key', () => {
-    expect(() => new FDv2SkillStore('mob-00000000-0000-4000-8000-000000000000')).toThrow(/mobile key/);
+    expect(() => new LaunchDarklySkillStore('mob-00000000-0000-4000-8000-000000000000')).toThrow(/mobile key/);
   });
 
   it('refuses a client-side environment ID', () => {
-    expect(() => new FDv2SkillStore('0123456789abcdef01234567')).toThrow(/client-side/);
+    expect(() => new LaunchDarklySkillStore('0123456789abcdef01234567')).toThrow(/client-side/);
   });
 
   it('refuses an empty credential', () => {
-    expect(() => new FDv2SkillStore('   ')).toThrow(/server-side SDK key/);
+    expect(() => new LaunchDarklySkillStore('   ')).toThrow(/server-side SDK key/);
   });
 
   it('accepts a server-side key', () => {
-    expect(new FDv2SkillStore(SDK_KEY)).toBeTruthy();
+    expect(new LaunchDarklySkillStore(SDK_KEY)).toBeTruthy();
   });
 
   it('warns but allows an unrecognised credential shape', () => {
     // Private instances and test doubles issue keys without the public prefix.
-    new FDv2SkillStore('my-private-instance-credential');
+    new LaunchDarklySkillStore('my-private-instance-credential');
     expect(logged(warnSpy)).toContain('server-side SDK key');
   });
 
   it('refuses an unknown mode', () => {
-    expect(() => new FDv2SkillStore(SDK_KEY, { mode: 'mobile' as never })).toThrow(/stream/);
+    expect(() => new LaunchDarklySkillStore(SDK_KEY, { mode: 'mobile' as never })).toThrow(/stream/);
   });
 });
 
@@ -3871,7 +3871,7 @@ describe('watchSkills', () => {
     });
     // The message names both remedies: the one-shot reconcile, and the store
     // that does implement the listener half of the seam.
-    await expect(watchSkills('*', await scratchRoot())).rejects.toThrow(/writeSkills[\s\S]*FDv2SkillStore/);
+    await expect(watchSkills('*', await scratchRoot())).rejects.toThrow(/writeSkills[\s\S]*LaunchDarklySkillStore/);
   });
 
   it('passes prune and timeout straight through to writeSkills (§3.26)', async () => {
@@ -4113,7 +4113,7 @@ describe('lifecycle', () => {
     // The probe `writeSkills('*')` reads to decide whether it may prune. Before
     // the first payload, an empty store and an environment with no skills are
     // the same answer through `allObjects`; this is what tells them apart.
-    const silent = new FDv2SkillStore(SDK_KEY, {
+    const silent = new LaunchDarklySkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalSeconds: 60,
       requester: new ScriptedRequester([new Promise(() => {})]),
@@ -4153,7 +4153,7 @@ describe('lifecycle', () => {
   });
 
   it('times out waitForSkills rather than hanging', async () => {
-    const store = new FDv2SkillStore(SDK_KEY, {
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalSeconds: 60,
       requester: new ScriptedRequester([new Promise(() => {})]),
@@ -4163,7 +4163,7 @@ describe('lifecycle', () => {
   });
 
   it('retains no waiter for a wait that timed out', async () => {
-    const store = new FDv2SkillStore(SDK_KEY, {
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalSeconds: 60,
       requester: new ScriptedRequester([new Promise(() => {})]),
@@ -4208,8 +4208,8 @@ describe('lifecycle', () => {
     [
       'ESM top-level await',
       'wait.mts',
-      `import { FDv2SkillStore } from STORE_URL;
-const store = new FDv2SkillStore('${SDK_KEY}', ${UNREACHABLE}).start();
+      `import { LaunchDarklySkillStore } from STORE_URL;
+const store = new LaunchDarklySkillStore('${SDK_KEY}', ${UNREACHABLE}).start();
 const started = Date.now();
 const ready = await store.waitForSkills({ timeoutSeconds: ${WAIT_MS / 1000} });
 console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));
@@ -4219,8 +4219,8 @@ await store.close();`,
       'a CommonJS async function',
       'wait.cts',
       `(async () => {
-  const { FDv2SkillStore } = await import(STORE_URL);
-  const store = new FDv2SkillStore('${SDK_KEY}', ${UNREACHABLE}).start();
+  const { LaunchDarklySkillStore } = await import(STORE_URL);
+  const store = new LaunchDarklySkillStore('${SDK_KEY}', ${UNREACHABLE}).start();
   const started = Date.now();
   const ready = await store.waitForSkills({ timeoutSeconds: ${WAIT_MS / 1000} });
   console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));
@@ -4230,8 +4230,8 @@ await store.close();`,
     [
       'a store that was never started',
       'never-started.mts',
-      `import { FDv2SkillStore } from STORE_URL;
-const store = new FDv2SkillStore('${SDK_KEY}', ${UNREACHABLE});
+      `import { LaunchDarklySkillStore } from STORE_URL;
+const store = new LaunchDarklySkillStore('${SDK_KEY}', ${UNREACHABLE});
 const started = Date.now();
 const ready = await store.waitForSkills({ timeoutSeconds: ${WAIT_MS / 1000} });
 console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));`,
@@ -4331,7 +4331,7 @@ console.log(JSON.stringify({ ready, elapsed: Date.now() - started }));`,
   });
 
   it('satisfies the seam before it starts', () => {
-    const store = new FDv2SkillStore(SDK_KEY);
+    const store = new LaunchDarklySkillStore(SDK_KEY);
     expect(store.getObject(SKILL_OBJECT_KIND, 'anything')).toBeNull();
     expect(store.allObjects(SKILL_OBJECT_KIND)).toEqual({});
   });
@@ -4369,7 +4369,7 @@ class BlackHole {
   }
 }
 
-const requesterOf = (store: FDv2SkillStore): FetchRequester =>
+const requesterOf = (store: LaunchDarklySkillStore): FetchRequester =>
   (store as unknown as { requester: FetchRequester }).requester;
 
 describe('timeouts', () => {
@@ -4406,7 +4406,7 @@ describe('timeouts', () => {
   });
 
   it('reports the timeout and keeps going', async () => {
-    const store = new FDv2SkillStore(SDK_KEY, {
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
       baseUri: blackHole.baseUri,
       mode: 'poll',
       pollIntervalSeconds: 0.05,
@@ -4425,7 +4425,11 @@ describe('timeouts', () => {
     // Before the connect returns there is no body read to interrupt; aborting
     // the signal has to reach the pending `fetch` itself, or close waits on a
     // host that will never speak.
-    const store = new FDv2SkillStore(SDK_KEY, { baseUri: blackHole.baseUri, mode: 'stream', readTimeoutSeconds: 60 });
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
+      baseUri: blackHole.baseUri,
+      mode: 'stream',
+      readTimeoutSeconds: 60,
+    });
     store.start();
     await new Promise((resolve) => setTimeout(resolve, 50));
     const started = Date.now();
@@ -4437,20 +4441,22 @@ describe('timeouts', () => {
   it('defaults the bound per mode', () => {
     expect(DEFAULT_POLL_TIMEOUT_SECONDS).toBe(10);
     expect(DEFAULT_STREAM_READ_TIMEOUT_SECONDS).toBe(300);
-    expect(requesterOf(new FDv2SkillStore(SDK_KEY, { mode: 'poll' })).readTimeoutSeconds).toBe(
+    expect(requesterOf(new LaunchDarklySkillStore(SDK_KEY, { mode: 'poll' })).readTimeoutSeconds).toBe(
       DEFAULT_POLL_TIMEOUT_SECONDS,
     );
-    expect(requesterOf(new FDv2SkillStore(SDK_KEY, { mode: 'stream' })).readTimeoutSeconds).toBe(
+    expect(requesterOf(new LaunchDarklySkillStore(SDK_KEY, { mode: 'stream' })).readTimeoutSeconds).toBe(
       DEFAULT_STREAM_READ_TIMEOUT_SECONDS,
     );
   });
 
   it.each(['poll', 'stream'] as const)('lets an explicit readTimeoutSeconds override the %s default', (mode) => {
-    expect(requesterOf(new FDv2SkillStore(SDK_KEY, { mode, readTimeoutSeconds: 42 })).readTimeoutSeconds).toBe(42);
+    expect(requesterOf(new LaunchDarklySkillStore(SDK_KEY, { mode, readTimeoutSeconds: 42 })).readTimeoutSeconds).toBe(
+      42,
+    );
   });
 
   it.each([0, -1, Number.POSITIVE_INFINITY, Number.NaN])('rejects a non-positive readTimeoutSeconds (%s)', (value) => {
-    expect(() => new FDv2SkillStore(SDK_KEY, { readTimeoutSeconds: value })).toThrow(/readTimeoutSeconds/);
+    expect(() => new LaunchDarklySkillStore(SDK_KEY, { readTimeoutSeconds: value })).toThrow(/readTimeoutSeconds/);
   });
 });
 
@@ -4490,7 +4496,7 @@ describe('endpoints', () => {
   it('polls sdk.launchdarkly.com and streams from stream.launchdarkly.com by default', async () => {
     expect(SKILLS_DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
     expect(SKILLS_DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
-    const requester = requesterOf(new FDv2SkillStore(SDK_KEY));
+    const requester = requesterOf(new LaunchDarklySkillStore(SDK_KEY));
     expect(requester.baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
     expect(requester.streamUri).toBe(SKILLS_DEFAULT_STREAM_URI);
     const { poll, stream } = await requestedUrls(requester);
@@ -4499,7 +4505,7 @@ describe('endpoints', () => {
   });
 
   it('sends both endpoints to a custom baseUri when no streamUri is given', async () => {
-    const requester = requesterOf(new FDv2SkillStore(SDK_KEY, { baseUri: 'https://relay.example.com/' }));
+    const requester = requesterOf(new LaunchDarklySkillStore(SDK_KEY, { baseUri: 'https://relay.example.com/' }));
     const { poll, stream } = await requestedUrls(requester);
     expect(poll).toBe('https://relay.example.com/sdk/poll?kinds=agent-skill');
     expect(stream).toBe('https://relay.example.com/sdk/stream?kinds=agent-skill');
@@ -4507,7 +4513,10 @@ describe('endpoints', () => {
 
   it('lets streamUri differ from baseUri', async () => {
     const requester = requesterOf(
-      new FDv2SkillStore(SDK_KEY, { baseUri: 'https://sdk.example.com', streamUri: 'https://stream.example.com/' }),
+      new LaunchDarklySkillStore(SDK_KEY, {
+        baseUri: 'https://sdk.example.com',
+        streamUri: 'https://stream.example.com/',
+      }),
     );
     const { poll, stream } = await requestedUrls(requester);
     expect(poll).toBe('https://sdk.example.com/sdk/poll?kinds=agent-skill');
@@ -4515,7 +4524,7 @@ describe('endpoints', () => {
   });
 
   it('keeps the default poll host when only streamUri is given', () => {
-    const requester = requesterOf(new FDv2SkillStore(SDK_KEY, { streamUri: 'https://stream.example.com' }));
+    const requester = requesterOf(new LaunchDarklySkillStore(SDK_KEY, { streamUri: 'https://stream.example.com' }));
     expect(requester.baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
     expect(requester.streamUri).toBe('https://stream.example.com');
   });
@@ -4523,7 +4532,7 @@ describe('endpoints', () => {
   describe('from LD_BASE_URI and LD_STREAM_URI', () => {
     it('sends both endpoints to LD_BASE_URI when it is set alone', async () => {
       process.env.LD_BASE_URI = 'https://sdk.catfood.example.com';
-      const { poll, stream } = await requestedUrls(requesterOf(new FDv2SkillStore(SDK_KEY)));
+      const { poll, stream } = await requestedUrls(requesterOf(new LaunchDarklySkillStore(SDK_KEY)));
       expect(poll).toBe('https://sdk.catfood.example.com/sdk/poll?kinds=agent-skill');
       expect(stream).toBe('https://sdk.catfood.example.com/sdk/stream?kinds=agent-skill');
     });
@@ -4531,14 +4540,14 @@ describe('endpoints', () => {
     it('sets each endpoint from its own variable when both are set', async () => {
       process.env.LD_BASE_URI = 'https://sdk.catfood.example.com';
       process.env.LD_STREAM_URI = 'https://stream.catfood.example.com/';
-      const { poll, stream } = await requestedUrls(requesterOf(new FDv2SkillStore(SDK_KEY)));
+      const { poll, stream } = await requestedUrls(requesterOf(new LaunchDarklySkillStore(SDK_KEY)));
       expect(poll).toBe('https://sdk.catfood.example.com/sdk/poll?kinds=agent-skill');
       expect(stream).toBe('https://stream.catfood.example.com/sdk/stream?kinds=agent-skill');
     });
 
     it('keeps the default poll host when only LD_STREAM_URI is set', () => {
       process.env.LD_STREAM_URI = 'https://stream.catfood.example.com';
-      const requester = requesterOf(new FDv2SkillStore(SDK_KEY));
+      const requester = requesterOf(new LaunchDarklySkillStore(SDK_KEY));
       expect(requester.baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
       expect(requester.streamUri).toBe('https://stream.catfood.example.com');
     });
@@ -4546,10 +4555,10 @@ describe('endpoints', () => {
     it('reads neither variable when a URI option is given', () => {
       process.env.LD_BASE_URI = 'https://sdk.catfood.example.com';
       process.env.LD_STREAM_URI = 'https://stream.catfood.example.com';
-      const fromBase = requesterOf(new FDv2SkillStore(SDK_KEY, { baseUri: 'https://relay.example.com' }));
+      const fromBase = requesterOf(new LaunchDarklySkillStore(SDK_KEY, { baseUri: 'https://relay.example.com' }));
       expect(fromBase.baseUri).toBe('https://relay.example.com');
       expect(fromBase.streamUri).toBe('https://relay.example.com');
-      const fromStream = requesterOf(new FDv2SkillStore(SDK_KEY, { streamUri: 'https://stream.example.com' }));
+      const fromStream = requesterOf(new LaunchDarklySkillStore(SDK_KEY, { streamUri: 'https://stream.example.com' }));
       expect(fromStream.baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
       expect(fromStream.streamUri).toBe('https://stream.example.com');
     });
@@ -4557,19 +4566,19 @@ describe('endpoints', () => {
     it.each(['', '   '])('treats a blank value (%j) as unset', (blank) => {
       process.env.LD_BASE_URI = blank;
       process.env.LD_STREAM_URI = blank;
-      const requester = requesterOf(new FDv2SkillStore(SDK_KEY));
+      const requester = requesterOf(new LaunchDarklySkillStore(SDK_KEY));
       expect(requester.baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
       expect(requester.streamUri).toBe(SKILLS_DEFAULT_STREAM_URI);
     });
 
     it.each(['LD_BASE_URI', 'LD_STREAM_URI'] as const)('refuses a plain http:// %s and names the variable', (name) => {
       process.env[name] = 'http://sdk.catfood.example.com';
-      expect(() => new FDv2SkillStore(SDK_KEY)).toThrow(new RegExp(`${name}.*https://|https://.*${name}`));
+      expect(() => new LaunchDarklySkillStore(SDK_KEY)).toThrow(new RegExp(`${name}.*https://|https://.*${name}`));
     });
 
     it('reads the variables once, at construction', () => {
       process.env.LD_BASE_URI = 'https://sdk.catfood.example.com';
-      const requester = requesterOf(new FDv2SkillStore(SDK_KEY));
+      const requester = requesterOf(new LaunchDarklySkillStore(SDK_KEY));
       process.env.LD_BASE_URI = 'https://sdk.elsewhere.example.com';
       expect(requester.baseUri).toBe('https://sdk.catfood.example.com');
       expect(requester.streamUri).toBe('https://sdk.catfood.example.com');
@@ -4577,7 +4586,7 @@ describe('endpoints', () => {
 
     it('leaves the published defaults at the production hosts', () => {
       process.env.LD_BASE_URI = 'https://sdk.catfood.example.com';
-      new FDv2SkillStore(SDK_KEY);
+      new LaunchDarklySkillStore(SDK_KEY);
       expect(SKILLS_DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
       expect(SKILLS_DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
     });
@@ -4786,7 +4795,7 @@ describe('transport contract', () => {
     Number.POSITIVE_INFINITY,
   ])('rejects a non-positive or non-finite pollIntervalSeconds (%s)', (value) => {
     // `NaN` is the case a `<= 0` guard misses.
-    expect(() => new FDv2SkillStore(SDK_KEY, { mode: 'poll', pollIntervalSeconds: value })).toThrow(
+    expect(() => new LaunchDarklySkillStore(SDK_KEY, { mode: 'poll', pollIntervalSeconds: value })).toThrow(
       /pollIntervalSeconds/,
     );
   });
@@ -4806,32 +4815,34 @@ describe('transport contract', () => {
       // The other option is set out of the way, so only the one under test can
       // be what the constructor refuses.
       const other = option === 'initialBackoffSeconds' ? { maxBackoffSeconds: 30 } : { initialBackoffSeconds: 0.001 };
-      expect(() => new FDv2SkillStore(SDK_KEY, { ...other, [option]: value })).toThrow(new RegExp(option));
+      expect(() => new LaunchDarklySkillStore(SDK_KEY, { ...other, [option]: value })).toThrow(new RegExp(option));
     });
   });
 
   it('rejects an initialBackoffSeconds greater than maxBackoffSeconds', () => {
-    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffSeconds: 5, maxBackoffSeconds: 0.02 })).toThrow(
+    expect(() => new LaunchDarklySkillStore(SDK_KEY, { initialBackoffSeconds: 5, maxBackoffSeconds: 0.02 })).toThrow(
       /initialBackoffSeconds.*must not exceed maxBackoffSeconds/,
     );
     // Either one alone can produce the inversion against the other's default.
-    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffSeconds: 60 })).toThrow(/must not exceed/);
-    expect(() => new FDv2SkillStore(SDK_KEY, { maxBackoffSeconds: 0.5 })).toThrow(/must not exceed/);
+    expect(() => new LaunchDarklySkillStore(SDK_KEY, { initialBackoffSeconds: 60 })).toThrow(/must not exceed/);
+    expect(() => new LaunchDarklySkillStore(SDK_KEY, { maxBackoffSeconds: 0.5 })).toThrow(/must not exceed/);
   });
 
   it('accepts an initialBackoffSeconds equal to maxBackoffSeconds, and the defaults', () => {
-    expect(() => new FDv2SkillStore(SDK_KEY, { initialBackoffSeconds: 0.25, maxBackoffSeconds: 0.25 })).not.toThrow();
-    expect(() => new FDv2SkillStore(SDK_KEY)).not.toThrow();
+    expect(
+      () => new LaunchDarklySkillStore(SDK_KEY, { initialBackoffSeconds: 0.25, maxBackoffSeconds: 0.25 }),
+    ).not.toThrow();
+    expect(() => new LaunchDarklySkillStore(SDK_KEY)).not.toThrow();
   });
 
   it('rejects a non-string credential', () => {
-    expect(() => new FDv2SkillStore(42 as never)).toThrow(/server-side SDK key/);
-    expect(() => new FDv2SkillStore(undefined as never)).toThrow(/server-side SDK key/);
+    expect(() => new LaunchDarklySkillStore(42 as never)).toThrow(/server-side SDK key/);
+    expect(() => new LaunchDarklySkillStore(undefined as never)).toThrow(/server-side SDK key/);
   });
 
   it('refusal messages for mobile and client-side credentials say skills are server-side', () => {
-    expect(() => new FDv2SkillStore('mob-00000000-0000-4000-8000-000000000000')).toThrow(/server-side/);
-    expect(() => new FDv2SkillStore('0123456789abcdef01234567')).toThrow(/server-side/);
+    expect(() => new LaunchDarklySkillStore('mob-00000000-0000-4000-8000-000000000000')).toThrow(/server-side/);
+    expect(() => new LaunchDarklySkillStore('0123456789abcdef01234567')).toThrow(/server-side/);
   });
 
   it.each([
@@ -4892,7 +4903,7 @@ describe('transport contract', () => {
     // `pollIntervalSeconds: 1.005` must sleep 1005ms between polls. Truncating
     // `1.005 * 1000` would sleep 1004.
     const timers = vi.spyOn(globalThis, 'setTimeout');
-    const store = new FDv2SkillStore(SDK_KEY, {
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalSeconds: 1.005,
       requester: new ScriptedRequester([asPairs(fullPayload([['put-object', putSkill()]]))]),
@@ -4907,7 +4918,7 @@ describe('transport contract', () => {
     // `pollIntervalSeconds: 3e6` is about 34 days. Uncapped, Node's timer
     // overflows and fires after 1ms, so poll mode spins.
     const timers = vi.spyOn(globalThis, 'setTimeout');
-    const store = new FDv2SkillStore(SDK_KEY, {
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalSeconds: 3e6,
       requester: new ScriptedRequester([asPairs(fullPayload([['put-object', putSkill()]]))]),
@@ -4920,7 +4931,7 @@ describe('transport contract', () => {
 
   it('warns once when a retired millisecond option is passed, and does not read it', async () => {
     const timers = vi.spyOn(globalThis, 'setTimeout');
-    const store = new FDv2SkillStore(SDK_KEY, {
+    const store = new LaunchDarklySkillStore(SDK_KEY, {
       mode: 'poll',
       pollIntervalMs: 5000,
       readTimeoutMs: 1,
@@ -5002,14 +5013,16 @@ describe('transport contract', () => {
   // leaves the machine.
   describe('base URI scheme', () => {
     it('refuses a plain http:// baseUri, naming https://', () => {
-      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: 'http://example.com' })).toThrow(/cleartext/);
-      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: 'http://sdk.launchdarkly.com' })).toThrow(/https:\/\//);
+      expect(() => new LaunchDarklySkillStore(SDK_KEY, { baseUri: 'http://example.com' })).toThrow(/cleartext/);
+      expect(() => new LaunchDarklySkillStore(SDK_KEY, { baseUri: 'http://sdk.launchdarkly.com' })).toThrow(
+        /https:\/\//,
+      );
     });
 
     it('refuses a plain http:// baseUri even with a requester injected', () => {
       // The check is on the store, not on the socket it happens to open.
       const requester = new ScriptedRequester([]);
-      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: 'http://relay.internal:8030', requester })).toThrow(
+      expect(() => new LaunchDarklySkillStore(SDK_KEY, { baseUri: 'http://relay.internal:8030', requester })).toThrow(
         /cleartext/,
       );
     });
@@ -5020,13 +5033,15 @@ describe('transport contract', () => {
       'http://[::1]:8030',
       'http://LOCALHOST/',
     ])('allows plain http:// to a loopback host (%s)', (uri) => {
-      expect(requesterOf(new FDv2SkillStore(SDK_KEY, { baseUri: uri })).baseUri).toBe(uri.replace(/\/+$/, ''));
-      expect(requesterOf(new FDv2SkillStore(SDK_KEY, { streamUri: uri })).streamUri).toBe(uri.replace(/\/+$/, ''));
+      expect(requesterOf(new LaunchDarklySkillStore(SDK_KEY, { baseUri: uri })).baseUri).toBe(uri.replace(/\/+$/, ''));
+      expect(requesterOf(new LaunchDarklySkillStore(SDK_KEY, { streamUri: uri })).streamUri).toBe(
+        uri.replace(/\/+$/, ''),
+      );
     });
 
     it('a private address is not loopback', () => {
       // Only the machine itself is exempt; the LAN is not.
-      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: 'http://10.0.0.5:8030' })).toThrow(/cleartext/);
+      expect(() => new LaunchDarklySkillStore(SDK_KEY, { baseUri: 'http://10.0.0.5:8030' })).toThrow(/cleartext/);
     });
 
     it.each([
@@ -5036,31 +5051,34 @@ describe('transport contract', () => {
       'ftp://sdk.launchdarkly.com',
       'https://',
     ])('refuses anything but an https:// URL with a host (%j)', (uri) => {
-      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: uri })).toThrow(/https:\/\//);
-      expect(() => new FDv2SkillStore(SDK_KEY, { streamUri: uri })).toThrow(/https:\/\//);
+      expect(() => new LaunchDarklySkillStore(SDK_KEY, { baseUri: uri })).toThrow(/https:\/\//);
+      expect(() => new LaunchDarklySkillStore(SDK_KEY, { streamUri: uri })).toThrow(/https:\/\//);
     });
 
     it('refuses a non-string URI', () => {
-      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: 42 as never })).toThrow(/https:\/\/.*none was given/);
+      expect(() => new LaunchDarklySkillStore(SDK_KEY, { baseUri: 42 as never })).toThrow(/https:\/\/.*none was given/);
     });
 
     it('accepts https://, and the defaults', () => {
-      expect(requesterOf(new FDv2SkillStore(SDK_KEY, { baseUri: 'https://sdk.example.com/' })).baseUri).toBe(
+      expect(requesterOf(new LaunchDarklySkillStore(SDK_KEY, { baseUri: 'https://sdk.example.com/' })).baseUri).toBe(
         'https://sdk.example.com',
       );
-      expect(requesterOf(new FDv2SkillStore(SDK_KEY)).baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
+      expect(requesterOf(new LaunchDarklySkillStore(SDK_KEY)).baseUri).toBe(SKILLS_DEFAULT_BASE_URI);
     });
 
     it('refuses a plain http:// streamUri by name', () => {
       // The streaming host is checked too, and the message names it.
       expect(
         () =>
-          new FDv2SkillStore(SDK_KEY, { baseUri: 'https://sdk.example.com', streamUri: 'http://stream.example.com' }),
+          new LaunchDarklySkillStore(SDK_KEY, {
+            baseUri: 'https://sdk.example.com',
+            streamUri: 'http://stream.example.com',
+          }),
       ).toThrow(/streamUri.*cleartext/);
     });
 
     it('the refusal names the defaults', () => {
-      expect(() => new FDv2SkillStore(SDK_KEY, { baseUri: 'http://example.com' })).toThrow(
+      expect(() => new LaunchDarklySkillStore(SDK_KEY, { baseUri: 'http://example.com' })).toThrow(
         /https:\/\/sdk\.launchdarkly\.com.*https:\/\/stream\.launchdarkly\.com/,
       );
     });
