@@ -26,6 +26,8 @@
     "api:surface": "node scripts/api-surface.mjs",
     "test:api-surface": "node --test scripts/api-surface.test.mjs",
     "test:api-breaking": "node --test scripts/api-breaking.test.mjs",
+    "check:packaging": "node scripts/check-packaging.mjs",
+    "test:check-packaging": "node --test scripts/check-packaging.test.mjs",
     "lint:pkg": "sherif",
     "lint:pkg:fix": "sherif -f",
     "size": "sh -c 'cd packages/$0 && npm pack --dry-run 2>&1 | grep \"npm notice package size\"'",

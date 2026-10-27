@@ -587,7 +587,7 @@ export type ProviderHandler = ((config: AiConfigRep, userInput?: string, toolHan
 }>) & {
     providesFor?: [provider: string, type: 'agent' | 'messages'];
     captureContent?: boolean;
-    stream?: (config: AiConfigRep, userInput?: string, toolHandlers?: Record<string, any>, variables?: Record<string, unknown>, history?: Message[]) => AsyncGenerator<HandlerStreamEvent>;
+    stream?: (config: AiConfigRep, userInput?: string, toolHandlers?: Record<string, ToolHandlerFn | NativeTool>, variables?: Record<string, unknown>, history?: Message[]) => AsyncGenerator<HandlerStreamEvent>;
 };
 
 // @public (undocumented)

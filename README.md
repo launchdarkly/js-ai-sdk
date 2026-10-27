@@ -96,6 +96,10 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-litellm-agents](packages/litellm-agents/README.md)`         | `*` (any) | `agent`    | OpenAI Agents SDK through a LiteLLM proxy              |
 | `[@launchdarkly/ai-typesafe](packages/typesafe/README.md)`                     | TypeSafe  | `messages` | TypeSafe Jev judge handler                            |
 
+### Versioning
+
+From 1.0.0 every package in this SDK is released at the same version, so install them at matching versions. Each package depends on `@launchdarkly/ai-server` within the same major (`^1.0.0`), and a breaking change in any package is a new major for all of them. Names exported from `@launchdarkly/ai-server/experimental` are the exception: they may change in a minor release.
+
 
 ## Module format support
 
