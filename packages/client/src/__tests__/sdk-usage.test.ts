@@ -18,12 +18,8 @@ vi.mock('@opentelemetry/exporter-trace-otlp-http', () => ({
     export(_spans: unknown, done: (result: { code: number }) => void) {
       done({ code: 0 });
     }
-    shutdown() {
-      return Promise.resolve();
-    }
-    forceFlush() {
-      return Promise.resolve();
-    }
+    async forceFlush() {}
+    async shutdown() {}
   },
 }));
 
