@@ -658,6 +658,8 @@ An evaluation from code runs a dataset through your own code and reports the res
 
 Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row and on the run; the SDK reports scores and never computes a verdict itself.
 
+Each row is also exported as one trace on the tracer provider `initClient()` registered: a `launchdarkly.dataset_row` root with the generation, its tool calls and each criterion's `evaluate` span beneath it, all sharing the row's `gen_ai.conversation.id`. A provider handler traces its own call; for a plain function the runner writes the `chat` and `execute_tool` spans. **By default the transcript is not sent:** prompts, the row input, model output, tool arguments and results, judge prompts and completions, and judge explanations are left off every span, the evaluation spans included. Setting `captureContent: true` on a handler sends them for that handler's calls, on the evaluation spans too. The result events never carry the transcript.
+
 ```ts
 import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
 import { initEvaluations } from '@launchdarkly/ai-server/experimental';

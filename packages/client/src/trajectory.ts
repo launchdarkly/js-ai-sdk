@@ -14,6 +14,7 @@
  */
 
 import { NativeTool, type ToolHandlerFn } from './types.js';
+import { spanTimestamp } from './utils.js';
 
 /** Calls recorded per unit. Calls past the cap still run, and are counted. */
 export const TRAJECTORY_MAX_CALLS = 50;
@@ -44,6 +45,9 @@ export type TrajectoryCall = {
   error?: string;
   /** False while the call is still running. */
   done: boolean;
+  /** When the call started and settled, from {@link spanTimestamp}, so a span can be timed to it. */
+  startedAt?: number;
+  endedAt?: number;
 };
 
 type ToolMap = Record<string, ToolHandlerFn | NativeTool>;
@@ -143,7 +147,7 @@ export class TrajectoryRecorder {
       this.droppedCalls++;
       return undefined;
     }
-    const call: TrajectoryCall = { key, done: false };
+    const call: TrajectoryCall = { key, done: false, startedAt: spanTimestamp() };
     if (args.length === 1) call.args = args[0];
     else if (args.length > 1) call.args = args;
     this.calls.push(call);
@@ -153,6 +157,7 @@ export class TrajectoryRecorder {
 
 function settle(call: TrajectoryCall, outcome: { result?: unknown; error?: unknown }): void {
   call.done = true;
+  call.endedAt = spanTimestamp();
   if ('error' in outcome) {
     const { error } = outcome;
     call.error = error instanceof Error ? error.message : String(error);
@@ -179,8 +184,11 @@ function sortedJson(value: unknown): string | undefined {
   });
 }
 
-/** An absent value renders as nothing, not as `null`: a tool that returned nothing did not return a null. */
-function renderValue(value: unknown): string {
+/**
+ * One argument bag or result as a judge reads it: bounded, and with object keys sorted. An absent
+ * value renders as nothing, not as `null`: a tool that returned nothing did not return a null.
+ */
+export function renderValue(value: unknown): string {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return truncate(value);
   let rendered: string | undefined;

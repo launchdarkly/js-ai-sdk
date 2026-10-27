@@ -10,11 +10,23 @@
  * Internal: nothing here is exported from an entry point.
  */
 
+import type { Span } from '@opentelemetry/api';
 import { toolResultString } from './content.js';
 import type { DatasetRow } from './evaluations.js';
 import { EvaluationsError, errorMessage, isPlainObject } from './evaluations-api.js';
 import { type Criterion, criterionType, Judge, type Scorer } from './evaluations-criteria.js';
 import { eventIdFor, mapBounded, type RowResult, type RunIdentity, rowIdentity } from './evaluations-runner.js';
+import {
+  captureFor,
+  endSpan,
+  finishCriterionSpan,
+  recordChat,
+  setConfigModelIdentity,
+  startCriterionSpan,
+  traceHandlerCall,
+  withActiveSpan,
+  withEvaluationRow,
+} from './evaluations-spans.js';
 import {
   buildMessageHistory,
   FORMATTING_INSTRUCTIONS,
@@ -190,7 +202,12 @@ function startClock() {
   };
 }
 
-async function runJudge(result: RowResult, resolved: ResolvedJudge): Promise<CriterionResult> {
+/**
+ * Score one row with a judge. With `span`, the row's `evaluate` span, the
+ * span carries the judge's provider and model, and a judge call that started
+ * no SDK span is described by a `chat` child of it.
+ */
+async function runJudge(result: RowResult, resolved: ResolvedJudge, span?: Span): Promise<CriterionResult> {
   const clock = startClock();
   const base = {
     rowIndex: result.row.rowIndex,
@@ -205,16 +222,27 @@ async function runJudge(result: RowResult, resolved: ResolvedJudge): Promise<Cri
     ...clock.stop(),
   });
   let response: unknown;
+  const judged = toolResultString(result.output);
+  const variables = judgeVariables(result, resolved.judge);
+  // The config is passed unrendered: the handler makes the one template
+  // pass, so `{{…}}` in generated output or dataset values is never expanded.
+  // Judges get no tools.
+  const invoke = () => resolved.handler(resolved.config, judged, {}, variables);
   try {
-    // The config is passed unrendered: the handler makes the one template
-    // pass, so `{{…}}` in generated output or dataset values is never expanded.
-    // Judges get no tools.
-    response = await resolved.handler(
-      resolved.config,
-      toolResultString(result.output),
-      {},
-      judgeVariables(result, resolved.judge),
-    );
+    if (span) {
+      setConfigModelIdentity(span, resolved.config);
+      response = await traceHandlerCall(invoke, (outcome) =>
+        recordChat(span, {
+          ...outcome,
+          config: resolved.config,
+          userInput: judged,
+          variables,
+          capture: captureFor(resolved.handler),
+        }),
+      );
+    } else {
+      response = await invoke();
+    }
   } catch (err) {
     return fail('handler_raised', `judge handler raised: ${errorMessage(err)}`);
   }
@@ -288,23 +316,45 @@ async function runScorer(result: RowResult, scorer: Scorer): Promise<CriterionRe
  * `concurrency` pairs in flight across the whole phase. A row that did not
  * generate is skipped entirely: it yields no criterion result, because
  * LaunchDarkly has already counted it as failed.
+ *
+ * With `evaluationRunId`, each pair on a row that has a trace root runs inside
+ * an `evaluate {criterionType}` child of that root, opened before the judge or
+ * scorer runs and closed after it answers.
  */
 export function scoreRows(
   results: readonly RowResult[],
   criteria: readonly Criterion[],
   judges: ReadonlyMap<string, ResolvedJudge>,
   concurrency: number,
+  evaluationRunId?: string,
 ): Promise<CriterionResult[]> {
   const pairs = results
     .filter((result) => result.status === 'COMPLETE')
     .flatMap((result) => criteria.map((criterion) => ({ result, criterion })));
-  return mapBounded(pairs, concurrency, ({ result, criterion }) => {
+  const score = (result: RowResult, criterion: Criterion, span?: Span): Promise<CriterionResult> => {
     if (criterion instanceof Judge) {
       const resolved = judges.get(criterion.key);
       if (!resolved) throw new EvaluationsError(`judge '${criterion.key}' was not resolved`);
-      return runJudge(result, resolved);
+      return runJudge(result, resolved, span);
     }
     return runScorer(result, criterion);
+  };
+  return mapBounded(pairs, concurrency, ({ result, criterion }) => {
+    const rowSpan = result.span;
+    if (evaluationRunId === undefined || rowSpan === undefined) return score(result, criterion);
+    const { rowIndex } = result.row;
+    const name = criterionType(criterion);
+    return withEvaluationRow(evaluationRunId, rowIndex, async () => {
+      const span = startCriterionSpan(evaluationRunId, rowIndex, name, rowSpan);
+      try {
+        const scored = await withActiveSpan(span, () => score(result, criterion, span));
+        // A scorer has no reason, so only a judge's capture setting matters.
+        finishCriterionSpan(span, name, scored, captureFor(scored.judge?.handler));
+        return scored;
+      } finally {
+        endSpan(span);
+      }
+    });
   });
 }
 
