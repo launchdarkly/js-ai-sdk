@@ -484,12 +484,12 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
   return picked;
 }
 
-export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createOpenAIMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('openai-messages.createOpenAIHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  return createOpenAIHandlerInternal({ captureContent });
+  return createOpenAIMessagesHandlerInternal({ captureContent });
 }
 
-function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+function createOpenAIMessagesHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   const openai = new OpenAI();
 
   const MAX_STEPS = 10;
@@ -825,6 +825,6 @@ export const openaiMessages = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createOpenAIHandlerInternal({ captureContent }),
+    handler: createOpenAIMessagesHandlerInternal({ captureContent }),
   }).invoke(userInput, context, variables);
 };

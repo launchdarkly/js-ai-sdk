@@ -21,7 +21,7 @@ That means the LaunchDarkly flag variation must have `provider.name === "OpenAI"
 | File | Responsibility |
 |---|---|
 | `src/handler.ts` | All implementation — message building, tool schema conversion, function-call loop, telemetry |
-| `src/index.ts` | Barrel: `export { createOpenAIHandler, openaiMessages }` |
+| `src/index.ts` | Barrel: `export { createOpenAIMessagesHandler, openaiMessages }` |
 
 ---
 
@@ -29,9 +29,9 @@ That means the LaunchDarkly flag variation must have `provider.name === "OpenAI"
 
 ```ts
 // Factory — returns a ProviderHandler with providesFor attached
-export function createOpenAIHandler(): ProviderHandler
+export function createOpenAIMessagesHandler(): ProviderHandler
 
-// Convenience wrapper — identical to config({ ...options, key: configKey, handler: createOpenAIHandler() }).invoke(userInput, context)
+// Convenience wrapper — identical to config({ ...options, key: configKey, handler: createOpenAIMessagesHandler() }).invoke(userInput, context)
 export const openaiMessages: (configKey: string, userInput: string, context: LDContext, options?: Omit<ConfigArgs, 'handler' | 'key'>) => Promise<ProviderResponse>
 ```
 

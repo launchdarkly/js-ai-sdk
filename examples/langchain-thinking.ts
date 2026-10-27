@@ -1,5 +1,5 @@
 import { ChatAnthropic } from '@langchain/anthropic';
-import { createLangChainHandler } from '@launchdarkly/ai-langchain-messages';
+import { createLangChainMessagesHandler } from '@launchdarkly/ai-langchain-messages';
 import { config } from '@launchdarkly/ai-node';
 import { fetchLaunchDarklyDocumentation, getPreferences, searchLdDocumentation, webSearch } from './tools';
 import { newContext, writeOutput } from './utils';
@@ -22,7 +22,7 @@ import { newContext, writeOutput } from './utils';
 export async function run(key: string, userInput: string): Promise<void> {
   const response = await config({
     key,
-    handler: createLangChainHandler((aiConfig) => {
+    handler: createLangChainMessagesHandler((aiConfig) => {
       const parameters =
         aiConfig.model.parameters && typeof aiConfig.model.parameters === 'object' ? aiConfig.model.parameters : {};
       return new ChatAnthropic({

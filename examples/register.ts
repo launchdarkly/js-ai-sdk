@@ -1,20 +1,20 @@
 import { ClaudeWebSearch, createClaudeAgentsHandler } from '@launchdarkly/ai-claude-agents';
 import { createClaudeMessagesHandler } from '@launchdarkly/ai-claude-messages';
 import { createLangChainAgentsHandler } from '@launchdarkly/ai-langchain-agents';
-import { createLangChainHandler } from '@launchdarkly/ai-langchain-messages';
+import { createLangChainMessagesHandler } from '@launchdarkly/ai-langchain-messages';
 import { globalRegistry } from '@launchdarkly/ai-node';
 import { createOpenAIAgentHandler } from '@launchdarkly/ai-openai-agents';
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
 import { createTypesafeHandler } from '@launchdarkly/ai-typesafe';
 import { fetchLaunchDarklyDocumentation, getPreferences, searchLdDocumentation } from './tools';
 
 globalRegistry.register({
   handlers: [
-    createOpenAIHandler(),
+    createOpenAIMessagesHandler(),
     createOpenAIAgentHandler(),
     createClaudeAgentsHandler(),
     createClaudeMessagesHandler(),
-    createLangChainHandler(),
+    createLangChainMessagesHandler(),
     createLangChainAgentsHandler(),
     createTypesafeHandler(),
   ],
