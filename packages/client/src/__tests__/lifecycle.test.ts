@@ -233,7 +233,7 @@ describe('lifecycle', () => {
       delete process.env.LD_BASE_URI;
     });
 
-    it('stamps highlight.project_id resource attribute with the resolved SDK key', async () => {
+    it('stamps launchdarkly.project_id resource attribute with the resolved SDK key', async () => {
       const mockClient = makeMockClient();
       mockLdInit.mockReturnValue(mockClient);
       process.env.LD_SDK_KEY = 'sdk-test-key';
@@ -242,8 +242,11 @@ describe('lifecycle', () => {
       await initClient();
 
       expect(mockResourceFromAttributes).toHaveBeenCalledWith(
-        expect.objectContaining({ 'highlight.project_id': 'sdk-test-key' }),
+        expect.objectContaining({ 'launchdarkly.project_id': 'sdk-test-key' }),
       );
+      for (const [attributes] of mockResourceFromAttributes.mock.calls) {
+        expect(attributes).not.toHaveProperty(['highlight.project_id']);
+      }
     });
 
     it('configures GZIP compression on the OTLP exporter', async () => {
@@ -878,7 +881,7 @@ describe('lifecycle', () => {
     it('tears down the provider of an init in flight at shutdown, so the next init builds its own', async () => {
       // shutdown() used to return early without a client, leaving the in-flight
       // attempt's provider registered for the next init to reuse — with the
-      // abandoned attempt's sdkKey as highlight.project_id.
+      // abandoned attempt's sdkKey as launchdarkly.project_id.
       let resolveFirst: () => void = () => {};
       const first = makeMockClient();
       first.waitForInitialization = vi.fn(
@@ -900,7 +903,7 @@ describe('lifecycle', () => {
       expect(tracerProviders).toHaveLength(2);
       expect(otel.held.trace).toBe(tracerProviders[1]);
       expect(mockResourceFromAttributes).toHaveBeenLastCalledWith(
-        expect.objectContaining({ 'highlight.project_id': 'second-key' }),
+        expect.objectContaining({ 'launchdarkly.project_id': 'second-key' }),
       );
 
       resolveFirst();
@@ -914,7 +917,7 @@ describe('lifecycle', () => {
       // No await before shutdown(): setupTelemetry is still awaiting its
       // imports, so there is no provider yet for shutdown to tear down. One
       // built afterwards would outlive the attempt and be reused by the next
-      // init, with the abandoned attempt's sdkKey as highlight.project_id.
+      // init, with the abandoned attempt's sdkKey as launchdarkly.project_id.
       const first = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
       mockLdInit.mockReturnValueOnce(first).mockReturnValueOnce(makeMockClient());
 
@@ -930,7 +933,7 @@ describe('lifecycle', () => {
       expect(otel.held.trace).toBe(tracerProviders[0]);
       expect(mockResourceFromAttributes).toHaveBeenCalledOnce();
       expect(mockResourceFromAttributes).toHaveBeenCalledWith(
-        expect.objectContaining({ 'highlight.project_id': 'second-key' }),
+        expect.objectContaining({ 'launchdarkly.project_id': 'second-key' }),
       );
     });
 
@@ -975,7 +978,7 @@ describe('lifecycle', () => {
 
     it('builds the retry its own provider, with the options the retry passed', async () => {
       // Reusing the failed attempt's provider would stamp its spans with the
-      // failed attempt's sdkKey as highlight.project_id.
+      // failed attempt's sdkKey as launchdarkly.project_id.
       const failed = makeMockClient();
       failed.waitForInitialization = vi.fn().mockRejectedValue(new Error('timeout'));
       mockLdInit.mockReturnValueOnce(failed).mockReturnValueOnce(makeMockClient());
@@ -985,7 +988,7 @@ describe('lifecycle', () => {
       await initClient({ sdkKey: 'second-key' });
 
       expect(mockResourceFromAttributes).toHaveBeenLastCalledWith(
-        expect.objectContaining({ 'highlight.project_id': 'second-key' }),
+        expect.objectContaining({ 'launchdarkly.project_id': 'second-key' }),
       );
     });
   });
