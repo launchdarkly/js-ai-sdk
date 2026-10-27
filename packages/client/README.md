@@ -94,14 +94,14 @@ The primary entry point for AI config invocations. Accepts either a single handl
 
 ```ts
 import { config } from '@launchdarkly/ai-server';
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
 import { createOpenAIAgentHandler } from '@launchdarkly/ai-openai-agents';
 import { createClaudeAgentsHandler } from '@launchdarkly/ai-claude-agents';
 
 // Single handler — must match the flag variation's provider+mode, or throws.
 const caller = config({
   key: 'my-ai-config-flag',
-  handler: createOpenAIHandler(),
+  handler: createOpenAIMessagesHandler(),
   toolHandlers: { myTool: myToolFn },      // optional: tool implementations
 });
 
@@ -118,7 +118,7 @@ const router = config({
   key: 'my-ai-config-flag',
   toolHandlers: { search: searchFn },
   handler: [
-    createOpenAIHandler(),        // providesFor: ['OpenAI', 'messages']
+    createOpenAIMessagesHandler(),        // providesFor: ['OpenAI', 'messages']
     createOpenAIAgentHandler(),   // providesFor: ['OpenAI', 'agent']
     createClaudeAgentsHandler(),  // providesFor: ['Anthropic', 'agent']
   ],
@@ -659,7 +659,7 @@ An evaluation from code runs a dataset through your own code and reports the res
 Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row and on the run; the SDK reports scores and never computes a verdict itself.
 
 ```ts
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
 import { initEvaluations } from '@launchdarkly/ai-server/experimental';
 
 // Reads LD_PROJECT_KEY, LD_API_TOKEN and LD_SDK_KEY unless you pass them.
@@ -668,7 +668,7 @@ const evals = initEvaluations({ projectKey: 'my-project' });
 const result = await evals.run({
   key: `support-qa-${Date.now()}`, // every run creates a new evaluation, so keep keys unique
   dataset: 'support-golden', // the key of a dataset in LaunchDarkly
-  handler: createOpenAIHandler(),
+  handler: createOpenAIMessagesHandler(),
   generation: {
     provider: 'OpenAI',
     model: 'gpt-4o',
@@ -725,7 +725,7 @@ Pass `aiConfig` instead of a full `generation` to evaluate a variation you alrea
 await evals.run({
   key: `support-qa-${Date.now()}`,
   dataset: 'support-golden',
-  handler: createOpenAIHandler(),
+  handler: createOpenAIMessagesHandler(),
   aiConfig: { key: 'support-agent', variation: 'candidate' },
   generation: { parameters: { temperature: 0.2 } },
 });
@@ -744,7 +744,7 @@ await evals.run({
     { input: 'How do I reset my password?', expectedOutput: 'Use the reset link.' },
     { input: 'Where is order {{order_id}}?', variables: { order_id: 'A-17' } },
   ],
-  handler: createOpenAIHandler(),
+  handler: createOpenAIMessagesHandler(),
   generation: { provider: 'OpenAI', model: 'gpt-4o', mode: 'completion', messages: [{ role: 'user', content: '{{input}}' }] },
 });
 ```
@@ -786,7 +786,7 @@ await evals.run({
   key: `support-qa-${Date.now()}`,
   dataset: 'support-golden',
   // The judge is served by Anthropic, so the pool has a handler for it too.
-  handlers: [createOpenAIHandler(), createClaudeMessagesHandler()],
+  handlers: [createOpenAIMessagesHandler(), createClaudeMessagesHandler()],
   generation: { provider: 'OpenAI', model: 'gpt-4o', mode: 'completion', messages: [{ role: 'user', content: '{{input}}' }] },
   criteria: [
     new Judge('accuracy-judge', { threshold: 0.8 }),

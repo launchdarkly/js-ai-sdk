@@ -25,7 +25,7 @@ The handler is model-agnostic — it accepts any `BaseChatModel`. The default is
 | File | Responsibility |
 |---|---|
 | `src/handler.ts` | All implementation — message building, tool binding, invoke loop, telemetry |
-| `src/index.ts` | Barrel: `export { createLangChainHandler, langchainMessages }` |
+| `src/index.ts` | Barrel: `export { createLangChainMessagesHandler, langchainMessages }` |
 
 ---
 
@@ -34,9 +34,9 @@ The handler is model-agnostic — it accepts any `BaseChatModel`. The default is
 ```ts
 // Factory — accepts a BaseChatModel or `(config) => model` so flag parameters can be applied
 // unchanged after evaluation. Defaults to ChatOpenAI / ChatAnthropic constructed from the config.
-export function createLangChainHandler(llm?: LangChainModelSource): ProviderHandler
+export function createLangChainMessagesHandler(llm?: LangChainModelSource): ProviderHandler
 
-// Convenience wrapper — identical to config({ ...options, key: configKey, handler: createLangChainHandler() }).invoke(userInput, context)
+// Convenience wrapper — identical to config({ ...options, key: configKey, handler: createLangChainMessagesHandler() }).invoke(userInput, context)
 export const langchainMessages: (configKey: string, userInput: string, context: LDContext, options?: Omit<ConfigArgs, 'handler' | 'key'>) => Promise<ProviderResponse>
 ```
 

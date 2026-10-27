@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createLangChainHandler } from '../handler.js';
+import { createLangChainMessagesHandler } from '../handler.js';
 import { NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // This file deliberately does NOT mock @langchain/openai. Every other test in this package mocks
@@ -43,9 +43,9 @@ const baseConfig = {
   instructions: 'You are helpful.',
 };
 
-describe('createLangChainHandler wire request (real ChatOpenAI, unmocked)', () => {
+describe('createLangChainMessagesHandler wire request (real ChatOpenAI, unmocked)', () => {
   it('sends snake_case model.parameters onto the wire as top_p / max_tokens', async () => {
-    await expect(createLangChainHandler()(baseConfig as any, 'hi')).rejects.toThrow();
+    await expect(createLangChainMessagesHandler()(baseConfig as any, 'hi')).rejects.toThrow();
     expect(captured.length).toBeGreaterThan(0);
     expect(captured[0].body.top_p).toBe(0.42);
     expect(captured[0].body.max_tokens).toBe(321);
@@ -70,7 +70,7 @@ describe('createLangChainHandler wire request (real ChatOpenAI, unmocked)', () =
         },
       },
     };
-    await expect(createLangChainHandler()(config as any, 'hi')).rejects.toThrow();
+    await expect(createLangChainMessagesHandler()(config as any, 'hi')).rejects.toThrow();
     expect(captured.length).toBeGreaterThan(0);
     for (const request of captured) {
       expect(request.url.startsWith('https://api.openai.com/')).toBe(true);
