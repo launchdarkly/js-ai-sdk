@@ -402,6 +402,29 @@ describe('run() argument validation', () => {
       (b.providesFor as unknown as string[])[1] = 'completion';
       await rejects(base({ handler: undefined, handlers: [a, b] }), /provider 'OpenAI' in mode 'messages'/);
     });
+
+    it('accepts two wildcards of one mode scoped to different providers', async () => {
+      const bedrock = stubHandler('*', 'messages');
+      const anthropic = stubHandler('*', 'messages');
+      bedrock.providers = ['Bedrock'];
+      anthropic.providers = ['Anthropic'];
+      await rejects(
+        base({
+          handler: undefined,
+          handlers: [bedrock, anthropic],
+          generation: completion({ provider: 'Bedrock', instructions: 'grade it', messages: undefined }),
+        }),
+        /needs messages, not instructions.*\[\*, messages\]/,
+      );
+    });
+
+    it('rejects two wildcards whose provider sets match', async () => {
+      const first = stubHandler('*', 'messages');
+      const second = stubHandler('*', 'messages');
+      first.providers = ['Bedrock', 'Anthropic'];
+      second.providers = ['Anthropic', 'Bedrock'];
+      await rejects(base({ handler: undefined, handlers: [first, second] }), /provider '\*' in mode 'messages'/);
+    });
   });
 
   describe('generation', () => {

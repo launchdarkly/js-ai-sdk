@@ -1,16 +1,20 @@
 import type { NativeTool, ProviderHandler, ToolHandlerFn } from './types.js';
-import { selectModeHandler } from './utils.js';
+import { normalizeMode, selectModeHandler } from './utils.js';
 
 /**
- * `providesFor`, plus the allowlist as a set on a `'*'` handler. Order and repeated
- * names do not make a new identity. Routing ignores the list on an exact handler,
- * so it is not part of that handler's identity.
+ * Handler identity for {@link Registry} and the evaluations duplicate check.
+ *
+ * Normalized `providesFor` (`completion` and `judge` are `messages`), plus the
+ * allowlist as a set on a `'*'` handler. Order and repeated names do not make a
+ * new identity. Routing ignores the list on an exact handler, so it is not part
+ * of that handler's identity.
  */
-function registrationKey(handler: ProviderHandler): string | undefined {
+export function registrationKey(handler: ProviderHandler): string | undefined {
   if (!handler.providesFor) return undefined;
   const [provider, mode] = handler.providesFor;
-  if (provider !== '*' || handler.providers === undefined) return JSON.stringify([provider, mode]);
-  return JSON.stringify([provider, mode, [...new Set(handler.providers)].sort()]);
+  const normalizedMode = normalizeMode(mode);
+  if (provider !== '*' || handler.providers === undefined) return JSON.stringify([provider, normalizedMode]);
+  return JSON.stringify([provider, normalizedMode, [...new Set(handler.providers)].sort()]);
 }
 
 export class Registry {

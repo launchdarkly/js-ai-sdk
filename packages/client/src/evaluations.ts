@@ -68,7 +68,7 @@ import {
   validateTools,
 } from './evaluations-tools.js';
 import { getClient, initClient } from './lifecycle.js';
-import { findHandler } from './registry.js';
+import { findHandler, registrationKey } from './registry.js';
 import { reportUsage } from './sdk-usage.js';
 import type { ConfigMessage, LDClientInterface, ProviderHandler } from './types.js';
 import { normalizeMode } from './utils.js';
@@ -311,7 +311,10 @@ function validateHandlerPool(options: { handler?: unknown; handlers?: unknown })
     if (!Array.isArray(providesFor) || typeof providesFor[0] !== 'string' || typeof providesFor[1] !== 'string') {
       throw new EvaluationsError(`${name(index)} does not declare providesFor. ${advice}`);
     }
-    const identity = `${providesFor[0]}\u0000${normalizeMode(providesFor[1])}`;
+    const identity = registrationKey(candidate as ProviderHandler);
+    if (identity === undefined) {
+      throw new EvaluationsError(`${name(index)} does not declare providesFor. ${advice}`);
+    }
     if (seen.has(identity)) {
       throw new EvaluationsError(
         `Two handlers provide for provider '${providesFor[0]}' in mode '${normalizeMode(providesFor[1])}'; ` +
