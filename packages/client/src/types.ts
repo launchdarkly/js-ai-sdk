@@ -307,7 +307,7 @@ export type RawSkillObject = {
 
 /**
  * The interface a source of skill content implements. Structurally typed: pass
- * any object with these methods. `FDv2SkillStore` (LaunchDarkly delivery) and
+ * any object with these methods. `LaunchDarklySkillStore` (LaunchDarkly delivery) and
  * `InMemorySkillStore` are the built-in implementations.
  *
  * Everything a store serves is treated as untrusted; the accessors re-verify

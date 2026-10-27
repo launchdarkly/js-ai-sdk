@@ -228,7 +228,7 @@ Returns `{ invoke(...): Promise<ProviderResponse>, stream(...): AsyncGenerator<S
 ```ts
 import 'dotenv/config';
 import { config, createHandler, shutdown } from '@launchdarkly/ai-server';
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
 import { createOpenAIAgentsHandler } from '@launchdarkly/ai-openai-agents';
 import { createClaudeAgentsHandler } from '@launchdarkly/ai-claude-agents';
 import { createClaudeMessagesHandler } from '@launchdarkly/ai-claude-messages';
@@ -255,7 +255,7 @@ const result = await config({
     search: async ({ query }) => { /* ... */ },
   },
   handler: [
-    createOpenAIHandler(),
+    createOpenAIMessagesHandler(),
     createOpenAIAgentsHandler(),
     createClaudeAgentsHandler(),
     createClaudeMessagesHandler(),
@@ -479,11 +479,11 @@ Handlers and tools can be registered once and reused across every call in your a
 ```ts
 import { globalRegistry, config, graph } from '@launchdarkly/ai-server';
 import { createClaudeAgentsHandler, ClaudeWebSearch } from '@launchdarkly/ai-claude-agents';
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
 
 // Called once at app startup
 globalRegistry.register({
-  handlers: [createClaudeAgentsHandler(), createOpenAIHandler()],
+  handlers: [createClaudeAgentsHandler(), createOpenAIMessagesHandler()],
   tools: {
     'web-search': ClaudeWebSearch,
     'get-prefs': getPreferencesFn,
@@ -506,11 +506,11 @@ Scoping configurations allows you to define registries that have only a subset o
 
 ```ts
 import { Registry } from '@launchdarkly/ai-server';
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
 import { createOpenAIAgentsHandler } from '@launchdarkly/ai-openai-agents';
 
 const openaiRegistry = new Registry({
-  handlers: [createOpenAIHandler(), createOpenAIAgentsHandler()],
+  handlers: [createOpenAIMessagesHandler(), createOpenAIAgentsHandler()],
   tools: { 'get-prefs': getPreferencesFn },
 });
 ```
@@ -521,7 +521,7 @@ When you have separate registries for separate concerns, use `compose()` to merg
 import { compose } from '@launchdarkly/ai-server';
 
 const baseRegistry = new Registry({
-  handlers: [createOpenAIHandler()],
+  handlers: [createOpenAIMessagesHandler()],
   tools: { 'get-prefs': getPreferencesFn },
 });
 

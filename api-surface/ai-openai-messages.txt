@@ -6,5 +6,5 @@
 #   - Name    leaving the public surface; may be exported or not
 #   + Name    joining the public surface; may be exported or not
 
-createOpenAIHandler  usage=openai-messages.createOpenAIHandler
+createOpenAIMessagesHandler  usage=openai-messages.createOpenAIHandler
 openaiMessages  usage=openai-messages.openaiMessages

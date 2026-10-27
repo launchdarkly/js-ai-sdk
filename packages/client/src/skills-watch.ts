@@ -326,7 +326,7 @@ export async function watchSkills(
     throw new Error(
       'watchSkills needs a skill store that implements addListener(kind, fn); the configured store does not, so ' +
         'delivery changes cannot be observed. Use writeSkills for a one-shot reconcile, or configure a store with a ' +
-        'delivery transport (FDv2SkillStore).',
+        'delivery transport (LaunchDarklySkillStore).',
     );
   }
 

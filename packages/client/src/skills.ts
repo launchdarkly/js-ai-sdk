@@ -70,9 +70,9 @@ export function _clearState(): void {
  * replacement.
  *
  * ```ts
- * import { FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server';
+ * import { LaunchDarklySkillStore, setSkillStore } from '@launchdarkly/ai-server';
  *
- * setSkillStore(new FDv2SkillStore(process.env.LD_SDK_KEY!).start());
+ * setSkillStore(new LaunchDarklySkillStore(process.env.LD_SDK_KEY!).start());
  * ```
  *
  * @throws TypeError if `store` is not nullish and has no `getObject` and

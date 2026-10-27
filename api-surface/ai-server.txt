@@ -36,9 +36,9 @@ createHandler  usage=client.createHandler
 + createSkillReference
 + createSkillSource
 - endSpanOnce
-+ FDv2Mode
-+ FDv2SkillStore
-+ FDv2SkillStoreOptions
+- FDv2Mode  # deprecated alias of LaunchDarklySkillStoreMode
+- FDv2SkillStore  # deprecated alias of LaunchDarklySkillStore
+- FDv2SkillStoreOptions  # deprecated alias of LaunchDarklySkillStoreOptions
 getClient
 + getSkill  usage=client.getSkill
 + getSkillResult  usage=client.getSkillResult
@@ -77,6 +77,9 @@ JudgeTask
 - langChainFinishReasons
 - langChainSpanMessages
 - langChainSpanUsage
++ LaunchDarklySkillStore  # renamed from FDv2SkillStore
++ LaunchDarklySkillStoreMode  # renamed from FDv2Mode
++ LaunchDarklySkillStoreOptions  # renamed from FDv2SkillStoreOptions
 LDClientInterface
 LDContext
 - LDMultiKindContext

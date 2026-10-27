@@ -74,7 +74,7 @@ export type IntegrityReasonCode =
  */
 export const NO_STORE_MESSAGE =
   'No skill store is configured, so skill content cannot be retrieved. Configure one with ' +
-  'setSkillStore(store) from @launchdarkly/ai-server — FDv2SkillStore receives content from LaunchDarkly, and ' +
+  'setSkillStore(store) from @launchdarkly/ai-server — LaunchDarklySkillStore receives content from LaunchDarkly, and ' +
   'InMemorySkillStore is available for local development and testing.';
 
 // ---------------------------------------------------------------------------

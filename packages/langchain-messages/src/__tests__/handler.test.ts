@@ -73,7 +73,7 @@ vi.mock('@langchain/aws', () => ({
 import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatBedrockConverse } from '@langchain/aws';
 import { ChatOpenAI } from '@langchain/openai';
-import { createLangChainHandler } from '../handler.js';
+import { createLangChainMessagesHandler } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -104,7 +104,7 @@ const baseConfig = {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-describe('createLangChainHandler', () => {
+describe('createLangChainMessagesHandler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStartActiveSpan.mockImplementation((_name: string, fn: Function) => fn(mockSpan));
@@ -117,16 +117,16 @@ describe('createLangChainHandler', () => {
   // ── 1.1 Factory and metadata ────────────────────────────────────────────────
 
   it('returns a callable function', () => {
-    expect(typeof createLangChainHandler(makeMockLLM() as any)).toBe('function');
+    expect(typeof createLangChainMessagesHandler(makeMockLLM() as any)).toBe('function');
   });
 
   it('attaches providesFor = ["*", "messages"]', () => {
-    expect(createLangChainHandler(makeMockLLM() as any).providesFor).toEqual(['*', 'messages']);
+    expect(createLangChainMessagesHandler(makeMockLLM() as any).providesFor).toEqual(['*', 'messages']);
   });
 
   it('returns independent instances on multiple calls', () => {
     const llm = makeMockLLM() as any;
-    expect(createLangChainHandler(llm)).not.toBe(createLangChainHandler(llm));
+    expect(createLangChainMessagesHandler(llm)).not.toBe(createLangChainMessagesHandler(llm));
   });
 
   it('returns text from mixed thinking and text content blocks', async () => {
@@ -134,7 +134,7 @@ describe('createLangChainHandler', () => {
       { type: 'thinking', thinking: 'internal reasoning' },
       { type: 'text', text: 'visible answer' },
     ];
-    const result = await createLangChainHandler(makeMockLLM(content) as any)(baseConfig as any, 'q');
+    const result = await createLangChainMessagesHandler(makeMockLLM(content) as any)(baseConfig as any, 'q');
     expect(result.output).toBe('visible answer');
   });
 
@@ -142,7 +142,7 @@ describe('createLangChainHandler', () => {
 
   it('uses instructions as SystemMessage', async () => {
     const llm = makeMockLLM();
-    const handler = createLangChainHandler(llm as any);
+    const handler = createLangChainMessagesHandler(llm as any);
     await handler(baseConfig as any, 'hello');
     const messages = llm.invoke.mock.calls[0][0];
     expect(messages[0]._getType()).toBe('system');
@@ -153,7 +153,7 @@ describe('createLangChainHandler', () => {
 
   it('substitutes variables in instructions', async () => {
     const llm = makeMockLLM();
-    await createLangChainHandler(llm as any)(
+    await createLangChainMessagesHandler(llm as any)(
       { ...baseConfig, instructions: 'Hello {{name}}.' } as any,
       'q',
       {},
@@ -173,7 +173,7 @@ describe('createLangChainHandler', () => {
         { role: 'user', content: 'Old question' },
       ],
     };
-    await createLangChainHandler(llm as any)(config as any, 'new question');
+    await createLangChainMessagesHandler(llm as any)(config as any, 'new question');
     const messages = llm.invoke.mock.calls[0][0];
     expect(messages[0]._getType()).toBe('system');
     expect(messages[0].content).toBe('Be concise.');
@@ -192,7 +192,7 @@ describe('createLangChainHandler', () => {
         { role: 'assistant', content: 'Old answer' },
       ],
     };
-    await createLangChainHandler(llm as any)(config as any, 'new question');
+    await createLangChainMessagesHandler(llm as any)(config as any, 'new question');
     const messages = llm.invoke.mock.calls[0][0];
     expect(messages.at(-1).content).toBe('new question');
   });
@@ -203,7 +203,7 @@ describe('createLangChainHandler', () => {
       ...baseConfig,
       messages: [{ role: 'system', content: 'Messages system — takes priority' }],
     };
-    await createLangChainHandler(llm as any)(config as any, 'q');
+    await createLangChainMessagesHandler(llm as any)(config as any, 'q');
     const messages = llm.invoke.mock.calls[0][0];
     expect(messages[0].content).toBe('Messages system — takes priority');
   });
@@ -220,7 +220,7 @@ describe('createLangChainHandler', () => {
         new AIMessage({ content: 'ok', usage_metadata: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } }),
       );
     });
-    await expect(createLangChainHandler(llm as any)(baseConfig as any, '')).resolves.toBeDefined();
+    await expect(createLangChainMessagesHandler(llm as any)(baseConfig as any, '')).resolves.toBeDefined();
     // With instructions present: [SystemMessage, HumanMessage(userInput)]
     const humanMsg = capturedMessages?.[1];
     expect(humanMsg._getType()).toBe('human');
@@ -229,12 +229,17 @@ describe('createLangChainHandler', () => {
 
   it('does not throw when userInput is undefined', async () => {
     const llm = makeMockLLM();
-    await expect(createLangChainHandler(llm as any)(baseConfig as any, undefined)).resolves.toBeDefined();
+    await expect(createLangChainMessagesHandler(llm as any)(baseConfig as any, undefined)).resolves.toBeDefined();
   });
 
   it('leaves unresolved placeholder unchanged in instructions', async () => {
     const llm = makeMockLLM();
-    await createLangChainHandler(llm as any)({ ...baseConfig, instructions: 'Hello {{missing}}.' } as any, 'q', {}, {});
+    await createLangChainMessagesHandler(llm as any)(
+      { ...baseConfig, instructions: 'Hello {{missing}}.' } as any,
+      'q',
+      {},
+      {},
+    );
     const messages = llm.invoke.mock.calls[0][0];
     expect(messages[0].content).toBe('Hello {{missing}}.');
   });
@@ -248,7 +253,7 @@ describe('createLangChainHandler', () => {
       provider: { name: 'LangChain' },
       messages: [{ role: 'system', content: 'Be a {{role}}.' }],
     };
-    await createLangChainHandler(llm as any)(config as any, 'q', {}, { role: 'poet' });
+    await createLangChainMessagesHandler(llm as any)(config as any, 'q', {}, { role: 'poet' });
     const messages = llm.invoke.mock.calls[0][0];
     expect(messages[0]._getType()).toBe('system');
     expect(messages[0].content).toBe('Be a poet.');
@@ -261,7 +266,7 @@ describe('createLangChainHandler', () => {
       provider: { name: 'LangChain' },
       messages: [{ role: 'user', content: 'Tell me about {{topic}}.' }],
     };
-    await createLangChainHandler(llm as any)(config as any, 'follow-up', {}, { topic: 'oceans' });
+    await createLangChainMessagesHandler(llm as any)(config as any, 'follow-up', {}, { topic: 'oceans' });
     const messages = llm.invoke.mock.calls[0][0];
     expect(messages[0]._getType()).toBe('human');
     expect(messages[0].content).toBe('Tell me about oceans.');
@@ -277,7 +282,7 @@ describe('createLangChainHandler', () => {
         search: { name: 'search', type: 'function' as const, parameters: { type: 'object' }, description: 'Search' },
       },
     };
-    await createLangChainHandler(llm as any)(config as any, 'q', { search: vi.fn() });
+    await createLangChainMessagesHandler(llm as any)(config as any, 'q', { search: vi.fn() });
     expect(llm.bindTools).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ function: expect.objectContaining({ name: 'search' }) })]),
     );
@@ -285,7 +290,7 @@ describe('createLangChainHandler', () => {
 
   it('does not call bindTools when config.tools is absent', async () => {
     const llm = makeMockLLM();
-    await createLangChainHandler(llm as any)(baseConfig as any, 'q');
+    await createLangChainMessagesHandler(llm as any)(baseConfig as any, 'q');
     expect(llm.bindTools).not.toHaveBeenCalled();
   });
 
@@ -311,7 +316,11 @@ describe('createLangChainHandler', () => {
         },
       },
     };
-    await createLangChainHandler(llm as any)(config as any, 'q', { search: vi.fn(), calc: vi.fn(), weather: vi.fn() });
+    await createLangChainMessagesHandler(llm as any)(config as any, 'q', {
+      search: vi.fn(),
+      calc: vi.fn(),
+      weather: vi.fn(),
+    });
     const toolDefs = llm.bindTools.mock.calls[0][0];
     expect(toolDefs).toHaveLength(3);
     const names = toolDefs.map((t: any) => t.function.name);
@@ -346,7 +355,7 @@ describe('createLangChainHandler', () => {
       ...baseConfig,
       tools: { myTool: { name: 'myTool', type: 'function' as const, parameters: {} } },
     };
-    const result = await createLangChainHandler(llm as any)(config as any, 'q', { myTool });
+    const result = await createLangChainMessagesHandler(llm as any)(config as any, 'q', { myTool });
     expect(myTool).toHaveBeenCalledWith({ q: 'test' });
     expect(result.output).toBe('Final answer');
   });
@@ -388,7 +397,7 @@ describe('createLangChainHandler', () => {
         toolB: { name: 'toolB', type: 'function' as const, parameters: {} },
       },
     };
-    const result = await createLangChainHandler(llm as any)(config as any, 'q', { toolA, toolB });
+    const result = await createLangChainMessagesHandler(llm as any)(config as any, 'q', { toolA, toolB });
     expect(toolA).toHaveBeenCalledOnce();
     expect(toolA).toHaveBeenCalledWith({ x: 1 });
     expect(toolB).toHaveBeenCalledOnce();
@@ -411,7 +420,7 @@ describe('createLangChainHandler', () => {
       ...baseConfig,
       tools: { unknownTool: { name: 'unknownTool', type: 'function' as const, parameters: {} } },
     };
-    await expect(createLangChainHandler(llm as any)(config as any, 'q', {})).rejects.toThrow(/unknownTool/);
+    await expect(createLangChainMessagesHandler(llm as any)(config as any, 'q', {})).rejects.toThrow(/unknownTool/);
   });
 
   it('rejects a registered tool that is excluded from the active config', async () => {
@@ -430,7 +439,7 @@ describe('createLangChainHandler', () => {
       tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
     };
 
-    await expect(createLangChainHandler(llm as any)(config as any, 'q', { safe, dangerous })).rejects.toThrow(
+    await expect(createLangChainMessagesHandler(llm as any)(config as any, 'q', { safe, dangerous })).rejects.toThrow(
       /dangerous/,
     );
     expect(dangerous).not.toHaveBeenCalled();
@@ -447,7 +456,7 @@ describe('createLangChainHandler', () => {
       }),
     );
 
-    await expect(createLangChainHandler(llm as any)(baseConfig as any, 'q', { dangerous })).rejects.toThrow(
+    await expect(createLangChainMessagesHandler(llm as any)(baseConfig as any, 'q', { dangerous })).rejects.toThrow(
       /dangerous/,
     );
     expect(dangerous).not.toHaveBeenCalled();
@@ -468,7 +477,7 @@ describe('createLangChainHandler', () => {
       tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: {} } },
     };
 
-    await expect(createLangChainHandler(llm as any)(config as any, 'q', {})).rejects.toThrow(/constructor/);
+    await expect(createLangChainMessagesHandler(llm as any)(config as any, 'q', {})).rejects.toThrow(/constructor/);
     expect(llm.bindTools).not.toHaveBeenCalled();
   });
 
@@ -488,7 +497,7 @@ describe('createLangChainHandler', () => {
       ...baseConfig,
       tools: { brokenTool: { name: 'brokenTool', type: 'function' as const, parameters: {} } },
     };
-    await expect(createLangChainHandler(llm as any)(config as any, 'q', { brokenTool })).rejects.toThrow(
+    await expect(createLangChainMessagesHandler(llm as any)(config as any, 'q', { brokenTool })).rejects.toThrow(
       'tool explosion',
     );
   });
@@ -496,7 +505,7 @@ describe('createLangChainHandler', () => {
   it('does not invoke toolHandlers when config.tools is absent', async () => {
     const orphanTool = vi.fn();
     const llm = makeMockLLM();
-    await createLangChainHandler(llm as any)(baseConfig as any, 'q', { orphanTool });
+    await createLangChainMessagesHandler(llm as any)(baseConfig as any, 'q', { orphanTool });
     expect(orphanTool).not.toHaveBeenCalled();
     expect(llm.invoke).toHaveBeenCalledOnce();
   });
@@ -504,14 +513,14 @@ describe('createLangChainHandler', () => {
   // ── 1.5 Telemetry ───────────────────────────────────────────────────────────
 
   it('uses invoke_agent as the root span name', async () => {
-    await createLangChainHandler(makeMockLLM() as any)(baseConfig as any, 'q');
+    await createLangChainMessagesHandler(makeMockLLM() as any)(baseConfig as any, 'q');
     expect(mockStartActiveSpan).toHaveBeenCalledWith('invoke_agent', expect.any(Function));
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.operation.name', 'invoke_agent');
   });
 
   it('sets gen_ai usage attributes on the chat model span', async () => {
     const llm = makeMockLLM('hi', 8, 4);
-    await createLangChainHandler(llm as any)(baseConfig as any, 'q');
+    await createLangChainMessagesHandler(llm as any)(baseConfig as any, 'q');
     const modelSpan = latestModelSpan();
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.system', 'langchain');
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.operation.name', 'chat');
@@ -529,14 +538,14 @@ describe('createLangChainHandler', () => {
     ['', 'openai'],
   ] as const)('sets gen_ai.provider.name from config %s', async (providerName, expected) => {
     const cfg = { ...baseConfig, provider: { name: providerName } };
-    await createLangChainHandler(makeMockLLM() as any)(cfg as any, 'q');
+    await createLangChainMessagesHandler(makeMockLLM() as any)(cfg as any, 'q');
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', expected);
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.system', 'langchain');
   });
 
   it('emits no content at all by default', async () => {
     const llm = makeMockLLM('answer');
-    await createLangChainHandler(llm as any)(baseConfig as any, 'question');
+    await createLangChainMessagesHandler(llm as any)(baseConfig as any, 'question');
 
     // Conversation content is PII, so a caller has to ask for it. Asserting on the recorded
     // arguments rather than on specific keys catches a new content attribute added without a gate.
@@ -547,7 +556,7 @@ describe('createLangChainHandler', () => {
 
   it('puts prompt and completion on span attributes when capture is enabled', async () => {
     const llm = makeMockLLM('answer');
-    await createLangChainHandler(llm as any, { captureContent: true })(baseConfig as any, 'question');
+    await createLangChainMessagesHandler(llm as any, { captureContent: true })(baseConfig as any, 'question');
 
     // Attributes, not events: OTEP 4430 deprecated event-recorded content and LaunchDarkly's
     // readers parse only attributes.
@@ -576,7 +585,7 @@ describe('createLangChainHandler', () => {
   };
 
   it('emits the feature_flag correlation event and launchdarkly attributes on the root span', async () => {
-    await createLangChainHandler(makeMockLLM() as any)(baseConfig as any, 'q', {}, ldFixture);
+    await createLangChainMessagesHandler(makeMockLLM() as any)(baseConfig as any, 'q', {}, ldFixture);
 
     expect(mockSpan.addEvent).toHaveBeenCalledWith('feature_flag', {
       'feature_flag.key': 'test-config',
@@ -590,13 +599,13 @@ describe('createLangChainHandler', () => {
   });
 
   it('does not emit the feature_flag event on child spans', async () => {
-    await createLangChainHandler(makeMockLLM() as any)(baseConfig as any, 'q', {}, ldFixture);
+    await createLangChainMessagesHandler(makeMockLLM() as any)(baseConfig as any, 'q', {}, ldFixture);
     const childEvents = mockChildSpans.flatMap(({ span }) => span.addEvent.mock.calls.map((c: unknown[]) => c[0]));
     expect(childEvents).not.toContain('feature_flag');
   });
 
   it('sets OK status and ends span on success', async () => {
-    await createLangChainHandler(makeMockLLM() as any)(baseConfig as any, 'q');
+    await createLangChainMessagesHandler(makeMockLLM() as any)(baseConfig as any, 'q');
     expect(mockSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.OK });
     expect(mockSpan.end).toHaveBeenCalled();
   });
@@ -632,7 +641,7 @@ describe('createLangChainHandler', () => {
 
   it('emits one chat child span per model turn under the invoke_agent root', async () => {
     const myTool = vi.fn().mockReturnValue('r');
-    await createLangChainHandler(toolThenAnswerLLM(myTool) as any)(toolConfig as any, 'q', { myTool });
+    await createLangChainMessagesHandler(toolThenAnswerLLM(myTool) as any)(toolConfig as any, 'q', { myTool });
 
     const chats = modelSpans();
     expect(chats).toHaveLength(2);
@@ -643,7 +652,7 @@ describe('createLangChainHandler', () => {
 
   it('emits an execute_tool child span per tool call, keyed by tool_call id', async () => {
     const myTool = vi.fn().mockReturnValue('r');
-    await createLangChainHandler(toolThenAnswerLLM(myTool) as any)(toolConfig as any, 'q', { myTool });
+    await createLangChainMessagesHandler(toolThenAnswerLLM(myTool) as any)(toolConfig as any, 'q', { myTool });
 
     const toolSpan = mockChildSpans.find(({ name }) => name === 'execute_tool myTool')?.span;
     expect(toolSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.operation.name', 'execute_tool');
@@ -669,7 +678,7 @@ describe('createLangChainHandler', () => {
         }),
       ),
     };
-    await createLangChainHandler(llm as any)(baseConfig as any, 'q');
+    await createLangChainMessagesHandler(llm as any)(baseConfig as any, 'q');
 
     const modelSpan = latestModelSpan();
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 50);
@@ -680,7 +689,7 @@ describe('createLangChainHandler', () => {
   it('fails the chat span when the model invoke throws', async () => {
     const err = new Error('LLM down');
     const llm = { invoke: vi.fn().mockRejectedValue(err), bindTools: vi.fn().mockReturnThis() };
-    await expect(createLangChainHandler(llm as any)(baseConfig as any, 'q')).rejects.toThrow('LLM down');
+    await expect(createLangChainMessagesHandler(llm as any)(baseConfig as any, 'q')).rejects.toThrow('LLM down');
 
     const modelSpan = latestModelSpan();
     expect(modelSpan?.recordException).toHaveBeenCalledWith(err);
@@ -701,7 +710,7 @@ describe('createLangChainHandler', () => {
       ),
     };
     await expect(
-      createLangChainHandler(llm as any)(toolConfig as any, 'q', { myTool: vi.fn().mockRejectedValue(err) }),
+      createLangChainMessagesHandler(llm as any)(toolConfig as any, 'q', { myTool: vi.fn().mockRejectedValue(err) }),
     ).rejects.toThrow('tool boom');
 
     const toolSpan = mockChildSpans.find(({ name }) => name === 'execute_tool myTool')?.span;
@@ -715,7 +724,7 @@ describe('createLangChainHandler', () => {
   it('records exception, sets ERROR status, ends span, and re-throws', async () => {
     const err = new Error('LLM error');
     const llm = { invoke: vi.fn().mockRejectedValue(err), bindTools: vi.fn().mockReturnThis() };
-    await expect(createLangChainHandler(llm as any)(baseConfig as any, 'q')).rejects.toThrow('LLM error');
+    await expect(createLangChainMessagesHandler(llm as any)(baseConfig as any, 'q')).rejects.toThrow('LLM error');
     expect(mockSpan.recordException).toHaveBeenCalledWith(err);
     expect(mockSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR, message: 'LLM error' });
     expect(mockSpan.end).toHaveBeenCalled();
@@ -766,20 +775,20 @@ describe('createLangChainHandler', () => {
   }
 
   it('handler.stream is defined', () => {
-    const handler = createLangChainHandler(makeMockLLM() as any);
+    const handler = createLangChainMessagesHandler(makeMockLLM() as any);
     expect(typeof handler.stream).toBe('function');
   });
 
   it('handler.stream returns an async iterable', () => {
     const llm = makeStreamingLLM(['hi']);
-    const handler = createLangChainHandler(llm as any);
+    const handler = createLangChainMessagesHandler(llm as any);
     const gen = handler.stream?.(baseConfig as any, 'q', {}, {});
     expect(typeof gen[Symbol.asyncIterator]).toBe('function');
   });
 
   it('yields chunk events for each AIMessageChunk', async () => {
     const llm = makeStreamingLLM(['Hello', ' world']);
-    const handler = createLangChainHandler(llm as any);
+    const handler = createLangChainMessagesHandler(llm as any);
     const events = await collectStream(handler.stream?.(baseConfig as any, 'q', {}, {}));
     const chunks = events.filter((e: any) => e.type === 'chunk').map((e: any) => e.text);
     expect(chunks).toEqual(['Hello', ' world']);
@@ -792,21 +801,23 @@ describe('createLangChainHandler', () => {
         { type: 'text', text: 'visible answer' },
       ],
     ]);
-    const events = await collectStream(createLangChainHandler(llm as any).stream?.(baseConfig as any, 'q', {}, {}));
+    const events = await collectStream(
+      createLangChainMessagesHandler(llm as any).stream?.(baseConfig as any, 'q', {}, {}),
+    );
     expect(events).toContainEqual({ type: 'chunk', text: 'visible answer' });
     expect(events.at(-1)).toMatchObject({ type: 'done', output: 'visible answer' });
   });
 
   it('yields a done event as the last event', async () => {
     const llm = makeStreamingLLM(['hi']);
-    const handler = createLangChainHandler(llm as any);
+    const handler = createLangChainMessagesHandler(llm as any);
     const events = await collectStream(handler.stream?.(baseConfig as any, 'q', {}, {}));
     expect(events.at(-1) as any).toMatchObject({ type: 'done' });
   });
 
   it('no chunk event appears after the done event', async () => {
     const llm = makeStreamingLLM(['a', 'b', 'c']);
-    const handler = createLangChainHandler(llm as any);
+    const handler = createLangChainMessagesHandler(llm as any);
     const events = await collectStream(handler.stream?.(baseConfig as any, 'q', {}, {}));
     const doneIdx = events.findIndex((e: any) => e.type === 'done');
     const chunksAfterDone = events.slice(doneIdx + 1).filter((e: any) => e.type === 'chunk');
@@ -815,7 +826,7 @@ describe('createLangChainHandler', () => {
 
   it('done event carries correct usage', async () => {
     const llm = makeStreamingLLM(['result'], 10, 6);
-    const handler = createLangChainHandler(llm as any);
+    const handler = createLangChainMessagesHandler(llm as any);
     const events = await collectStream(handler.stream?.(baseConfig as any, 'q', {}, {}));
     const done = events.find((e: any) => e.type === 'done') as any;
     expect(done.usage.input_tokens).toBe(10);
@@ -824,7 +835,7 @@ describe('createLangChainHandler', () => {
 
   it('done event carries the accumulated output text', async () => {
     const llm = makeStreamingLLM(['Hello', ' world']);
-    const handler = createLangChainHandler(llm as any);
+    const handler = createLangChainMessagesHandler(llm as any);
     const events = await collectStream(handler.stream?.(baseConfig as any, 'q', {}, {}));
     const done = events.find((e: any) => e.type === 'done') as any;
     expect(done.output).toBe('Hello world');
@@ -833,7 +844,7 @@ describe('createLangChainHandler', () => {
   it('sets span attributes and puts content on attributes when enabled, streaming', async () => {
     const llm = makeStreamingLLM(['result']);
     await collectStream(
-      createLangChainHandler(llm as any, { captureContent: true }).stream?.(baseConfig as any, 'q', {}, {}),
+      createLangChainMessagesHandler(llm as any, { captureContent: true }).stream?.(baseConfig as any, 'q', {}, {}),
     );
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.operation.name', 'invoke_agent');
     const modelSpan = latestModelSpan();
@@ -851,7 +862,7 @@ describe('createLangChainHandler', () => {
     const { trace } = await import('@opentelemetry/api');
     const startSpanSpy = (trace.getTracer as any)().startSpan;
     const llm = makeStreamingLLM(['hi']);
-    await collectStream(createLangChainHandler(llm as any).stream?.(baseConfig as any, 'q', {}, {}));
+    await collectStream(createLangChainMessagesHandler(llm as any).stream?.(baseConfig as any, 'q', {}, {}));
     expect(startSpanSpy).toHaveBeenCalledWith('invoke_agent');
   });
 
@@ -863,7 +874,7 @@ describe('createLangChainHandler', () => {
       stream: vi.fn().mockRejectedValue(err),
     };
     await expect(
-      collectStream(createLangChainHandler(llm as any).stream?.(baseConfig as any, 'q', {}, {})),
+      collectStream(createLangChainMessagesHandler(llm as any).stream?.(baseConfig as any, 'q', {}, {})),
     ).rejects.toThrow('stream fail');
     expect(mockSpan.recordException).toHaveBeenCalledWith(err);
     expect(mockSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
@@ -879,7 +890,7 @@ describe('createLangChainHandler', () => {
 
   it('history messages are inserted between config messages and userInput', async () => {
     const llm = makeMockLLM();
-    const handler = createLangChainHandler(llm as any);
+    const handler = createLangChainMessagesHandler(llm as any);
     const config = {
       model: { name: 'gpt-4o' },
       provider: { name: 'LangChain' },
@@ -907,7 +918,7 @@ describe('createLangChainHandler', () => {
 
   it('history with instructions path — history messages appear before userInput', async () => {
     const llm = makeMockLLM();
-    const handler = createLangChainHandler(llm as any);
+    const handler = createLangChainMessagesHandler(llm as any);
     await handler(baseConfig as any, 'follow up', {}, {}, sampleHistory);
     const messages = llm.invoke.mock.calls[0][0];
     expect(messages[0]._getType()).toBe('system');
@@ -922,11 +933,11 @@ describe('createLangChainHandler', () => {
 
   it('empty history is treated like no history', async () => {
     const llm1 = makeMockLLM();
-    await createLangChainHandler(llm1 as any)(baseConfig as any, 'hi', {}, {}, []);
+    await createLangChainMessagesHandler(llm1 as any)(baseConfig as any, 'hi', {}, {}, []);
     const withEmpty = llm1.invoke.mock.calls[0][0];
 
     const llm2 = makeMockLLM();
-    await createLangChainHandler(llm2 as any)(baseConfig as any, 'hi');
+    await createLangChainMessagesHandler(llm2 as any)(baseConfig as any, 'hi');
     const without = llm2.invoke.mock.calls[0][0];
 
     expect(withEmpty.length).toEqual(without.length);
@@ -938,7 +949,7 @@ describe('createLangChainHandler', () => {
 
   it('system role messages in history are filtered out', async () => {
     const llm = makeMockLLM();
-    const handler = createLangChainHandler(llm as any);
+    const handler = createLangChainMessagesHandler(llm as any);
     const historyWithSystem = [
       { role: 'user' as const, content: 'Hello' },
       { role: 'system' as const, content: 'Should be filtered' },
@@ -954,7 +965,7 @@ describe('createLangChainHandler', () => {
 
   it('multimodal image history content blocks are preserved on the wire', async () => {
     const llm = makeMockLLM();
-    const handler = createLangChainHandler(llm as any);
+    const handler = createLangChainMessagesHandler(llm as any);
     const imageHistory = [
       {
         role: 'user' as const,
@@ -992,7 +1003,7 @@ describe('createLangChainHandler', () => {
     };
 
     await expect(
-      collectStream(createLangChainHandler(llm as any).stream?.(config as any, 'q', {}, {})),
+      collectStream(createLangChainMessagesHandler(llm as any).stream?.(config as any, 'q', {}, {})),
     ).rejects.toThrow(/constructor/);
     expect(llm.bindTools).not.toHaveBeenCalled();
   });
@@ -1015,7 +1026,9 @@ describe('createLangChainHandler', () => {
     };
 
     await expect(
-      collectStream(createLangChainHandler(llm as any).stream?.(config as any, 'q', { safe: vi.fn(), dangerous }, {})),
+      collectStream(
+        createLangChainMessagesHandler(llm as any).stream?.(config as any, 'q', { safe: vi.fn(), dangerous }, {}),
+      ),
     ).rejects.toThrow(/dangerous/);
     expect(dangerous).not.toHaveBeenCalled();
     expect(stream).toHaveBeenCalledOnce();
@@ -1035,7 +1048,7 @@ describe('createLangChainHandler', () => {
     const llm = { invoke: vi.fn(), stream, bindTools: vi.fn().mockReturnThis() };
 
     await expect(
-      collectStream(createLangChainHandler(llm as any).stream?.(baseConfig as any, 'q', { dangerous }, {})),
+      collectStream(createLangChainMessagesHandler(llm as any).stream?.(baseConfig as any, 'q', { dangerous }, {})),
     ).rejects.toThrow(/dangerous/);
     expect(dangerous).not.toHaveBeenCalled();
     expect(stream).toHaveBeenCalledOnce();
@@ -1080,7 +1093,9 @@ describe('createLangChainHandler', () => {
       tools: { myTool: { name: 'myTool', type: 'function' as const, parameters: {} } },
     };
 
-    const events = await collectStream(createLangChainHandler(llm as any).stream?.(config as any, 'q', { myTool }, {}));
+    const events = await collectStream(
+      createLangChainMessagesHandler(llm as any).stream?.(config as any, 'q', { myTool }, {}),
+    );
 
     const chunkTexts = events.filter((e: any) => e.type === 'chunk').map((e: any) => e.text);
     expect(chunkTexts).toContain('Pre-tool text');
@@ -1116,7 +1131,7 @@ describe('createLangChainHandler', () => {
       tools: { myTool: { name: 'myTool', type: 'function' as const, parameters: {} } },
     };
 
-    await collectStream(createLangChainHandler(llm as any).stream?.(config as any, 'q', { myTool }, {}));
+    await collectStream(createLangChainMessagesHandler(llm as any).stream?.(config as any, 'q', { myTool }, {}));
 
     expect(myTool).toHaveBeenCalledWith({ key: 'val' });
   });
@@ -1151,7 +1166,9 @@ describe('createLangChainHandler', () => {
       tools: { myTool: { name: 'myTool', type: 'function' as const, parameters: {} } },
     };
 
-    const events = await collectStream(createLangChainHandler(llm as any).stream?.(config as any, 'q', { myTool }, {}));
+    const events = await collectStream(
+      createLangChainMessagesHandler(llm as any).stream?.(config as any, 'q', { myTool }, {}),
+    );
 
     const done = events.find((e: any) => e.type === 'done') as any;
     expect(done.output).toBe('Hello world');
@@ -1160,7 +1177,7 @@ describe('createLangChainHandler', () => {
 
 // ── §1.9 outputFormat — first-class (withStructuredOutput) ───────────────────
 
-describe('createLangChainHandler — outputFormat (§1.9)', () => {
+describe('createLangChainMessagesHandler — outputFormat (§1.9)', () => {
   const outputFormat = { type: 'object', properties: { answer: { type: 'string' } } };
 
   beforeEach(() => {
@@ -1184,7 +1201,7 @@ describe('createLangChainHandler — outputFormat (§1.9)', () => {
     const withStructuredOutput = vi.fn().mockReturnValue({ invoke: structuredInvoke });
     const llm = { invoke: vi.fn(), bindTools: vi.fn().mockReturnThis(), withStructuredOutput };
     const config = { ...baseConfig, outputFormat };
-    await createLangChainHandler(llm as any)(config as any, 'hello');
+    await createLangChainMessagesHandler(llm as any)(config as any, 'hello');
     expect(withStructuredOutput).toHaveBeenCalledWith(outputFormat, expect.objectContaining({ includeRaw: true }));
   });
 
@@ -1200,14 +1217,14 @@ describe('createLangChainHandler — outputFormat (§1.9)', () => {
     const withStructuredOutput = vi.fn().mockReturnValue({ invoke: structuredInvoke });
     const llm = { invoke: vi.fn(), bindTools: vi.fn().mockReturnThis(), withStructuredOutput };
     const config = { ...baseConfig, outputFormat };
-    const result = await createLangChainHandler(llm as any)(config as any, 'hello');
+    const result = await createLangChainMessagesHandler(llm as any)(config as any, 'hello');
     expect(result.output).toEqual(structuredOutput);
   });
 
   it('does not call withStructuredOutput when outputFormat is absent', async () => {
     const withStructuredOutput = vi.fn();
     const llm = { ...makeMockLLM(), withStructuredOutput };
-    const handler = createLangChainHandler(llm as any);
+    const handler = createLangChainMessagesHandler(llm as any);
     await handler(baseConfig as any, 'hello');
     expect(withStructuredOutput).not.toHaveBeenCalled();
   });
@@ -1224,7 +1241,7 @@ describe('createLangChainHandler — outputFormat (§1.9)', () => {
     const withStructuredOutput = vi.fn().mockReturnValue({ invoke: structuredInvoke });
     const llm = { invoke: vi.fn(), bindTools: vi.fn().mockReturnThis(), withStructuredOutput };
     const config = { ...baseConfig, outputFormat };
-    const result = await createLangChainHandler(llm as any)(config as any, 'hello');
+    const result = await createLangChainMessagesHandler(llm as any)(config as any, 'hello');
     expect(result.usage).toMatchObject({ input_tokens: 5, output_tokens: 3 });
   });
 
@@ -1240,14 +1257,14 @@ describe('createLangChainHandler — outputFormat (§1.9)', () => {
     const withStructuredOutput = vi.fn().mockReturnValue({ invoke: structuredInvoke });
     const llm = { invoke: vi.fn(), bindTools: vi.fn().mockReturnThis(), withStructuredOutput };
     const config = { ...baseConfig, outputFormat };
-    const result = await createLangChainHandler(llm as any)(config as any, 'hello');
+    const result = await createLangChainMessagesHandler(llm as any)(config as any, 'hello');
     expect(result.output).toEqual(parsedOutput);
   });
 });
 
 // ── §1.9 outputFormat + tools conflict ───────────────────────────────────────
 
-describe('createLangChainHandler — outputFormat + tools conflict (§1.9)', () => {
+describe('createLangChainMessagesHandler — outputFormat + tools conflict (§1.9)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStartActiveSpan.mockImplementation((_name: string, fn: Function) => fn(mockSpan));
@@ -1279,7 +1296,7 @@ describe('createLangChainHandler — outputFormat + tools conflict (§1.9)', () 
       outputFormat: { type: 'object', properties: { answer: { type: 'string' } } },
       tools: { myTool: { name: 'myTool', type: 'function' as const, parameters: {} } },
     };
-    await expect(createLangChainHandler(llm as any)(config as any, 'hello')).resolves.toBeDefined();
+    await expect(createLangChainMessagesHandler(llm as any)(config as any, 'hello')).resolves.toBeDefined();
   });
 
   it('does not throw when outputFormat is set and config.tools is absent', async () => {
@@ -1293,13 +1310,13 @@ describe('createLangChainHandler — outputFormat + tools conflict (§1.9)', () 
     const withStructuredOutput = vi.fn().mockReturnValue({ invoke: structuredInvoke });
     const llm = { invoke: vi.fn(), bindTools: vi.fn().mockReturnThis(), withStructuredOutput };
     const config = { ...baseConfig, outputFormat: { type: 'object', properties: { answer: { type: 'string' } } } };
-    await expect(createLangChainHandler(llm as any)(config as any, 'hello')).resolves.not.toThrow();
+    await expect(createLangChainMessagesHandler(llm as any)(config as any, 'hello')).resolves.not.toThrow();
   });
 });
 
 // ── §1.10 MAX_STEPS cap ───────────────────────────────────────────────────────
 
-describe('createLangChainHandler — MAX_STEPS cap (§1.10)', () => {
+describe('createLangChainMessagesHandler — MAX_STEPS cap (§1.10)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStartActiveSpan.mockImplementation((_name: string, fn: Function) => fn(mockSpan));
@@ -1324,7 +1341,7 @@ describe('createLangChainHandler — MAX_STEPS cap (§1.10)', () => {
     const llm = { invoke, bindTools: vi.fn().mockReturnThis() };
 
     const cfg = { ...baseConfig, tools: { myTool: { name: 'myTool', type: 'function' as const, parameters: {} } } };
-    await expect(createLangChainHandler(llm as any)(cfg as any, 'q', { myTool: toolFn })).rejects.toThrow(
+    await expect(createLangChainMessagesHandler(llm as any)(cfg as any, 'q', { myTool: toolFn })).rejects.toThrow(
       /maximum number of steps/,
     );
     // 11 calls: 10 tool loops + 1 that hits the cap check
@@ -1344,7 +1361,7 @@ describe('createLangChainHandler — MAX_STEPS cap (§1.10)', () => {
     const llm = { invoke, bindTools: vi.fn().mockReturnThis() };
 
     const cfg = { ...baseConfig, tools: { myTool: { name: 'myTool', type: 'function' as const, parameters: {} } } };
-    const result = await createLangChainHandler(llm as any)(cfg as any, 'q', { myTool: toolFn });
+    const result = await createLangChainMessagesHandler(llm as any)(cfg as any, 'q', { myTool: toolFn });
     expect(result.output).toBe('Done');
   });
 
@@ -1370,7 +1387,7 @@ describe('createLangChainHandler — MAX_STEPS cap (§1.10)', () => {
       return out;
     };
     await expect(
-      collectStream(createLangChainHandler(llm as any).stream?.(cfg as any, 'q', { myTool: toolFn }, {})),
+      collectStream(createLangChainMessagesHandler(llm as any).stream?.(cfg as any, 'q', { myTool: toolFn }, {})),
     ).rejects.toThrow(/maximum number of steps/);
   });
 });
@@ -1390,7 +1407,7 @@ describe('model source', () => {
   it('calls a factory with the evaluated config and uses the returned model', async () => {
     const llm = makeMockLLM('from-factory');
     const factory = vi.fn().mockReturnValue(llm);
-    const result = await createLangChainHandler(factory)(parameterized as any, 'q');
+    const result = await createLangChainMessagesHandler(factory)(parameterized as any, 'q');
     expect(factory).toHaveBeenCalledOnce();
     expect(factory.mock.calls[0][0].model.parameters).toEqual({ temperature: 0.2, max_tokens: 512 });
     expect(llm.invoke).toHaveBeenCalledOnce();
@@ -1399,7 +1416,7 @@ describe('model source', () => {
 
   it('uses a pre-built instance as-is', async () => {
     const llm = makeMockLLM('from-instance');
-    const result = await createLangChainHandler(llm as any)(parameterized as any, 'q');
+    const result = await createLangChainMessagesHandler(llm as any)(parameterized as any, 'q');
     expect(llm.invoke).toHaveBeenCalledOnce();
     expect(result.output).toBe('from-instance');
   });
@@ -1415,7 +1432,7 @@ describe('model source', () => {
       ...parameterized,
       model: { ...parameterized.model, parameters: { ...parameterized.model.parameters, tools: ['openai-tool'] } },
     };
-    await createLangChainHandler()(cfg as any, 'q');
+    await createLangChainMessagesHandler()(cfg as any, 'q');
     expect(ChatOpenAI).toHaveBeenCalledWith({
       temperature: 0.2,
       maxTokens: 512,
@@ -1431,7 +1448,7 @@ describe('model source', () => {
       ...baseConfig,
       model: { name: 'gpt-4o', parameters: { temperature: 0.2, maxTokens: 512 } },
     };
-    await createLangChainHandler()(cfg as any, 'q');
+    await createLangChainMessagesHandler()(cfg as any, 'q');
     expect(ChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
   });
 
@@ -1448,7 +1465,7 @@ describe('model source', () => {
       provider: { name: provider },
       model: { name, parameters: { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 } },
     };
-    await createLangChainHandler()(cfg as any, 'q');
+    await createLangChainMessagesHandler()(cfg as any, 'q');
     const args = vi.mocked(ctor()).mock.calls.at(-1)![0] as Record<string, unknown>;
     expect(args.temperature).toBe(0.3);
     expectNoNeverForwardedValue(args);
@@ -1466,7 +1483,7 @@ describe('model source', () => {
         parameters: { temperature: 0.1, thinking: { type: 'enabled', budget_tokens: 1024 } },
       },
     };
-    await createLangChainHandler()(cfg as any, 'q');
+    await createLangChainMessagesHandler()(cfg as any, 'q');
     expect(ChatAnthropic).toHaveBeenCalledWith({
       temperature: 0.1,
       thinking: { type: 'enabled', budget_tokens: 1024 },
@@ -1494,8 +1511,8 @@ describe('model source', () => {
         parameters: { output_config: { effort: 'low', format: { type: 'json_schema', schema: { type: 'object' } } } },
       },
     };
-    await createLangChainHandler()(cfg as any, 'q');
-    for await (const _e of createLangChainHandler().stream?.(cfg as any, 'q', {}, {}) ?? []) {
+    await createLangChainMessagesHandler()(cfg as any, 'q');
+    for await (const _e of createLangChainMessagesHandler().stream?.(cfg as any, 'q', {}, {}) ?? []) {
       // drain
     }
     expect(vi.mocked(ChatAnthropic).mock.calls.map(([args]) => args)).toEqual([
@@ -1517,7 +1534,7 @@ describe('model source', () => {
         parameters: { temperature: 0.2, tools: [{ name: 'duplicated-search' }] },
       },
     };
-    await createLangChainHandler()(cfg as any, 'q');
+    await createLangChainMessagesHandler()(cfg as any, 'q');
     expect(ChatBedrockConverse).toHaveBeenCalledWith({
       temperature: 0.2,
       model: 'us.anthropic.claude-sonnet-4-5',
@@ -1535,7 +1552,7 @@ describe('model source', () => {
       provider: { name: 'Bedrock' },
       model: { name: 'us.anthropic.claude-sonnet-4-5', region: 'us' },
     };
-    await createLangChainHandler()(cfg as any, 'q');
+    await createLangChainMessagesHandler()(cfg as any, 'q');
     expect(ChatBedrockConverse).toHaveBeenCalledWith({ model: 'us.anthropic.claude-sonnet-4-5' });
   });
 
@@ -1548,7 +1565,7 @@ describe('model source', () => {
       provider: { name: 'Bedrock' },
       model: { name: 'anthropic.claude-sonnet-4-5' },
     };
-    await createLangChainHandler()(cfg as any, 'q');
+    await createLangChainMessagesHandler()(cfg as any, 'q');
     expect(ChatBedrockConverse).toHaveBeenCalledWith({ model: 'anthropic.claude-sonnet-4-5' });
   });
 
@@ -1561,7 +1578,7 @@ describe('model source', () => {
       provider: { name: 'OpenAI' },
       model: { name: 'gpt-4o', region: 'us' },
     };
-    await createLangChainHandler()(cfg as any, 'q');
+    await createLangChainMessagesHandler()(cfg as any, 'q');
     expect(ChatOpenAI).toHaveBeenCalledWith({ model: 'gpt-4o' });
   });
 
@@ -1573,7 +1590,7 @@ describe('model source', () => {
       provider: { name: 'Bedrock' },
       model: { name: 'anthropic.claude-sonnet-4-5', region: 'us', parameters: { temperature: 0.2 } },
     };
-    await createLangChainHandler(factory)(cfg as any, 'q');
+    await createLangChainMessagesHandler(factory)(cfg as any, 'q');
     expect(factory.mock.calls[0][0].model.name).toBe('us.anthropic.claude-sonnet-4-5');
     expect(cfg.model.name).toBe('anthropic.claude-sonnet-4-5');
     expect(factory.mock.calls[0][0]).not.toBe(cfg);
@@ -1589,7 +1606,7 @@ describe('model source', () => {
     });
     const factory = vi.fn().mockReturnValue(llm);
     const events: any[] = [];
-    for await (const event of createLangChainHandler(factory).stream?.(parameterized as any, 'q', {}, {}) ??
+    for await (const event of createLangChainMessagesHandler(factory).stream?.(parameterized as any, 'q', {}, {}) ??
       (async function* () {})()) {
       events.push(event);
     }
