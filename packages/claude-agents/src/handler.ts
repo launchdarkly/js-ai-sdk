@@ -1002,7 +1002,7 @@ export type ClaudeAgentsHostOptions = {
 /**
  * What a per-invoke preparation adds to one run. Package-internal and generic: it names no
  * feature, so code at a later stage can register through it without this module importing or
- * naming that code (TESTING.md §0.3).
+ * naming that code.
  */
 export type QueryPreparation = {
   /** Extra `query()` options, spread with the handler's own, after `model.parameters`. */

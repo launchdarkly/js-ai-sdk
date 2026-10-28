@@ -104,8 +104,6 @@ PRs are squash-merged with the PR title as the commit message, and release-pleas
 - **A breaking experimental change** uses `!` while the package is 0.x: `feat(evaluations)!:` bumps the minor version, which is what an experimental break is allowed. After 1.0, `!` would force a major release. Use `feat(evaluations):` without `!` instead, and say the change is breaking in the title.
 - **When a feature is promoted to core,** remove its rows from `changelog-sections`.
 
-The rule is specified in `TESTING.md` §0.3 in `launchdarkly/ai-sdks-monorepo`.
-
 ## Public API Reports
 
 Every public entry point has a committed API Extractor report at `packages/<package>/etc/<name>.api.md`: every exported name, type-only names included, with its full declaration. `<name>` is the package name without `@launchdarkly/`, plus `-experimental` for the `./experimental` entry point. The reports are the public API contract. `@launchdarkly/ai-node` re-exports `@launchdarkly/ai-server`, whose reports cover it, and `@launchdarkly/ai-otel` exports nothing, so neither has a report.
