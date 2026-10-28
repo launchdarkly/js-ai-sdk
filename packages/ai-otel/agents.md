@@ -36,7 +36,7 @@ None. This package intentionally exports nothing. Users import the LaunchDarkly 
 | `@opentelemetry/sdk-trace-base` | Core span/tracer abstractions |
 | `@opentelemetry/exporter-trace-otlp-http` | OTLP HTTP exporter for LaunchDarkly Observability |
 | `@opentelemetry/otlp-exporter-base` | Base classes for OTLP exporters |
-| `@opentelemetry/resources` | Resource attribute builder (`service.name`, `highlight.project_id`) |
+| `@opentelemetry/resources` | Resource attribute builder (`service.name`, `launchdarkly.project_id`) |
 | `@opentelemetry/context-async-hooks` | `AsyncLocalStorageContextManager` for async context propagation |
 | `@opentelemetry/core` | W3C propagators and compression constants |
 
