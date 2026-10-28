@@ -471,7 +471,15 @@ function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | und
  * Span event (required for AI Config Monitoring tab trace correlation):
  *   name: 'feature_flag'
  *   attributes: feature_flag.key, feature_flag.provider.name, feature_flag.set.id,
- *               feature_flag.context.id, feature_flag.contextKeys
+ *               feature_flag.result.variant, feature_flag.result.value,
+ *               feature_flag.context.id,
+ *               feature_flag.contextKeys
+ *   feature_flag.result.variant is the served variationKey, omitted when empty
+ *   (graph spans can carry an empty variationKey).
+ *   feature_flag.result.value is `JSON.stringify` of `variables.__ldValue`, the
+ *   raw variation the SDK returned (as the OTel TracingHook writes it with
+ *   `includeValue: true`). Omitted when absent, e.g. on native graph spans.
+ *   Not gated by content capture.
  *   The observability backend projects these event attrs to span-level attrs,
  *   satisfying the query: events.name=feature_flag AND
  *   events.attributes.feature_flag.key=<configKey> AND
@@ -492,6 +500,17 @@ export function setLdSpanAttributes(span: Span, variables: Record<string, unknow
   };
   if (ld.environmentId) {
     featureFlagAttrs['feature_flag.set.id'] = ld.environmentId;
+  }
+  if (typeof ld.variationKey === 'string' && ld.variationKey !== '') {
+    featureFlagAttrs['feature_flag.result.variant'] = ld.variationKey;
+  }
+  // Same serialization as the LaunchDarkly OTel TracingHook with `includeValue: true`:
+  // `JSON.stringify(detail.value)`. Omitted when there is no evaluated value (native graph spans)
+  // or when it does not serialize to a string.
+  const value = variables?.__ldValue;
+  if (value !== undefined) {
+    const serialized = JSON.stringify(value);
+    if (typeof serialized === 'string') featureFlagAttrs['feature_flag.result.value'] = serialized;
   }
 
   const identity = contextIdentityFromLdContext(variables?.ldContext);

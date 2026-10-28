@@ -380,6 +380,41 @@ describe('setLdSpanAttributes', () => {
     const eventCall = span.addEvent.mock.calls.find((c: any[]) => c[0] === 'feature_flag');
     expect(eventCall?.[1]).not.toHaveProperty('feature_flag.set.id');
   });
+
+  it('includes feature_flag.result.variant in the event from variationKey', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: 'var-a' } });
+    expect(span.addEvent).toHaveBeenCalledWith(
+      'feature_flag',
+      expect.objectContaining({ 'feature_flag.result.variant': 'var-a' }),
+    );
+  });
+
+  it('omits feature_flag.result.variant when variationKey is empty', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: '', graphKey: 'my-graph' } });
+    const eventCall = span.addEvent.mock.calls.find((c: any[]) => c[0] === 'feature_flag');
+    expect(eventCall?.[1]).not.toHaveProperty('feature_flag.result.variant');
+  });
+
+  it('includes feature_flag.result.value as the JSON of the raw evaluated variation', () => {
+    const span = makeMockSpan();
+    const raw = {
+      model: { name: 'gpt-x', parameters: { temperature: 0.2 } },
+      provider: { name: 'openai' },
+      messages: [{ role: 'system', content: 'Be brief.' }],
+      _ldMeta: { enabled: true, variationKey: 'var-a', version: 3 },
+    };
+    setLdSpanAttributes(span as any, { __ld: ldFixture, __ldValue: raw });
+    // Same serialization as the LaunchDarkly OTel TracingHook with includeValue: JSON.stringify(detail.value).
+    expect(featureFlagAttrs(span)['feature_flag.result.value']).toBe(JSON.stringify(raw));
+  });
+
+  it('omits feature_flag.result.value when there is no evaluated value (graph spans)', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: '', graphKey: 'my-graph' } });
+    expect(featureFlagAttrs(span)).not.toHaveProperty('feature_flag.result.value');
+  });
 });
 
 // ─── setLdSpanAttributes — context identity ───────────────────────────────────
