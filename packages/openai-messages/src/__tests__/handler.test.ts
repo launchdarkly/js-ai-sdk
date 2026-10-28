@@ -343,7 +343,7 @@ describe('createOpenAIMessagesHandler', () => {
     expect(call).not.toHaveProperty('foo');
   });
 
-  // Not on the cross-SDK OpenAI Messages list (TESTING.md §1.12): retention, server-side state,
+  // Not on the cross-SDK OpenAI Messages list: retention, server-side state,
   // response shape, prompt content and attribution settings are dropped like any unknown key.
   it('drops store, user, safety_identifier, metadata, prompt_cache_retention, include, context_management, truncation, moderation and instructions', async () => {
     mockResponsesCreate.mockResolvedValue(mockFinalResponse());
@@ -1286,7 +1286,7 @@ describe('createOpenAIMessagesHandler', () => {
   });
 });
 
-// ── §1.4 Token accumulation across multiple tool turns (blocking) ────────────
+// ── Token accumulation across multiple tool turns (blocking) ─────────────────
 
 describe('createOpenAIMessagesHandler — token accumulation', () => {
   beforeEach(() => {
@@ -1312,9 +1312,9 @@ describe('createOpenAIMessagesHandler — token accumulation', () => {
   });
 });
 
-// ── §1.9 outputFormat — first-class (Responses API text.format) ───────────────
+// ── outputFormat — first-class (Responses API text.format) ────────────────────
 
-describe('createOpenAIMessagesHandler — outputFormat (§1.9)', () => {
+describe('createOpenAIMessagesHandler — outputFormat', () => {
   const outputFormat = { type: 'object', properties: { answer: { type: 'string' } } };
 
   beforeEach(() => {
@@ -1342,9 +1342,9 @@ describe('createOpenAIMessagesHandler — outputFormat (§1.9)', () => {
   });
 });
 
-// ── §1.10 MAX_STEPS cap ───────────────────────────────────────────────────────
+// ── MAX_STEPS cap ─────────────────────────────────────────────────────────────
 
-describe('createOpenAIMessagesHandler — MAX_STEPS cap (§1.10)', () => {
+describe('createOpenAIMessagesHandler — MAX_STEPS cap', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     for (const key of Object.keys(mockSpan)) {
@@ -1431,7 +1431,7 @@ describe('createOpenAIMessagesHandler — MAX_STEPS cap (§1.10)', () => {
   });
 });
 
-describe('createOpenAIMessagesHandler — cross-SDK allowlist (TESTING.md §1.12)', () => {
+describe('createOpenAIMessagesHandler — cross-SDK allowlist', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockChildSpans.length = 0;

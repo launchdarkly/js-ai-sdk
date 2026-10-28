@@ -696,7 +696,7 @@ describe('protocol reader', () => {
     expect(reader.diagnostics.objectsRevoked).toBe(1);
   });
 
-  it('reports but does not count a delete-object for a key it never held (§3.25)', () => {
+  it('reports but does not count a delete-object for a key it never held', () => {
     // `objectsRevoked` is read precisely when somebody is working out whether a
     // revocation landed, so a tombstone for nothing must not inflate it. The
     // tombstone still reaches listeners through `changes`.
@@ -817,7 +817,7 @@ describe('protocol reader', () => {
   });
 
   it('ignores a delete with no usable key, and commits the rest of its transfer', () => {
-    // Pins TESTING.md §3.25's keyless put/delete rule, kept at promotion: warned
+    // Pins the keyless put/delete rule, kept at promotion: warned
     // and ignored, not an interruption, so the revocation it carried is lost and
     // `revoked` stays served. Base ldclient interrupts instead. Changing the rule
     // should fail this test.
@@ -999,7 +999,7 @@ describe('protocol reader', () => {
     }
   });
 
-  it('applies a put that follows a none intent on the same connection (§3.25)', () => {
+  it('applies a put that follows a none intent on the same connection', () => {
     // `none` says the basis is current, not that the connection is finished:
     // later edits arrive as objects with no second intent. Dropping them while
     // adopting the selector would move the basis past a change never applied.
@@ -1021,7 +1021,7 @@ describe('protocol reader', () => {
     expect(reader.diagnostics.objectsIgnored).toBe(0);
   });
 
-  it('applies a revocation that follows a none intent on the same connection (§3.25)', () => {
+  it('applies a revocation that follows a none intent on the same connection', () => {
     // The case that matters: a skill revoked after a routine reconnect. Dropped,
     // it would keep being served, and reconnecting would not recover it,
     // because the basis has already moved past the delete.
@@ -1246,7 +1246,7 @@ describe('payload identity', () => {
     expect(held.get('a', null)).toBeNull();
   });
 
-  it('does not adopt the basis of a foreign payload announced with the none intent (§3.25)', () => {
+  it('does not adopt the basis of a foreign payload announced with the none intent', () => {
     // A `none` intent builds no pending set, and the foreign check must not be
     // gated on one: the transfer that follows still names a payload, and
     // adopting its selector would resume the next connection from someone
@@ -1579,7 +1579,7 @@ describe('polling against the endpoint', () => {
     // Releasing `waitForSkills` on it would make `isInitialized()` true over an
     // empty committed set — the fact `writeSkills('*')` prunes on — so a reconcile
     // that raced delivery would delete every managed skill on disk instead of
-    // reporting the retrieval unavailable (§3.21). Failing closed costs a boot
+    // reporting the retrieval unavailable. Failing closed costs a boot
     // that is genuinely waiting nothing it was not already waiting for.
     endpoint.queuePoll([], { status: 304 });
     const store = pollStore();
@@ -2368,7 +2368,7 @@ describe('failure handling', () => {
     expect(await waitUntil(() => store.diagnostics.connectionFailures === 0)).toBe(true);
   });
 
-  it('keeps retrying a recoverable failure well past ten in a row (§3.25)', async () => {
+  it('keeps retrying a recoverable failure well past ten in a row', async () => {
     // There is no consecutive-failure bound. One would turn a few minutes of
     // outage into a process that receives no updates, and no revocations, for
     // the rest of its life.
@@ -2489,7 +2489,7 @@ describe('failure handling', () => {
     expect(logged(warnSpy)).toMatch(/Skill delivery failed \(server said goodbye: recycling\); retrying in/);
   });
 
-  it('reads no failure, no lastError and no warning across repeated answer-then-goodbye recycles (§3.25)', async () => {
+  it('reads no failure, no lastError and no warning across repeated answer-then-goodbye recycles', async () => {
     // A goodbye after a completed exchange is how the server recycles a
     // long-lived stream. The counter is the main outage signal now that
     // `failed` is reserved for fatal failures, so a recycle must not appear in
@@ -2518,7 +2518,7 @@ describe('failure handling', () => {
     expect(logged(debugSpy)).toMatch(/FDv2 connection closing: server recycle/);
   });
 
-  it('reports one failure, not two, for a store that fails, succeeds, then fails (§3.25)', async () => {
+  it('reports one failure, not two, for a store that fails, succeeds, then fails', async () => {
     // Polled, so the success is a request of its own rather than a stream whose
     // own end counts as the next failure. The fourth request parks, freezing
     // the count after the second failure. A completed poll also starts the
@@ -2554,7 +2554,7 @@ describe('failure handling', () => {
     expect(Number(retries[0])).toBe(100);
   });
 
-  it('reconnects a server that answers none and drops at once on a growing delay (§3.25)', async () => {
+  it('reconnects a server that answers none and drops at once on a growing delay', async () => {
     // Each connection completes an exchange, so the failure count resets every
     // time and never climbs past one. The delay must not reset with it: a
     // degraded server that answers and then drops would otherwise be
@@ -2578,7 +2578,7 @@ describe('failure handling', () => {
     expect(retryDelays().slice(0, 5)).toEqual([2, 4, 8, 16, 32]);
   });
 
-  it('retries at the first step after a stream that stayed open past the reset interval (§3.25)', async () => {
+  it('retries at the first step after a stream that stayed open past the reset interval', async () => {
     // Three refused connects advance the step to 8ms; the fourth connection
     // answers and is held open past the (shortened) reset interval before it
     // drops, so the reconnect after it starts over at `initialBackoffSeconds`.
@@ -2596,7 +2596,7 @@ describe('failure handling', () => {
     expect(retryDelays()).toEqual([2, 4, 8, 2]);
   });
 
-  it('keeps advancing the step after a stream that dropped inside the reset interval (§3.25)', async () => {
+  it('keeps advancing the step after a stream that dropped inside the reset interval', async () => {
     // The control for the test above: the same script against the real
     // interval, so the reset there is the uptime's doing and nothing else's.
     vi.spyOn(Math, 'random').mockReturnValue(0);
@@ -2632,7 +2632,7 @@ describe('failure handling', () => {
     expect(store.diagnostics.lastError).toContain('closed unexpectedly');
   });
 
-  it('counts each drop of a server that announces a transfer and drops before committing (§3.25)', async () => {
+  it('counts each drop of a server that announces a transfer and drops before committing', async () => {
     // An `xfer-full` intent is a promise, not a delivery. A server that sends
     // one and drops before `payload-transferred` has delivered nothing, and a
     // store that counted the announcement as health would report it healthy
@@ -2652,7 +2652,7 @@ describe('failure handling', () => {
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).toBeNull();
   });
 
-  it('revokes and notifies on a delete that follows a none intent on a live stream (§3.25)', async () => {
+  it('revokes and notifies on a delete that follows a none intent on a live stream', async () => {
     // The reconnect is answered `none`, and the revocation comes later on the
     // same connection with no second intent. The listener is what wakes a
     // watcher to prune, so it must see the tombstone.
@@ -3029,7 +3029,7 @@ describe('failure handling', () => {
     });
   };
 
-  it('stops on a poll body over the memory bound, like a 422, after exactly one request (§3.25)', async () => {
+  it('stops on a poll body over the memory bound, like a 422, after exactly one request', async () => {
     // The payload's size belongs to the environment, not the connection, so
     // the next request would be refused the same way: retried, it would
     // re-download up to the bound on every backoff step, from every process.
@@ -3058,7 +3058,7 @@ describe('failure handling', () => {
     expect(consoleErrors()).toMatch(/will not retry/);
   });
 
-  it('stops on a streamed event over the memory bound and keeps serving what it held (§3.25)', async () => {
+  it('stops on a streamed event over the memory bound and keeps serving what it held', async () => {
     // One connection: a payload commits, then an event runs past the bound.
     const committed = fullPayload([['put-object', putSkill()]])
       .map((event) => `event: ${event.event}\ndata: ${JSON.stringify(event.data ?? null)}\n\n`)
@@ -3874,7 +3874,7 @@ describe('watchSkills', () => {
     await expect(watchSkills('*', await scratchRoot())).rejects.toThrow(/writeSkills[\s\S]*LaunchDarklySkillStore/);
   });
 
-  it('passes prune and timeout straight through to writeSkills (§3.26)', async () => {
+  it('passes prune and timeout straight through to writeSkills', async () => {
     // Driven behaviourally rather than by spying on the import: a `prune: false`
     // that reached `writeSkills` leaves a stale managed skill alone on the
     // initial reconcile *and* on a re-reconcile, and a `timeout: 0` that reached
@@ -4109,7 +4109,7 @@ describe('lifecycle', () => {
     expect(store.getObject(SKILL_OBJECT_KIND, 'pdf-extraction')).not.toBeNull();
   });
 
-  it('isInitialized tracks the first payload, and stays true after close (§3.25)', async () => {
+  it('isInitialized tracks the first payload, and stays true after close', async () => {
     // The probe `writeSkills('*')` reads to decide whether it may prune. Before
     // the first payload, an empty store and an environment with no skills are
     // the same answer through `allObjects`; this is what tells them apart.
@@ -4717,7 +4717,7 @@ describe('transport contract', () => {
     expect(source).not.toMatch(/warnedNoSkillPayload/);
   });
 
-  it('declares no maxConsecutiveFailures option, by source text (§3.25)', () => {
+  it('declares no maxConsecutiveFailures option, by source text', () => {
     // The option would freeze a give-up contract into the public API, so its
     // absence is asserted by name, the same way as payloadUnavailable's.
     expect(source).not.toMatch(/maxConsecutiveFailures/);

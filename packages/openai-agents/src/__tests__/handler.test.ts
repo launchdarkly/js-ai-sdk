@@ -272,7 +272,7 @@ describe('createOpenAIAgentsHandler', () => {
     expect(mockRun.mock.calls[0][2]).toBeUndefined();
   });
 
-  // The OpenAI Agents list in the cross-SDK spec (TESTING.md §1.12), each key with a well-formed
+  // The cross-SDK OpenAI Agents list, each key with a well-formed
   // value, plus keys that are not on it.
   const CANONICAL_PARAMETERS = {
     frequency_penalty: 0.1,
@@ -823,7 +823,7 @@ describe('createOpenAIAgentsHandler', () => {
     expect(mockSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
   });
 
-  // ── History (§1.11 — structured Runner input, not system-prompt text) ────────
+  // ── History (structured Runner input, not system-prompt text) ────────────────
 
   const sampleHistory = [
     { role: 'user' as const, content: 'What is feature flagging?' },
@@ -910,9 +910,9 @@ describe('createOpenAIAgentsHandler', () => {
   });
 });
 
-// ── §1.9 outputFormat — first-class (Agent outputType) ───────────────────────
+// ── outputFormat — first-class (Agent outputType) ────────────────────────────
 
-describe('createOpenAIAgentsHandler — outputFormat (§1.9)', () => {
+describe('createOpenAIAgentsHandler — outputFormat', () => {
   const outputFormat = { type: 'object', properties: { score: { type: 'number' } } };
 
   beforeEach(() => {

@@ -78,7 +78,7 @@ const generationEvents = () => client.tracked.filter((t) => t.name === '$ld:ai:o
 const toolPath = (key: string) => `projects/${PROJECT}/ai-tools/${key}`;
 
 // ---------------------------------------------------------------------------
-// §8.5 Request sequence
+// Request sequence
 // ---------------------------------------------------------------------------
 
 describe('request sequence', () => {
@@ -171,7 +171,7 @@ describe('request sequence', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.5 Dataset resolution and record bodies
+// Dataset resolution and record bodies
 // ---------------------------------------------------------------------------
 
 describe('dataset resolution', () => {
@@ -332,7 +332,7 @@ describe('run create body', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.4 / §8.5 AI Config source
+// AI Config source
 // ---------------------------------------------------------------------------
 
 describe('aiConfig source', () => {
@@ -615,7 +615,7 @@ describe('aiConfig source', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.7 Generation phase
+// Generation phase
 // ---------------------------------------------------------------------------
 
 describe('handler selection', () => {
@@ -895,7 +895,7 @@ describe('trajectory per row', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.6 / §8.7.3 Events
+// Events
 // ---------------------------------------------------------------------------
 
 describe('generation events', () => {
@@ -1223,7 +1223,7 @@ describe('client resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.5 Inline dataset upload
+// Inline dataset upload
 // ---------------------------------------------------------------------------
 
 describe('inline dataset upload', () => {
@@ -1316,7 +1316,7 @@ describe('inline dataset upload', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.9 Summary polling and result
+// Summary polling and result
 // ---------------------------------------------------------------------------
 
 describe('summary polling', () => {

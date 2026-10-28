@@ -107,7 +107,7 @@ describe('createTypesafeHandler', () => {
     ).rejects.toThrow('typesafe down');
   });
 
-  // TESTING.md §1.12: the TypeSafe table is empty. A Jev call takes the judge state, the
+  // The cross-SDK TypeSafe forwarding table is empty. A Jev call takes the judge state, the
   // questions, and the model name, and has no field for sampling or output settings.
   it('forwards no model.parameters key to the client or the Jev request', async () => {
     const handler = createTypesafeHandler();

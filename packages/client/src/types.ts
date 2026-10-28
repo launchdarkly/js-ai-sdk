@@ -109,8 +109,7 @@ export type TextContentBlock = { type: 'text'; text: string };
 /**
  * An image block inside a multimodal message, in LaunchDarkly-canonical form.
  * `source.type` is either an inline base64 payload (with its media type) or a
- * URL. Handlers map this into each provider's native image shape — see the
- * per-provider table in TESTING.md Appendix A.7.
+ * URL. Handlers map this into each provider's native image shape.
  */
 export type ImageContentBlock =
   | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }

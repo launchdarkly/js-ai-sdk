@@ -328,7 +328,7 @@ describe('createClaudeAgentsHandler', () => {
     expect(mockQuery.mock.calls[0][0].options.outputFormat).toBeUndefined();
   });
 
-  // The Claude Agents list in the cross-SDK spec (TESTING.md §1.12): the options a config adds on
+  // The cross-SDK Claude Agents list: the options a config adds on
   // top of what the handler sets itself are exactly these, on invoke and on stream.
   it('adds exactly the canonical query options, the same on invoke and stream', async () => {
     const parameters = {
@@ -837,7 +837,7 @@ describe('createClaudeAgentsHandler', () => {
     expect(mockSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
   });
 
-  // ── History (§1.11 — structured query prompt, not system-prompt text) ────────
+  // ── History (structured query prompt, not system-prompt text) ────────────────
 
   const sampleHistory = [
     { role: 'user' as const, content: 'What is feature flagging?' },
@@ -1117,7 +1117,7 @@ describe('streaming additional coverage', () => {
   });
 });
 
-// ── Host options and the built-in tool set (§2.x Claude Agents Handler) ─────────
+// ── Host options and the built-in tool set ──────────────────────────────────────
 
 describe('createClaudeAgentsHandler — host options and built-in tool set', () => {
   type Path = 'invoke' | 'stream';
@@ -1253,9 +1253,9 @@ describe('createClaudeAgentsHandler — host options and built-in tool set', () 
   });
 });
 
-// ── §1.9 outputFormat — best-effort (system prompt injection) ─────────────────
+// ── outputFormat — best-effort (system prompt injection) ──────────────────────
 
-describe('createClaudeAgentsHandler — outputFormat (§1.9)', () => {
+describe('createClaudeAgentsHandler — outputFormat', () => {
   const outputFormat = { type: 'object', properties: { result: { type: 'string' } } };
 
   beforeEach(() => {

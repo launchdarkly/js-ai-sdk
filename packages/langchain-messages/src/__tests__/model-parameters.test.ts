@@ -18,7 +18,7 @@ describe('modelConstructorParameters', () => {
     ).toEqual({});
   });
 
-  // The cross-SDK LangChain lists (TESTING.md §1.12), each key with a well-formed value. Every
+  // The cross-SDK LangChain lists, each key with a well-formed value. Every
   // removed key is in NEVER_FORWARDED_PARAMETERS, which is mixed in so the result proves it is gone.
   it('forwards exactly the canonical ChatOpenAI keys, under their constructor names', () => {
     expect(

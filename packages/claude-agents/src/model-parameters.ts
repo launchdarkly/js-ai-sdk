@@ -20,7 +20,7 @@ import {
  * `continue`). None of those can come from a config.
  *
  * `outputFormat` is not forwarded either: structured output belongs to the config's own
- * `outputFormat` (TESTING.md §1.9), which the handler applies itself, so a schema in
+ * `outputFormat`, which the handler applies itself, so a schema in
  * `model.parameters` would only fight it.
  */
 const FORWARDED_QUERY_OPTION_KEYS = [

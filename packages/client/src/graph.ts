@@ -258,7 +258,7 @@ const buildGraph = async (
       };
       handoffHandlers[toolName] = () => {
         if (!chosen) chosen = edge.targetKey;
-        // Wording and rationale are pinned in ai-sdks-monorepo TESTING.md §3.15a.
+        // Same bytes as the Python and Go SDKs. The last sentence stops the router answering for its target.
         return `Handoff to ${edge.targetKey} recorded. ${edge.targetKey} takes over when your turn ends. Finish your own part, then end your turn. Do not answer for ${edge.targetKey}.`;
       };
     }

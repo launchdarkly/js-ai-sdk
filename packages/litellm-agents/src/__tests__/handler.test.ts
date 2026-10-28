@@ -495,7 +495,7 @@ describe('createLiteLLMAgentsHandler', () => {
     expect(mockRootSpan.end).toHaveBeenCalledOnce();
   });
 
-  describe('cross-SDK allowlist (TESTING.md §1.12)', () => {
+  describe('cross-SDK allowlist', () => {
     // Every key on the LiteLLM Agents list, each with a well-formed value.
     const CANONICAL_PARAMETERS = {
       frequency_penalty: 0.1,
@@ -556,7 +556,7 @@ describe('createLiteLLMAgentsHandler', () => {
       agentArgs.length = 0;
     };
 
-    it('forwards exactly the keys in the spec table, compared in snake_case', async () => {
+    it('forwards exactly the keys in the cross-SDK table, compared in snake_case', async () => {
       const { agent, run } = await invokeOptions({ ...CANONICAL_PARAMETERS, made_up_key: 1 });
       const forwarded = [
         ...Object.keys(agent.modelSettings as Record<string, unknown>).map(toSnake),

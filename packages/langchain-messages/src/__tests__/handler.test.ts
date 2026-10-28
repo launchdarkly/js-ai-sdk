@@ -1175,9 +1175,9 @@ describe('createLangChainMessagesHandler', () => {
   });
 });
 
-// ── §1.9 outputFormat — first-class (withStructuredOutput) ───────────────────
+// ── outputFormat — first-class (withStructuredOutput) ────────────────────────
 
-describe('createLangChainMessagesHandler — outputFormat (§1.9)', () => {
+describe('createLangChainMessagesHandler — outputFormat', () => {
   const outputFormat = { type: 'object', properties: { answer: { type: 'string' } } };
 
   beforeEach(() => {
@@ -1262,9 +1262,9 @@ describe('createLangChainMessagesHandler — outputFormat (§1.9)', () => {
   });
 });
 
-// ── §1.9 outputFormat + tools conflict ───────────────────────────────────────
+// ── outputFormat + tools conflict ────────────────────────────────────────────
 
-describe('createLangChainMessagesHandler — outputFormat + tools conflict (§1.9)', () => {
+describe('createLangChainMessagesHandler — outputFormat + tools conflict', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStartActiveSpan.mockImplementation((_name: string, fn: Function) => fn(mockSpan));
@@ -1314,9 +1314,9 @@ describe('createLangChainMessagesHandler — outputFormat + tools conflict (§1.
   });
 });
 
-// ── §1.10 MAX_STEPS cap ───────────────────────────────────────────────────────
+// ── MAX_STEPS cap ─────────────────────────────────────────────────────────────
 
-describe('createLangChainMessagesHandler — MAX_STEPS cap (§1.10)', () => {
+describe('createLangChainMessagesHandler — MAX_STEPS cap', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStartActiveSpan.mockImplementation((_name: string, fn: Function) => fn(mockSpan));

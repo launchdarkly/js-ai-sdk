@@ -643,7 +643,7 @@ describe('createLiteLLMMessagesHandler', () => {
   });
 });
 
-describe('createLiteLLMMessagesHandler — cross-SDK allowlist (TESTING.md §1.12)', () => {
+describe('createLiteLLMMessagesHandler — cross-SDK allowlist', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSpans.length = 0;

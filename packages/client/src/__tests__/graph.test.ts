@@ -1103,7 +1103,7 @@ describe('graph().stream()', () => {
 
 // ─── Multi-edge routing text ──────────────────────────────────────────────────
 
-// Pinned byte-for-byte in the monorepo's TESTING.md §3.15a; Python and Go use the same strings.
+// Pinned byte-for-byte; Python and Go use the same strings.
 const ROUTING_SUFFIX =
   '\n\nComplete your task using your available tools first. Only once your own part is done, call exactly one transfer tool to route to the next agent. Do not answer the parts of the request that belong to the agent you route to.';
 const handoffResult = (target: string) =>
