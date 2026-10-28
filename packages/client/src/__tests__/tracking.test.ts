@@ -45,6 +45,13 @@ describe('wrapToolHandlers', () => {
     expect(wrapToolHandlers(undefined, mockContext, mockTrackData)).toEqual({});
   });
 
+  it('returns a map without inherited names, so `toString` resolves to no handler (SEC-9507)', () => {
+    const wrapped = wrapToolHandlers({ safe: vi.fn() }, mockContext, mockTrackData);
+    expect(wrapped.toString).toBeUndefined();
+    expect(wrapped.constructor).toBeUndefined();
+    expect(wrapToolHandlers(undefined, mockContext, mockTrackData).toString).toBeUndefined();
+  });
+
   it('wraps a regular function and calls the original with args', () => {
     const original = vi.fn().mockReturnValue('tool-result');
     const wrapped = wrapToolHandlers({ myTool: original }, mockContext, mockTrackData);

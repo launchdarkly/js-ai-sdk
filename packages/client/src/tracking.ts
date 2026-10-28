@@ -46,28 +46,32 @@ export const wrapToolHandlers = (
   userContext: LDContext,
   trackData: TrackData,
 ): Record<string, ToolHandlerFn> => {
-  if (!toolHandlers) return {};
-  return Object.fromEntries(
-    Object.entries(toolHandlers).map(([name, fn]) => {
-      if (fn instanceof NativeTool) {
-        const stub = () => {
-          getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolKey: name }, 1);
-        };
-        (stub as unknown as Record<symbol, unknown>)[NATIVE_TOOL_KEY] = fn;
-        return [name, stub];
-      }
-      return [
-        name,
-        (...args: unknown[]) => {
-          // Synthetic handoff tools (graph routing) are not real tool calls;
-          // they must not pollute `$ld:ai:tool_call` metrics.
-          if (!name.startsWith(HANDOFF_TOOL_PREFIX)) {
+  if (!toolHandlers) return Object.create(null);
+  // Null prototype: a config tool named `toString` or `constructor` resolves to no handler.
+  return Object.assign(
+    Object.create(null),
+    Object.fromEntries(
+      Object.entries(toolHandlers).map(([name, fn]) => {
+        if (fn instanceof NativeTool) {
+          const stub = () => {
             getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolKey: name }, 1);
-          }
-          return (fn as (...args: unknown[]) => unknown)(...args);
-        },
-      ];
-    }),
+          };
+          (stub as unknown as Record<symbol, unknown>)[NATIVE_TOOL_KEY] = fn;
+          return [name, stub];
+        }
+        return [
+          name,
+          (...args: unknown[]) => {
+            // Synthetic handoff tools (graph routing) are not real tool calls;
+            // they must not pollute `$ld:ai:tool_call` metrics.
+            if (!name.startsWith(HANDOFF_TOOL_PREFIX)) {
+              getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolKey: name }, 1);
+            }
+            return (fn as (...args: unknown[]) => unknown)(...args);
+          },
+        ];
+      }),
+    ),
   );
 };
 
