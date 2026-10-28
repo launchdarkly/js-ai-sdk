@@ -632,17 +632,16 @@ events these handlers used to emit were read by nothing on the LaunchDarkly
 side. The only event a handler emits is `feature_flag`, on the root, for
 trace correlation. It carries `feature_flag.result.variant` (the served
 variation key) whenever that key is non-empty; graph spans can have an empty
-one, and then it is left off. It also carries `feature_flag.result.value`,
-which follows content capture. With capture on and a raw variation present,
-it is `JSON.stringify` of the raw variation the SDK returned (messages or
-instructions, model, provider, `_ldMeta`, judge configuration), the same
-string the LaunchDarkly OTel `TracingHook` writes with `includeValue: true`.
-Otherwise it is `JSON.stringify` of the variation key (for example
-`"\"opus\""`), and it is left off when there is neither. Every handler passes
-its own `captureContent` as the third argument to `setLdSpanAttributes`; the
-default is `false`. The core client passes the raw value to handlers as
-`variables.__ldValue`, beside `__ld`, because `TrackData` is the `$ld:ai:*`
-event payload.
+one, and then it is left off. It also carries `feature_flag.result.value`.
+When `variables.__ldValue` is present, it is `JSON.stringify` of that raw
+variation (messages or instructions, model, provider, `_ldMeta`, judge
+configuration), the same string the LaunchDarkly OTel `TracingHook` writes
+with `includeValue: true`. Otherwise it is `JSON.stringify` of the variation
+key (for example `"\"opus\""`), and it is left off when there is neither.
+The core client sets `__ldValue`, beside `__ld`, only when the handler that
+runs has `captureContent` on (`ProviderHandler.captureContent`, the same gate
+judge reasoning uses), so the raw config never reaches a capture-off handler.
+It is not in `TrackData`, because `TrackData` is the `$ld:ai:*` event payload.
 When `variables.ldContext` has a usable identity, that
 event also carries `feature_flag.context.id` and `feature_flag.contextKeys`,
 and the root span gets `context.contextKeys.<kind>`. Child spans must not.

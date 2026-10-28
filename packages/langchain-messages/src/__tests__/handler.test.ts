@@ -582,7 +582,6 @@ describe('createLangChainMessagesHandler', () => {
       modelName: 'test-model',
       providerName: 'TestProvider',
     },
-    __ldValue: { model: { name: 'test-model' }, _ldMeta: { enabled: true, variationKey: 'variation-a' } },
   };
 
   it('emits the feature_flag correlation event and launchdarkly attributes on the root span', async () => {

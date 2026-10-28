@@ -239,7 +239,8 @@ export const executeAndTrack = async ({
   /**
    * The flag value as the LaunchDarkly SDK returned it, before parsing. Passed to the handler as
    * `variables.__ldValue` (not in `TrackData`, which is the `$ld:ai:*` event payload) so
-   * `setLdSpanAttributes` can write `feature_flag.result.value`. Omit it when there is none.
+   * `setLdSpanAttributes` can write `feature_flag.result.value`, but only when the handler has
+   * `captureContent` on: the value holds the prompt. Omit it when there is none.
    */
   evaluatedValue?: unknown;
 }): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData; trajectory: string }> => {
@@ -259,7 +260,7 @@ export const executeAndTrack = async ({
         ...variables,
         ldContext: { ...userContext },
         __ld: trackData,
-        ...(evaluatedValue !== undefined ? { __ldValue: evaluatedValue } : {}),
+        ...(evaluatedValue !== undefined && handler.captureContent === true ? { __ldValue: evaluatedValue } : {}),
       },
       history,
     );
@@ -325,7 +326,8 @@ export async function* executeAndStream({
   /**
    * The flag value as the LaunchDarkly SDK returned it, before parsing. Passed to the handler as
    * `variables.__ldValue` (not in `TrackData`, which is the `$ld:ai:*` event payload) so
-   * `setLdSpanAttributes` can write `feature_flag.result.value`. Omit it when there is none.
+   * `setLdSpanAttributes` can write `feature_flag.result.value`, but only when the handler has
+   * `captureContent` on: the value holds the prompt. Omit it when there is none.
    */
   evaluatedValue?: unknown;
 }): AsyncGenerator<ExecuteStreamEvent> {
@@ -336,7 +338,7 @@ export async function* executeAndStream({
     ...variables,
     ldContext: { ...userContext },
     __ld: trackData,
-    ...(evaluatedValue !== undefined ? { __ldValue: evaluatedValue } : {}),
+    ...(evaluatedValue !== undefined && handler.captureContent === true ? { __ldValue: evaluatedValue } : {}),
   };
 
   const startTime = Date.now();

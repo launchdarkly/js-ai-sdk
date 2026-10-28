@@ -1055,7 +1055,7 @@ export function createClaudeAgentsHandlerInternal(
       return trace.getTracer('@launchdarkly/ai-claude-agents').startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, 'anthropic', config.model.name);
-        setLdSpanAttributes(span, variables, captureContent);
+        setLdSpanAttributes(span, variables);
         // Explicit rather than a bare `context.active()`: the active context only carries this
         // span while an OTel ContextManager is registered, so a host app that installs its own
         // TracerProvider without one would otherwise get a flat trace.
@@ -1191,7 +1191,7 @@ export function createClaudeAgentsHandlerInternal(
       const span = trace.getTracer('@launchdarkly/ai-claude-agents').startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, 'anthropic', config.model.name);
-      setLdSpanAttributes(span, variables, captureContent);
+      setLdSpanAttributes(span, variables);
       const parentContext = trace.setSpan(context.active(), span);
 
       // A consumer that `break`s out of `for await`, or throws inside the loop body, makes this

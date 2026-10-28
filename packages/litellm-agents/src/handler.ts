@@ -411,7 +411,7 @@ export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setIdentity(span, configRep);
-        setLdSpanAttributes(span, variables, captureContent);
+        setLdSpanAttributes(span, variables);
         const parentContext = trace.setSpan(context.active(), span);
         const client = resolveLiteLLMClient(resolvedOptions, configRep);
         const { agent, model, instructions, runOptions } = buildAgent(
@@ -461,7 +461,7 @@ export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setIdentity(span, configRep);
-      setLdSpanAttributes(span, variables, captureContent);
+      setLdSpanAttributes(span, variables);
       const parentContext = trace.setSpan(context.active(), span);
       const client = resolveLiteLLMClient(resolvedOptions, configRep);
       const { agent, model, instructions, runOptions } = buildAgent(

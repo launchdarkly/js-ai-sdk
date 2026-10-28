@@ -276,7 +276,7 @@ export function createVercelAgentsHandlerInternal(options: VercelAgentsOptions =
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (rootSpan) => {
         rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
-        setLdSpanAttributes(rootSpan, variables, captureContent);
+        setLdSpanAttributes(rootSpan, variables);
         let chatSpan: Span | undefined;
         try {
           const messages = buildMessages(configRep, userInput, variables, history);
@@ -318,7 +318,7 @@ export function createVercelAgentsHandlerInternal(options: VercelAgentsOptions =
       const rootSpan = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
-      setLdSpanAttributes(rootSpan, variables, captureContent);
+      setLdSpanAttributes(rootSpan, variables);
       let chatSpan: Span | undefined;
       let iterator: AsyncIterator<string> | undefined;
       let completed = false;

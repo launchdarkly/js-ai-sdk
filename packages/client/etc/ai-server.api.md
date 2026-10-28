@@ -711,7 +711,7 @@ export function setInputContentAttributes(span: Span, capture: boolean, input: {
 }): void;
 
 // @public
-export function setLdSpanAttributes(span: Span, variables: Record<string, unknown> | undefined, captureContent?: boolean): void;
+export function setLdSpanAttributes(span: Span, variables: Record<string, unknown> | undefined): void;
 
 // @public
 export function setModelIdentityAttributes(span: Span, providerName: string, requestModel: string, legacySystem?: string): void;

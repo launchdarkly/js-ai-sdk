@@ -149,8 +149,9 @@ describe('executeAndTrack', () => {
     expect(result.response).toBe('Hello!');
   });
 
-  it('passes evaluatedValue to the handler as __ldValue and keeps it out of trackData and events', async () => {
+  it('passes evaluatedValue as __ldValue to a capture-on handler and keeps it out of trackData and events', async () => {
     const handler = makeHandler('ok');
+    handler.captureContent = true;
     const raw = { ...execConfig, _ldMeta: { enabled: true, variationKey: 'v1' } };
     const result = await executeAndTrack({
       configKey: 'my-flag',
@@ -165,8 +166,26 @@ describe('executeAndTrack', () => {
     for (const call of mockTrack.mock.calls) expect(JSON.stringify(call[2])).not.toContain('You are helpful.');
   });
 
+  it.each([
+    ['capture off', false],
+    ['capture unset', undefined],
+  ])('does not pass __ldValue to a handler with %s', async (_label, capture) => {
+    const handler = makeHandler('ok');
+    if (capture !== undefined) handler.captureContent = capture;
+    await executeAndTrack({
+      configKey: 'my-flag',
+      config: execConfig as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+      evaluatedValue: { ...execConfig },
+    });
+    expect(handler.mock.calls[0][3]).not.toHaveProperty('__ldValue');
+  });
+
   it('does not set __ldValue when evaluatedValue is absent', async () => {
     const handler = makeHandler('ok');
+    handler.captureContent = true;
     await executeAndTrack({
       configKey: 'my-flag',
       config: execConfig as any,
@@ -352,6 +371,31 @@ describe('executeAndStream', () => {
     fn.stream = streamFn;
     return fn;
   }
+
+  it.each([
+    [true, true],
+    [false, false],
+  ])('passes __ldValue to the stream only when captureContent is %s', async (capture, expected) => {
+    const handler = makeStreamingHandler(['Hi']);
+    const seen: Record<string, unknown>[] = [];
+    const inner = handler.stream;
+    handler.stream = (c: unknown, u: unknown, t: unknown, v: Record<string, unknown>, h: unknown) => {
+      seen.push(v);
+      return inner(c, u, t, v, h);
+    };
+    handler.captureContent = capture;
+    await collectExecStream(
+      executeAndStream({
+        configKey: 'my-flag',
+        config: execConfig as any,
+        meta: execMeta,
+        userContext: execContext,
+        handler,
+        evaluatedValue: { ...execConfig },
+      }),
+    );
+    expect('__ldValue' in seen[0]).toBe(expected);
+  });
 
   it('copies modelKey and modelVersion from meta onto every streamed event payload', async () => {
     const handler = makeStreamingHandler(['Hi']);
