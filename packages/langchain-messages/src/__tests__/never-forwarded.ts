@@ -2,11 +2,11 @@ import { createNeverForwarded } from '../../../client/src/__tests__/never-forwar
 
 export { NEVER_FORWARDED } from '../../../client/src/__tests__/never-forwarded-keys.js';
 
-// `reasoning` switches `ChatOpenAI` to the Responses API, which the LangChain handlers do not read (§1.12).
+// `reasoning` switches `ChatOpenAI` to the Responses API, which the LangChain handlers do not read.
 const PACKAGE_NEVER_FORWARDED_KEYS = ['reasoning'];
 
 /**
- * This package's never-forward bag (ai-sdks-monorepo TESTING.md §1.12): the shared key list from
+ * This package's never-forward bag: the shared key list from
  * every never-forward category, plus the keys only the LangChain list leaves out.
  */
 const bag = createNeverForwarded(PACKAGE_NEVER_FORWARDED_KEYS);

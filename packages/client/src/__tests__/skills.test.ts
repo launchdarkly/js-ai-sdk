@@ -423,7 +423,7 @@ const ROOT_VALUES = [
   'setUsageSpanAttributes',
   'shutdown',
   'shutdownTelemetry',
-  // Non-reporting skills plumbing for the handler packages (TESTING.md §3.27).
+  // Non-reporting skills plumbing for the handler packages.
   'skillRefsInternal',
   'textMessage',
   'toolResultString',
@@ -754,7 +754,7 @@ describe('InMemorySkillStore', () => {
     expect(new InMemorySkillStore().getObject('skill', 'nope')).toBeNull();
   });
 
-  it('implements no isInitialized probe — a hand-populated store is never waiting (§3.21)', () => {
+  it('implements no isInitialized probe — a hand-populated store is never waiting', () => {
     expect('isInitialized' in new InMemorySkillStore()).toBe(false);
   });
 
@@ -1845,7 +1845,7 @@ describe('integrity verification', () => {
     expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
   });
 
-  it('reports over_size_cap, not not_utf8, for over-cap content that also carries a lone surrogate (§3.21)', async () => {
+  it('reports over_size_cap, not not_utf8, for over-cap content that also carries a lone surrogate', async () => {
     // The checks run in a fixed order — shape, size, encoding, hash — and size
     // precedes encoding deliberately: running an encoding pass over a 10 MiB
     // body before rejecting it for being 10 MiB is a DoS foothold. This is the
@@ -1933,7 +1933,7 @@ describe('integrity verification', () => {
     expect(await getSkill('a')).toBeNull();
   });
 
-  it('rejects a non-object raw entry — absent when pinned, not_an_object when listed (§3.21)', async () => {
+  it('rejects a non-object raw entry — absent when pinned, not_an_object when listed', async () => {
     // The asymmetry is the contract. A pinned lookup that comes back as a
     // non-object is a broken store adapter answering "nothing", reported as
     // `absent` with no signal and no log record — firing a tampering signal on
@@ -2174,7 +2174,7 @@ describe('telemetry seam, accessor half', () => {
     skillRefs({ model: { name: 'm' }, provider: { name: 'p' }, instructions: 'i', skills: [{ key: 'a', version: 1 }] });
 
     // Skills telemetry goes through the private emitter, never client.track. The only track calls
-    // are the $ld:ai:sdk:usage events for the helpers themselves (§3.27). Which helpers still
+    // are the $ld:ai:sdk:usage events for the helpers themselves. Which helpers still
     // report here depends on earlier tests, since each reports once per client.
     const calls = mockClient.track.mock.calls as unknown[][];
     const helpers = ['client.allSkills', 'client.getSkill', 'client.getSkills', 'client.skillRefs'];

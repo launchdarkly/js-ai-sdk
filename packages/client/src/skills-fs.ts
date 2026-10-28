@@ -206,7 +206,7 @@ export async function writeSkills(
 }
 
 /**
- * `writeSkills` without the helper-usage report (TESTING.md §3.27). The watcher's
+ * `writeSkills` without the helper-usage report. The watcher's
  * initial and repeat reconciles call this, so `watchSkills` reports only itself.
  */
 export async function writeSkillsInternal(

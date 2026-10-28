@@ -9,8 +9,8 @@ import {
 } from '@launchdarkly/ai-server';
 
 /**
- * The allowlists below are the LangChain lists in the cross-SDK spec (ai-sdks-monorepo TESTING.md
- * §1.12), the same lists the Python SDK forwards, in the camelCase the LangChain constructors
+ * The allowlists below are the cross-SDK LangChain lists, the same lists the Python SDK
+ * forwards, in the camelCase the LangChain constructors
  * read. Only settings that shape what the model generates are on them. Adding a key after 1.0
  * breaks nobody, and removing one does, so a key that does not clearly shape generation stays off.
  *
@@ -32,13 +32,13 @@ import {
  * - `useResponsesApi`, `reasoning`: API-shape switches. `useResponsesApi` moves `ChatOpenAI` to
  *   the Responses API, and so does a `reasoning` with a `summary`, which changes the response
  *   shape the handler reads. The Python SDK forwards the Chat Completions `reasoning_effort`
- *   instead; the TypeScript `ChatOpenAI` takes that only per call, so the spec marks it not
+ *   instead; the TypeScript `ChatOpenAI` takes that only per call, so it is not
  *   supported in TypeScript.
  * - `audio`, `modalities`: change the output type, not how text is generated.
  * - `promptCacheRetention`, `zdrEnabled`: data retention.
  * - `user`: identity and attribution.
  *
- * `promptCacheKey` is forwarded here but marked not supported in Python in the spec, because the
+ * `promptCacheKey` is forwarded here but not supported in Python, because the
  * Python `ChatOpenAI` has no such constructor field.
  */
 export const CHAT_OPENAI_FORWARDED_KEYS = [

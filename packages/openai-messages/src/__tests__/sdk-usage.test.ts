@@ -1,5 +1,5 @@
 /**
- * TESTING.md §3.27 — `$ld:ai:sdk:usage` for openai-messages.
+ * `$ld:ai:sdk:usage` for openai-messages.
  */
 
 import type { LDClientInterface, LDContext } from '@launchdarkly/ai-server';
@@ -76,7 +76,7 @@ it('has a call for every usage ID its list reports, and none it does not', () =>
   expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());
 });
 
-describe('§3.27 openai-messages helper usage', () => {
+describe('openai-messages helper usage', () => {
   let client: FakeClient;
 
   beforeEach(async () => {

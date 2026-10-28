@@ -1,5 +1,5 @@
 /**
- * TESTING.md §3.27 — `$ld:ai:sdk:usage` for claude-agents.
+ * `$ld:ai:sdk:usage` for claude-agents.
  */
 
 import type { LDClientInterface, LDContext } from '@launchdarkly/ai-server';
@@ -98,7 +98,7 @@ it('has a call for every usage ID its list reports, and none it does not', () =>
   expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());
 });
 
-describe('§3.27 claude-agents helper usage', () => {
+describe('claude-agents helper usage', () => {
   let client: FakeClient;
 
   beforeEach(async () => {

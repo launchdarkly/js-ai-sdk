@@ -82,7 +82,7 @@ tool({
   description: toolConfig.description ?? '',
   strict: false,
   parameters: toolConfig.parameters as any,   // JSON Schema passed directly
-  errorFunction: null,                        // propagate tool errors (TESTING.md §1.4)
+  errorFunction: null,                        // propagate tool errors
   execute: async (args) => {
     const result = await toolHandlers[name](args);
     return String(result);
@@ -195,5 +195,5 @@ Span names and attributes are described in [Implementation Details → Telemetry
 - **`result.state.usage` uses camelCase**: `inputTokens`, `outputTokens`, `totalTokens` — not the snake_case used by the OpenAI REST API. The returned `usage` object converts these back to `input_tokens`/`output_tokens` so the client's normalizer works.
 - **`execute` receives parsed args**: unlike the Responses API where arguments arrive as a JSON string, the Agents SDK parses them before calling `execute`. Do not call `JSON.parse` in the executor.
 - **`typeof handler !== 'function'` guard**: the execute callback checks `typeof handler !== 'function'` before calling it, so passing a `NativeTool` instance as a `toolHandlers` value will produce a clear `"No handler registered"` error rather than an opaque TypeError.
-- **`errorFunction: null` is required on every `tool()`**: leaving it unset makes the SDK catch a tool error and send it to the model as the tool result, so the run carries on. The spec (TESTING.md §1.4) requires the error to propagate. A test that calls a mocked tool's `execute` directly cannot catch this; build the tool with the real `tool()` and call `invoke`.
+- **`errorFunction: null` is required on every `tool()`**: leaving it unset makes the SDK catch a tool error and send it to the model as the tool result, so the run carries on. The handler must let the error propagate instead. A test that calls a mocked tool's `execute` directly cannot catch this; build the tool with the real `tool()` and call `invoke`.
 - **No manual loop**: do not add a tool-call loop. The Agents SDK's `run()` handles everything. Adding a manual loop on top would double-execute tools.

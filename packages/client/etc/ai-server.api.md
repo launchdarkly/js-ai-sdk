@@ -968,7 +968,7 @@ export type WriteSkillsOptions = {
 // Warnings were encountered during analysis:
 //
 // temp/dts/skills-fdv2.d.ts:460:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point index.d.ts
-// temp/dts/types.d.ts:426:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
+// temp/dts/types.d.ts:425:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 
