@@ -496,6 +496,7 @@ npm install @opentelemetry/sdk-trace-node @opentelemetry/sdk-trace-base \
 **Other env vars / options read by `initClient()`:**
 - `LD_SERVICE_NAME` / `options.serviceName` — sets `service.name` resource attribute (default: `'nodejs-sdk'`)
 - `LD_ENVIRONMENT` / `options.environment` — sets `deployment.environment` resource attribute
+- Not configurable: the `launchdarkly.project_id` resource attribute is always set to the resolved SDK key, not the project's ID
 
 **Graceful degradation:** if any OTel package cannot be imported, telemetry is silently skipped and a `console.warn` is emitted with the install command. The LD client still initializes and all AI API calls work normally.
 

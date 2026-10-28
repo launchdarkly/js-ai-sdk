@@ -46,6 +46,8 @@ No code changes are required — `initClient()` detects the packages at runtime 
 
 The SDK reads these from `process.env` and never loads a `.env` file itself. If you want `.env` loading, install `dotenv` (`npm install dotenv`) and add `import 'dotenv/config';` to your own entrypoint before importing the SDK, as the examples below do.
 
+`initClient()` also sets the `launchdarkly.project_id` resource attribute to the resolved SDK key, not the project's ID.
+
 The client uses **lazy initialization**: importing the package does not connect to LaunchDarkly. The singleton is created automatically on the first API call that needs it (`config().invoke()`, `graph().invoke()`, `resolveGraph()`, etc.), as long as `LD_SDK_KEY` is set in the environment.
 
 Call `initClient()` explicitly when you want to:
@@ -798,7 +800,7 @@ await evals.run({
 | | `Judge` | `Scorer` |
 |---|---|---|
 | `threshold`: score a row must reach | default `0.5` | default `1.0` |
-| `passRateThreshold`: share of rows that must pass | default `0.95` | default `0.95` |
+| `passRateThreshold`: share of rows that must pass | optional, unset by default | optional, unset by default |
 | Direction | Set on the judge's AI Config in LaunchDarkly | `successDirection`, default `'higher_is_better'`. Use `'lower_is_better'` for a scorer that counts something unwanted |
 | Other | `groundTruthContext`: what to grade against, when it is not the row's expected output | `fn(row, output)` may be async and must return a number from 0 to 1. Booleans are not accepted: return `1` or `0` |
 

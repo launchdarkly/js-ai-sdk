@@ -592,7 +592,7 @@ describe('aiConfig source', () => {
           criterionType: 'accuracy',
           kind: 'judge',
           judgeKey: 'accuracy',
-          options: { threshold: 0.5, passRateThreshold: 0.95 },
+          options: { threshold: 0.5 },
         },
       ]);
     });
