@@ -121,6 +121,13 @@ const startSpan = (name: string, parent: Span | undefined, startTime = spanTimes
     ? tracer().startSpan(name, { startTime }, trace.setSpan(context.active(), parent))
     : tracer().startSpan(name, { root: true, startTime });
 
+/**
+ * The most row roots ended between tracer flushes. OTel's `BatchSpanProcessor`
+ * drops every span past 2,048 queued, and its own export cannot run while a
+ * synchronous loop holds the thread.
+ */
+export const SPAN_FLUSH_BOUND = 500;
+
 /** Ends a span started by this module. */
 export const endSpan = (span: Span, endTime = spanTimestamp()): void => span.end(endTime);
 

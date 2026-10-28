@@ -10,6 +10,7 @@ import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-ho
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import {
   BasicTracerProvider,
+  BatchSpanProcessor,
   InMemorySpanExporter,
   type ReadableSpan,
   SimpleSpanProcessor,
@@ -623,6 +624,11 @@ describe('a handler that opens its own spans', () => {
 // Flushing
 // ---------------------------------------------------------------------------
 
+const yieldsThenAnswers: Impl = async () => {
+  await new Promise((resolve) => setImmediate(resolve));
+  return { output: ANSWER };
+};
+
 describe('tracer flush', () => {
   it('runs, and the row roots end, when the evaluation phase throws', async () => {
     let flushes = 0;
@@ -636,6 +642,27 @@ describe('tracer flush', () => {
     expect(named('launchdarkly.dataset_row')).toHaveLength(1);
     expect(named('evaluate accuracy')).toEqual([]);
   });
+
+  it('exports every row root of a large run through a batch span processor', async () => {
+    // SimpleSpanProcessor exports each span as it ends, so only a batch
+    // processor with OTel's default queue (2,048) can overflow. The handler
+    // yields to timers, as a network call would, so generation can export.
+    const batchExporter = new InMemorySpanExporter();
+    const batchProvider = new BasicTracerProvider({
+      spanProcessors: [new ConversationIdSpanProcessor(), new BatchSpanProcessor(batchExporter)],
+    });
+    vi.spyOn(trace, 'getTracerProvider').mockReturnValue(batchProvider);
+    const rows = Array.from({ length: 3000 }, (_, i) => datasetRow(i, { input: `q${i}` }));
+    const api = routeHostedRun(new FakeApi(), rows);
+    try {
+      await makeModule(api).run(options({ tools: [], criteria: [], handlers: [plain('OpenAI', yieldsThenAnswers)] }));
+      const exported = batchExporter.getFinishedSpans();
+      expect(exported.filter((span) => span.name === 'launchdarkly.dataset_row')).toHaveLength(3000);
+      expect(exported.filter((span) => span.name === 'chat gpt-4o')).toHaveLength(3000);
+    } finally {
+      await batchProvider.shutdown();
+    }
+  }, 30_000);
 
   it('is a no-op for a provider with no forceFlush', async () => {
     const bare = { getTracer: () => trace.getTracer('x') };

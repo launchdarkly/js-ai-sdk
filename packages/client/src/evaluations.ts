@@ -61,7 +61,7 @@ import {
   variationToolVersions,
 } from './evaluations-runner.js';
 import { CRITERION_EVENT_NAME, criterionPayload, resolveJudges, scoreRows } from './evaluations-scoring.js';
-import { endSpan } from './evaluations-spans.js';
+import { endSpan, SPAN_FLUSH_BOUND } from './evaluations-spans.js';
 import {
   type EvalTool,
   LibraryToolsClient,
@@ -672,9 +672,13 @@ export class EvaluationsModule {
     } finally {
       // Events already queued must reach LaunchDarkly even when a later step fails.
       // Spans follow, on the provider initClient() registered. A span that fails
-      // to end must not skip the event flush.
+      // to end must not skip the event flush. The roots end in bounded batches,
+      // each on a drained queue, so a large run cannot overflow the span processor.
       try {
-        for (const result of results) if (result.span) endSpan(result.span);
+        for (const [i, result] of results.entries()) {
+          if (i % SPAN_FLUSH_BOUND === 0) await flushTracerProvider();
+          if (result.span) endSpan(result.span);
+        }
       } finally {
         try {
           await sink.flush();
