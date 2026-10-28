@@ -45,8 +45,8 @@ const drain = async <T, TReturn>(generator: AsyncGenerator<T, TReturn>): Promise
 };
 
 /**
- * A node's `node_done` event. Carries the node's own judge results, and omits
- * them when no judge produced one, as `done` does for the graph-level judge.
+ * A node's `node_done` event. Carries the node's own judge results, and leaves
+ * the key out when no judge produced one. `done` holds only the graph-level judge.
  */
 const nodeDoneEvent = (
   nodeKey: string,

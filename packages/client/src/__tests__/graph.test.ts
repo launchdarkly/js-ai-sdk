@@ -1055,6 +1055,27 @@ describe('graph().stream()', () => {
     expect((events.at(-1) as { judgeResults?: unknown }).judgeResults).toBeUndefined();
   });
 
+  it('keeps node judge results on node_done and only the graph judge on done', async () => {
+    const leafJudge = { 'leaf-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'good', score: 0.9 } };
+    const graphJudge = { 'graph-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'whole', score: 0.5 } };
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockImplementation(
+      async (args: { config: { instructions?: string; judgeConfiguration?: { judges: Array<{ key: string }> } } }) => {
+        if (args.config.judgeConfiguration?.judges[0]?.key === 'graph-judge') return graphJudge;
+        return args.config.instructions === 'I am leaf' ? leafJudge : {};
+      },
+    );
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+    const events = await collectStream(
+      graph('graph-flag', { handlers: [handler], graphJudge: 'graph-judge' }).stream('hi', mockContext),
+    );
+
+    const leafDone = events.find((e) => e.type === 'node_done' && e.nodeKey === 'leaf-node');
+    expect(leafDone).toMatchObject({ judgeResults: leafJudge });
+    expect((events.at(-1) as { judgeResults?: unknown }).judgeResults).toEqual(graphJudge);
+  });
+
   it("multi-edge route: the routing node's judge results are on its node_done", async () => {
     const rootJudge = { 'root-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'routed', score: 1 } };
     const { runJudges } = await import('../judges.js');

@@ -30,7 +30,9 @@ export async function run(key: string, userInput: string): Promise<void> {
     } else if (event.type === 'node_start') {
       process.stderr.write(`\n[node_start] ${event.nodeKey}\n`);
     } else if (event.type === 'node_done') {
-      process.stderr.write(`\n[node_done] ${event.nodeKey} usage=${JSON.stringify(event.usage)}\n`);
+      // A node's own judge results, when one of its judges produced a score.
+      const judged = event.judgeResults ? ` judgeResults=${JSON.stringify(event.judgeResults)}` : '';
+      process.stderr.write(`\n[node_done] ${event.nodeKey} usage=${JSON.stringify(event.usage)}${judged}\n`);
     } else if (event.type === 'handoff') {
       process.stderr.write(`[handoff] ${event.sourceKey} -> ${event.targetKey}\n`);
     } else {
