@@ -178,9 +178,12 @@ const buildGraph = async (
   const edgesFrom = (nodeKey: string): GraphEdge[] => edges.filter((e) => e.sourceKey === nodeKey);
 
   const nodes = new Map<string, GraphNode>();
+  // Raw variation per node, kept beside `GraphNode` so the public type is unchanged.
+  const nodeValues = new Map<string, unknown>();
   try {
     for (const nodeKey of allKeys) {
-      const { config, meta: nodeMeta } = await extractVariation(nodeKey, context);
+      const { config, meta: nodeMeta, value } = await extractVariation(nodeKey, context);
+      nodeValues.set(nodeKey, value);
       const nodeEdges = edgesFrom(nodeKey);
       nodes.set(nodeKey, {
         key: nodeKey,
@@ -320,6 +323,7 @@ const buildGraph = async (
         variables: opts.variables,
         graphKey: key,
         history: opts.history,
+        evaluatedValue: nodeValues.get(node.key),
       })) {
         if (event.type === 'chunk') {
           yield { type: 'chunk', text: event.text, nodeKey: node.key };
@@ -427,6 +431,7 @@ const buildGraph = async (
         variables: opts.variables,
         graphKey: key,
         history: opts.history,
+        evaluatedValue: nodeValues.get(node.key),
       })) {
         if (event.type === 'chunk') {
           yield { type: 'chunk', text: event.text, nodeKey: node.key };

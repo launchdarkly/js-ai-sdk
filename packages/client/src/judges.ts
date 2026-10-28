@@ -34,7 +34,7 @@ import { collapseMessagesToInstructions, normalizeMode, parseJSONWithPossibleFen
 const resolveJudge = async (
   key: string,
   userContext: LDContext,
-): Promise<{ config: AiConfigRep; meta: VariationMeta } | null> => {
+): Promise<{ config: AiConfigRep; meta: VariationMeta; value: unknown } | null> => {
   try {
     return await extractVariation(key, userContext);
   } catch (err) {
@@ -144,7 +144,7 @@ export const runJudges = async ({
 
     const resolved = await resolveJudge(judge.key, userContext);
     if (!resolved) continue;
-    const { config: judgeConfig, meta: judgeMeta } = resolved;
+    const { config: judgeConfig, meta: judgeMeta, value: judgeValue } = resolved;
 
     const judgeProvider = judgeConfig.provider?.name;
     const judgeMode = normalizeMode(judgeMeta.mode);
@@ -198,6 +198,7 @@ export const runJudges = async ({
         configKey: judge.key,
         config: effectiveJudgeConfig,
         meta: judgeMeta,
+        evaluatedValue: judgeValue,
         userContext,
         handler: judgeHandler,
         userInput: llmResponse,

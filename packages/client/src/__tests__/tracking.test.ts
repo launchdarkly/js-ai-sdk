@@ -149,6 +149,34 @@ describe('executeAndTrack', () => {
     expect(result.response).toBe('Hello!');
   });
 
+  it('passes evaluatedValue to the handler as __ldValue and keeps it out of trackData and events', async () => {
+    const handler = makeHandler('ok');
+    const raw = { ...execConfig, _ldMeta: { enabled: true, variationKey: 'v1' } };
+    const result = await executeAndTrack({
+      configKey: 'my-flag',
+      config: execConfig as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+      evaluatedValue: raw,
+    });
+    expect(handler.mock.calls[0][3].__ldValue).toBe(raw);
+    expect(result.trackData).not.toHaveProperty('__ldValue');
+    for (const call of mockTrack.mock.calls) expect(JSON.stringify(call[2])).not.toContain('You are helpful.');
+  });
+
+  it('does not set __ldValue when evaluatedValue is absent', async () => {
+    const handler = makeHandler('ok');
+    await executeAndTrack({
+      configKey: 'my-flag',
+      config: execConfig as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+    });
+    expect(handler.mock.calls[0][3]).not.toHaveProperty('__ldValue');
+  });
+
   it('returns parsed usage with correct totals', async () => {
     const handler = makeHandler('hi', { input_tokens: 5, output_tokens: 10 });
     const result = await executeAndTrack({

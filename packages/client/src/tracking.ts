@@ -224,6 +224,7 @@ export const executeAndTrack = async ({
   variables,
   graphKey,
   history,
+  evaluatedValue,
 }: {
   configKey: string;
   config: AiConfigRep;
@@ -235,6 +236,12 @@ export const executeAndTrack = async ({
   variables?: Record<string, unknown>;
   graphKey?: string;
   history?: Message[];
+  /**
+   * The flag value as the LaunchDarkly SDK returned it, before parsing. Passed to the handler as
+   * `variables.__ldValue` (not in `TrackData`, which is the `$ld:ai:*` event payload) so
+   * `setLdSpanAttributes` can write `feature_flag.result.value`. Omit it when there is none.
+   */
+  evaluatedValue?: unknown;
 }): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData; trajectory: string }> => {
   const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
@@ -252,6 +259,7 @@ export const executeAndTrack = async ({
         ...variables,
         ldContext: { ...userContext },
         __ld: trackData,
+        ...(evaluatedValue !== undefined ? { __ldValue: evaluatedValue } : {}),
       },
       history,
     );
@@ -302,6 +310,7 @@ export async function* executeAndStream({
   variables,
   graphKey,
   history,
+  evaluatedValue,
 }: {
   configKey: string;
   config: AiConfigRep;
@@ -313,11 +322,22 @@ export async function* executeAndStream({
   variables?: Record<string, unknown>;
   graphKey?: string;
   history?: Message[];
+  /**
+   * The flag value as the LaunchDarkly SDK returned it, before parsing. Passed to the handler as
+   * `variables.__ldValue` (not in `TrackData`, which is the `$ld:ai:*` event payload) so
+   * `setLdSpanAttributes` can write `feature_flag.result.value`. Omit it when there is none.
+   */
+  evaluatedValue?: unknown;
 }): AsyncGenerator<ExecuteStreamEvent> {
   const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
   const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
-  const mergedVariables = { ...variables, ldContext: { ...userContext }, __ld: trackData };
+  const mergedVariables = {
+    ...variables,
+    ldContext: { ...userContext },
+    __ld: trackData,
+    ...(evaluatedValue !== undefined ? { __ldValue: evaluatedValue } : {}),
+  };
 
   const startTime = Date.now();
   let fullText = '';
