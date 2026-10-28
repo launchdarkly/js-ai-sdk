@@ -90,12 +90,15 @@ type Call = {
   history: Message[] | undefined;
 };
 
-function recorder(provider: string, output = 'ok', opts: { rejects?: boolean; sleepMs?: number } = {}) {
+function recorder(provider: string, output = 'ok', opts: { rejects?: boolean; sleepMs?: number; error?: Error } = {}) {
   const calls: Call[] = [];
   const handler = (async (cfg, input, tools, variables, history) => {
     calls.push({ config: cfg as Record<string, unknown>, input, tools, variables: variables ?? {}, history });
     if (opts.sleepMs) {
       await new Promise((r) => setTimeout(r, opts.sleepMs));
+    }
+    if (opts.error) {
+      throw opts.error;
     }
     if (opts.rejects) {
       throw new Error('shadow boom');
@@ -371,6 +374,36 @@ describe('§9.4 running a shadow', () => {
     const names = shadowEvents(client).map((e) => e[0]);
     expect(names).toContain('$ld:ai:generation:error');
     expect(names).toContain('$ld:ai:duration:total');
+  });
+
+  it('tracks a timeout once and ignores the late result', async () => {
+    enableShadowRequests({ timeoutMs: 20 });
+    const client = await use(makeClient(variationA()));
+    const a = recorder('TestProvider', 'real answer');
+    const b = recorder('ShadowProvider', 'ok', { sleepMs: 100 });
+    await config({ key: 'flag', handler: [a.handler, b.handler] }).invoke('hi', CONTEXT);
+    await waitForShadowsForTesting();
+    await new Promise((r) => setTimeout(r, 150));
+    const names = shadowEvents(client).map((e) => e[0]);
+    expect(names.filter((n) => n === '$ld:ai:generation:error')).toHaveLength(1);
+    expect(names.filter((n) => n === '$ld:ai:duration:total')).toHaveLength(1);
+    expect(names).not.toContain('$ld:ai:generation:success');
+  });
+
+  it('tracks a handler timeout error once', async () => {
+    const tasks: ShadowTask[] = [];
+    enableShadowRequests({ onTask: (t) => tasks.push(t) });
+    const client = makeClient(variationA());
+    await invoke(client);
+    const timeoutError = Object.assign(new Error('provider timeout'), { name: 'TimeoutError' });
+    const result = await runShadow(tasks[0], [recorder('ShadowProvider', 'ok', { error: timeoutError }).handler]);
+    const names = shadowEvents(client).map((e) => e[0]);
+    expect(result.error).toBe('provider timeout');
+    expect(names.filter((n) => n === '$ld:ai:generation:error')).toHaveLength(1);
+  });
+
+  it.each([0, -1, Number.POSITIVE_INFINITY, Number.NaN, 2 ** 31])('rejects timeoutMs %s', (timeoutMs) => {
+    expect(() => enableShadowRequests({ timeoutMs })).toThrow(RangeError);
   });
 
   it('leaves the real run unchanged', async () => {

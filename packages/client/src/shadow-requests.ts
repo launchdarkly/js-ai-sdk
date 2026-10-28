@@ -11,7 +11,6 @@ import { createHash } from 'node:crypto';
 
 import { selectHandler } from './client.js';
 import { type InvocationEvent, registerInvocationHook } from './invocation-hooks.js';
-import { getClient } from './lifecycle.js';
 import { reportUsage } from './sdk-usage.js';
 import { registerShutdownHook } from './shutdown-hooks.js';
 import { executeAndTrack, makeRunTrackData, modelStampsFromMeta } from './tracking.js';
@@ -31,6 +30,7 @@ const FEATURE = 'Shadow Requests';
 const FALLTHROUGH = 'fallthrough';
 const STRIPPED_KEYS = new Set(['_ldMeta', 'tools', 'judgeConfiguration', 'shadowConfiguration']);
 const BUCKET_SCALE = 2 ** 60;
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 /**
  * Everything needed to run and track one sampled shadow, with no flag
@@ -78,8 +78,8 @@ const pending = new Set<Promise<ShadowResult>>();
 export function enableShadowRequests(options: EnableShadowRequestsOptions = {}): void {
   reportUsage('experimental.enableShadowRequests');
   const timeoutMs = options.timeoutMs ?? 30_000;
-  if (!(timeoutMs > 0)) {
-    throw new RangeError('timeoutMs must be greater than 0');
+  if (!(Number.isFinite(timeoutMs) && timeoutMs > 0 && timeoutMs <= MAX_TIMEOUT_MS)) {
+    throw new RangeError(`timeoutMs must be greater than 0 and at most ${MAX_TIMEOUT_MS}`);
   }
   settings = { timeoutMs, onTask: options.onTask };
   registerInvocationHook(FEATURE, onInvocation);
@@ -272,47 +272,42 @@ async function run(task: ShadowTask, handlers: ProviderHandler[]): Promise<Shado
     return { usage: NO_USAGE, trackData, error: String(err) };
   }
 
-  const start = Date.now();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timedOut = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => resolve('timeout'), task.timeoutMs);
-    timer.unref?.();
-  });
   try {
-    const result = await Promise.race([
-      executeAndTrack({
-        configKey: task.configKey,
-        config: task.shadowConfig,
-        meta: task.shadowMeta,
-        userContext: task.userContext,
-        handler,
-        userInput: task.userInput,
-        variables: task.variables,
-        history: task.history ? [...task.history] : undefined,
-        runId: trackData.runId,
-        extraTrackData,
-        spanAttributes: task.spanAttributes,
-      }),
-      timedOut,
-    ]);
-    if (result === 'timeout') {
-      trackTimeout(task, trackData, Date.now() - start);
-      return { usage: NO_USAGE, trackData, error: 'timeout' };
-    }
+    const result = await executeAndTrack({
+      configKey: task.configKey,
+      config: task.shadowConfig,
+      meta: task.shadowMeta,
+      userContext: task.userContext,
+      handler: withDeadline(handler, task.timeoutMs),
+      userInput: task.userInput,
+      variables: task.variables,
+      history: task.history ? [...task.history] : undefined,
+      runId: trackData.runId,
+      extraTrackData,
+      spanAttributes: task.spanAttributes,
+    });
     return { usage: result.usage, trackData: result.trackData };
   } catch (err) {
     return { usage: NO_USAGE, trackData, error: err instanceof Error ? err.message : String(err) };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
-function trackTimeout(task: ShadowTask, trackData: TrackData, elapsedMs: number): void {
-  try {
-    const client = getClient();
-    client.track('$ld:ai:duration:total', task.userContext, trackData, elapsedMs);
-    client.track('$ld:ai:generation:error', task.userContext, trackData, 1);
-  } catch {
-    // The client may already be shut down.
+function withDeadline(handler: ProviderHandler, timeoutMs: number): ProviderHandler {
+  const timed = (async (...args: Parameters<ProviderHandler>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([handler(...args), deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }) as ProviderHandler;
+  timed.providesFor = handler.providesFor;
+  if (handler.captureContent !== undefined) {
+    timed.captureContent = handler.captureContent;
   }
+  return timed;
 }
