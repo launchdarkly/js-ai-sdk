@@ -173,13 +173,29 @@ describe('toClaudeAgents', () => {
     await (leafTool![3] as (args: { input: string }) => Promise<unknown>)({ input: 'sub task' });
 
     const rootOptions = mockQuery.mock.calls[0][0].options;
-    expect(rootOptions.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('200');
-    expect(rootOptions.env.PATH).toBe(process.env.PATH);
+    expect(rootOptions.env).toEqual({ ...process.env, CLAUDE_CODE_MAX_OUTPUT_TOKENS: '200' });
     expect(rootOptions.thinking).toEqual({ type: 'disabled' });
 
     const leafOptions = mockQuery.mock.calls[1][0].options;
     expect(leafOptions).not.toHaveProperty('env');
     expect(leafOptions.thinking).toEqual({ type: 'enabled', budgetTokens: 2048 });
+  });
+
+  it("drops a node's invalid max_tokens and leaves thinking to a node's max_thinking_tokens", async () => {
+    const def = makeGraphDef();
+    (def.root!.config.model as any).parameters = { max_tokens: 1.5 };
+    (def.getNode('leaf')!.config.model as any).parameters = { max_thinking_tokens: 2048 };
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+    const leafTool = mockTool.mock.calls.find((call) => call[0] === 'leaf');
+    await (leafTool![3] as (args: { input: string }) => Promise<unknown>)({ input: 'sub task' });
+
+    const rootOptions = mockQuery.mock.calls[0][0].options;
+    expect(rootOptions).not.toHaveProperty('env');
+    expect(rootOptions.thinking).toEqual({ type: 'disabled' });
+
+    const leafOptions = mockQuery.mock.calls[1][0].options;
+    expect(leafOptions.maxThinkingTokens).toBe(2048);
+    expect(leafOptions.thinking).toBeUndefined();
   });
 
   it('never forwards credentials, endpoints, remote tools or host-process settings from any node', async () => {

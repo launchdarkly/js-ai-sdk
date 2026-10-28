@@ -1,4 +1,4 @@
-import { SpanStatusCode } from '@opentelemetry/api';
+import { propagation, SpanStatusCode, type TextMapPropagator } from '@opentelemetry/api';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -482,10 +482,10 @@ describe('createClaudeAgentsHandler', () => {
           process.env.LD_TEST_INHERITED = 'kept';
           try {
             const options = await optionsFor({ max_tokens: 200 }, path);
-            expect(options.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('200');
-            // The SDK replaces the child's environment with `env`, so the rest must still be there.
+            // The SDK replaces the child's environment with `env`, so it must be everything the
+            // child would inherit, plus the one variable and nothing else.
+            expect(options.env).toEqual({ ...process.env, CLAUDE_CODE_MAX_OUTPUT_TOKENS: '200' });
             expect(options.env.LD_TEST_INHERITED).toBe('kept');
-            expect(options.env.PATH).toBe(process.env.PATH);
             expect(options.thinking).toEqual({ type: 'disabled' });
           } finally {
             delete process.env.LD_TEST_INHERITED;
@@ -506,6 +506,7 @@ describe('createClaudeAgentsHandler', () => {
           0,
           -5,
           1.5,
+          Number.MAX_SAFE_INTEGER + 1,
           '200',
           true,
           null,
@@ -527,6 +528,57 @@ describe('createClaudeAgentsHandler', () => {
           const options = await optionsFor({ max_thinking_tokens: 2048 }, path);
           expect(options.maxThinkingTokens).toBe(2048);
           expect(options.thinking).toBeUndefined();
+        });
+
+        it('passes both as given when thinking and max_thinking_tokens are set', async () => {
+          const options = await optionsFor(
+            { max_thinking_tokens: 4096, thinking: { type: 'enabled', budget_tokens: 2048 } },
+            path,
+          );
+          expect(options.maxThinkingTokens).toBe(4096);
+          expect(options.thinking).toEqual({ type: 'enabled', budgetTokens: 2048 });
+        });
+
+        it('disables thinking when only effort is set', async () => {
+          const options = await optionsFor({ effort: 'low' }, path);
+          expect(options.effort).toBe('low');
+          expect(options.thinking).toEqual({ type: 'disabled' });
+        });
+
+        // The Agent SDK injects the active span into the CLI's environment only for trace variables
+        // `env` does not already hold, so an inherited TRACEPARENT copied into `env` would win.
+        describe('inherited trace context', () => {
+          const injecting: TextMapPropagator = {
+            inject: (_context, carrier, setter) => setter.set(carrier, 'traceparent', '00-active-span-01'),
+            extract: (context) => context,
+            fields: () => ['traceparent'],
+          };
+
+          it('leaves out TRACEPARENT and TRACESTATE when the active context injects a traceparent', async () => {
+            process.env.TRACEPARENT = '00-inherited-01';
+            process.env.TRACESTATE = 'inherited=1';
+            propagation.setGlobalPropagator(injecting);
+            try {
+              const options = await optionsFor({ max_tokens: 200 }, path);
+              expect(options.env).not.toHaveProperty('TRACEPARENT');
+              expect(options.env).not.toHaveProperty('TRACESTATE');
+              expect(options.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('200');
+            } finally {
+              propagation.disable();
+              delete process.env.TRACEPARENT;
+              delete process.env.TRACESTATE;
+            }
+          });
+
+          it('keeps them when there is nothing to inject, as the CLI would inherit them', async () => {
+            process.env.TRACEPARENT = '00-inherited-01';
+            try {
+              const options = await optionsFor({ max_tokens: 200 }, path);
+              expect(options.env.TRACEPARENT).toBe('00-inherited-01');
+            } finally {
+              delete process.env.TRACEPARENT;
+            }
+          });
         });
       });
     }
