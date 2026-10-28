@@ -545,6 +545,13 @@ describe('createClaudeAgentsHandler', () => {
           expect(options.thinking).toEqual({ type: 'disabled' });
         });
 
+        // `null` still reaches `query()`, and the Agent SDK reads `maxThinkingTokens` only when
+        // `thinking` is unset, where a null budget throws. The default must cover it.
+        it('disables thinking when max_thinking_tokens is null', async () => {
+          const options = await optionsFor({ max_thinking_tokens: null }, path);
+          expect(options.thinking).toEqual({ type: 'disabled' });
+        });
+
         // The Agent SDK injects the active span into the CLI's environment only for trace variables
         // `env` does not already hold, so an inherited TRACEPARENT copied into `env` would win.
         describe('inherited trace context', () => {

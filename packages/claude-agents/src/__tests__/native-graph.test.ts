@@ -1,5 +1,5 @@
 import type { GraphDefinition, GraphEdge, GraphNode } from '@launchdarkly/ai-server';
-import { SpanStatusCode } from '@opentelemetry/api';
+import { propagation, SpanStatusCode, type TextMapPropagator } from '@opentelemetry/api';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -196,6 +196,63 @@ describe('toClaudeAgents', () => {
     const leafOptions = mockQuery.mock.calls[1][0].options;
     expect(leafOptions.maxThinkingTokens).toBe(2048);
     expect(leafOptions.thinking).toBeUndefined();
+  });
+
+  it('passes no env without a max_tokens, and disables thinking for a malformed thinking or effort alone', async () => {
+    const def = makeGraphDef();
+    (def.root!.config.model as any).parameters = { thinking: { type: 'enabled' } };
+    (def.getNode('leaf')!.config.model as any).parameters = { effort: 'low' };
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+    const leafTool = mockTool.mock.calls.find((call) => call[0] === 'leaf');
+    await (leafTool![3] as (args: { input: string }) => Promise<unknown>)({ input: 'sub task' });
+
+    for (const call of mockQuery.mock.calls) {
+      expect(call[0].options).not.toHaveProperty('env');
+      expect(call[0].options.thinking).toEqual({ type: 'disabled' });
+    }
+  });
+
+  // A node's options are built in native-graph.ts, not under the handler's span, so pin the
+  // inherited-TRACEPARENT rule there too.
+  describe('inherited trace context', () => {
+    const injecting: TextMapPropagator = {
+      inject: (_context, carrier, setter) => setter.set(carrier, 'traceparent', '00-active-span-01'),
+      extract: (context) => context,
+      fields: () => ['traceparent'],
+    };
+
+    const rootOptions = async () => {
+      const def = makeGraphDef();
+      (def.root!.config.model as any).parameters = { max_tokens: 200 };
+      await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+      return mockQuery.mock.calls[0][0].options;
+    };
+
+    it('leaves out TRACEPARENT and TRACESTATE when the active context injects a traceparent', async () => {
+      process.env.TRACEPARENT = '00-inherited-01';
+      process.env.TRACESTATE = 'inherited=1';
+      propagation.setGlobalPropagator(injecting);
+      try {
+        const options = await rootOptions();
+        expect(options.env).not.toHaveProperty('TRACEPARENT');
+        expect(options.env).not.toHaveProperty('TRACESTATE');
+        expect(options.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('200');
+      } finally {
+        propagation.disable();
+        delete process.env.TRACEPARENT;
+        delete process.env.TRACESTATE;
+      }
+    });
+
+    it('keeps them when there is nothing to inject', async () => {
+      process.env.TRACEPARENT = '00-inherited-01';
+      try {
+        const options = await rootOptions();
+        expect(options.env.TRACEPARENT).toBe('00-inherited-01');
+      } finally {
+        delete process.env.TRACEPARENT;
+      }
+    });
   });
 
   it('never forwards credentials, endpoints, remote tools or host-process settings from any node', async () => {
