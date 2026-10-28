@@ -7,6 +7,7 @@
 #   + Name    joining the public surface; may be exported or not
 
 - addCachedTokensToInput
++ AIConfig
 AiConfigRep
 + allSkills  usage=client.allSkills
 - anyMultimodal
@@ -35,10 +36,19 @@ createHandler  usage=client.createHandler
 + createSkillOutcome
 + createSkillReference
 + createSkillSource
++ Criterion
++ DatasetRow
 - endSpanOnce
++ EvalRunResult
++ EvalTool
++ EvaluationsError
++ EvaluationsModule
 - FDv2Mode  # deprecated alias of LaunchDarklySkillStoreMode
 - FDv2SkillStore  # deprecated alias of LaunchDarklySkillStore
 - FDv2SkillStoreOptions  # deprecated alias of LaunchDarklySkillStoreOptions
++ GenerationConfig
++ GenerationMode
++ GenerationOverrides
 getClient
 + getSkill  usage=client.getSkill
 + getSkillResult  usage=client.getSkillResult
@@ -63,12 +73,16 @@ HandlerStreamEvent
 ImageContentBlock
 initClient
 + InitClientOptions
++ initEvaluations  usage=client.initEvaluations
++ InitEvaluationsOptions
++ InlineDatasetRow
 + InMemorySkillStore
 + InputTokenDetails
 inspectConfig  usage=client.inspectConfig
 - inspectConfigInternal  # internal: plumbing for the handler packages; moves to the internal entry point
 InspectConfigResult
 - isContentBlocks
++ Judge
 - JudgeCallResult  # renamed to JudgeResult
 + JudgeResult  # rename of JudgeCallResult
 JudgeRunResult
@@ -117,7 +131,10 @@ resolveGraph  usage=client.resolveGraph
 - RouteResult
 runJudge  usage=client.runJudge
 - RunNodeOptions
++ RunOptions
++ RunSummary
 - RunUsage
++ Scorer
 + SDKOptions
 - setConversationIdIfAbsent
 - setInputContentAttributes

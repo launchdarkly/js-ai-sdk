@@ -202,7 +202,7 @@ const CALLS: Record<string, Call> = {
   'client.createHandler': (createHandler) =>
     fire(() => createHandler(['OpenAI', 'messages'], async () => ({ output: '' }))),
   // Throws on missing credentials; the report is the first statement, so it still lands.
-  'experimental.initEvaluations': (initEvaluations) =>
+  'client.initEvaluations': (initEvaluations) =>
     fire(() => {
       try {
         initEvaluations({ projectKey: 'p', apiKey: 't', sdkKey: 's' });
