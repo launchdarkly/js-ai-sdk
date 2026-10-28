@@ -1,4 +1,5 @@
 import { bindConversationId } from './conversation.js';
+import { hasInvocationHooks, runInvocationHooks } from './invocation-hooks.js';
 import { buildJudgeTasksInternal, runJudges } from './judges.js';
 import { extractVariation } from './lifecycle.js';
 import { findHandler, resolveHandlers, resolveTools } from './registry.js';
@@ -31,8 +32,10 @@ export type { AiConfigRep };
 /**
  * Selects a handler from `resolvedHandlers` based on the variation's provider
  * and mode. Throws if no match is found.
+ *
+ * @internal Exported for this package's own modules; not part of the public API.
  */
-function selectHandler(
+export function selectHandler(
   config: AiConfigRep,
   meta: VariationMeta,
   resolvedHandlers: ProviderHandler[] | undefined,
@@ -50,6 +53,33 @@ function selectHandler(
     throw new Error(`Handler for provider ${provider} not found`);
   }
   throw new Error(`Handler for provider ${provider} with mode ${normalizedMode} not found`);
+}
+
+function runHooks(args: {
+  configKey: string;
+  raw: Record<string, unknown>;
+  reason: unknown;
+  meta: VariationMeta;
+  context: LDContext;
+  userInput: string | undefined;
+  history: Message[] | undefined;
+  variables: Record<string, unknown> | undefined;
+  handlers: ProviderHandler[] | undefined;
+  runId: string;
+}): void {
+  if (!hasInvocationHooks()) return;
+  runInvocationHooks({
+    configKey: args.configKey,
+    value: args.raw ?? {},
+    reason: args.reason,
+    context: args.context,
+    userInput: args.userInput,
+    history: args.history,
+    variables: args.variables,
+    handlers: args.handlers ?? [],
+    runId: args.runId,
+    variationKey: args.meta?.variationKey ?? '',
+  });
 }
 
 /**
@@ -75,8 +105,21 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
     const resolvedHandlerArray = resolveHandlers(registry, normalizeHandlers());
     const resolvedTools = resolveTools(registry, toolHandlers);
 
-    const { config: aiConfig, meta } = await extractVariation(key, context);
+    const { config: aiConfig, meta, raw, reason } = await extractVariation(key, context);
     const resolvedHandler = selectHandler(aiConfig, meta, resolvedHandlerArray);
+    const runId = crypto.randomUUID();
+    runHooks({
+      configKey: key,
+      raw,
+      reason,
+      meta,
+      context,
+      userInput,
+      history,
+      variables,
+      handlers: resolvedHandlerArray,
+      runId,
+    });
 
     const {
       response: rawResponse,
@@ -93,6 +136,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       toolHandlers: resolvedTools,
       variables,
       history,
+      runId,
     });
 
     const parsedResponse = resolveOutputFormatResponse(rawResponse, aiConfig.outputFormat);
@@ -161,8 +205,21 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
     const resolvedHandlerArray = resolveHandlers(registry, normalizeHandlers());
     const resolvedTools = resolveTools(registry, toolHandlers);
 
-    const { config: aiConfig, meta } = await extractVariation(key, context);
+    const { config: aiConfig, meta, raw, reason } = await extractVariation(key, context);
     const resolvedHandler = selectHandler(aiConfig, meta, resolvedHandlerArray);
+    const runId = crypto.randomUUID();
+    runHooks({
+      configKey: key,
+      raw,
+      reason,
+      meta,
+      context,
+      userInput,
+      history,
+      variables,
+      handlers: resolvedHandlerArray,
+      runId,
+    });
 
     let doneEvent: ExecuteStreamDoneEvent | undefined;
 
@@ -176,6 +233,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       toolHandlers: resolvedTools,
       variables,
       history,
+      runId,
     })) {
       if (event.type === 'chunk') {
         yield event;

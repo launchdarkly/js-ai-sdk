@@ -844,6 +844,34 @@ A timeout almost always means LaunchDarkly did not receive some events, not that
 
 ---
 
+### Shadow Requests (experimental)
+
+A Shadow Request runs another variation of an AI Config in the background on the same input, and reports it on the normal AI metrics with `isShadow: true`. LaunchDarkly attaches shadow requests to a targeting rule or the fallthrough. The shadow's response is discarded, and your response, latency and events are unchanged. Shadow runs use your provider account, so they are billed like real calls.
+
+Nothing runs until you enable it:
+
+```ts
+import { enableShadowRequests } from '@launchdarkly/ai-server/experimental';
+
+enableShadowRequests();                     // run sampled shadows in the background, 30 s timeout
+enableShadowRequests({ timeoutMs: 10_000 }); // or pick the timeout
+```
+
+Shadows run for `config().invoke()` and `config().stream()`, not for graphs or judges. A shadow makes no tool calls and runs no judges. Call `disableShadowRequests()` to turn them off.
+
+To run shadows on your own queue or worker instead, pass `onTask`. It receives a `ShadowTask` (plain data, safe to serialize) before your handler runs and must only enqueue it. Run the task later with `runShadow`:
+
+```ts
+import { enableShadowRequests, runShadow } from '@launchdarkly/ai-server/experimental';
+
+enableShadowRequests({ onTask: (task) => queue.push(task) });
+
+// in the worker
+const result = await runShadow(task, [createOpenAIMessagesHandler()]);
+```
+
+These names may change in a minor release.
+
 ### Utility Helpers
 
 ```ts

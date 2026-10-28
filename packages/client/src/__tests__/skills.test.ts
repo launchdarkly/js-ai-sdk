@@ -339,6 +339,8 @@ const EXPERIMENTAL_EVALUATIONS_VALUES = [
   'initEvaluations',
 ];
 
+const EXPERIMENTAL_SHADOW_REQUESTS_VALUES = ['disableShadowRequests', 'enableShadowRequests', 'runShadow'];
+
 /** The package root's type-only exports for Agent Skills. */
 const SKILLS_TYPES = [
   'FDv2Mode',
@@ -434,12 +436,14 @@ const ROOT_VALUES = [
 ];
 
 describe('package exports', () => {
-  it('the experimental entry point exports exactly the documented evaluations values', () => {
-    expect(Object.keys(experimental).sort()).toEqual([...EXPERIMENTAL_EVALUATIONS_VALUES].sort());
+  it('the experimental entry point exports exactly the documented values', () => {
+    expect(Object.keys(experimental).sort()).toEqual(
+      [...EXPERIMENTAL_EVALUATIONS_VALUES, ...EXPERIMENTAL_SHADOW_REQUESTS_VALUES].sort(),
+    );
   });
 
-  it('no evaluations value is exported from the package root', () => {
-    for (const name of EXPERIMENTAL_EVALUATIONS_VALUES) {
+  it('no experimental value is exported from the package root', () => {
+    for (const name of [...EXPERIMENTAL_EVALUATIONS_VALUES, ...EXPERIMENTAL_SHADOW_REQUESTS_VALUES]) {
       expect(name in packageIndex, name).toBe(false);
     }
   });

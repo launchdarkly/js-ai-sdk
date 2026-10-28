@@ -38,6 +38,15 @@ export type LDContext = LDUser | LDSingleKindContext | LDMultiKindContext;
 
 export interface LDClientInterface {
   variation(key: string, context: LDContext, defaultValue: unknown): Promise<unknown>;
+  /**
+   * Evaluates a flag and returns its value with the evaluation reason. Optional: without it, no
+   * feature that needs the reason runs.
+   */
+  variationDetail?(
+    key: string,
+    context: LDContext,
+    defaultValue: unknown,
+  ): Promise<{ value: unknown; reason?: unknown }>;
   track(eventName: string, context: LDContext, data?: unknown, metricValue?: number): void;
   flush(): Promise<void>;
   // Server SDKs return void; a custom client may return a Promise, and shutdown() awaits either.

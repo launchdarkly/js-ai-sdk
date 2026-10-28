@@ -9,6 +9,8 @@
  *
  * - **Evaluations from Code** — run a dataset through local code and score
  *   the outputs with LaunchDarkly judges or local scorers.
+ * - **Shadow Requests**: run the shadow variations attached to a targeting
+ *   rule or the fallthrough in the background, tracked with `isShadow`.
  */
 
 // ---------------------------------------------------------------------------
@@ -31,3 +33,10 @@ export { EvaluationsError, EvaluationsModule, initEvaluations } from './evaluati
 export type { Criterion } from './evaluations-criteria.js';
 export { Judge, Scorer } from './evaluations-criteria.js';
 export { EvalTool } from './evaluations-tools.js';
+
+// ---------------------------------------------------------------------------
+// Shadow Requests
+// ---------------------------------------------------------------------------
+
+export type { EnableShadowRequestsOptions, ShadowResult, ShadowTask } from './shadow-requests.js';
+export { disableShadowRequests, enableShadowRequests, runShadow } from './shadow-requests.js';

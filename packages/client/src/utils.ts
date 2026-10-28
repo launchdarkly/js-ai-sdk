@@ -409,8 +409,10 @@ function compactContextKeysJson(keys: Record<string, string>): string {
 /**
  * Canonical key plus per-kind map from `variables.ldContext`.
  * Never throws. Returns undefined when there is no usable identity.
+ *
+ * @internal Exported for this package's own modules; not part of the public API.
  */
-function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | undefined {
+export function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | undefined {
   try {
     if (ldContext === null || typeof ldContext !== 'object') return undefined;
     const ctx = ldContext as Record<string, unknown>;
@@ -485,6 +487,14 @@ export function setLdSpanAttributes(span: Span, variables: Record<string, unknow
   span.setAttribute('launchdarkly.variation.key', ld.variationKey);
   span.setAttribute('launchdarkly.run.id', ld.runId);
   if (ld.graphKey) span.setAttribute('launchdarkly.graph.key', ld.graphKey);
+  const extra = variables?.__ld_span;
+  if (extra && typeof extra === 'object') {
+    for (const [name, value] of Object.entries(extra as Record<string, unknown>)) {
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        span.setAttribute(name, value);
+      }
+    }
+  }
 
   const featureFlagAttrs: Record<string, string> = {
     'feature_flag.key': ld.configKey,
