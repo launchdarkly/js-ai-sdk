@@ -46,6 +46,8 @@ No code changes are required — `initClient()` detects the packages at runtime 
 
 The SDK reads these from `process.env` and never loads a `.env` file itself. If you want `.env` loading, install `dotenv` (`npm install dotenv`) and add `import 'dotenv/config';` to your own entrypoint before importing the SDK, as the examples below do.
 
+`initClient()` also sets the `launchdarkly.project_id` resource attribute to the resolved SDK key, not the project's ID.
+
 The client uses **lazy initialization**: importing the package does not connect to LaunchDarkly. The singleton is created automatically on the first API call that needs it (`config().invoke()`, `graph().invoke()`, `resolveGraph()`, etc.), as long as `LD_SDK_KEY` is set in the environment.
 
 Call `initClient()` explicitly when you want to:
