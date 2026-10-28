@@ -33,8 +33,8 @@ No code changes are required — `initClient()` detects the packages at runtime 
 | Variable | Required | Description |
 |---|---|---|
 | `LD_SDK_KEY` | Yes | LaunchDarkly server-side SDK key |
-| `LD_BASE_URI` | No | Override the LaunchDarkly polling base URI (e.g. for staging). `FDv2SkillStore` reads it too when given no URI option |
-| `LD_STREAM_URI` | No | Override the streaming URI. `FDv2SkillStore` reads it too when given no URI option |
+| `LD_BASE_URI` | No | Override the LaunchDarkly polling base URI (e.g. for staging). `LaunchDarklySkillStore` reads it too when given no URI option |
+| `LD_STREAM_URI` | No | Override the streaming URI. `LaunchDarklySkillStore` reads it too when given no URI option |
 | `LD_EVENTS_URI` | No | Override the events URI |
 | `LD_SERVICE_NAME` | No | OTel `service.name` resource attribute (default: `nodejs-sdk`) |
 | `LD_ENVIRONMENT` | No | `deployment.environment` resource attribute attached to telemetry |
@@ -94,14 +94,14 @@ The primary entry point for AI config invocations. Accepts either a single handl
 
 ```ts
 import { config } from '@launchdarkly/ai-server';
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
-import { createOpenAIAgentHandler } from '@launchdarkly/ai-openai-agents';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIAgentsHandler } from '@launchdarkly/ai-openai-agents';
 import { createClaudeAgentsHandler } from '@launchdarkly/ai-claude-agents';
 
 // Single handler — must match the flag variation's provider+mode, or throws.
 const caller = config({
   key: 'my-ai-config-flag',
-  handler: createOpenAIHandler(),
+  handler: createOpenAIMessagesHandler(),
   toolHandlers: { myTool: myToolFn },      // optional: tool implementations
 });
 
@@ -118,8 +118,8 @@ const router = config({
   key: 'my-ai-config-flag',
   toolHandlers: { search: searchFn },
   handler: [
-    createOpenAIHandler(),        // providesFor: ['OpenAI', 'messages']
-    createOpenAIAgentHandler(),   // providesFor: ['OpenAI', 'agent']
+    createOpenAIMessagesHandler(),        // providesFor: ['OpenAI', 'messages']
+    createOpenAIAgentsHandler(),   // providesFor: ['OpenAI', 'agent']
     createClaudeAgentsHandler(),  // providesFor: ['Anthropic', 'agent']
   ],
 });
@@ -242,7 +242,7 @@ Import every name in this section from `@launchdarkly/ai-server` (or `@launchdar
 
 Agent Skills are versioned `SKILL.md` documents managed in LaunchDarkly and attached to AI Config variations by reference. This package tells you which skills a config references, retrieves their content, and writes them to `<root>/<key>/SKILL.md`, where agent runtimes such as the Claude Agent SDK discover them.
 
-**Everything below goes through a `SkillStore`.** None is configured by default, so the accessors throw an actionable error until you set one. Use `InMemorySkillStore` for local development, tests, and bring-your-own-content, and `FDv2SkillStore` to receive content from LaunchDarkly — see [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly).
+**Everything below goes through a `SkillStore`.** None is configured by default, so the accessors throw an actionable error until you set one. Use `InMemorySkillStore` for local development, tests, and bring-your-own-content, and `LaunchDarklySkillStore` to receive content from LaunchDarkly — see [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly).
 
 ```ts
 import { createHash } from 'node:crypto';
@@ -339,7 +339,7 @@ const report = await writeSkills('*', '.claude/skills', {
 | `allSkills()` | Every verified skill the store holds, newest version per key. |
 | `writeSkills(skills, root, options?)` | Materialize to `<root>/<key>/SKILL.md`. Accepts `Skill` / `SkillReference` / key strings, the literal `'*'`, or a `SkillSource`, which it reads once. Returns a `ReconcileReport`. Throws for a caller error (an unusable `root`, a bare string other than `'*'`), distinct from the per-skill `error` actions in the report. A source that throws, rejects, or answers anything but an array of references and key strings is reported like an unavailable store: one run-level `error`, and nothing on disk changes. |
 | `InMemorySkillStore` | An in-memory `SkillStore` for local development and testing: `put(raw)`, `getObject(kind, key, version?)`, `allObjects(kind)`, `addListener(kind, fn)`, `removeListener(kind, fn)`. Holds several versions of a key: `getObject` answers a pin with exactly that version and an omitted version with the newest. `addListener` throws for any kind but `'skill'`. |
-| `FDv2SkillStore(sdkKey, options?)` | The delivery transport: a `SkillStore` fed by LaunchDarkly over the SDK-facing FDv2 channel. `start()`, `waitForSkills({ timeoutSeconds })`, `isInitialized()`, `close()`, `diagnostics`, `failed`, `addListener` / `removeListener`. `close()` is **final** — `start()` throws afterwards. Options (`FDv2SkillStoreOptions`): `mode` (`'stream'` default, or `'poll'`), `baseUri`, `streamUri`, `pollIntervalSeconds`, `readTimeoutSeconds`, `initialBackoffSeconds`, `maxBackoffSeconds` (all in seconds, each positive and finite, with `initialBackoffSeconds` no greater than `maxBackoffSeconds`; the constructor throws otherwise). **Server-side only.** See [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly). |
+| `LaunchDarklySkillStore(sdkKey, options?)` | The delivery transport: a `SkillStore` fed by LaunchDarkly over the SDK-facing FDv2 channel. `start()`, `waitForSkills({ timeoutSeconds })`, `isInitialized()`, `close()`, `diagnostics`, `failed`, `addListener` / `removeListener`. `close()` is **final** — `start()` throws afterwards. Options (`LaunchDarklySkillStoreOptions`): `mode` (`'stream'` default, or `'poll'`), `baseUri`, `streamUri`, `pollIntervalSeconds`, `readTimeoutSeconds`, `initialBackoffSeconds`, `maxBackoffSeconds` (all in seconds, each positive and finite, with `initialBackoffSeconds` no greater than `maxBackoffSeconds`; the constructor throws otherwise). **Server-side only.** See [Receiving skills from LaunchDarkly](#receiving-skills-from-launchdarkly). |
 | `watchSkills(skills, root, options?)` | `writeSkills` plus a re-reconcile on every delivery change, and, for a `SkillSource`, on every change to one of its `configKeys`. Which changes in LaunchDarkly reach disk depends on the form of `skills`; see [Which changes reach disk](#which-changes-reach-disk). Resolves to `{ report, watcher }`; `await watcher.close()` when done. Options (`WatchSkillsOptions`): everything `writeSkills` takes, plus `debounceMs` (milliseconds, default `SKILLS_DEFAULT_DEBOUNCE_MS`) and `onReconcile`. One watcher per root. |
 | `SkillWatcher` | Returned by `watchSkills`: `reconciles` (re-reconciles completed, excluding the initial one), `notify()` (schedules a reconcile through the same debounce as a change; call it from your own listener), `close()` (idempotent; detaches from the store and the base client, and awaits any reconcile in flight). |
 | `configSkills(key, context)` | A `SkillSource` for the skills AI Config `key` pins for `context`, following that config. Each read evaluates the config afresh. See [Following an AI Config](#following-an-ai-config-configskills). |
@@ -382,12 +382,12 @@ On macOS and Windows, write permission on the managed root **and its ancestors**
 
 #### Receiving skills from LaunchDarkly
 
-`InMemorySkillStore` is for tests and bring-your-own-content. In production, skill content arrives through `FDv2SkillStore`, which uses LaunchDarkly's SDK-facing FDv2 delivery channel (the `GET /sdk/poll` and `GET /sdk/stream` endpoints the base SDK's FDv2 data source uses), authenticated with the environment's server-side SDK key.
+`InMemorySkillStore` is for tests and bring-your-own-content. In production, skill content arrives through `LaunchDarklySkillStore`, which uses LaunchDarkly's SDK-facing FDv2 delivery channel (the `GET /sdk/poll` and `GET /sdk/stream` endpoints the base SDK's FDv2 data source uses), authenticated with the environment's server-side SDK key.
 
 ```ts
-import { FDv2SkillStore, setSkillStore, watchSkills } from '@launchdarkly/ai-server';
+import { LaunchDarklySkillStore, setSkillStore, watchSkills } from '@launchdarkly/ai-server';
 
-const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
+const store = new LaunchDarklySkillStore(process.env.LD_SDK_KEY!).start();
 if (!(await store.waitForSkills({ timeoutSeconds: 10 }))) {
   // No payload arrived. Reconciling now would find an empty store; see below.
   console.warn(`skill delivery has not answered yet: ${store.failed ?? 'still waiting'}`);
@@ -410,7 +410,7 @@ try {
 }
 ```
 
-**A reconcile that runs before delivery answers does not prune.** A store still waiting for its first payload looks the same as an environment with no skills, and `writeSkills('*')` would otherwise treat that as every skill revoked and delete the files from a previous run. `FDv2SkillStore` reports readiness through the optional `isInitialized()`; until it is true, a reconcile reports the retrieval unavailable (`report.ok` is `false`, and the error names the remedy) and leaves the disk alone. A store without `isInitialized()`, such as `InMemorySkillStore`, is treated as initialized.
+**A reconcile that runs before delivery answers does not prune.** A store still waiting for its first payload looks the same as an environment with no skills, and `writeSkills('*')` would otherwise treat that as every skill revoked and delete the files from a previous run. `LaunchDarklySkillStore` reports readiness through the optional `isInitialized()`; until it is true, a reconcile reports the retrieval unavailable (`report.ok` is `false`, and the error names the remedy) and leaves the disk alone. A store without `isInitialized()`, such as `InMemorySkillStore`, is treated as initialized.
 
 **`watchSkills` is one watcher per root.** It registers the store's change listener, runs `writeSkills` once, and returns that report with a `SkillWatcher`.
 
@@ -418,7 +418,7 @@ try {
 - Delivery changes are coalesced over `debounceMs` (default `SKILLS_DEFAULT_DEBOUNCE_MS`, 500 ms), so a payload of forty objects runs one reconcile, not forty. `onReconcile` receives each of those reports, never the initial one.
 - The watcher exposes `reconciles` (re-reconciles completed), `notify()` (schedules a reconcile through the same debounce), and `close()`, which detaches and awaits any reconcile in flight.
 - Do not point two watchers at one root, or call `writeSkills` on a watched root yourself: two interleaved reconciles of one root lose manifest entries.
-- `debounceMs` is in **milliseconds**, while `timeout` in the same options is in **seconds**, as are every `FDv2SkillStore` time option and `waitForSkills`' `timeoutSeconds`. The debounce is the one millisecond value in the skills API.
+- `debounceMs` is in **milliseconds**, while `timeout` in the same options is in **seconds**, as are every `LaunchDarklySkillStore` time option and `waitForSkills`' `timeoutSeconds`. The debounce is the one millisecond value in the skills API.
 
 **`waitForSkills` orders boot against the first payload.** It takes `{ timeoutSeconds }` (default 10 seconds), like the base SDK's `waitForInitialization`, and rejects a bare number. It resolves `true` once a payload is committed, or a `304` confirms the held payload is current. It resolves `false` on timeout, or immediately once the store is closed or delivery stops for good on a fatal status (for example, an unauthorized key), including for waits already pending, so a boot gated on it does not proceed on a dead store. Read `failed` to tell a store that gave up from one that timed out; closing a store yourself leaves `failed` as `null`.
 
@@ -460,10 +460,10 @@ try {
 `watchSkills(configSkills(key, context), root)` keeps `root` in step with the skills one AI Config pins for one context. It is the form to use for config-scoped materialization under the watcher.
 
 ```ts
-import { configSkills, FDv2SkillStore, initClient, setSkillStore, watchSkills } from '@launchdarkly/ai-server';
+import { configSkills, LaunchDarklySkillStore, initClient, setSkillStore, watchSkills } from '@launchdarkly/ai-server';
 
 await initClient(); // a base LaunchDarkly client: the watcher hears config changes from it
-const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
+const store = new LaunchDarklySkillStore(process.env.LD_SDK_KEY!).start();
 await store.waitForSkills({ timeoutSeconds: 10 });
 setSkillStore(store);
 
@@ -555,7 +555,7 @@ These ten tokens are the whole vocabulary. The Python SDK emits the same ten for
 
 **Page on `hash_mismatch`.** It means content and its declared digest disagree, a possible sign of **active tampering** in transit, in a cache, or in whatever backs your `SkillStore`. Most other codes indicate a malformed store, a bad deployment, or a truncated response. If all your content comes from LaunchDarkly, `over_size_cap` and `not_utf8` should never occur and are worth alerting on too.
 
-**`key_mismatch` and `version_mismatch` skip the product signal.** Both are detected after verification passes, and the usual cause is a bug in a custom `SkillStore` adapter (a stale cache entry, a colliding key, a wrong index lookup) rather than tampering, so neither inflates LaunchDarkly's integrity counter. Both still write this record, so a rule on `ld.skills.integrity_failure` catches them. Neither is reachable through `FDv2SkillStore`, so if it is your only store, treat them like `hash_mismatch`; behind a custom adapter, suspect the adapter first.
+**`key_mismatch` and `version_mismatch` skip the product signal.** Both are detected after verification passes, and the usual cause is a bug in a custom `SkillStore` adapter (a stale cache entry, a colliding key, a wrong index lookup) rather than tampering, so neither inflates LaunchDarkly's integrity counter. Both still write this record, so a rule on `ld.skills.integrity_failure` catches them. Neither is reachable through `LaunchDarklySkillStore`, so if it is your only store, treat them like `hash_mismatch`; behind a custom adapter, suspect the adapter first.
 
 `getSkill` returns `null` for a `version_mismatch` like any other failure, so this record is the only place it is visible unless you use `getSkillResult`, which reports it as the `wrong_version` outcome (below).
 
@@ -659,7 +659,7 @@ An evaluation from code runs a dataset through your own code and reports the res
 Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row and on the run; the SDK reports scores and never computes a verdict itself.
 
 ```ts
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
 import { initEvaluations } from '@launchdarkly/ai-server/experimental';
 
 // Reads LD_PROJECT_KEY, LD_API_TOKEN and LD_SDK_KEY unless you pass them.
@@ -668,7 +668,7 @@ const evals = initEvaluations({ projectKey: 'my-project' });
 const result = await evals.run({
   key: `support-qa-${Date.now()}`, // every run creates a new evaluation, so keep keys unique
   dataset: 'support-golden', // the key of a dataset in LaunchDarkly
-  handler: createOpenAIHandler(),
+  handler: createOpenAIMessagesHandler(),
   generation: {
     provider: 'OpenAI',
     model: 'gpt-4o',
@@ -725,7 +725,7 @@ Pass `aiConfig` instead of a full `generation` to evaluate a variation you alrea
 await evals.run({
   key: `support-qa-${Date.now()}`,
   dataset: 'support-golden',
-  handler: createOpenAIHandler(),
+  handler: createOpenAIMessagesHandler(),
   aiConfig: { key: 'support-agent', variation: 'candidate' },
   generation: { parameters: { temperature: 0.2 } },
 });
@@ -744,7 +744,7 @@ await evals.run({
     { input: 'How do I reset my password?', expectedOutput: 'Use the reset link.' },
     { input: 'Where is order {{order_id}}?', variables: { order_id: 'A-17' } },
   ],
-  handler: createOpenAIHandler(),
+  handler: createOpenAIMessagesHandler(),
   generation: { provider: 'OpenAI', model: 'gpt-4o', mode: 'completion', messages: [{ role: 'user', content: '{{input}}' }] },
 });
 ```
@@ -786,7 +786,7 @@ await evals.run({
   key: `support-qa-${Date.now()}`,
   dataset: 'support-golden',
   // The judge is served by Anthropic, so the pool has a handler for it too.
-  handlers: [createOpenAIHandler(), createClaudeMessagesHandler()],
+  handlers: [createOpenAIMessagesHandler(), createClaudeMessagesHandler()],
   generation: { provider: 'OpenAI', model: 'gpt-4o', mode: 'completion', messages: [{ role: 'user', content: '{{input}}' }] },
   criteria: [
     new Judge('accuracy-judge', { threshold: 0.8 }),
@@ -888,6 +888,7 @@ All types are re-exported from this package. Handler packages import them from h
 | `OnUnavailable` | `'keep' \| 'raise'` — how `writeSkills` reacts to content it could not retrieve |
 | `WriteSkillsOptions` | Options accepted by `writeSkills()` (`prune`, `timeout` in seconds, `onUnavailable`) |
 | `WatchSkillsOptions` | `WriteSkillsOptions` plus `debounceMs` (milliseconds) and `onReconcile` — what `watchSkills()` accepts |
-| `FDv2Mode` | `'stream' \| 'poll'` — the `mode` option of `FDv2SkillStore` |
-| `FDv2SkillStoreOptions` | Options accepted by the `FDv2SkillStore` constructor (`mode`, `baseUri`, `streamUri`, `pollIntervalSeconds`, `readTimeoutSeconds`, `initialBackoffSeconds`, `maxBackoffSeconds`, all in seconds) |
-| `StoreDiagnostics` | The read-only counters `FDv2SkillStore.diagnostics` returns |
+| `LaunchDarklySkillStoreMode` | `'stream' \| 'poll'` — the `mode` option of `LaunchDarklySkillStore` |
+| `LaunchDarklySkillStoreOptions` | Options accepted by the `LaunchDarklySkillStore` constructor (`mode`, `baseUri`, `streamUri`, `pollIntervalSeconds`, `readTimeoutSeconds`, `initialBackoffSeconds`, `maxBackoffSeconds`, all in seconds) |
+| `StoreDiagnostics` | The read-only counters `LaunchDarklySkillStore.diagnostics` returns |
+| `FDv2SkillStore`, `FDv2SkillStoreOptions`, `FDv2Mode` | **Deprecated** aliases of `LaunchDarklySkillStore`, `LaunchDarklySkillStoreOptions` and `LaunchDarklySkillStoreMode`, kept so 0.5.0 code still compiles. They are removed in the next major release |

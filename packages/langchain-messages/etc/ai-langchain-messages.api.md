@@ -13,7 +13,7 @@ import { ProviderHandler } from '@launchdarkly/ai-server';
 import { ProviderResponse } from '@launchdarkly/ai-server';
 
 // @public
-export function createLangChainHandler(llm?: LangChainModelSource, options?: ContentCaptureOptions): ProviderHandler;
+export function createLangChainMessagesHandler(llm?: LangChainModelSource, options?: ContentCaptureOptions): ProviderHandler;
 
 // @public (undocumented)
 export const langchainMessages: (configKey: string, userInput: string, context: LDContext, input?: Omit<Parameters<typeof config>[0], "handler" | "key"> & ContentCaptureOptions & {

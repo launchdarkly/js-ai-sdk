@@ -6,6 +6,6 @@
 #   - Name    leaving the public surface; may be exported or not
 #   + Name    joining the public surface; may be exported or not
 
-createLangChainHandler  usage=langchain-messages.createLangChainHandler  # open: Python is create_langchain_messages_handler
+createLangChainMessagesHandler  usage=langchain-messages.createLangChainHandler
 langchainMessages  usage=langchain-messages.langchainMessages
 LangChainModelSource

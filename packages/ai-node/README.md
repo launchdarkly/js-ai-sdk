@@ -41,11 +41,11 @@ Import from `@launchdarkly/ai-node` exactly as you would from `@launchdarkly/ai-
 ```ts
 import 'dotenv/config';
 import { config, shutdown } from '@launchdarkly/ai-node';
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
 
 const caller = config({
   key: 'my-ai-config-flag',
-  handler: createOpenAIHandler(),
+  handler: createOpenAIMessagesHandler(),
 });
 
 const result = await caller.invoke(

@@ -11,7 +11,7 @@ import { ProviderHandler } from '@launchdarkly/ai-server';
 import { ProviderResponse } from '@launchdarkly/ai-server';
 
 // @public (undocumented)
-export function createOpenAIHandler(input?: ContentCaptureOptions): ProviderHandler;
+export function createOpenAIMessagesHandler(input?: ContentCaptureOptions): ProviderHandler;
 
 // @public (undocumented)
 export const openaiMessages: (configKey: string, userInput: string, context: LDContext, input?: Omit<Parameters<typeof config>[0], "handler" | "key"> & ContentCaptureOptions & {

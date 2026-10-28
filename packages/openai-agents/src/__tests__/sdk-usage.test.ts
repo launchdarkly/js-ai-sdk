@@ -10,7 +10,7 @@ import {
   LD_AI_PACKAGE_NAME as AI_SDK_NAME,
   LD_AI_PACKAGE_VERSION as AI_SDK_VERSION,
 } from '../../../client/src/version.js';
-import { createOpenAIAgentHandler } from '../handler.js';
+import { createOpenAIAgentsHandler } from '../handler.js';
 import * as entry from '../index.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from '../version.js';
 
@@ -126,7 +126,7 @@ describe('§3.27 openai-agents helper usage', () => {
   it('sends a helper called before a client exists with its package fields once the client exists', async () => {
     await shutdown();
     try {
-      createOpenAIAgentHandler();
+      createOpenAIAgentsHandler();
     } catch {
       // A factory may throw after the report. The held record is what is under test.
     }
