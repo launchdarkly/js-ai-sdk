@@ -753,7 +753,14 @@ export type StreamEvent =
 export type GraphStreamEvent =
   | { type: 'node_start'; nodeKey: string }
   | { type: 'chunk'; text: string; nodeKey: string }
-  | { type: 'node_done'; nodeKey: string; response: string; usage: TokenUsage }
+  | {
+      type: 'node_done';
+      nodeKey: string;
+      response: string;
+      usage: TokenUsage;
+      /** This node's own judge results. Absent when none of its judges produced one. */
+      judgeResults?: ProviderResponse['judgeResults'];
+    }
   | { type: 'handoff'; sourceKey: string; targetKey: string }
   | {
       type: 'done';

@@ -284,6 +284,7 @@ export type GraphStreamEvent = {
     nodeKey: string;
     response: string;
     usage: TokenUsage;
+    judgeResults?: ProviderResponse['judgeResults'];
 } | {
     type: 'handoff';
     sourceKey: string;

@@ -1037,6 +1037,40 @@ describe('graph().stream()', () => {
     expect(done.judgeResults).toBeUndefined();
   });
 
+  it("puts a node's own judge results on its node_done", async () => {
+    const leafJudge = { 'leaf-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'good', score: 0.9 } };
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockImplementation(async (args: { config: { instructions?: string } }) =>
+      args.config.instructions === 'I am leaf' ? leafJudge : {},
+    );
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+    const events = await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+
+    const dones = events.filter((e) => e.type === 'node_done');
+    expect(dones.map((e) => e.nodeKey)).toEqual(['root-node', 'leaf-node']);
+    expect('judgeResults' in dones[0]).toBe(false);
+    expect(dones[1]).toMatchObject({ nodeKey: 'leaf-node', judgeResults: leafJudge });
+    // done holds only the graph-level judge; per-node results are not merged into it.
+    expect((events.at(-1) as { judgeResults?: unknown }).judgeResults).toBeUndefined();
+  });
+
+  it("multi-edge route: the routing node's judge results are on its node_done", async () => {
+    const rootJudge = { 'root-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'routed', score: 1 } };
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockImplementation(async (args: { config: { instructions?: string } }) =>
+      args.config.instructions === 'I am root' ? rootJudge : {},
+    );
+    setupBranchingGraph();
+    const handler = makeBranchPickingStreamHandler('agent-b');
+    const events = await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+
+    const dones = events.filter((e) => e.type === 'node_done');
+    expect(dones.map((e) => e.nodeKey)).toEqual(['root-node', 'agent-b']);
+    expect(dones[0]).toMatchObject({ nodeKey: 'root-node', judgeResults: rootJudge });
+    expect('judgeResults' in dones[1]).toBe(false);
+  });
+
   it('multi-edge route: model pick emits handoff_success from the route branch', async () => {
     setupBranchingGraph();
     const handler = makeBranchPickingStreamHandler('agent-b');

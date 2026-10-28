@@ -23,6 +23,7 @@ import {
   type ProviderResponse,
   type RouteResult,
   type RunNodeOptions,
+  type TokenUsage,
   type Tool,
   type TrackData,
   type TraverseVisitor,
@@ -42,6 +43,20 @@ const drain = async <T, TReturn>(generator: AsyncGenerator<T, TReturn>): Promise
   while (!step.done) step = await generator.next();
   return step.value;
 };
+
+/**
+ * A node's `node_done` event. Carries the node's own judge results, and omits
+ * them when no judge produced one, as `done` does for the graph-level judge.
+ */
+const nodeDoneEvent = (
+  nodeKey: string,
+  response: string,
+  usage: TokenUsage,
+  judgeResults: ProviderResponse['judgeResults'],
+): Extract<GraphStreamEvent, { type: 'node_done' }> =>
+  judgeResults && Object.keys(judgeResults).length > 0
+    ? { type: 'node_done', nodeKey, response, usage, judgeResults }
+    : { type: 'node_done', nodeKey, response, usage };
 
 /**
  * Selects the handler responsible for a node from the candidate `handlers`,
@@ -355,7 +370,7 @@ const buildGraph = async (
         );
       }
 
-      yield { type: 'node_done', nodeKey: node.key, response, usage };
+      yield nodeDoneEvent(node.key, response, usage, judgeResults);
       return { response, usage, judgeResults, trackData };
     } catch (err) {
       if (opts.from) {
@@ -465,7 +480,7 @@ const buildGraph = async (
         );
       }
 
-      yield { type: 'node_done', nodeKey: node.key, response, usage };
+      yield nodeDoneEvent(node.key, response, usage, judgeResults);
       return { response, usage, judgeResults, trackData, next };
     } catch (err) {
       const chosenKey = chosen();
