@@ -27,6 +27,7 @@ import { config } from '../client.js';
 import { runJudges } from '../judges.js';
 import { extractVariation, getClient } from '../lifecycle.js';
 import type { ProviderHandler } from '../types.js';
+import { createHandler, setLdSpanAttributes } from '../utils.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -818,5 +819,42 @@ describe('config().stream() — multi-handler routing', () => {
     claudeHandler.providesFor = ['Anthropic', 'messages'];
     const gen = config({ key: 'flag', handler: [claudeHandler] }).stream('q', mockContext);
     await expect(collectStream(gen)).rejects.toThrow(/OpenAI/i);
+  });
+});
+
+// ─── config().invoke — feature_flag.result.value with content capture on ─────
+
+describe('config().invoke — capture-on handler', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack });
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+  });
+
+  it('writes the raw variation JSON as feature_flag.result.value on the root feature_flag event', async () => {
+    const rawVariation = {
+      ...mockConfig,
+      _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'messages' },
+    };
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: mockConfig,
+      meta: mockMeta,
+      value: rawVariation,
+    });
+    const span = { setAttribute: vi.fn(), addEvent: vi.fn() };
+    const handler = createHandler(
+      ['OpenAI', 'messages'],
+      async (_config, _input, _tools, variables) => {
+        setLdSpanAttributes(span as any, variables);
+        return { output: 'ok', usage: { input_tokens: 1, output_tokens: 1 } };
+      },
+      undefined,
+      true,
+    );
+
+    await config({ key: 'my-flag', handler }).invoke('hi', mockContext);
+
+    const event = span.addEvent.mock.calls.find((c: unknown[]) => c[0] === 'feature_flag');
+    expect((event?.[1] as Record<string, unknown>)['feature_flag.result.value']).toBe(JSON.stringify(rawVariation));
   });
 });
