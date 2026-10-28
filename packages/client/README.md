@@ -798,7 +798,7 @@ await evals.run({
 | | `Judge` | `Scorer` |
 |---|---|---|
 | `threshold`: score a row must reach | default `0.5` | default `1.0` |
-| `passRateThreshold`: share of rows that must pass | default `0.95` | default `0.95` |
+| `passRateThreshold`: share of rows that must pass | optional, unset by default | optional, unset by default |
 | Direction | Set on the judge's AI Config in LaunchDarkly | `successDirection`, default `'higher_is_better'`. Use `'lower_is_better'` for a scorer that counts something unwanted |
 | Other | `groundTruthContext`: what to grade against, when it is not the row's expected output | `fn(row, output)` may be async and must return a number from 0 to 1. Booleans are not accepted: return `1` or `0` |
 

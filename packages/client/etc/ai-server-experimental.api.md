@@ -112,7 +112,7 @@ export class Judge {
     });
     readonly groundTruthContext?: string;
     readonly key: string;
-    readonly passRateThreshold: number;
+    readonly passRateThreshold?: number;
     readonly threshold: number;
 }
 
@@ -158,7 +158,7 @@ export class Scorer {
     // Warning: (ae-forgotten-export) The symbol "ScorerFn" needs to be exported by the entry point experimental.d.ts
     readonly fn: ScorerFn;
     readonly name: string;
-    readonly passRateThreshold: number;
+    readonly passRateThreshold?: number;
     // Warning: (ae-forgotten-export) The symbol "SuccessDirection" needs to be exported by the entry point experimental.d.ts
     readonly successDirection: SuccessDirection;
     readonly threshold: number;

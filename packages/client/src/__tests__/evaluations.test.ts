@@ -203,15 +203,16 @@ describe('initEvaluations', () => {
 
 describe('criterion references', () => {
   it('a Judge defaults its thresholds', () => {
-    expect(new Judge('accuracy')).toMatchObject({ threshold: 0.5, passRateThreshold: 0.95 });
+    expect(new Judge('accuracy')).toMatchObject({ threshold: 0.5 });
+    expect(new Judge('accuracy').passRateThreshold).toBeUndefined();
   });
 
   it('a Scorer defaults its thresholds and success direction', () => {
     expect(new Scorer('exact', () => true)).toMatchObject({
       threshold: 1.0,
-      passRateThreshold: 0.95,
       successDirection: 'higher_is_better',
     });
+    expect(new Scorer('exact', () => true).passRateThreshold).toBeUndefined();
   });
 
   it('rejects a blank judge key and a blank scorer name', () => {
