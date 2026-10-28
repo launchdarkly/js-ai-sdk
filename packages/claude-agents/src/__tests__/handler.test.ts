@@ -328,8 +328,10 @@ describe('createClaudeAgentsHandler', () => {
     expect(mockQuery.mock.calls[0][0].options.outputFormat).toBeUndefined();
   });
 
-  // The cross-SDK Claude Agents list: the options a config adds on
-  // top of what the handler sets itself are exactly these, on invoke and on stream.
+  // The cross-SDK Claude Agents list: the options a config adds or changes on top of what the
+  // handler sets itself are exactly these, on invoke and on stream. `thinking` is compared by
+  // value because the handler sets `{ type: 'disabled' }` by default, and `env` comes from
+  // `max_tokens`.
   it('adds exactly the canonical query options, the same on invoke and stream', async () => {
     const parameters = {
       betas: ['context-1m-2025-08-07'],
@@ -337,6 +339,7 @@ describe('createClaudeAgentsHandler', () => {
       fallback_model: 'claude-haiku',
       max_budget_usd: 1.5,
       max_thinking_tokens: 2048,
+      max_tokens: 200,
       max_turns: 4,
       output_format: { type: 'json_schema', schema: { type: 'object' } },
       thinking: { type: 'enabled', budget_tokens: 1024 },
@@ -358,14 +361,23 @@ describe('createClaudeAgentsHandler', () => {
       }
       return mockQuery.mock.calls[0][0].options as Record<string, unknown>;
     };
-    const expected = ['betas', 'effort', 'fallbackModel', 'maxBudgetUsd', 'maxThinkingTokens', 'maxTurns', 'thinking'];
+    const expected = [
+      'betas',
+      'effort',
+      'env',
+      'fallbackModel',
+      'maxBudgetUsd',
+      'maxThinkingTokens',
+      'maxTurns',
+      'thinking',
+    ];
     const added: Record<string, string[]> = {};
     const forwarded: Record<string, Record<string, unknown>> = {};
     for (const path of ['invoke', 'stream'] as const) {
       const baseline = await optionsFor(undefined, path);
       const options = await optionsFor(parameters, path);
       added[path] = Object.keys(options)
-        .filter((key) => options[key] !== undefined && baseline[key] === undefined)
+        .filter((key) => options[key] !== undefined && JSON.stringify(options[key]) !== JSON.stringify(baseline[key]))
         .sort();
       forwarded[path] = Object.fromEntries(expected.map((key) => [key, options[key]]));
     }
@@ -374,6 +386,7 @@ describe('createClaudeAgentsHandler', () => {
     expect(forwarded.stream).toEqual(forwarded.invoke);
   });
 
+  // A dropped thinking counts as not set, so the handler's `{ type: 'disabled' }` default applies.
   it('accepts a camelCase thinking.budgetTokens and drops a thinking value without a type', async () => {
     mockQuery.mockImplementation(makeResultMessage());
     const run = async (thinking: unknown) => {
@@ -384,8 +397,8 @@ describe('createClaudeAgentsHandler', () => {
     };
     expect(await run({ type: 'enabled', budgetTokens: 512 })).toEqual({ type: 'enabled', budgetTokens: 512 });
     expect(await run({ type: 'adaptive' })).toEqual({ type: 'adaptive' });
-    expect(await run({ budget_tokens: 512 })).toBeUndefined();
-    expect(await run('enabled')).toBeUndefined();
+    expect(await run({ budget_tokens: 512 })).toEqual({ type: 'disabled' });
+    expect(await run('enabled')).toEqual({ type: 'disabled' });
   });
 
   it('drops a thinking with an unknown type or an enabled thinking without a budget', async () => {
@@ -396,9 +409,9 @@ describe('createClaudeAgentsHandler', () => {
       await createClaudeAgentsHandler()(config as any, 'q');
       return mockQuery.mock.calls[0][0].options.thinking;
     };
-    expect(await run({ type: 'enabled' })).toBeUndefined();
-    expect(await run({ type: 'enabled', budget_tokens: '1024' })).toBeUndefined();
-    expect(await run({ type: 'on', budget_tokens: 1024 })).toBeUndefined();
+    expect(await run({ type: 'enabled' })).toEqual({ type: 'disabled' });
+    expect(await run({ type: 'enabled', budget_tokens: '1024' })).toEqual({ type: 'disabled' });
+    expect(await run({ type: 'on', budget_tokens: 1024 })).toEqual({ type: 'disabled' });
     expect(await run({ type: 'disabled', budget_tokens: 1, display: 'omitted' })).toEqual({ type: 'disabled' });
     expect(await run({ type: 'adaptive', display: 'verbose' })).toEqual({ type: 'adaptive' });
     expect(await run({ type: 'adaptive', display: 'omitted' })).toEqual({ type: 'adaptive', display: 'omitted' });
@@ -439,7 +452,84 @@ describe('createClaudeAgentsHandler', () => {
     expect(options.maxBudgetUsd).toBeUndefined();
     expect(options.effort).toBeUndefined();
     expect(options.fallbackModel).toBeUndefined();
-    expect(options.thinking).toBeUndefined();
+    expect(options.env).toBeUndefined();
+    // The CLI would otherwise choose thinking itself.
+    expect(options.thinking).toEqual({ type: 'disabled' });
+  });
+
+  // The cross-SDK Claude Agents rule: `max_tokens` reaches the CLI as CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+  // and thinking is off unless the config asks for it. The CLI would otherwise send its own
+  // defaults (max_tokens 32000 and a 31,999-token thinking budget on claude-haiku-4-5).
+  describe('output limit and thinking default', () => {
+    const optionsFor = async (parameters: Record<string, unknown>, path: 'invoke' | 'stream') => {
+      mockQuery.mockClear();
+      const config = { ...baseConfig, model: { ...baseConfig.model, parameters } };
+      if (path === 'invoke') {
+        mockQuery.mockImplementation(makeResultMessage());
+        await createClaudeAgentsHandler()(config as any, 'q');
+      } else {
+        mockQuery.mockImplementation(async function* () {
+          yield { type: 'result', subtype: 'success', result: 'done', usage: {} };
+        });
+        await collectStream(createClaudeAgentsHandler().stream?.(config as any, 'q', {}, {}));
+      }
+      return mockQuery.mock.calls[0][0].options as Record<string, any>;
+    };
+
+    for (const path of ['invoke', 'stream'] as const) {
+      describe(path, () => {
+        it('sets CLAUDE_CODE_MAX_OUTPUT_TOKENS from max_tokens and disables thinking', async () => {
+          process.env.LD_TEST_INHERITED = 'kept';
+          try {
+            const options = await optionsFor({ max_tokens: 200 }, path);
+            expect(options.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('200');
+            // The SDK replaces the child's environment with `env`, so the rest must still be there.
+            expect(options.env.LD_TEST_INHERITED).toBe('kept');
+            expect(options.env.PATH).toBe(process.env.PATH);
+            expect(options.thinking).toEqual({ type: 'disabled' });
+          } finally {
+            delete process.env.LD_TEST_INHERITED;
+          }
+        });
+
+        it('reads the camelCase maxTokens as well', async () => {
+          const options = await optionsFor({ maxTokens: 300 }, path);
+          expect(options.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('300');
+        });
+
+        it('passes no env without a max_tokens', async () => {
+          const options = await optionsFor({ max_turns: 2 }, path);
+          expect('env' in options).toBe(false);
+        });
+
+        it.each([
+          0,
+          -5,
+          1.5,
+          '200',
+          true,
+          null,
+          Number.POSITIVE_INFINITY,
+        ])('drops a max_tokens of %s', async (maxTokens) => {
+          const options = await optionsFor({ max_tokens: maxTokens }, path);
+          expect('env' in options).toBe(false);
+        });
+
+        it('passes the configured thinking in place of the default', async () => {
+          const options = await optionsFor(
+            { max_tokens: 4096, thinking: { type: 'enabled', budget_tokens: 2048 } },
+            path,
+          );
+          expect(options.thinking).toEqual({ type: 'enabled', budgetTokens: 2048 });
+        });
+
+        it('passes no thinking when only max_thinking_tokens is set, so the CLI applies it', async () => {
+          const options = await optionsFor({ max_thinking_tokens: 2048 }, path);
+          expect(options.maxThinkingTokens).toBe(2048);
+          expect(options.thinking).toBeUndefined();
+        });
+      });
+    }
   });
 
   // ── 1.3 Tool wiring ─────────────────────────────────────────────────────────
@@ -481,8 +571,9 @@ describe('createClaudeAgentsHandler', () => {
   // The CLI's own instrumentation emits span names outside the semantic conventions
   // (`claude_code.llm_request`, `claude_code.tool`, `claude_code.tool.blocked_on_user`), so
   // enabling it would make this handler's traces read differently from the other five and from
-  // any non-LaunchDarkly OTel backend. `env` must also stay absent entirely, so the child keeps
-  // the SDK's own inheritance instead of a bag assembled here.
+  // any non-LaunchDarkly OTel backend. Without a config `max_tokens`, `env` must also stay absent
+  // entirely, so the child keeps the SDK's own inheritance instead of a bag assembled here. With
+  // one, `env` is `process.env` plus CLAUDE_CODE_MAX_OUTPUT_TOKENS only.
   it('never enables the CLI own telemetry exporter', async () => {
     mockQuery.mockImplementation(makeResultMessage('ok', { input_tokens: 1, output_tokens: 1 }));
     await createClaudeAgentsHandler()(baseConfig as any, 'q');

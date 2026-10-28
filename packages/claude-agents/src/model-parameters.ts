@@ -22,6 +22,8 @@ import {
  * `outputFormat` is not forwarded either: structured output belongs to the config's own
  * `outputFormat`, which the handler applies itself, so a schema in
  * `model.parameters` would only fight it.
+ *
+ * `max_tokens` is read too, but it is not a `query()` option: see `MAX_OUTPUT_TOKENS_ENV`.
  */
 const FORWARDED_QUERY_OPTION_KEYS = [
   'betas',
@@ -32,6 +34,14 @@ const FORWARDED_QUERY_OPTION_KEYS = [
   'maxTurns',
   'thinking',
 ] as const satisfies ReadonlyArray<keyof Options>;
+
+/**
+ * The variable the CLI reads its output-token limit from. `query()` takes no output-token option,
+ * so the config's `max_tokens` reaches the CLI as this variable in its environment, the only value
+ * this package writes there. Without it the CLI sends its own default (32000 on
+ * `claude-haiku-4-5`) whatever the config asks for.
+ */
+const MAX_OUTPUT_TOKENS_ENV = 'CLAUDE_CODE_MAX_OUTPUT_TOKENS';
 
 type ThinkingType = NonNullable<Options['thinking']>['type'];
 
@@ -72,20 +82,32 @@ function toThinkingOption(value: unknown): Options['thinking'] | undefined {
 
 /**
  * `config.model.parameters` as `query()` options: camelized, narrowed to
- * `FORWARDED_QUERY_OPTION_KEYS`, with `thinking` rebuilt in the shape the SDK reads. A config
- * that sets none of them produces `{}`.
+ * `FORWARDED_QUERY_OPTION_KEYS`, with `thinking` rebuilt in the shape the SDK reads.
+ *
+ * Two options are set even though the config does not name them. `thinking` is
+ * `{ type: 'disabled' }` unless the config sets `thinking` or `maxThinkingTokens`, because the
+ * CLI otherwise picks thinking itself (a 31,999-token budget on `claude-haiku-4-5`). And a
+ * positive integer `max_tokens` becomes `env`: the inherited environment plus
+ * `MAX_OUTPUT_TOKENS_ENV`. The SDK replaces the child's environment with `env` rather than
+ * merging it, so `process.env` is spread first; with no `max_tokens`, `env` is left unset and the
+ * child inherits `process.env` as before.
  */
 export function buildModelParameterQueryOptions(
   parameters: AiConfigRep['model']['parameters'] | unknown,
 ): Partial<Options> {
-  const options = pickForwardedModelParameters(
-    camelizeModelParameters(normalizeModelParameters(parameters)),
-    FORWARDED_QUERY_OPTION_KEYS,
-  );
+  const camelized = camelizeModelParameters(normalizeModelParameters(parameters));
+  const options = pickForwardedModelParameters(camelized, FORWARDED_QUERY_OPTION_KEYS);
   if (options.thinking !== undefined) {
     const thinking = toThinkingOption(options.thinking);
     if (thinking) options.thinking = thinking;
     else delete options.thinking;
+  }
+  if (options.thinking === undefined && options.maxThinkingTokens == null) {
+    options.thinking = { type: 'disabled' };
+  }
+  const { maxTokens } = camelized;
+  if (typeof maxTokens === 'number' && Number.isSafeInteger(maxTokens) && maxTokens > 0) {
+    options.env = { ...process.env, [MAX_OUTPUT_TOKENS_ENV]: String(maxTokens) };
   }
   return options as Partial<Options>;
 }

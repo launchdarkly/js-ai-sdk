@@ -71,6 +71,15 @@ claudeGraph('support-graph', { settingSources: ['user'] });
 toClaudeAgents(resolveGraph('support-graph', { context }), { context, settingSources: ['user'] });
 ```
 
+### Output limit and thinking
+
+- `max_tokens` in the config's model parameters sets the output-token limit for each model request. The Agent SDK has no option for it, so the handler sets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` in the environment of the Claude Code process. Without `max_tokens`, Claude Code uses its own default.
+- Thinking is off unless the config sets `thinking` or `max_thinking_tokens`. Claude Code lowers a thinking budget to one less than `max_tokens`, so when a config sets both, keep `max_tokens` above the budget.
+
+#### Migrating from a version that used Claude Code's thinking default
+
+Earlier versions passed no thinking setting when the config had none, so Claude Code chose one: adaptive thinking on models that support it, and a 31,999-token budget on others such as `claude-haiku-4-5`. A run now thinks only when its config asks. To keep thinking, set it in the config's model parameters, for example `{"thinking": {"type": "adaptive"}}`.
+
 ### Built-in tools
 
 A run has no Claude Code built-in tools (`Read`, `Bash`, and the rest) unless its config attaches them. Attach one by mapping a tool key to its exported sentinel, such as `ClaudeRead` or `ClaudeBash`, in `toolHandlers`. Tools you define in the flag config are always available to the model through the handler's MCP server, whatever built-ins are attached.

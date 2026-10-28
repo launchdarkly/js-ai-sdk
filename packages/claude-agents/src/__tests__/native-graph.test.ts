@@ -162,6 +162,26 @@ describe('toClaudeAgents', () => {
     expect(leafOptions).not.toHaveProperty('max_turns');
   });
 
+  // Each node's max_tokens reaches its CLI as
+  // CLAUDE_CODE_MAX_OUTPUT_TOKENS, and thinking is off unless that node's config asks for it.
+  it("sets each node's output limit and disables thinking unless the node enables it", async () => {
+    const def = makeGraphDef();
+    (def.root!.config.model as any).parameters = { max_tokens: 200 };
+    (def.getNode('leaf')!.config.model as any).parameters = { thinking: { type: 'enabled', budget_tokens: 2048 } };
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+    const leafTool = mockTool.mock.calls.find((call) => call[0] === 'leaf');
+    await (leafTool![3] as (args: { input: string }) => Promise<unknown>)({ input: 'sub task' });
+
+    const rootOptions = mockQuery.mock.calls[0][0].options;
+    expect(rootOptions.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('200');
+    expect(rootOptions.env.PATH).toBe(process.env.PATH);
+    expect(rootOptions.thinking).toEqual({ type: 'disabled' });
+
+    const leafOptions = mockQuery.mock.calls[1][0].options;
+    expect(leafOptions).not.toHaveProperty('env');
+    expect(leafOptions.thinking).toEqual({ type: 'enabled', budgetTokens: 2048 });
+  });
+
   it('never forwards credentials, endpoints, remote tools or host-process settings from any node', async () => {
     const def = makeGraphDef();
     (def.root!.config.model as any).parameters = NEVER_FORWARDED_PARAMETERS;
