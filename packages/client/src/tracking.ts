@@ -72,6 +72,24 @@ export const wrapToolHandlers = (
 };
 
 /**
+ * Narrows `toolHandlers` to the tools attached to the active variation: own
+ * properties whose key is in `config.tools`. A registry holds the tools of every
+ * variation, so this is the authorization boundary (SEC-9507): a tool name the
+ * model returns can only reach a handler this variation was given.
+ */
+export const scopeToolHandlers = (
+  config: Pick<AiConfigRep, 'tools'>,
+  toolHandlers: Record<string, ToolHandlerFn | NativeTool> | undefined,
+): Record<string, ToolHandlerFn | NativeTool> | undefined => {
+  if (!toolHandlers) return undefined;
+  return Object.fromEntries(
+    Object.keys(config.tools ?? {})
+      .filter((key) => Object.hasOwn(toolHandlers, key))
+      .map((key) => [key, toolHandlers[key]]),
+  );
+};
+
+/**
  * Wraps the tool map for one invocation: trajectory recording inside the
  * `$ld:ai:tool_call` wrapper, on the original map. That order matters. The
  * tracking wrapper turns a `NativeTool` into a callable stub that returns
@@ -87,8 +105,9 @@ function instrumentTools(
 ): { tools: Record<string, ToolHandlerFn>; recorder: TrajectoryRecorder } {
   // One recorder per invocation: invocations run concurrently against one map.
   const recorder = new TrajectoryRecorder();
-  if (!toolHandlers) return { tools: {}, recorder };
-  const recorded = recorder.wrap(toolHandlers, exposedToolKeys(config, toolHandlers));
+  const scoped = scopeToolHandlers(config, toolHandlers);
+  if (!scoped) return { tools: {}, recorder };
+  const recorded = recorder.wrap(scoped, exposedToolKeys(config, scoped));
   return { tools: wrapToolHandlers(recorded, userContext, trackData), recorder };
 }
 

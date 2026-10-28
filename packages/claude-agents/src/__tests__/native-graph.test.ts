@@ -501,7 +501,9 @@ describe('toClaudeAgents', () => {
   });
 
   it('emits tool-call tracking when PreToolUse invokes a NativeTool stub', async () => {
-    const def = makeGraphDef();
+    const root = makeNode('root', [makeEdge('root', 'leaf')]);
+    root.config.tools = { 'web-search': { name: 'web-search', type: 'function', parameters: {} } };
+    const def = makeGraphDef({ root });
     const webSearch = new NativeTool(Symbol('ws'), 'WebSearch');
 
     let capturedHooks: { PreToolUse?: Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }> } | undefined;

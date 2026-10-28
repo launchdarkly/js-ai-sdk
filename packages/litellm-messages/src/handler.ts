@@ -187,17 +187,32 @@ function buildMessages(
   return messages;
 }
 
+type ExecutableTool = (args: Record<string, unknown>) => unknown;
+
+/**
+ * The tools offered to the model for this request, and the only handlers a
+ * returned tool call may dispatch to: `config.tools` entries backed by a
+ * callable own property of `handlers`.
+ */
 function buildTools(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn | NativeTool>) {
-  return Object.entries(configTools)
-    .filter(([name]) => typeof handlers[name] === 'function')
-    .map(([name, definition]) => ({
-      type: 'function',
-      function: {
-        name,
-        description: definition.description ?? '',
-        parameters: definition.parameters,
+  const executableTools = new Map<string, ExecutableTool>();
+  const tools = Object.entries(configTools).flatMap(([name, definition]) => {
+    if (!Object.hasOwn(handlers, name)) return [];
+    const handler = handlers[name];
+    if (typeof handler !== 'function') return [];
+    executableTools.set(name, handler as unknown as ExecutableTool);
+    return [
+      {
+        type: 'function',
+        function: {
+          name,
+          description: definition.description ?? '',
+          parameters: definition.parameters,
+        },
       },
-    }));
+    ];
+  });
+  return { tools, executableTools };
 }
 
 function resolveClient(options: LiteLLMMessagesOptions, configRep: AiConfigRep): CompatibleClient {
@@ -291,7 +306,9 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
         const parentContext = trace.setSpan(context.active(), span);
         const messages = buildMessages(configRep, userInput, variables, history);
         setInputContentAttributes(span, captureContent, { messages: spanMessages(messages) });
-        const tools = configRep.tools ? buildTools(configRep.tools, toolHandlers) : [];
+        const { tools, executableTools } = configRep.tools
+          ? buildTools(configRep.tools, toolHandlers)
+          : { tools: [], executableTools: new Map<string, ExecutableTool>() };
         const usage = { input_tokens: 0, output_tokens: 0 };
 
         try {
@@ -333,9 +350,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
               calls.map(async (call: ToolCall) => {
                 const toolSpan = startToolSpan(call.function.name, call.id, parentContext);
                 setToolCallContentAttributes(toolSpan, captureContent, { arguments: call.function.arguments });
-                const handler = toolHandlers[call.function.name] as unknown as (
-                  args: Record<string, unknown>,
-                ) => unknown;
+                const handler = executableTools.get(call.function.name);
                 try {
                   if (typeof handler !== 'function')
                     throw new Error(`No handler registered for tool "${call.function.name}"`);
@@ -387,7 +402,9 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
       const parentContext = trace.setSpan(context.active(), span);
       const messages = buildMessages(configRep, userInput, variables, history);
       setInputContentAttributes(span, captureContent, { messages: spanMessages(messages) });
-      const tools = configRep.tools ? buildTools(configRep.tools, toolHandlers) : [];
+      const { tools, executableTools } = configRep.tools
+        ? buildTools(configRep.tools, toolHandlers)
+        : { tools: [], executableTools: new Map<string, ExecutableTool>() };
       const usage = { input_tokens: 0, output_tokens: 0 };
       let client: CompatibleClient;
       let activeStream: ChatStream | undefined;
@@ -450,7 +467,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
             [...calls.values()].map(async (call) => {
               const toolSpan = startToolSpan(call.name, call.id, parentContext);
               setToolCallContentAttributes(toolSpan, captureContent, { arguments: call.arguments });
-              const handler = toolHandlers[call.name] as unknown as (args: Record<string, unknown>) => unknown;
+              const handler = executableTools.get(call.name);
               try {
                 if (typeof handler !== 'function') throw new Error(`No handler registered for tool "${call.name}"`);
                 const result = await handler(parseToolArguments(call.name, call.arguments));

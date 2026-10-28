@@ -434,7 +434,10 @@ describe('a helper called from application code inside a call still reports', ()
   let client: FakeClient;
 
   beforeEach(async () => {
-    client = await install(enabledConfig);
+    client = await install({
+      ...enabledConfig,
+      tools: { lookup: { name: 'lookup', type: 'function', parameters: {} } },
+    });
   });
 
   afterEach(async () => {

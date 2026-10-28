@@ -556,7 +556,7 @@ If `config.tools` is present, the handler must:
 
 If `config.tools` is absent or empty, tool handling should be skipped entirely.
 
-**Native tools:** A `toolHandlers` value may be a `NativeTool` instance rather than a plain function. When encountered, the handler should wire it to the provider SDK's built-in capability (not invoke it as a function), and emit `$ld:ai:tool_call` tracking when the model invokes it. Read the `NATIVE_TOOL_KEY` symbol off the tracking stub to recover the original `NativeTool` instance and its `toolName`.
+**Native tools:** A `toolHandlers` value may be a `NativeTool` instance rather than a plain function. The same `config.tools` allowlist applies: a native tool whose key is not in `config.tools` must not be enabled. When encountered, the handler should wire it to the provider SDK's built-in capability (not invoke it as a function), and emit `$ld:ai:tool_call` tracking when the model invokes it. Read the `NATIVE_TOOL_KEY` symbol off the tracking stub to recover the original `NativeTool` instance and its `toolName`.
 
 ### Telemetry
 
@@ -768,7 +768,7 @@ Current adapters:
 
 ## Claude Provider Built-ins (`@launchdarkly/ai-claude-agents`)
 
-The Claude agents package exports pre-constructed `NativeTool` sentinels for Claude Code built-in capabilities. Place these as values in `toolHandlers` to enable the corresponding native Claude tool without writing a handler function:
+The Claude agents package exports pre-constructed `NativeTool` sentinels for Claude Code built-in capabilities. Place these as values in `toolHandlers` to enable the corresponding native Claude tool without writing a handler function. Like any tool, a native tool is enabled only for a variation whose `config.tools` has its `toolHandlers` key; registering it is not enough:
 
 | Export | Claude SDK tool name |
 |---|---|
