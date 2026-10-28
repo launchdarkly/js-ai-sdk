@@ -476,16 +476,26 @@ function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | und
  *               feature_flag.contextKeys
  *   feature_flag.result.variant is the served variationKey, omitted when empty
  *   (graph spans can carry an empty variationKey).
- *   feature_flag.result.value is `JSON.stringify` of `variables.__ldValue`, the
- *   raw variation the SDK returned (as the OTel TracingHook writes it with
- *   `includeValue: true`). Omitted when absent, e.g. on native graph spans.
- *   Not gated by content capture.
+ *   feature_flag.result.value follows content capture. With `captureContent`
+ *   on and `variables.__ldValue` present, it is `JSON.stringify` of that raw
+ *   variation (as the OTel TracingHook writes it with `includeValue: true`).
+ *   Otherwise it is `JSON.stringify(variationKey)` when the key is non-empty,
+ *   so the prompt never leaves the process unless capture is on. Omitted when
+ *   there is neither.
+ *
+ * @param captureContent - The calling handler's content-capture setting.
+ *   Defaults to `false`, so a caller that does not pass it never writes the
+ *   raw variation.
  *   The observability backend projects these event attrs to span-level attrs,
  *   satisfying the query: events.name=feature_flag AND
  *   events.attributes.feature_flag.key=<configKey> AND
  *   feature_flag.set.id=<environmentId>
  */
-export function setLdSpanAttributes(span: Span, variables: Record<string, unknown> | undefined): void {
+export function setLdSpanAttributes(
+  span: Span,
+  variables: Record<string, unknown> | undefined,
+  captureContent = false,
+): void {
   span.setAttribute('launchdarkly.operation.type', 'gen_ai');
   const ld = variables?.__ld as TrackData | undefined;
   if (!ld) return;
@@ -505,12 +515,14 @@ export function setLdSpanAttributes(span: Span, variables: Record<string, unknow
     featureFlagAttrs['feature_flag.result.variant'] = ld.variationKey;
   }
   // Same serialization as the LaunchDarkly OTel TracingHook with `includeValue: true`:
-  // `JSON.stringify(detail.value)`. Omitted when there is no evaluated value (native graph spans)
-  // or when it does not serialize to a string.
-  const value = variables?.__ldValue;
-  if (value !== undefined) {
-    const serialized = JSON.stringify(value);
-    if (typeof serialized === 'string') featureFlagAttrs['feature_flag.result.value'] = serialized;
+  // `JSON.stringify(detail.value)`. The raw variation holds the prompt, so it is written only
+  // with content capture on; otherwise the variation key stands in, JSON-encoded like any flag value.
+  const raw = captureContent ? variables?.__ldValue : undefined;
+  const serializedRaw = raw !== undefined ? JSON.stringify(raw) : undefined;
+  if (typeof serializedRaw === 'string') {
+    featureFlagAttrs['feature_flag.result.value'] = serializedRaw;
+  } else if (typeof ld.variationKey === 'string' && ld.variationKey !== '') {
+    featureFlagAttrs['feature_flag.result.value'] = JSON.stringify(ld.variationKey);
   }
 
   const identity = contextIdentityFromLdContext(variables?.ldContext);

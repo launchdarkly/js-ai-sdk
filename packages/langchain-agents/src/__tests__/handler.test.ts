@@ -362,7 +362,7 @@ describe('createLangChainAgentsHandler', () => {
       'feature_flag.provider.name': 'LaunchDarkly',
       'feature_flag.set.id': 'env-abc',
       'feature_flag.result.variant': 'variation-a',
-      'feature_flag.result.value': JSON.stringify(ldFixture.__ldValue),
+      'feature_flag.result.value': JSON.stringify('variation-a'),
     });
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.operation.type', 'gen_ai');
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.config.key', 'test-config');

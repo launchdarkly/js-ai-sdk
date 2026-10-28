@@ -287,7 +287,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setIdentity(span, configRep);
-        setLdSpanAttributes(span, variables);
+        setLdSpanAttributes(span, variables, captureContent);
         const parentContext = trace.setSpan(context.active(), span);
         const messages = buildMessages(configRep, userInput, variables, history);
         setInputContentAttributes(span, captureContent, { messages: spanMessages(messages) });
@@ -383,7 +383,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setIdentity(span, configRep);
-      setLdSpanAttributes(span, variables);
+      setLdSpanAttributes(span, variables, captureContent);
       const parentContext = trace.setSpan(context.active(), span);
       const messages = buildMessages(configRep, userInput, variables, history);
       setInputContentAttributes(span, captureContent, { messages: spanMessages(messages) });

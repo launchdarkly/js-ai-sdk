@@ -397,22 +397,41 @@ describe('setLdSpanAttributes', () => {
     expect(eventCall?.[1]).not.toHaveProperty('feature_flag.result.variant');
   });
 
-  it('includes feature_flag.result.value as the JSON of the raw evaluated variation', () => {
+  const rawVariation = {
+    model: { name: 'gpt-x', parameters: { temperature: 0.2 } },
+    provider: { name: 'openai' },
+    messages: [{ role: 'system', content: 'Be brief.' }],
+    _ldMeta: { enabled: true, variationKey: 'var-a', version: 3 },
+  };
+
+  it('writes the raw variation JSON as feature_flag.result.value when content capture is on', () => {
     const span = makeMockSpan();
-    const raw = {
-      model: { name: 'gpt-x', parameters: { temperature: 0.2 } },
-      provider: { name: 'openai' },
-      messages: [{ role: 'system', content: 'Be brief.' }],
-      _ldMeta: { enabled: true, variationKey: 'var-a', version: 3 },
-    };
-    setLdSpanAttributes(span as any, { __ld: ldFixture, __ldValue: raw });
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: 'var-a' }, __ldValue: rawVariation }, true);
     // Same serialization as the LaunchDarkly OTel TracingHook with includeValue: JSON.stringify(detail.value).
-    expect(featureFlagAttrs(span)['feature_flag.result.value']).toBe(JSON.stringify(raw));
+    expect(featureFlagAttrs(span)['feature_flag.result.value']).toBe(JSON.stringify(rawVariation));
   });
 
-  it('omits feature_flag.result.value when there is no evaluated value (graph spans)', () => {
+  it('writes the variation key JSON as feature_flag.result.value when content capture is off', () => {
     const span = makeMockSpan();
-    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: '', graphKey: 'my-graph' } });
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: 'opus' }, __ldValue: rawVariation }, false);
+    expect(featureFlagAttrs(span)['feature_flag.result.value']).toBe('"opus"');
+  });
+
+  it('defaults content capture to off, so the raw variation is not written', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: 'opus' }, __ldValue: rawVariation });
+    expect(featureFlagAttrs(span)['feature_flag.result.value']).toBe('"opus"');
+  });
+
+  it('writes the variation key JSON when capture is on but there is no raw variation', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: 'opus' } }, true);
+    expect(featureFlagAttrs(span)['feature_flag.result.value']).toBe('"opus"');
+  });
+
+  it('omits feature_flag.result.value when there is no variation key and no raw variation (graph spans)', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: '', graphKey: 'my-graph' } }, true);
     expect(featureFlagAttrs(span)).not.toHaveProperty('feature_flag.result.value');
   });
 });

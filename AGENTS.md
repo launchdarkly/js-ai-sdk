@@ -632,14 +632,17 @@ events these handlers used to emit were read by nothing on the LaunchDarkly
 side. The only event a handler emits is `feature_flag`, on the root, for
 trace correlation. It carries `feature_flag.result.variant` (the served
 variation key) whenever that key is non-empty; graph spans can have an empty
-one, and then it is left off. It also carries `feature_flag.result.value`:
-`JSON.stringify` of the raw variation the SDK returned (messages or
+one, and then it is left off. It also carries `feature_flag.result.value`,
+which follows content capture. With capture on and a raw variation present,
+it is `JSON.stringify` of the raw variation the SDK returned (messages or
 instructions, model, provider, `_ldMeta`, judge configuration), the same
 string the LaunchDarkly OTel `TracingHook` writes with `includeValue: true`.
-The core client passes that raw value to handlers as `variables.__ldValue`,
-beside `__ld`, because `TrackData` is the `$ld:ai:*` event payload. It is not
-gated by content capture, and it is left off when there is no evaluated
-value, such as on native graph spans.
+Otherwise it is `JSON.stringify` of the variation key (for example
+`"\"opus\""`), and it is left off when there is neither. Every handler passes
+its own `captureContent` as the third argument to `setLdSpanAttributes`; the
+default is `false`. The core client passes the raw value to handlers as
+`variables.__ldValue`, beside `__ld`, because `TrackData` is the `$ld:ai:*`
+event payload.
 When `variables.ldContext` has a usable identity, that
 event also carries `feature_flag.context.id` and `feature_flag.contextKeys`,
 and the root span gets `context.contextKeys.<kind>`. Child spans must not.

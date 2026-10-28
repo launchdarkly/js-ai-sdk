@@ -110,7 +110,7 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
   return trace.getTracer(TRACER_NAME).startActiveSpan('evaluate', async (span) => {
     span.setAttribute('gen_ai.operation.name', 'evaluate');
     setModelIdentityAttributes(span, servingProvider(config), config.model.name);
-    setLdSpanAttributes(span, { __ld: trackData, ldContext: { ...context } });
+    setLdSpanAttributes(span, { __ld: trackData, ldContext: { ...context } }, captureContent);
     const payload = JSON.stringify({ state, questions: options.questions });
     setInputContentAttributes(span, captureContent, {
       messages: [textMessage('user', payload)],

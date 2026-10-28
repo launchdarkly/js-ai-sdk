@@ -84,7 +84,7 @@ export function createTypesafeHandler(options: TypesafeHandlerOptions = {}): Pro
       const modelName = config.model?.name || 'jev';
       const root = tracer.startSpan('invoke_agent');
       const chat = tracer.startSpan(`chat ${modelName}`, undefined, trace.setSpan(context.active(), root));
-      setLdSpanAttributes(root, variables);
+      setLdSpanAttributes(root, variables, captureContent);
       setModelIdentityAttributes(root, 'typesafe', modelName);
       setModelIdentityAttributes(chat, 'typesafe', modelName);
       if (captureContent) {
