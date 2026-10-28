@@ -258,12 +258,7 @@ const buildGraph = async (
       };
       handoffHandlers[toolName] = () => {
         if (!chosen) chosen = edge.targetKey;
-        // Selecting an edge does not end the turn, so this result has two jobs. It must not
-        // read as though control has already left: with "Transferring to <key>", nodes that
-        // had a real tool skipped it (#59). And it must not ask for a final answer: a pure
-        // router has none of its own, so it writes the target's answer instead, which
-        // stream() emits as chunks and the target receives as its previous agent response
-        // (AIC-3601). The graph has no router role, so the text cannot branch on one.
+        // Wording and rationale are pinned in ai-sdks-monorepo TESTING.md §3.15a.
         return `Handoff to ${edge.targetKey} recorded. ${edge.targetKey} takes over when your turn ends. Finish your own part, then end your turn. Do not answer for ${edge.targetKey}.`;
       };
     }
