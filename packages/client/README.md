@@ -93,7 +93,7 @@ await shutdown();
 
 ### Conversation content on spans: `configure`
 
-Handler spans carry the conversation by default: prompts and system instructions, model output, tool definitions, tool arguments and results, and judge explanations. The AI Config variation itself also goes out, as `feature_flag.result.value` on the root and graph spans; with capture off, that attribute carries only the variation key. Model names, token counts, timings and tool names are written either way.
+Handler spans carry the conversation by default: prompts and system instructions, model output, tool definitions, tool arguments and results, and judge explanations. The AI Config variation itself also goes out, as `feature_flag.result.value` on each span's `feature_flag` event; with capture off, that attribute carries only the variation key, and is left out when there is no key. Model names, token counts, timings and tool names are written either way.
 
 Turn the default off for the whole process with `configure`, once at startup, before the first AI call:
 
