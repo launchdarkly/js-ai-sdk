@@ -949,8 +949,7 @@ describe('config().invoke — capture-on handler', () => {
         setLdSpanAttributes(span as any, variables);
         return { output: 'ok', usage: { input_tokens: 1, output_tokens: 1 } };
       },
-      undefined,
-      true,
+      { captureContent: true },
     );
 
     await config({ key: 'my-flag', handler }).invoke('hi', mockContext);
@@ -993,8 +992,7 @@ describe('deferred judge feature_flag.result.value', () => {
         setLdSpanAttributes(span as any, variables);
         return { output: '{"score":0.9,"reasoning":"ok"}', usage: { input_tokens: 1, output_tokens: 1 } };
       },
-      undefined,
-      capture,
+      { captureContent: capture },
     );
 
   const featureFlagValue = (span: { addEvent: ReturnType<typeof vi.fn> }) => {
