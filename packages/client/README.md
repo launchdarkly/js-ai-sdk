@@ -848,6 +848,28 @@ A timeout almost always means LaunchDarkly did not receive some events, not that
 
 ---
 
+### Shadow requests (experimental)
+
+A shadow request runs another variation of an AI Config on the same input as the variation you serve, so you can compare it on the normal AI metrics without showing its answer to anyone. You set up shadows on a targeting rule or the fallthrough in LaunchDarkly. The SDK runs them only where you call `shadowConfig()` instead of `config()`.
+
+```ts
+import { shadowConfig } from '@launchdarkly/ai-server/experimental';
+
+const support = shadowConfig({ key: 'support-agent', handler: [openaiHandler, anthropicHandler] });
+const { response } = await support.invoke(userInput, context);
+```
+
+`shadowConfig()` takes the same arguments as `config()`, and its `invoke()` and `stream()` return exactly what `config()` would. After the served variation returns, or its stream reaches `done`, the SDK starts each sampled shadow in the background. Shadows never delay the served answer, and none run when the served variation fails. A shadow gets the same input, history and variables, but no tools and no judges, and it always runs as a plain invoke. Its answer is discarded, and nothing is added to history.
+
+Sampling is sticky per context. A shadow is skipped when it has ended, when no handler you passed matches its provider, or when the context has no key. Each shadow sends the usual `$ld:ai:*` events for its own variation, with the served call's `runId`, `isShadow: true`, `primaryVariationKey`, `shadowRequestId`, `ownerKind` and `ownerId`. The served call's events do not change.
+
+- `shadowTimeoutMs` (default 30000) is how long a shadow may run before it is tracked as an error with `error: 'timeout'`.
+- `onTask` runs shadows yourself, for example on a queue. The SDK then runs nothing, and calls it once per sampled shadow with a `ShadowTask`, which is plain data that survives `structuredClone`. Run the task with `runShadow(task, handlers)`, which never rejects and returns `{ usage, trackData, error? }`.
+
+`shutdown()` drops shadows that are still running.
+
+---
+
 ### Utility Helpers
 
 ```ts

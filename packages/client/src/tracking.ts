@@ -12,7 +12,7 @@ import type {
   VariationMeta,
 } from './types.js';
 import { NATIVE_TOOL_KEY, NativeTool } from './types.js';
-import { parseUsage } from './utils.js';
+import { parseUsage, SPAN_ATTRIBUTES_KEY } from './utils.js';
 
 /**
  * Internal done event yielded by `executeAndStream`. Carries `trackData` so
@@ -247,6 +247,9 @@ export const executeAndTrack = async ({
   variables,
   graphKey,
   history,
+  runId,
+  extraTrackData,
+  spanAttributes,
 }: {
   configKey: string;
   config: AiConfigRep;
@@ -258,8 +261,15 @@ export const executeAndTrack = async ({
   variables?: Record<string, unknown>;
   graphKey?: string;
   history?: Message[];
+  runId?: string;
+  extraTrackData?: Record<string, unknown>;
+  spanAttributes?: Record<string, string | boolean>;
 }): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData; trajectory: string }> => {
-  const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
+  const trackData = {
+    ...makeRunTrackData({ configKey, config, meta, graphKey }),
+    ...(runId && { runId }),
+    ...extraTrackData,
+  };
 
   const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
 
@@ -275,6 +285,7 @@ export const executeAndTrack = async ({
         ...variables,
         ldContext: { ...userContext },
         __ld: trackData,
+        ...(spanAttributes && { [SPAN_ATTRIBUTES_KEY]: spanAttributes }),
       },
       history,
     );
@@ -325,6 +336,7 @@ export async function* executeAndStream({
   variables,
   graphKey,
   history,
+  runId,
 }: {
   configKey: string;
   config: AiConfigRep;
@@ -336,8 +348,9 @@ export async function* executeAndStream({
   variables?: Record<string, unknown>;
   graphKey?: string;
   history?: Message[];
+  runId?: string;
 }): AsyncGenerator<ExecuteStreamEvent> {
-  const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
+  const trackData = { ...makeRunTrackData({ configKey, config, meta, graphKey }), ...(runId && { runId }) };
 
   const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
   const mergedVariables = { ...variables, ldContext: { ...userContext }, __ld: trackData };

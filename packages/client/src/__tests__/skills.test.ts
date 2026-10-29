@@ -439,8 +439,8 @@ const ROOT_VALUES = [
 ];
 
 describe('package exports', () => {
-  it('the experimental entry point exports no value', () => {
-    expect(Object.keys(experimental)).toEqual([]);
+  it('the experimental entry point exports only the shadow requests values', () => {
+    expect(Object.keys(experimental).sort()).toEqual(['runShadow', 'shadowConfig']);
   });
 
   it('the package root exports exactly the snapshotted, skills and evaluations values', () => {

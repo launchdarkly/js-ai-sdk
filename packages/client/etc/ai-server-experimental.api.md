@@ -4,6 +4,65 @@
 
 ```ts
 
+// Warning: (ae-forgotten-export) The symbol "ProviderHandler" needs to be exported by the entry point experimental.d.ts
+//
+// @public
+export function runShadow(task: ShadowTask, handlers: ProviderHandler[]): Promise<ShadowResult>;
+
+// @public
+export function shadowConfig(input: ShadowConfigArgs): {
+    invoke: <T = string>(userInput: string | undefined, context: LDContext, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderResponse<T>>;
+    stream: (userInput: string | undefined, context: LDContext, variables?: Record<string, unknown>, history?: Message[]) => AsyncGenerator<StreamEvent>;
+};
+
+// Warning: (ae-forgotten-export) The symbol "ConfigArgs" needs to be exported by the entry point experimental.d.ts
+//
+// @public (undocumented)
+export type ShadowConfigArgs = ConfigArgs & {
+    shadowTimeoutMs?: number;
+    onTask?: (task: ShadowTask) => void;
+};
+
+// @public
+export type ShadowResult = {
+    usage: TokenUsage;
+    trackData: TrackData & ShadowTask['trackData'];
+    error?: string;
+};
+
+// @public
+export type ShadowTask = {
+    configKey: string;
+    shadowRequestId: string;
+    config: AiConfigRep;
+    meta: VariationMeta;
+    userInput: string | undefined;
+    history: Message[] | undefined;
+    variables: Record<string, unknown> | undefined;
+    context: LDContext;
+    timeoutMs: number;
+    trackData: {
+        runId: string;
+        isShadow: true;
+        primaryVariationKey: string;
+        shadowRequestId: string;
+        ownerKind: string;
+        ownerId: string;
+    };
+    spanAttributes: Record<string, string | boolean>;
+};
+
+// Warnings were encountered during analysis:
+//
+// temp/dts/shadow-requests.d.ts:10:5 - (ae-forgotten-export) The symbol "AiConfigRep" needs to be exported by the entry point experimental.d.ts
+// temp/dts/shadow-requests.d.ts:11:5 - (ae-forgotten-export) The symbol "VariationMeta" needs to be exported by the entry point experimental.d.ts
+// temp/dts/shadow-requests.d.ts:29:5 - (ae-forgotten-export) The symbol "TokenUsage" needs to be exported by the entry point experimental.d.ts
+// temp/dts/shadow-requests.d.ts:30:5 - (ae-forgotten-export) The symbol "TrackData" needs to be exported by the entry point experimental.d.ts
+// temp/dts/shadow-requests.d.ts:46:5 - (ae-forgotten-export) The symbol "LDContext" needs to be exported by the entry point experimental.d.ts
+// temp/dts/shadow-requests.d.ts:46:5 - (ae-forgotten-export) The symbol "Message" needs to be exported by the entry point experimental.d.ts
+// temp/dts/shadow-requests.d.ts:46:5 - (ae-forgotten-export) The symbol "ProviderResponse" needs to be exported by the entry point experimental.d.ts
+// temp/dts/shadow-requests.d.ts:47:5 - (ae-forgotten-export) The symbol "StreamEvent" needs to be exported by the entry point experimental.d.ts
+
 // (No @packageDocumentation comment for this package)
 
 ```
