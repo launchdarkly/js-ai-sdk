@@ -628,7 +628,7 @@ export async function inspectConfigInternal(key: string, context: LDContext): Pr
 export const extractVariation = async (
   key: string,
   userContext: LDContext,
-): Promise<{ config: AiConfigRep; meta: VariationMeta }> => {
+): Promise<{ config: AiConfigRep; meta: VariationMeta; value: unknown }> => {
   await initClient();
   const variation = await getClient().variation(key, userContext, { enabled: false });
   // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
@@ -640,6 +640,8 @@ export const extractVariation = async (
     throw new Error(`Invalid AI config for "${key}": ${parsed.error.message}`);
   }
 
+  // `value` is the variation exactly as the SDK returned it, before parsing. It is written to the
+  // `feature_flag` span event as `feature_flag.result.value`.
   // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
-  return { config: parsed.data, meta: (variation as any)._ldMeta as VariationMeta };
+  return { config: parsed.data, meta: (variation as any)._ldMeta as VariationMeta, value: variation };
 };

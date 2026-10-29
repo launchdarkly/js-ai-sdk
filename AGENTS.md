@@ -634,7 +634,23 @@ Span events are not a content carrier. OTEP 4430 deprecated the span-event
 recording API, and the `gen_ai.content.prompt` / `gen_ai.content.completion`
 events these handlers used to emit were read by nothing on the LaunchDarkly
 side. The only event a handler emits is `feature_flag`, on the root, for
-trace correlation. When `variables.ldContext` has a usable identity, that
+trace correlation. It carries `feature_flag.result.variant` (the served
+variation key) whenever that key is non-empty; graph spans can have an empty
+one, and then it is left off. It also carries `feature_flag.result.value`.
+When `variables.__ldValue` is present, it is `JSON.stringify` of that raw
+variation (messages or instructions, model, provider, `_ldMeta`, judge
+configuration), the same string the LaunchDarkly OTel `TracingHook` writes
+with `includeValue: true`. Otherwise it is `JSON.stringify` of the variation
+key (for example `"\"opus\""`), and it is left off when there is neither.
+The core client sets `__ldValue`, beside `__ld`, only when the handler that
+runs has `captureContent` on (`ProviderHandler.captureContent`, the same gate
+judge reasoning uses), so the raw config never reaches a capture-off handler.
+A deferred judge carries its variation on `JudgeTask.judgeValue`, and
+`runJudge` applies the same gate with the judge's handler. The
+`launchdarkly.graph` root span has no single handler, so it gets the graph
+flag's raw variation only when the process-wide default captures content.
+It is not in `TrackData`, because `TrackData` is the `$ld:ai:*` event payload.
+When `variables.ldContext` has a usable identity, that
 event also carries `feature_flag.context.id` and `feature_flag.contextKeys`,
 and the root span gets `context.contextKeys.<kind>`. Child spans must not.
 

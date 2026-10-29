@@ -75,7 +75,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
     const resolvedHandlerArray = resolveHandlers(registry, normalizeHandlers());
     const resolvedTools = resolveTools(registry, toolHandlers);
 
-    const { config: aiConfig, meta } = await extractVariation(key, context);
+    const { config: aiConfig, meta, value: evaluatedValue } = await extractVariation(key, context);
     const resolvedHandler = selectHandler(aiConfig, meta, resolvedHandlerArray);
 
     const {
@@ -93,6 +93,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       toolHandlers: resolvedTools,
       variables,
       history,
+      evaluatedValue,
     });
 
     const parsedResponse = resolveOutputFormatResponse(rawResponse, aiConfig.outputFormat);
@@ -161,7 +162,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
     const resolvedHandlerArray = resolveHandlers(registry, normalizeHandlers());
     const resolvedTools = resolveTools(registry, toolHandlers);
 
-    const { config: aiConfig, meta } = await extractVariation(key, context);
+    const { config: aiConfig, meta, value: evaluatedValue } = await extractVariation(key, context);
     const resolvedHandler = selectHandler(aiConfig, meta, resolvedHandlerArray);
 
     let doneEvent: ExecuteStreamDoneEvent | undefined;
@@ -176,6 +177,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       toolHandlers: resolvedTools,
       variables,
       history,
+      evaluatedValue,
     })) {
       if (event.type === 'chunk') {
         yield event;
