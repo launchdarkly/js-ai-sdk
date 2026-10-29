@@ -176,12 +176,12 @@ describe('toLangGraph — hand-offs through a real StateGraph', () => {
 
   it('a multi-child router hands off once and is not run again', async () => {
     const { modelFactory, models } = scriptedModels({
-      router: [toolCallMsg(['transfer_to_butler', 'call_1'])],
-      butler: [new AIMessage('the butler did it')],
+      router: [toolCallMsg(['transfer_to_manor_butler', 'call_1'])],
+      'manor.butler': [new AIMessage('the butler did it')],
       cook: [],
     });
 
-    const result = await toLangGraph(Promise.resolve(makeHandoffDef(['butler', 'cook'])), {
+    const result = await toLangGraph(Promise.resolve(makeHandoffDef(['manor.butler', 'cook'])), {
       modelFactory,
       context: { kind: 'user', key: 'u' },
     }).invoke('who did it?');
@@ -189,9 +189,11 @@ describe('toLangGraph — hand-offs through a real StateGraph', () => {
     expect(result.response).toBe('the butler did it');
     expect(models.router.invoke).toHaveBeenCalledTimes(1);
     expect(models.cook.invoke).not.toHaveBeenCalled();
-    const [answer] = toolMessagesSentTo(models.butler);
+    const [answer] = toolMessagesSentTo(models['manor.butler']);
     expect(answer.tool_call_id).toBe('call_1');
-    expect(answer.content).toBe('Handed off to butler.');
+    // The text uses the raw target key; the tool name uses the sanitized one.
+    expect(answer.content).toBe('Handed off to manor.butler.');
+    expect(answer.name).toBe('transfer_to_manor_butler');
     expect(handoffSuccessCount()).toBe(1);
   });
 

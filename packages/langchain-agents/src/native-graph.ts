@@ -191,7 +191,8 @@ export const toLangGraph = (
               async (_input, config): Promise<Command | string> => {
                 const toolCallId = config.toolCall?.id;
                 // Only the first hand-off in a model message routes, as in graph().
-                if (toolCallId !== routing.first) return HANDOFF_IGNORED;
+                // The handedOff check also keeps first-wins when the calls carry no id.
+                if (routing.handedOff || toolCallId !== routing.first) return HANDOFF_IGNORED;
                 routing.handedOff = true;
                 const targetKey = sanitizeName(edge.targetKey);
                 if (ldContext) {
