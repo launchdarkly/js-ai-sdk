@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 
 import { configFromVariation } from './client.js';
-import { getClient, initClient } from './lifecycle.js';
+import { fetchVariation, parseVariation as parseServedVariation } from './lifecycle.js';
 import { findHandler, resolveHandlers } from './registry.js';
 import { reportUsage } from './sdk-usage.js';
 import { registerShutdownHook } from './shutdown-hooks.js';
@@ -16,7 +16,6 @@ import { executeAndTrack, makeRunTrackData } from './tracking.js';
 import {
   type AiConfigRep,
   type ConfigArgs,
-  type LDClientInterface,
   type LDContext,
   type Message,
   type ProviderHandler,
@@ -207,30 +206,10 @@ export function inSample(shadowId: string, context: LDContext, samplingRate: num
   return Number.parseInt(digest.slice(0, 15), 16) / 2 ** 60 < samplingRate;
 }
 
-type DetailClient = LDClientInterface & {
-  variationDetail?: (
-    key: string,
-    context: LDContext,
-    defaultValue: unknown,
-  ) => Promise<{ value: unknown; reason?: unknown }>;
-};
-
 async function evaluate(key: string, context: LDContext): Promise<Evaluation> {
-  await initClient();
-  const client = getClient() as DetailClient;
-  const { value, reason } = client.variationDetail
-    ? await client.variationDetail(key, context, { enabled: false })
-    : { value: await client.variation(key, context, { enabled: false }), reason: undefined };
+  const { value, reason } = await fetchVariation(key, context, { withReason: true });
   const { shadowConfiguration, ...variation } = asRecord(value) ?? {};
-  const meta = asRecord(variation._ldMeta);
-  if (!meta?.enabled) {
-    throw new Error(`Variation ${key} is not enabled`);
-  }
-  const parsed = parseAiConfig(variation);
-  if (!parsed.success) {
-    throw new Error(`Invalid AI config for "${key}": ${parsed.error.message}`);
-  }
-  return { config: parsed.data, meta: meta as VariationMeta, runId: crypto.randomUUID(), shadowConfiguration, reason };
+  return { ...parseServedVariation(key, variation), runId: crypto.randomUUID(), shadowConfiguration, reason };
 }
 
 function buildTasks(

@@ -7,7 +7,7 @@ vi.mock('@launchdarkly/node-server-sdk', () => ({
 
 import { config } from '../client.js';
 import { runShadow, type ShadowTask, shadowConfig } from '../experimental.js';
-import { initClient, shutdown } from '../lifecycle.js';
+import { fetchVariation, initClient, shutdown } from '../lifecycle.js';
 import { inSample, waitForShadowsForTesting } from '../shadow-requests.js';
 import type { LDClientInterface, LDContext, Message, ProviderHandler, StreamEvent } from '../types.js';
 import { SPAN_ATTRIBUTES_KEY, setLdSpanAttributes } from '../utils.js';
@@ -175,6 +175,16 @@ describe('plain config()', () => {
     expect(client.variationDetail).not.toHaveBeenCalled();
     expect(b.calls).toHaveLength(0);
     expect(shadowEvents(client)).toEqual([]);
+  });
+});
+
+describe('fetchVariation', () => {
+  it('reads the reason only when asked', async () => {
+    const client = await use(makeClient(variationA()));
+    expect((await fetchVariation('flag', CONTEXT)).reason).toBeUndefined();
+    expect(client.variationDetail).not.toHaveBeenCalled();
+    expect((await fetchVariation('flag', CONTEXT, { withReason: true })).reason).toEqual(FALLTHROUGH);
+    expect(client.variationDetail).toHaveBeenCalledTimes(1);
   });
 });
 
