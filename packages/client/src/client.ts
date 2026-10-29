@@ -1,8 +1,9 @@
 import { bindConversationId } from './conversation.js';
 import { buildJudgeTasksInternal, runJudges } from './judges.js';
 import { extractVariation } from './lifecycle.js';
-import { findHandler, resolveHandlers, resolveTools } from './registry.js';
+import { resolveHandlers, resolveTools, selectHandler } from './registry.js';
 import { reportUsage } from './sdk-usage.js';
+import { buildShadowTasks, DEFAULT_SHADOW_TIMEOUT_MS, startShadows, validateShadowTimeout } from './shadows.js';
 import { type ExecuteStreamDoneEvent, executeAndStream, executeAndTrack } from './tracking.js';
 import type {
   AiConfigRep,
@@ -12,9 +13,8 @@ import type {
   ProviderHandler,
   ProviderResponse,
   StreamEvent,
-  VariationMeta,
 } from './types.js';
-import { normalizeMode, parseJSONWithPossibleFences } from './utils.js';
+import { parseJSONWithPossibleFences } from './utils.js';
 
 function resolveOutputFormatResponse(rawResponse: unknown, outputFormat: Record<string, unknown> | undefined): unknown {
   if (!outputFormat) return rawResponse ?? '';
@@ -29,30 +29,6 @@ function resolveOutputFormatResponse(rawResponse: unknown, outputFormat: Record<
 export type { AiConfigRep };
 
 /**
- * Selects a handler from `resolvedHandlers` based on the variation's provider
- * and mode. Throws if no match is found.
- */
-function selectHandler(
-  config: AiConfigRep,
-  meta: VariationMeta,
-  resolvedHandlers: ProviderHandler[] | undefined,
-): ProviderHandler {
-  const provider = config.provider?.name;
-  const mode = meta.mode;
-
-  if (!provider) throw new Error('Provider not found');
-  const normalizedMode = normalizeMode(mode);
-
-  const selected = findHandler(resolvedHandlers, provider, normalizedMode);
-  if (selected) return selected;
-
-  if (!resolvedHandlers?.some((h) => h.providesFor?.[0] === provider || h.providesFor?.[0] === '*')) {
-    throw new Error(`Handler for provider ${provider} not found`);
-  }
-  throw new Error(`Handler for provider ${provider} with mode ${normalizedMode} not found`);
-}
-
-/**
  * {@link config} without the `$ld:ai:sdk:usage` report: the returned `invoke`
  * and `stream` do not report. Package wrappers call this so a wrapper call
  * reports only the wrapper's own helper.
@@ -60,7 +36,17 @@ function selectHandler(
  * @internal Exported for the LaunchDarkly handler packages; applications should
  * call {@link config}.
  */
-export const configInternal = ({ key, handler, toolHandlers, registry, skipJudges = false }: ConfigArgs) => {
+export const configInternal = ({
+  key,
+  handler,
+  toolHandlers,
+  registry,
+  skipJudges = false,
+  skipShadows = false,
+  shadowTimeoutMs = DEFAULT_SHADOW_TIMEOUT_MS,
+}: ConfigArgs) => {
+  validateShadowTimeout(shadowTimeoutMs);
+
   const normalizeHandlers = (): ProviderHandler[] | undefined => {
     if (handler === undefined) return undefined;
     return Array.isArray(handler) ? handler : [handler];
@@ -75,8 +61,23 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
     const resolvedHandlerArray = resolveHandlers(registry, normalizeHandlers());
     const resolvedTools = resolveTools(registry, toolHandlers);
 
-    const { config: aiConfig, meta } = await extractVariation(key, context);
+    const { config: aiConfig, meta, raw, reason } = await extractVariation(key, context, { withReason: true });
     const resolvedHandler = selectHandler(aiConfig, meta, resolvedHandlerArray);
+    const runId = crypto.randomUUID();
+    const shadowTasks = buildShadowTasks({
+      configKey: key,
+      rawVariation: raw,
+      reason,
+      primaryVariationKey: meta.variationKey ?? '',
+      context,
+      userInput,
+      history,
+      variables,
+      handlers: resolvedHandlerArray,
+      runId,
+      timeoutMs: shadowTimeoutMs,
+    });
+    if (!skipShadows) startShadows(shadowTasks, resolvedHandlerArray ?? []);
 
     const {
       response: rawResponse,
@@ -93,6 +94,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       toolHandlers: resolvedTools,
       variables,
       history,
+      runId,
     });
 
     const parsedResponse = resolveOutputFormatResponse(rawResponse, aiConfig.outputFormat);
@@ -115,6 +117,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
         usage: llmUsage,
         trackData: baseTrackData,
         judgeTasks,
+        ...(skipShadows ? { shadowTasks } : {}),
       };
     }
 
@@ -135,6 +138,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       usage: llmUsage,
       judgeResults,
       trackData: baseTrackData,
+      ...(skipShadows ? { shadowTasks } : {}),
     };
   }
 
@@ -161,8 +165,23 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
     const resolvedHandlerArray = resolveHandlers(registry, normalizeHandlers());
     const resolvedTools = resolveTools(registry, toolHandlers);
 
-    const { config: aiConfig, meta } = await extractVariation(key, context);
+    const { config: aiConfig, meta, raw, reason } = await extractVariation(key, context, { withReason: true });
     const resolvedHandler = selectHandler(aiConfig, meta, resolvedHandlerArray);
+    const runId = crypto.randomUUID();
+    const shadowTasks = buildShadowTasks({
+      configKey: key,
+      rawVariation: raw,
+      reason,
+      primaryVariationKey: meta.variationKey ?? '',
+      context,
+      userInput,
+      history,
+      variables,
+      handlers: resolvedHandlerArray,
+      runId,
+      timeoutMs: shadowTimeoutMs,
+    });
+    if (!skipShadows) startShadows(shadowTasks, resolvedHandlerArray ?? []);
 
     let doneEvent: ExecuteStreamDoneEvent | undefined;
 
@@ -176,6 +195,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       toolHandlers: resolvedTools,
       variables,
       history,
+      runId,
     })) {
       if (event.type === 'chunk') {
         yield event;
@@ -203,6 +223,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
         response: doneEvent.response,
         usage: doneEvent.usage,
         judgeResults: Object.keys(judgeResults).length > 0 ? judgeResults : undefined,
+        ...(skipShadows ? { shadowTasks } : {}),
       };
     }
   }

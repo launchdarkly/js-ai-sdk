@@ -38,6 +38,12 @@ export type LDContext = LDUser | LDSingleKindContext | LDMultiKindContext;
 
 export interface LDClientInterface {
   variation(key: string, context: LDContext, defaultValue: unknown): Promise<unknown>;
+  /** Evaluates with the reason. Optional: without it, `config()` runs no shadow requests. */
+  variationDetail?(
+    key: string,
+    context: LDContext,
+    defaultValue: unknown,
+  ): Promise<{ value: unknown; reason?: unknown }>;
   track(eventName: string, context: LDContext, data?: unknown, metricValue?: number): void;
   flush(): Promise<void>;
   // Server SDKs return void; a custom client may return a Promise, and shutdown() awaits either.
@@ -635,11 +641,45 @@ export type ProviderResponse<T = string> = {
    */
   judgeTasks?: JudgeTask[];
   /**
+   * Shadow requests sampled for this call, produced when `skipShadows: true`.
+   * Run each with `runShadow(task, handlers)`. `undefined` when shadows ran in
+   * the background.
+   */
+  shadowTasks?: ShadowTask[];
+  /**
    * Tracking payload from this invocation. Carried inside each {@link JudgeTask}
    * so that background judge results are attributed to the originating request
    * (run ID, config key, graph key, etc.).
    */
   trackData: TrackData;
+};
+
+/**
+ * Everything needed to run one shadow request later, without evaluating the
+ * flag again. Returned in `shadowTasks` when `skipShadows: true`. Plain data,
+ * so it survives `structuredClone`. Run it with `runShadow(task, handlers)`.
+ */
+export type ShadowTask = {
+  configKey: string;
+  shadowRequestId: string;
+  /** The shadow variation, with tools, judges and shadow configuration removed. */
+  shadowConfig: AiConfigRep;
+  shadowMeta: VariationMeta;
+  userInput: string | undefined;
+  history: Message[] | undefined;
+  variables: Record<string, unknown> | undefined;
+  userContext: LDContext;
+  timeoutMs: number;
+  /** Added to every event of the shadow run, including the primary run's `runId`. */
+  trackData: Partial<TrackData>;
+  spanAttributes: Record<string, string | boolean>;
+};
+
+/** The outcome of one shadow run. The shadow's response is discarded. */
+export type ShadowResult = {
+  usage: TokenUsage;
+  trackData: TrackData;
+  error?: string;
 };
 
 /**
@@ -742,6 +782,8 @@ export type StreamEvent =
       response: string;
       usage: TokenUsage;
       judgeResults?: ProviderResponse['judgeResults'];
+      /** Present only when `skipShadows: true`. */
+      shadowTasks?: ShadowTask[];
     };
 
 /**
@@ -825,6 +867,13 @@ export type ConfigArgs = {
    * response has been returned to the caller.
    */
   skipJudges?: boolean;
+  /**
+   * When `true`, shadow requests are returned as `shadowTasks` instead of
+   * running in the background. Run each with `runShadow(task, handlers)`.
+   */
+  skipShadows?: boolean;
+  /** How long a shadow request may run, in milliseconds. Default 30000. */
+  shadowTimeoutMs?: number;
 };
 
 /**
@@ -845,6 +894,12 @@ export type TrackData = {
   graphKey?: string;
   toolKey?: string;
   judgeConfigKey?: string;
+  /** Set on the events of a shadow request, with the four fields below. */
+  isShadow?: boolean;
+  primaryVariationKey?: string;
+  shadowRequestId?: string;
+  ownerKind?: string;
+  ownerId?: string;
   /** LD environment MongoDB ObjectId — used to set feature_flag.set.id on OTel spans. */
   environmentId?: string;
 };

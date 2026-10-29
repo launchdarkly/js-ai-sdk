@@ -418,6 +418,7 @@ const ROOT_VALUES = [
   'reportUsage',
   'resolveGraph',
   'runJudge',
+  'runShadow',
   'setConversationIdIfAbsent',
   'setInputContentAttributes',
   'setLdSpanAttributes',

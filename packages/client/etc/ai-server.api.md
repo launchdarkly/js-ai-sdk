@@ -96,6 +96,8 @@ export type ConfigArgs = {
     toolHandlers?: Record<string, ToolHandlerFn | NativeTool>;
     registry?: RegistryInput;
     skipJudges?: boolean;
+    skipShadows?: boolean;
+    shadowTimeoutMs?: number;
 };
 
 // Warning: (ae-internal-missing-underscore) The name "configInternal" should be prefixed with an underscore because the declaration is marked as @internal
@@ -596,6 +598,10 @@ export interface LDClientInterface {
     track(eventName: string, context: LDContext, data?: unknown, metricValue?: number): void;
     // (undocumented)
     variation(key: string, context: LDContext, defaultValue: unknown): Promise<unknown>;
+    variationDetail?(key: string, context: LDContext, defaultValue: unknown): Promise<{
+        value: unknown;
+        reason?: unknown;
+    }>;
 }
 
 // @public (undocumented)
@@ -648,6 +654,8 @@ export const makeRunTrackData: (input: {
     config: AiConfigRep;
     meta: LDVariationMeta | null | undefined;
     graphKey?: string;
+    runId?: string;
+    extraTrackData?: Partial<TrackData>;
 }) => TrackData;
 
 // @public
@@ -721,6 +729,7 @@ export type ProviderResponse<T = string> = {
     usage: TokenUsage;
     judgeResults?: Record<string, JudgeCallResult>;
     judgeTasks?: JudgeTask[];
+    shadowTasks?: ShadowTask[];
     trackData: TrackData;
 };
 
@@ -829,6 +838,9 @@ export type RunOptions = {
 });
 
 // @public
+export function runShadow(task: ShadowTask, handlers: ProviderHandler[]): Promise<ShadowResult>;
+
+// @public
 export type RunSummary = {
     totalRows: number;
     passedRows: number;
@@ -894,6 +906,28 @@ export function setToolDefinitionAttributes(span: Span, capture: boolean, tools:
 
 // @public
 export function setUsageSpanAttributes(span: Span, usage: SpanUsage): void;
+
+// @public
+export type ShadowResult = {
+    usage: TokenUsage;
+    trackData: TrackData;
+    error?: string;
+};
+
+// @public
+export type ShadowTask = {
+    configKey: string;
+    shadowRequestId: string;
+    shadowConfig: AiConfigRep;
+    shadowMeta: LDVariationMeta;
+    userInput: string | undefined;
+    history: Message[] | undefined;
+    variables: Record<string, unknown> | undefined;
+    userContext: LDContext;
+    timeoutMs: number;
+    trackData: Partial<TrackData>;
+    spanAttributes: Record<string, string | boolean>;
+};
 
 // @public (undocumented)
 export function shutdown(): Promise<void>;
@@ -1025,6 +1059,7 @@ export type StreamEvent = {
     response: string;
     usage: TokenUsage;
     judgeResults?: ProviderResponse['judgeResults'];
+    shadowTasks?: ShadowTask[];
 };
 
 // @public
@@ -1089,6 +1124,11 @@ export type TrackData = {
     graphKey?: string;
     toolKey?: string;
     judgeConfigKey?: string;
+    isShadow?: boolean;
+    primaryVariationKey?: string;
+    shadowRequestId?: string;
+    ownerKind?: string;
+    ownerId?: string;
     environmentId?: string;
 };
 
@@ -1130,7 +1170,7 @@ export type WriteSkillsOptions = {
 //
 // temp/dts/evaluations.d.ts:48:5 - (ae-forgotten-export) The symbol "Transport" needs to be exported by the entry point index.d.ts
 // temp/dts/skills-fdv2.d.ts:460:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point index.d.ts
-// temp/dts/types.d.ts:425:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
+// temp/dts/types.d.ts:430:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 

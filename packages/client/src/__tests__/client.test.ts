@@ -82,7 +82,7 @@ describe('config() — single handler', () => {
   it('calls extractVariation with the correct key and context', async () => {
     const handler = makeHandler();
     await config({ key: 'my-flag', handler }).invoke('hi', mockContext);
-    expect(extractVariation).toHaveBeenCalledWith('my-flag', mockContext);
+    expect(extractVariation).toHaveBeenCalledWith('my-flag', mockContext, { withReason: true });
   });
 
   it('calls the handler with config, userInput, and variables', async () => {

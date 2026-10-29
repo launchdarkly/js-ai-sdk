@@ -418,8 +418,10 @@ function compactContextKeysJson(keys: Record<string, string>): string {
 /**
  * Canonical key plus per-kind map from `variables.ldContext`.
  * Never throws. Returns undefined when there is no usable identity.
+ *
+ * @internal Exported for this package's own modules; not part of the public API.
  */
-function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | undefined {
+export function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | undefined {
   try {
     if (ldContext === null || typeof ldContext !== 'object') return undefined;
     const ctx = ldContext as Record<string, unknown>;
@@ -475,6 +477,7 @@ function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | und
  *   launchdarkly.variation.key   = variationKey
  *   launchdarkly.run.id          = runId
  *   launchdarkly.graph.key       = graphKey    (only when present)
+ *   variables.__ld_span entries                (a shadow request's attributes)
  *   context.contextKeys.<kind>   = raw per-kind key (when ldContext has identity)
  *
  * Span event (required for AI Config Monitoring tab trace correlation):
@@ -494,6 +497,9 @@ export function setLdSpanAttributes(span: Span, variables: Record<string, unknow
   span.setAttribute('launchdarkly.variation.key', ld.variationKey);
   span.setAttribute('launchdarkly.run.id', ld.runId);
   if (ld.graphKey) span.setAttribute('launchdarkly.graph.key', ld.graphKey);
+  for (const [name, value] of Object.entries((variables?.__ld_span ?? {}) as Record<string, string | boolean>)) {
+    span.setAttribute(name, value);
+  }
 
   const featureFlagAttrs: Record<string, string> = {
     'feature_flag.key': ld.configKey,

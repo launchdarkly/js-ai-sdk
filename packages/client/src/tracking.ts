@@ -219,13 +219,17 @@ export const makeRunTrackData = ({
   config,
   meta,
   graphKey,
+  runId,
+  extraTrackData,
 }: {
   configKey: string;
   config: AiConfigRep;
   meta: VariationMeta | null | undefined;
   graphKey?: string;
+  runId?: string;
+  extraTrackData?: Partial<TrackData>;
 }): TrackData => ({
-  runId: crypto.randomUUID(),
+  runId: runId ?? crypto.randomUUID(),
   configKey,
   variationKey: meta?.variationKey ?? '',
   version: meta?.version ?? 1,
@@ -234,7 +238,24 @@ export const makeRunTrackData = ({
   ...modelStampsFromMeta(meta),
   ...(graphKey ? { graphKey } : {}),
   environmentId: tryGetEnvironmentId(),
+  ...extraTrackData,
 });
+
+/** Root-span attributes go under `__ld_span`, which only the SDK sets; a template variable of that name is dropped. */
+function mergeVariables(
+  variables: Record<string, unknown> | undefined,
+  userContext: LDContext,
+  trackData: TrackData,
+  spanAttributes?: Record<string, string | boolean>,
+): Record<string, unknown> {
+  const { __ld_span: _dropped, ...rest } = variables ?? {};
+  return {
+    ...rest,
+    ldContext: { ...userContext },
+    __ld: trackData,
+    ...(spanAttributes ? { __ld_span: { ...spanAttributes } } : {}),
+  };
+}
 
 export const executeAndTrack = async ({
   configKey,
@@ -247,6 +268,9 @@ export const executeAndTrack = async ({
   variables,
   graphKey,
   history,
+  runId,
+  extraTrackData,
+  spanAttributes,
 }: {
   configKey: string;
   config: AiConfigRep;
@@ -258,8 +282,11 @@ export const executeAndTrack = async ({
   variables?: Record<string, unknown>;
   graphKey?: string;
   history?: Message[];
+  runId?: string;
+  extraTrackData?: Partial<TrackData>;
+  spanAttributes?: Record<string, string | boolean>;
 }): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData; trajectory: string }> => {
-  const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
+  const trackData = makeRunTrackData({ configKey, config, meta, graphKey, runId, extraTrackData });
 
   const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
 
@@ -271,11 +298,7 @@ export const executeAndTrack = async ({
       config,
       userInput,
       trackedToolHandlers,
-      {
-        ...variables,
-        ldContext: { ...userContext },
-        __ld: trackData,
-      },
+      mergeVariables(variables, userContext, trackData, spanAttributes),
       history,
     );
   } catch (err) {
@@ -325,6 +348,7 @@ export async function* executeAndStream({
   variables,
   graphKey,
   history,
+  runId,
 }: {
   configKey: string;
   config: AiConfigRep;
@@ -336,11 +360,12 @@ export async function* executeAndStream({
   variables?: Record<string, unknown>;
   graphKey?: string;
   history?: Message[];
+  runId?: string;
 }): AsyncGenerator<ExecuteStreamEvent> {
-  const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
+  const trackData = makeRunTrackData({ configKey, config, meta, graphKey, runId });
 
   const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
-  const mergedVariables = { ...variables, ldContext: { ...userContext }, __ld: trackData };
+  const mergedVariables = mergeVariables(variables, userContext, trackData);
 
   const startTime = Date.now();
   let fullText = '';

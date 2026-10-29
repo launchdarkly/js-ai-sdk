@@ -750,14 +750,15 @@ describe('lifecycle', () => {
         expect(second).toHaveBeenCalledOnce();
       });
 
-      it('loading the package root registers the Agent Skills hook and no experimental hook', async () => {
-        // Agent Skills is exported from the root, and registers its hook when
-        // its core module loads, so the root's shutdown() clears its state.
-        // The root must still not load experimental code.
+      it('loading the package root registers the core hooks and no experimental hook', async () => {
+        // Agent Skills and shadow requests are exported from the root, and
+        // register their hooks when their core modules load, so the root's
+        // shutdown() clears their state. The root must still not load
+        // experimental code.
         await import('../index.js');
 
         const names = [...(hooks()?.keys() ?? [])].filter((name) => !name.startsWith('test: '));
-        expect(names).toEqual(['Agent Skills']);
+        expect(names.sort()).toEqual(['Agent Skills', 'Shadow requests']);
         expect(names.filter((name) => /experimental/i.test(name))).toEqual([]);
       });
     });

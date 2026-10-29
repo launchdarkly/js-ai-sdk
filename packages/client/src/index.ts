@@ -67,6 +67,7 @@ export {
 export { compose, globalRegistry, Registry } from './registry.js';
 export { registerAiSdkPackage } from './sdk-info.js';
 export { reportUsage } from './sdk-usage.js';
+export { runShadow } from './shadows.js';
 export {
   allSkills,
   getSkill,
@@ -131,6 +132,8 @@ export type {
   RegistryInput,
   RouteResult,
   RunNodeOptions,
+  ShadowResult,
+  ShadowTask,
   Skill,
   SkillOutcome,
   SkillOutcomeReason,

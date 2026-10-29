@@ -620,18 +620,32 @@ export async function inspectConfigInternal(key: string, context: LDContext): Pr
 export const extractVariation = async (
   key: string,
   userContext: LDContext,
-): Promise<{ config: AiConfigRep; meta: VariationMeta }> => {
+  { withReason = false }: { withReason?: boolean } = {},
+): Promise<{ config: AiConfigRep; meta: VariationMeta; raw: Record<string, unknown>; reason?: unknown }> => {
   await initClient();
-  const variation = await getClient().variation(key, userContext, { enabled: false });
+  const client = getClient();
+  let variation: unknown;
+  let reason: unknown;
+  if (withReason && client.variationDetail) {
+    ({ value: variation, reason } = await client.variationDetail(key, userContext, { enabled: false }));
+  } else {
+    variation = await client.variation(key, userContext, { enabled: false });
+  }
   // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
   if (!(variation as any)?._ldMeta?.enabled) {
     throw new Error(`Variation ${key} is not enabled`);
   }
-  const parsed = parseAiConfig(variation);
+  const { shadowConfiguration: _shadows, ...withoutShadows } = variation as Record<string, unknown>;
+  const parsed = parseAiConfig(withoutShadows);
   if (!parsed.success) {
     throw new Error(`Invalid AI config for "${key}": ${parsed.error.message}`);
   }
 
-  // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
-  return { config: parsed.data, meta: (variation as any)._ldMeta as VariationMeta };
+  return {
+    config: parsed.data,
+    // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
+    meta: (variation as any)._ldMeta as VariationMeta,
+    raw: variation as Record<string, unknown>,
+    reason,
+  };
 };

@@ -132,6 +132,7 @@ resolveGraph  usage=client.resolveGraph
 runJudge  usage=client.runJudge
 - RunNodeOptions
 + RunOptions
++ runShadow  usage=client.runShadow
 + RunSummary
 - RunUsage
 + Scorer
@@ -145,6 +146,8 @@ runJudge  usage=client.runJudge
 - setToolCallContentAttributes
 - setToolDefinitionAttributes
 - setUsageSpanAttributes
++ ShadowResult
++ ShadowTask
 shutdown
 - shutdownTelemetry  # internal: not needed to init, configure, execute or read results
 + Skill

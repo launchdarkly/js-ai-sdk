@@ -31,6 +31,7 @@ import type {
   ProviderHandler,
   RawSkillObject,
   ReconcileReport,
+  ShadowTask,
   TrackData,
 } from '../types.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from '../version.js';
@@ -198,6 +199,7 @@ const CALLS: Record<string, Call> = {
   'client.resolveGraph': (resolveGraph) => settle(resolveGraph('k', { context: ctx })),
   'client.inspectConfig': (inspectConfig) => settle(inspectConfig('k', ctx)),
   'client.runJudge': (runJudge) => settle(runJudge({} as JudgeTask, [])),
+  'client.runShadow': (runShadow) => settle(runShadow({} as ShadowTask, [])),
   'client.buildJudgeTasks': (buildJudgeTasks) => settle(buildJudgeTasks(judgeArgs())),
   'client.createHandler': (createHandler) =>
     fire(() => createHandler(['OpenAI', 'messages'], async () => ({ output: '' }))),

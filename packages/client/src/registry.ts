@@ -1,4 +1,5 @@
-import type { NativeTool, ProviderHandler, ToolHandlerFn } from './types.js';
+import type { AiConfigRep, NativeTool, ProviderHandler, ToolHandlerFn, VariationMeta } from './types.js';
+import { normalizeMode } from './utils.js';
 
 export class Registry {
   handlers: ProviderHandler[] = [];
@@ -95,4 +96,28 @@ export function resolveTools(
   const registryTools = registry.tools;
   if (!localTools) return Object.keys(registryTools).length ? registryTools : undefined;
   return { ...registryTools, ...localTools };
+}
+
+/**
+ * Selects a handler from `resolvedHandlers` based on the variation's provider
+ * and mode. Throws if no match is found.
+ */
+export function selectHandler(
+  config: AiConfigRep,
+  meta: VariationMeta,
+  resolvedHandlers: ProviderHandler[] | undefined,
+): ProviderHandler {
+  const provider = config.provider?.name;
+  const mode = meta.mode;
+
+  if (!provider) throw new Error('Provider not found');
+  const normalizedMode = normalizeMode(mode);
+
+  const selected = findHandler(resolvedHandlers, provider, normalizedMode);
+  if (selected) return selected;
+
+  if (!resolvedHandlers?.some((h) => h.providesFor?.[0] === provider || h.providesFor?.[0] === '*')) {
+    throw new Error(`Handler for provider ${provider} not found`);
+  }
+  throw new Error(`Handler for provider ${provider} with mode ${normalizedMode} not found`);
 }
