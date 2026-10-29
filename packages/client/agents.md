@@ -21,7 +21,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 
 | File | Responsibility |
 |---|---|
-| `src/conversation.ts` | `withConversationId`, `ConversationIdSpanProcessor` — stamps `gen_ai.conversation.id` |
+| `src/conversation.ts` | `withConversationId`, `ConversationIdSpanProcessor` — stamps `gen_ai.conversation.id`; `withSpanAttributes` (stamp a caller-supplied attribute set, write-if-absent, on SDK spans) and `countSdkSpans`, which know no feature |
 | `src/sdk-info.ts` | `$ld:ai:sdk:info` package registry and flush |
 | `src/lifecycle.ts` | `initClient` (options or BYOC overloads), `getClient`, `shutdown`, `waitForTelemetry`, `shutdownTelemetry`, `extractVariation` |
 | `src/client.ts` | `config()` |
@@ -40,6 +40,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/evaluations.ts` | Evaluations from Code — `initEvaluations`, `EvaluationsModule.run()` and its argument validation and orchestration, the public option and result types |
 | `src/evaluations-api.ts` | Evaluations from Code — the retrying management API client, its injectable `Transport` seam, `EvaluationsError`, and the strict-JSON check |
 | `src/evaluations-runner.ts` | Evaluations from Code — the management API operations, row rendering, handler config, the generation phase, event payloads and flushing, and summary parsing. `canonicalJson` is RFC 8785 (JCS), the form `eventId` and `contentHash` hash in every SDK; the Python SDK's `evaluations/canonical_json.py` produces the same bytes |
+| `src/evaluations-spans.ts` | Evaluations from Code — the spans `run()` exports per row: the `launchdarkly.dataset_row` root, the row binding (`gen_ai.conversation.id` as the UUIDv5 of `{runId}:{rowIndex}`, `launchdarkly.evaluation_run.*`), the `chat` / `execute_tool` spans written for a plain function, and the `evaluate` spans. Built on the feature-neutral `withSpanAttributes` and `countSdkSpans` in `conversation.ts`, which name none of its attributes |
 | `src/evaluations-tools.ts` | Evaluations from Code — `EvalTool` (inline and library), tool validation, and `tools.get()` |
 | `src/evaluations-criteria.ts` | Evaluations from Code — `Judge`, `Scorer`, `Criterion`, validated where constructed, and the `criteria` entries pinned on the create body |
 | `src/evaluations-scoring.ts` | Evaluations from Code — the evaluation phase: judge resolution and handler selection, judge and scorer invocation, criterion event payloads |

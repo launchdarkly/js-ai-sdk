@@ -50,6 +50,7 @@ import {
   type InlineRow,
   isTerminalSummary,
   type ResolvedGeneration,
+  type RowResult,
   renderRow,
   SUMMARY_POLL_DEFAULTS,
   summaryTimeoutError,
@@ -60,6 +61,7 @@ import {
   variationToolVersions,
 } from './evaluations-runner.js';
 import { CRITERION_EVENT_NAME, criterionPayload, resolveJudges, scoreRows } from './evaluations-scoring.js';
+import { endSpan, SPAN_FLUSH_BOUND } from './evaluations-spans.js';
 import {
   type EvalTool,
   LibraryToolsClient,
@@ -67,7 +69,7 @@ import {
   toolHandlerMap,
   validateTools,
 } from './evaluations-tools.js';
-import { getClient, initClient } from './lifecycle.js';
+import { flushTracerProvider, getClient, initClient } from './lifecycle.js';
 import { findHandler } from './registry.js';
 import { reportUsage } from './sdk-usage.js';
 import type { ConfigMessage, LDClientInterface, ProviderHandler } from './types.js';
@@ -641,17 +643,18 @@ export class EvaluationsModule {
 
     // ---- Generation phase. ----
     const config = buildHandlerConfig(generation, runTools);
-    const results = await generateRows(rows, handler, config, toolHandlerMap(runTools), concurrency);
     const ids = { projectKey: this.projectKey, evaluation, run, dataset: datasetRef };
     const sink = new EventSink(client, this.flushBound, this.logEvents ? info : undefined);
     const context = eventContext(ids);
+    let results: RowResult[] = [];
     try {
+      results = await generateRows(rows, handler, config, toolHandlerMap(runTools), concurrency, run.id);
       for (const result of results) await sink.track(GENERATION_EVENT_NAME, context, generationPayload(ids, result));
 
       // ---- Evaluation phase: after every row has generated, so phases never overlap. ----
       if (runCriteria.length) {
         await sink.flush();
-        const scored = await scoreRows(results, runCriteria, judges, concurrency);
+        const scored = await scoreRows(results, runCriteria, judges, concurrency, run.id);
         for (const result of scored) {
           // One event that fails to build or track must not cost the others.
           // It does cost its row, which LaunchDarkly cannot account for.
@@ -667,7 +670,21 @@ export class EvaluationsModule {
       }
     } finally {
       // Events already queued must reach LaunchDarkly even when a later step fails.
-      await sink.flush();
+      // Spans follow, on the provider initClient() registered. A span that fails
+      // to end must not skip the event flush. The roots end in bounded batches,
+      // each on a drained queue, so a large run cannot overflow the span processor.
+      try {
+        for (const [i, result] of results.entries()) {
+          if (i % SPAN_FLUSH_BOUND === 0) await flushTracerProvider();
+          if (result.span) endSpan(result.span);
+        }
+      } finally {
+        try {
+          await sink.flush();
+        } finally {
+          await flushTracerProvider();
+        }
+      }
     }
 
     // ---- Summary. ----

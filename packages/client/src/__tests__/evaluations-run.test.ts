@@ -881,7 +881,9 @@ describe('trajectory per row', () => {
       1,
     );
     expect(result.status).toBe('ERROR');
-    expect(result.trajectory.calls).toEqual([{ key: 'lookup', result: 'hit', done: true }]);
+    expect(result.trajectory.calls).toEqual([
+      { key: 'lookup', result: 'hit', done: true, startedAt: expect.any(Number), endedAt: expect.any(Number) },
+    ]);
   });
 
   it('leaves a native tool unwrapped', async () => {
