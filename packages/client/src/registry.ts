@@ -1,4 +1,21 @@
 import type { NativeTool, ProviderHandler, ToolHandlerFn } from './types.js';
+import { normalizeMode, selectModeHandler } from './utils.js';
+
+/**
+ * Handler identity for {@link Registry} and the evaluations duplicate check.
+ *
+ * Normalized `providesFor` (`completion` and `judge` are `messages`), plus the
+ * allowlist as a set on a `'*'` handler. Order and repeated names do not make a
+ * new identity. Routing ignores the list on an exact handler, so it is not part
+ * of that handler's identity.
+ */
+export function registrationKey(handler: ProviderHandler): string | undefined {
+  if (!handler.providesFor) return undefined;
+  const [provider, mode] = handler.providesFor;
+  const normalizedMode = normalizeMode(mode);
+  if (provider !== '*' || handler.providers === undefined) return JSON.stringify([provider, normalizedMode]);
+  return JSON.stringify([provider, normalizedMode, [...new Set(handler.providers)].sort()]);
+}
 
 export class Registry {
   handlers: ProviderHandler[] = [];
@@ -12,16 +29,14 @@ export class Registry {
 
   register(config: { handlers?: ProviderHandler[]; tools?: Record<string, ToolHandlerFn | NativeTool> }): void {
     for (const handler of config.handlers ?? []) {
-      const key = handler.providesFor ? `${handler.providesFor[0]}:${handler.providesFor[1]}` : undefined;
-      if (key) {
-        const existing = this.handlers.find((h) => h.providesFor && `${h.providesFor[0]}:${h.providesFor[1]}` === key);
-        if (existing) {
-          // biome-ignore lint/suspicious/noConsole: intentional warning for user misconfiguration
-          console.warn(`Multiple handlers registered for [${key}]. This may be unintended. The last one will be used.`);
-          this.handlers = this.handlers.filter(
-            (h) => !h.providesFor || `${h.providesFor[0]}:${h.providesFor[1]}` !== key,
-          );
-        }
+      const key = registrationKey(handler);
+      const index = key ? this.handlers.findIndex((h) => registrationKey(h) === key) : -1;
+      if (index !== -1) {
+        // biome-ignore lint/suspicious/noConsole: intentional warning for user misconfiguration
+        console.warn(`Multiple handlers registered for ${key}. This may be unintended. The last one will be used.`);
+        // In place, so a replacement keeps the registration order that breaks wildcard ties.
+        this.handlers[index] = handler;
+        continue;
       }
       this.handlers.push(handler);
     }
@@ -53,18 +68,16 @@ export function compose(a: Registry, b: Registry): Registry {
 /**
  * The handler selection rule `config()` uses, shared by every caller that picks
  * a handler for a provider and mode: a handler whose `providesFor` names the
- * provider wins over a `'*'` handler, and the mode must match exactly. Pass the
- * mode already normalized. Returns `undefined` when nothing matches.
+ * provider wins, then the shortest `'*'` allowlist containing it, then an
+ * unscoped `'*'` handler. The mode must match exactly. Pass the mode already
+ * normalized. Returns `undefined` when nothing matches.
  */
 export function findHandler(
   handlers: readonly ProviderHandler[] | undefined,
   provider: string,
   mode: 'agent' | 'messages',
 ): ProviderHandler | undefined {
-  return (
-    handlers?.find((h) => h.providesFor?.[0] === provider && h.providesFor?.[1] === mode) ??
-    handlers?.find((h) => h.providesFor?.[0] === '*' && h.providesFor?.[1] === mode)
-  );
+  return handlers ? selectModeHandler(handlers, provider, mode) : undefined;
 }
 
 /**

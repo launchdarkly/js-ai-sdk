@@ -422,7 +422,7 @@ Returns:
 **Behavior when `.invoke()` is called:**
 
 1. Fetches and validates the `AiConfigRep` variation from LaunchDarkly using `args.key` and the supplied `context`. Throws if the variation is disabled or invalid.
-2. Selects the handler by matching on `[config.provider.name, normalized mode]`. Selection priority: (a) exact provider match, (b) wildcard `['*', mode]` fallback for multi-provider adapters (e.g. LangChain). Throws if no matching handler is found.
+2. Selects the handler by matching on `[config.provider.name, normalized mode]`. Selection priority: (a) exact provider match, ignoring any `providers` list; (b) a wildcard `['*', mode]` whose `providers` list contains the name, shortest list first and earlier registration on a tie; (c) an unscoped wildcard `['*', mode]`. Throws if no matching handler is found.
 3. Invokes the selected handler with the config, user input, tool handlers, variables, and history. The `context` passed to `.invoke()` is automatically merged into `variables` under the key `ldContext`, so templates can reference `{{ldContext.key}}`, `{{ldContext.email}}`, etc. Any caller-supplied `ldContext` variable is silently overwritten. If `history` is provided, it is passed to the handler as the 5th positional argument — messages-mode handlers splice it into the messages array; agent-mode handlers append it to the system prompt.
 4. Emits LaunchDarkly telemetry events: duration (`$ld:ai:duration:total`), outcome (`$ld:ai:generation:success` / `$ld:ai:generation:error`), and token counts (`$ld:ai:tokens:*`).
 5. If `judgeConfiguration` is present:
@@ -455,7 +455,7 @@ const registry = new Registry({
 });
 ```
 
-`.register(config)` can be called multiple times to add more handlers or tools. Duplicate `providesFor` keys or tool names produce a warning and the last registration wins.
+`.register(config)` can be called multiple times to add more handlers or tools. Handler identity is `providesFor` plus the provider set: two wildcards of the same mode with different `providers` lists both stay registered, while the same set (order-independent; repeated names collapse) or two unscoped wildcards warn and the last registration wins, taking the earlier one's place in the order. A `providers` list on an exact handler is not part of its identity. Duplicate tool names do the same.
 
 `globalRegistry` is a pre-constructed singleton `Registry` instance.
 
@@ -473,7 +473,7 @@ const combined = compose(globalRegistry, localRegistry);
 
 | Export | Description |
 |---|---|
-| `createHandler(providesFor, handler)` | Attaches `providesFor` metadata to a handler function and returns it as a `ProviderHandler`. This is the canonical way to build any handler — both package-internal factories and user-supplied custom handlers. See [Factory Function](#factory-function). |
+| `createHandler(providesFor, handler, options?)` | Attaches `providesFor` metadata to a handler function and returns it as a `ProviderHandler`. `options` is `{ stream?, captureContent?, providers? }`; a third argument that is not an object, or a fourth argument, throws a `TypeError`. This is the canonical way to build any handler — both package-internal factories and user-supplied custom handlers. See [Factory Function](#factory-function). |
 | `makeNodeTrackData(node, graphKey, runId)` | Builds the standard `TrackData` for a graph node event (including the `_ldMeta` model stamps). Native graph adapter packages must use this instead of building their own payload. |
 | `parseTemplate(template, variables)` | Replaces `{{variable}}` placeholders in a string. Supports dot-notation for nested values (e.g. `{{user.name}}`). Unrecognized placeholders are left as-is. |
 | `parseJSONWithPossibleFences(text)` | Parses a JSON string that may be wrapped in markdown code fences (` ```json ` or ` ``` `). Returns `null` if the text is not valid JSON. |
@@ -506,7 +506,7 @@ A handler is a **callable that also carries metadata**. It must be both invokabl
 providesFor: [providerName: string, mode: 'agent' | 'messages']
 ```
 
-The `providesFor` tuple is how `config()` routes to the correct handler at runtime. The mode element must exactly match the normalized `meta.mode`. The provider element must either exactly match `config.provider.name` **or** be the wildcard `'*'`. A wildcard handler is chosen only when no handler with an exact provider name matches — it acts as a fallback for multi-provider adapters like LangChain. **Always attach `providesFor` using `createHandler` rather than direct property assignment.**
+The `providesFor` tuple is how `config()` routes to the correct handler at runtime. The mode element must exactly match the normalized `meta.mode`. The provider element must either exactly match `config.provider.name` **or** be the wildcard `'*'`. A wildcard handler is chosen only when no handler with an exact provider name matches — it acts as a fallback for multi-provider adapters like LangChain. Pass `{ providers: ['Bedrock'] }` as the third-argument options object, `createHandler(providesFor, fn, { providers: ['Bedrock'] })`, to limit which `config.provider.name` values that wildcard accepts; names must match exactly, and an empty list or a blank name is rejected. Omit `providers` to leave the property unset, which accepts every provider. **Always attach `providesFor` using `createHandler` rather than direct property assignment.**
 
 ### Factory Function
 
@@ -666,7 +666,7 @@ The handler must return:
 
 ### Streaming (optional)
 
-A handler package may implement real-time token streaming by passing a streaming generator as the **third argument** to `createHandler`. When present, `config().stream()` calls this instead of the blocking handler and forwards `chunk` events to the caller in real time.
+A handler package may implement real-time token streaming by passing a streaming generator as the **`stream` option** to `createHandler`. When present, `config().stream()` calls this instead of the blocking handler and forwards `chunk` events to the caller in real time.
 
 **Type:**
 
@@ -704,22 +704,24 @@ export function createMyProviderHandler(): ProviderHandler {
     async (config, userInput = '', toolHandlers = {}, variables = {}, history) => {
       // ... blocking implementation ...
     },
-    async function* streamHandler(config, userInput = '', toolHandlers = {}, variables = {}, history) {
-      const span = trace.getTracer('my-package').startSpan('my.stream');
-      try {
-        // ... stream from provider SDK ...
-        for await (const chunk of providerStream) {
-          yield { type: 'chunk', text: chunk.text };
+    {
+      stream: async function* streamHandler(config, userInput = '', toolHandlers = {}, variables = {}, history) {
+        const span = trace.getTracer('my-package').startSpan('my.stream');
+        try {
+          // ... stream from provider SDK ...
+          for await (const chunk of providerStream) {
+            yield { type: 'chunk', text: chunk.text };
+          }
+          yield { type: 'done', output: fullText, usage: { input_tokens: 10, output_tokens: 20 } };
+          span.setStatus({ code: SpanStatusCode.OK });
+        } catch (err) {
+          span.recordException(err as Error);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
+          throw err;
+        } finally {
+          span.end();
         }
-        yield { type: 'done', output: fullText, usage: { input_tokens: 10, output_tokens: 20 } };
-        span.setStatus({ code: SpanStatusCode.OK });
-      } catch (err) {
-        span.recordException(err as Error);
-        span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
-        throw err;
-      } finally {
-        span.end();
-      }
+      },
     },
   );
 }

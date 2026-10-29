@@ -250,6 +250,64 @@ describe('runJudges', () => {
     expect(callArgs.config).toBe(mockJudgeConfig);
   });
 
+  it('skips a scoped wildcard when the judge provider is outside its list', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const scoped: ProviderHandler = vi.fn().mockResolvedValue({ output: '{"score":1,"reasoning":"ok"}', usage: {} });
+    scoped.providesFor = ['*', 'agent'];
+    scoped.providers = ['Bedrock'];
+    const parent = makeHandler();
+    mockExtractVariation.mockResolvedValue({
+      config: { ...mockJudgeConfig, provider: { name: 'Anthropic' } },
+      meta: mockJudgeMeta,
+    });
+    const config = {
+      model: { name: 'gpt-4o' },
+      provider: { name: 'OpenAI' },
+      instructions: 'Be helpful.',
+      judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
+    };
+    await runJudges({
+      config,
+      userContext: mockContext,
+      handler: parent,
+      handlers: [scoped],
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+    expect(mockExecuteAndTrack).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith("Judge 'judge-flag' skipped: no handler covers provider Anthropic");
+    warn.mockRestore();
+  });
+
+  it.each([
+    ['Bedrock', true],
+    ['Anthropic', false],
+  ])('falls back to a Bedrock-scoped parent only for a listed provider (%s)', async (provider, runs) => {
+    const parent: ProviderHandler = vi.fn().mockResolvedValue({ output: '{"score":1,"reasoning":"ok"}', usage: {} });
+    parent.providesFor = ['*', 'messages'];
+    parent.providers = ['Bedrock'];
+    mockExtractVariation.mockResolvedValue({
+      config: { ...mockJudgeConfig, provider: { name: provider } },
+      meta: mockJudgeMeta,
+    });
+    await runJudges({
+      config: {
+        model: { name: 'm' },
+        provider: { name: 'Bedrock' },
+        instructions: 'Be helpful.',
+        judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
+      },
+      userContext: mockContext,
+      handler: parent,
+      handlers: [],
+      userInput: 'hello',
+      llmResponse: 'world',
+      baseTrackData,
+    });
+    expect(mockExecuteAndTrack).toHaveBeenCalledTimes(runs ? 1 : 0);
+  });
+
   it('skips a judge when no compatible handler is found (mismatched provider, no wildcard)', async () => {
     const openaiHandler = makeHandler(); // ['OpenAI', 'messages']
     mockExtractVariation.mockResolvedValue({
@@ -681,6 +739,15 @@ describe('runJudge result trackData', () => {
     const result = await runJudge(makeTask(parentTrackData), [makeHandler()]);
     expect(result!.trackData).toEqual({ ...parentTrackData, judgeConfigKey: 'judge-key' });
     expect(result!.trackData).toEqual(inlineTrackData);
+  });
+
+  it('returns null for a provider outside the only scoped handler list', async () => {
+    const scoped: ProviderHandler = vi.fn();
+    scoped.providesFor = ['*', 'messages'];
+    scoped.providers = ['Bedrock'];
+    const task = { ...makeTask(parentTrackData), judgeProvider: 'Anthropic' } as JudgeTask;
+    expect(await runJudge(task, [scoped])).toBeNull();
+    expect(mockExecuteAndTrack).not.toHaveBeenCalled();
   });
 });
 
