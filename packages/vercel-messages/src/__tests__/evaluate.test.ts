@@ -264,6 +264,34 @@ describe('vercelEvaluate', () => {
     });
   });
 
+  describe('configure() lock', () => {
+    afterEach(() => shutdown());
+
+    it('latches configure(), so a different captureContent afterwards throws', async () => {
+      configure({ options: { captureContent: true } });
+      await vercelEvaluate('flag', 'state', context, { questions });
+      expect(() => configure({ options: { captureContent: false } })).toThrow(/cannot change/);
+    });
+
+    it('still accepts identical options after an evaluation', async () => {
+      configure({ options: { captureContent: true } });
+      await vercelEvaluate('flag', 'state', context, { questions });
+      expect(() => configure({ options: { captureContent: true } })).not.toThrow();
+    });
+
+    it('latches before the evaluation call, even when it fails', async () => {
+      aiMocks.experimental_evaluate.mockRejectedValueOnce(new Error('gateway down'));
+      await expect(vercelEvaluate('flag', 'state', context, { questions })).rejects.toThrow('gateway down');
+      expect(() => configure({ options: { captureContent: false } })).toThrow(/cannot change/);
+    });
+
+    it('does not latch when the config is not enabled', async () => {
+      serverMocks.inspectConfig.mockResolvedValueOnce({ enabled: false, config: null, meta: null });
+      await expect(vercelEvaluate('missing', 'state', context, { questions })).rejects.toThrow(/not enabled/i);
+      expect(() => configure({ options: { captureContent: false } })).not.toThrow();
+    });
+  });
+
   it('tracks success, duration, and token events', async () => {
     await vercelEvaluate('flag', 'state', context, { questions });
     const names = serverMocks.track.mock.calls.map((call) => call[0]);

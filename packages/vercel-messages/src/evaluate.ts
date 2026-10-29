@@ -81,12 +81,13 @@ async function resolveModel(
 }
 
 /**
- * The effective content capture for one evaluation: an explicit `captureContent`, otherwise the
- * process default from `configure()` (itself `true`). `vercelEvaluate` is not a provider handler,
- * so it reads the same gate through a handler built for this one call rather than duplicating it.
+ * `vercelEvaluate` is not a provider handler, so it goes through a handler built for this one call
+ * rather than duplicating the handler rules. Its `captureContent` is the effective content capture:
+ * an explicit `captureContent`, otherwise the process default from `configure()` (itself `true`).
+ * Calling it latches `configure()`, as every handler call does.
  */
-const captureFor = (captureContent: boolean | undefined): boolean =>
-  createHandlerInternal(['*', 'messages'], async () => ({}), undefined, captureContent).captureContent === true;
+const evaluationHandler = (captureContent: boolean | undefined) =>
+  createHandlerInternal(['*', 'messages'], async () => ({}), undefined, captureContent);
 
 async function resolveConfig(
   configKey: string,
@@ -111,7 +112,8 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
   reportUsage('vercel-messages.vercelEvaluate', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   assertQuestions(options.questions);
   const { config, meta } = await resolveConfig(configKey, context);
-  const captureContent = captureFor(options.captureContent);
+  const handler = evaluationHandler(options.captureContent);
+  const captureContent = handler.captureContent === true;
   const trackData = makeRunTrackData({ configKey, config, meta });
   const model = await resolveModel(config, options);
   const startTime = Date.now();
@@ -126,6 +128,8 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
     });
 
     try {
+      // Latches `configure()` as the AI call starts, the same as a provider handler call.
+      await handler(config);
       const result = await experimental_evaluate({
         model,
         state,
