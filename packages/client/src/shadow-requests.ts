@@ -125,7 +125,15 @@ export function shadowConfig({ shadowTimeoutMs = DEFAULT_TIMEOUT_MS, onTask, ...
         return;
       }
       const handlers = resolveHandlers(args.registry, localHandlers) ?? [];
-      for (const task of buildTasks(args.key, state.evaluation, request, handlers, shadowTimeoutMs)) {
+      let tasks: ShadowTask[];
+      try {
+        tasks = buildTasks(args.key, state.evaluation, request, handlers, shadowTimeoutMs);
+      } catch (err) {
+        // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a skipped shadow must be visible
+        console.warn('[LaunchDarkly] Skipping shadow requests: they could not be prepared.', err);
+        return;
+      }
+      for (const task of tasks) {
         if (onTask) {
           try {
             onTask(task);

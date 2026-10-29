@@ -484,6 +484,22 @@ describe('onTask', () => {
     expect(tasks[0].context).toEqual({ kind: 'multi', user: { key: 'u1', name: 'Ann' } });
   });
 
+  it('still returns the served response when building the shadows fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await use(makeClient(variationA()));
+    const context = { kind: 'user', key: 'u1', format: () => 'x' } as unknown as LDContext;
+    const tasks: ShadowTask[] = [];
+    const response = await shadowConfig({
+      key: 'flag',
+      handler: [recorder('TestProvider', 'primary answer').handler, recorder('ShadowProvider', 'b').handler],
+      onTask: (task) => tasks.push(task),
+    }).invoke('hi', context);
+    expect(response.response).toBe('primary answer');
+    expect(tasks).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('hands over a task that survives structuredClone', async () => {
     const task = await deferredTask(makeClient(variationA()));
     expect(structuredClone(task)).toEqual(task);
