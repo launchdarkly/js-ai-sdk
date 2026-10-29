@@ -1135,7 +1135,7 @@ export type WriteSkillsOptions = {
 // temp/dts/evaluations.d.ts:48:5 - (ae-forgotten-export) The symbol "Transport" needs to be exported by the entry point index.d.ts
 // temp/dts/skills-fdv2.d.ts:460:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point index.d.ts
 // temp/dts/types.d.ts:425:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
-// temp/dts/utils.d.ts:36:5 - (ae-forgotten-export) The symbol "StreamHandlerInput" needs to be exported by the entry point index.d.ts
+// temp/dts/utils.d.ts:40:5 - (ae-forgotten-export) The symbol "StreamHandlerInput" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 
