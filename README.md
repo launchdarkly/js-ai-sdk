@@ -311,7 +311,7 @@ for await (const event of g.stream('I was double charged', { kind: 'user', key: 
 await shutdown();
 ```
 
-`stream()` uses the same model-driven router and graph telemetry as `invoke()`, and yields `GraphStreamEvent` values (`node_start`, `chunk`+`nodeKey`, `node_done`, `handoff`, final `done`) so callers can render per-node UI.
+`stream()` uses the same model-driven router and graph telemetry as `invoke()`, and yields `GraphStreamEvent` values (`node_start`, `chunk`+`nodeKey`, `node_done`, `handoff`, final `done`) so callers can render per-node UI. A node's own judge scores are on its `node_done` as `judgeResults`; `done.judgeResults` holds only the graph-level judge.
 
 Provider packages also export single-provider conveniences (`claudeGraph`, `openaiGraph`, `langchainGraph`, `vercelGraph`, `litellmGraph`) that pre-bind their handler. For mixed-provider graphs, use the base `graph()` and pass multiple handlers.
 

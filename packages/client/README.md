@@ -179,6 +179,8 @@ Routing is by each node config's `provider.name` + `meta.mode`, so a single grap
 
 `graph(...).stream()` yields `GraphStreamEvent` values (`node_start`, `chunk` with `nodeKey`, `node_done`, `handoff`, final `done`) while keeping the same handoff / path / graph-level telemetry as `invoke()`. Handlers without `.stream` fall back to a single chunk per node, matching `config().stream()`.
 
+A node's own judges are reported on its `node_done` event as `judgeResults`, which is omitted when none of them produced a result. `done.judgeResults` holds only the graph-level judge (`graphJudge`), so to collect every score, read each `node_done`.
+
 `resolveGraph(key, options)` returns a `GraphDefinition` without executing it. It still requires `context` at resolution time (it has no deferred `.invoke()`). The definition carries `.enabled` so you can branch on a disabled graph before traversing. `graph(...).invoke()` / `.stream()` throw if the graph is disabled.
 
 ### `Registry` / `globalRegistry` / `compose`
