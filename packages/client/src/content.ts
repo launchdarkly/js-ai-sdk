@@ -89,7 +89,9 @@ function partToText(part: SpanMessagePart): string {
   switch (part.type) {
     case 'text':
     case 'reasoning':
-      return part.content;
+      // Capture is on by default, so a handler that hands over a missing text (a provider result
+      // with no output, say) must not turn into a thrown run. It contributes nothing instead.
+      return typeof part.content === 'string' ? part.content : '';
     case 'tool_call':
       return JSON.stringify({ name: part.name, arguments: part.arguments ?? null });
     default:
