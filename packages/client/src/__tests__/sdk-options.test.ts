@@ -99,6 +99,21 @@ describe('configure', () => {
     expect(h.captureContent).toBe(true);
   });
 
+  it('keeps an explicit override when a handler is wrapped again without one', () => {
+    configure({ options: { captureContent: true } });
+    const rewrapped = createHandler(['Other', 'messages'], handler(false));
+    expect(rewrapped.captureContent).toBe(false);
+    expect(createHandler(['Other', 'messages'], handler(true)).captureContent).toBe(true);
+    expect(createHandler(['Other', 'messages'], handler(false), undefined, true).captureContent).toBe(true);
+  });
+
+  it('leaves a re-wrapped unset handler unset, so a later configure still applies', () => {
+    const rewrapped = createHandler(['Other', 'messages'], handler());
+    expect(rewrapped.captureContent).toBe(true);
+    configure({ options: { captureContent: false } });
+    expect(rewrapped.captureContent).toBe(false);
+  });
+
   it('rejects a value that is not an SDKOptions object', () => {
     expect(() => configure({ options: null as unknown as SDKOptions })).toThrow(TypeError);
     expect(() => configure({ options: { captureContent: 1 } as unknown as SDKOptions })).toThrow(/boolean/);
@@ -267,5 +282,10 @@ describe('runJudges explanation follows the judge handler’s effective capture 
   it('writes it for an explicit true when the configured default is false', async () => {
     configure({ options: { captureContent: false } });
     expect(await explanation(createHandler(['TestProvider', 'messages'], judgeFn, undefined, true))).toBe('good');
+  });
+
+  it('omits it for a re-wrapped judge that kept an explicit false', async () => {
+    const inner = createHandler(['TestProvider', 'messages'], judgeFn, undefined, false);
+    expect(await explanation(createHandler(['TestProvider', 'messages'], inner))).toBeUndefined();
   });
 });

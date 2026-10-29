@@ -41,7 +41,9 @@ type StreamHandlerInput = (
  * The returned value is a new function that latches `configure()` and then
  * calls `handler` with the same `this` and arguments, returning its result. It
  * carries `handler`'s own properties, so passing an existing handler through
- * again keeps them. Calling the original function directly does not latch.
+ * again keeps them, and an omitted `captureContent` keeps that handler's
+ * explicit override. Calling the original function directly does not latch,
+ * and the original carries no `providesFor`: use the returned handler.
  *
  * Pass an optional `streamHandler` as the third argument to attach a streaming
  * implementation. When present, `model().stream()` will call it instead of
@@ -87,9 +89,17 @@ export function createHandlerInternal(
       return streamHandler.apply(this, args);
     };
   }
-  defineCaptureContent(ph, captureContent);
+  defineCaptureContent(ph, captureContent ?? explicitCaptureContent.get(handler)?.());
   return ph;
 }
+
+/**
+ * Reads each handler's explicit `captureContent` override, or `undefined` when it is unset. Keyed by
+ * the wrapper, so re-wrapping a handler without a `captureContent` argument inherits the inner
+ * handler's override rather than its effective value: an unset inner handler stays unset and keeps
+ * following `configure`.
+ */
+const explicitCaptureContent = new WeakMap<object, () => boolean | undefined>();
 
 /** Function properties every function owns; the wrapper keeps its own. */
 const FUNCTION_OWN_KEYS = new Set<PropertyKey>(['length', 'name', 'prototype', 'arguments', 'caller']);
@@ -123,6 +133,7 @@ function defineCaptureContent(handler: ProviderHandler, override: boolean | unde
       explicit = typeof value === 'boolean' ? value : undefined;
     },
   });
+  explicitCaptureContent.set(handler, () => explicit);
 }
 
 /**
