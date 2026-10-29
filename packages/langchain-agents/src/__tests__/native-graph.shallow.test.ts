@@ -156,13 +156,28 @@ function scriptedModels(replies: Record<string, AIMessage[]>) {
   return { modelFactory: (node: any) => models[node.key], models };
 }
 
-const toolCallMsg = (...calls: [string, string][]) =>
-  new AIMessage({ content: '', tool_calls: calls.map(([name, id]) => ({ name, args: {}, id, type: 'tool_call' })) });
+/** An AI message with tool calls; each call is [name, id] or [name, id, args]. */
+const toolCallMsg = (calls: [string, string, Record<string, unknown>?][], content: any = '') =>
+  new AIMessage({
+    content,
+    tool_calls: calls.map(([name, id, args]) => ({ name, args: args ?? {}, id, type: 'tool_call' })),
+  });
 
-function toolMessagesSentTo(model: any): ToolMessage[] {
-  const sent: BaseMessage[] = model.invoke.mock.calls[0][0];
-  return sent.filter((m): m is ToolMessage => ToolMessage.isInstance(m));
+/** [type, content] of each message a node's model received on one call. */
+function sent(model: any, call = 0): [string, unknown][] {
+  return (model.invoke.mock.calls[call][0] as BaseMessage[]).map((m) => [m.getType(), m.content]);
 }
+
+/** No tool role, tool calls or non-text blocks reach a node that was handed to. */
+function expectNeutral(model: any) {
+  for (const m of model.invoke.mock.calls[0][0] as BaseMessage[]) {
+    expect(ToolMessage.isInstance(m)).toBe(false);
+    expect((m as AIMessage).tool_calls ?? []).toHaveLength(0);
+    expect(typeof m.content).toBe('string');
+  }
+}
+
+const REASONING = { type: 'reasoning_content', reasoningText: { text: 'hmm' } };
 
 function handoffSuccessCount(): number {
   const track = (getClient() as any).track as ReturnType<typeof vi.fn>;
@@ -176,7 +191,7 @@ describe('toLangGraph — hand-offs through a real StateGraph', () => {
 
   it('a multi-child router hands off once and is not run again', async () => {
     const { modelFactory, models } = scriptedModels({
-      router: [toolCallMsg(['transfer_to_manor_butler', 'call_1'])],
+      router: [toolCallMsg([['transfer_to_manor_butler', 'call_1']], [REASONING, { type: 'text', text: 'Routing.' }])],
       'manor.butler': [new AIMessage('the butler did it')],
       cook: [],
     });
@@ -189,17 +204,22 @@ describe('toLangGraph — hand-offs through a real StateGraph', () => {
     expect(result.response).toBe('the butler did it');
     expect(models.router.invoke).toHaveBeenCalledTimes(1);
     expect(models.cook.invoke).not.toHaveBeenCalled();
-    const [answer] = toolMessagesSentTo(models['manor.butler']);
-    expect(answer.tool_call_id).toBe('call_1');
-    // The text uses the raw target key; the tool name uses the sanitized one.
-    expect(answer.content).toBe('Handed off to manor.butler.');
-    expect(answer.name).toBe('transfer_to_manor_butler');
+    // A target with no tools gets the router's turn as plain text: reasoning dropped, the
+    // call and its result as lines. The result text uses the raw target key; the tool name
+    // uses the sanitized one.
+    expect(sent(models['manor.butler'])).toEqual([
+      ['system', 'you are manor.butler'],
+      ['human', 'who did it?'],
+      ['ai', 'Routing.\n[Tool call] transfer_to_manor_butler {}'],
+      ['human', '[Tool result] transfer_to_manor_butler: Handed off to manor.butler.'],
+    ]);
+    expectNeutral(models['manor.butler']);
     expect(handoffSuccessCount()).toBe(1);
   });
 
   it('never passes parallel_tool_calls to bindTools (Bedrock Converse rejects it)', async () => {
     const { modelFactory, models } = scriptedModels({
-      router: [toolCallMsg(['transfer_to_butler', 'call_1'])],
+      router: [toolCallMsg([['transfer_to_butler', 'call_1']])],
       butler: [new AIMessage('done')],
       cook: [],
     });
@@ -213,26 +233,44 @@ describe('toLangGraph — hand-offs through a real StateGraph', () => {
   it('runs a normal tool call and a hand-off from the same message, then hands off', async () => {
     const lookup = vi.fn().mockResolvedValue('clue');
     const { modelFactory, models } = scriptedModels({
-      router: [toolCallMsg(['lookup', 'call_a'], ['transfer_to_butler', 'call_b'])],
+      router: [
+        toolCallMsg([
+          ['lookup', 'call_a', { room: 'library' }],
+          ['transfer_to_butler', 'call_b'],
+        ]),
+      ],
       butler: [new AIMessage('done')],
       cook: [],
     });
     const def = makeHandoffDef(['butler', 'cook'], {
-      lookup: { description: 'look up', parameters: { type: 'object', properties: {} } },
+      lookup: {
+        description: 'look up',
+        parameters: { type: 'object', properties: { room: { type: 'string' } } },
+      },
     });
 
     const result = await toLangGraph(Promise.resolve(def), { modelFactory, toolHandlers: { lookup } }).invoke('hi');
 
     expect(result.response).toBe('done');
     expect(lookup).toHaveBeenCalledTimes(1);
+    expect(lookup.mock.calls[0][0]).toEqual({ room: 'library' });
     expect(models.router.invoke).toHaveBeenCalledTimes(1);
-    const answers = Object.fromEntries(toolMessagesSentTo(models.butler).map((m) => [m.tool_call_id, m.content]));
-    expect(answers).toEqual({ call_a: 'clue', call_b: 'Handed off to butler.' });
+    // Both results become one user message, in the call order.
+    expect(sent(models.butler).slice(2)).toEqual([
+      ['ai', '[Tool call] lookup {"room":"library"}\n[Tool call] transfer_to_butler {}'],
+      ['human', '[Tool result] lookup: clue\n[Tool result] transfer_to_butler: Handed off to butler.'],
+    ]);
+    expectNeutral(models.butler);
   });
 
   it('routes only the first hand-off when one message has two', async () => {
     const { modelFactory, models } = scriptedModels({
-      router: [toolCallMsg(['transfer_to_butler', 'call_1'], ['transfer_to_cook', 'call_2'])],
+      router: [
+        toolCallMsg([
+          ['transfer_to_butler', 'call_1'],
+          ['transfer_to_cook', 'call_2'],
+        ]),
+      ],
       butler: [new AIMessage('butler answer')],
       cook: [],
     });
@@ -244,17 +282,17 @@ describe('toLangGraph — hand-offs through a real StateGraph', () => {
 
     expect(result.response).toBe('butler answer');
     expect(models.cook.invoke).not.toHaveBeenCalled();
-    const answers = Object.fromEntries(toolMessagesSentTo(models.butler).map((m) => [m.tool_call_id, m.content]));
-    expect(answers).toEqual({
-      call_1: 'Handed off to butler.',
-      call_2: 'Ignored: only the first transfer in a turn routes.',
-    });
+    expect(sent(models.butler).at(-1)).toEqual([
+      'human',
+      '[Tool result] transfer_to_butler: Handed off to butler.\n' +
+        '[Tool result] transfer_to_cook: Ignored: only the first transfer in a turn routes.',
+    ]);
     expect(handoffSuccessCount()).toBe(1);
   });
 
   it('a single-child node hands off once and is not run again', async () => {
     const { modelFactory, models } = scriptedModels({
-      router: [toolCallMsg(['transfer_to_butler', 'call_1'])],
+      router: [toolCallMsg([['transfer_to_butler', 'call_1']])],
       butler: [new AIMessage('the butler did it')],
     });
 
@@ -262,7 +300,33 @@ describe('toLangGraph — hand-offs through a real StateGraph', () => {
 
     expect(result.response).toBe('the butler did it');
     expect(models.router.invoke).toHaveBeenCalledTimes(1);
-    const [answer] = toolMessagesSentTo(models.butler);
-    expect(answer.tool_call_id).toBe('call_1');
+    expect(sent(models.butler).slice(2)).toEqual([
+      ['ai', '[Tool call] transfer_to_butler {}'],
+      ['human', '[Tool result] transfer_to_butler: Handed off to butler.'],
+    ]);
+    expectNeutral(models.butler);
+  });
+
+  it("keeps a node's own tool loop native", async () => {
+    // Only the history from before a node was entered is rewritten: its own tool call and
+    // result reach its next model call unchanged.
+    const { modelFactory, models } = scriptedModels({
+      router: [toolCallMsg([['lookup', 'call_x']], [REASONING]), new AIMessage('answer')],
+    });
+    const def = makeHandoffDef([], {
+      lookup: { description: 'look up', parameters: { type: 'object', properties: {} } },
+    });
+
+    const result = await toLangGraph(Promise.resolve(def), {
+      modelFactory,
+      toolHandlers: { lookup: vi.fn().mockResolvedValue('clue') },
+    }).invoke('hi');
+
+    expect(result.response).toBe('answer');
+    const second = models.router.invoke.mock.calls[1][0] as BaseMessage[];
+    expect(second.map((m) => m.getType())).toEqual(['system', 'human', 'ai', 'tool']);
+    expect((second[2] as AIMessage).tool_calls?.[0].id).toBe('call_x');
+    expect(second[2].content).toEqual([REASONING]);
+    expect((second[3] as ToolMessage).tool_call_id).toBe('call_x');
   });
 });

@@ -1,5 +1,5 @@
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { type AIMessage, type BaseMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
+import { AIMessage, type BaseMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import { tool } from '@langchain/core/tools';
 import { Annotation, addMessages, Command, END, START, StateGraph } from '@langchain/langgraph';
 import { ToolNode, toolsCondition } from '@langchain/langgraph/prebuilt';
@@ -32,6 +32,60 @@ import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 const sanitizeName = (key: string) => key.replace(/[^a-z0-9_-]/gi, '_');
 
 const HANDOFF_IGNORED = 'Ignored: only the first transfer in a turn routes.';
+
+/** The text parts of a message's content, joined with no separator. */
+const contentText = (content: unknown): string =>
+  typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content
+          .filter((c) => c?.type === 'text')
+          .map((c) => c.text ?? '')
+          .join('')
+      : '';
+
+/**
+ * Rewrites the history a node finds when it is entered as provider-neutral text, so a
+ * target on another provider never sees the previous node's tool or reasoning blocks
+ * (spec §2.x.3). Human and system messages pass through.
+ */
+const toNeutralHistory = (messages: BaseMessage[]): BaseMessage[] => {
+  const out: BaseMessage[] = [];
+  let calls: { name: string; id?: string }[] = [];
+  let results: ToolMessage[] = [];
+  const flush = () => {
+    if (results.length === 0) return;
+    const order = (r: ToolMessage) => {
+      const i = calls.findIndex((c) => c.id === r.tool_call_id);
+      return i === -1 ? calls.length : i;
+    };
+    const lines = [...results]
+      .sort((a, b) => order(a) - order(b))
+      .map((r) => `[Tool result] ${calls[order(r)]?.name ?? r.name ?? ''}: ${contentText(r.content)}`);
+    out.push(new HumanMessage(lines.join('\n')));
+    results = [];
+  };
+  for (const m of messages) {
+    if (ToolMessage.isInstance(m)) {
+      results.push(m);
+      continue;
+    }
+    flush();
+    if (!AIMessage.isInstance(m)) {
+      out.push(m);
+      continue;
+    }
+    calls = m.tool_calls ?? [];
+    const text = contentText(m.content);
+    const lines = [
+      ...(text ? [text] : []),
+      ...calls.map((c) => `[Tool call] ${c.name} ${JSON.stringify((c as { args?: unknown }).args ?? {})}`),
+    ];
+    if (lines.length > 0) out.push(new AIMessage(lines.join('\n')));
+  }
+  flush();
+  return out;
+};
 
 const StateAnnotation = Annotation.Root({
   messages: Annotation<BaseMessage[]>({
@@ -183,7 +237,13 @@ export const toLangGraph = (
 
           // The node's last model call sets `first` (its first hand-off call id);
           // the tools step sets `handedOff` when that call routes.
-          const routing: { first?: string; handedOff: boolean } = { handedOff: false };
+          // `callIds` holds its last model call's tool call ids; `start` is where the
+          // node's current visit began.
+          const routing: { first?: string; handedOff: boolean; callIds: Set<string | undefined>; start: number } = {
+            handedOff: false,
+            callIds: new Set(),
+            start: 0,
+          };
 
           // Handoff tools for each child edge — returning Command routes the graph
           const handoffTools = outgoing.map((edge) =>
@@ -237,7 +297,16 @@ export const toLangGraph = (
             const nodeStartTime = Date.now();
 
             const systemPrompt = buildSystemPrompt(node, variables);
-            const conversationMessages = state.messages;
+            const last = state.messages.at(-1);
+            // A tool result for this node's own last call continues its tool loop;
+            // anything else means the node was just entered.
+            if (!(last && ToolMessage.isInstance(last) && routing.callIds.has(last.tool_call_id))) {
+              routing.start = state.messages.length;
+            }
+            const conversationMessages = [
+              ...toNeutralHistory(state.messages.slice(0, routing.start)),
+              ...state.messages.slice(routing.start),
+            ];
             const fullMessages: BaseMessage[] = [
               ...(systemPrompt ? [new SystemMessage(systemPrompt)] : []),
               ...conversationMessages,
@@ -254,6 +323,7 @@ export const toLangGraph = (
             const result = (await boundModel.invoke(fullMessages)) as AIMessage;
             routing.first = result.tool_calls?.find((tc) => tc.name.startsWith('transfer_to_'))?.id;
             routing.handedOff = false;
+            routing.callIds = new Set(result.tool_calls?.map((tc) => tc.id));
             const usage = extractUsage(result);
             totalUsage.input += usage.input;
             totalUsage.output += usage.output;
