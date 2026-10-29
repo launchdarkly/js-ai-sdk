@@ -326,17 +326,22 @@ const SKILLS_VALUES = [
   'writeSkills',
 ];
 
-/**
- * The experimental entry point's runtime exports for Evaluations from Code.
- * Listed here so the exact-equality check below covers the whole entry point.
- */
-const EXPERIMENTAL_EVALUATIONS_VALUES = [
-  'EvalTool',
-  'EvaluationsError',
-  'EvaluationsModule',
-  'Judge',
-  'Scorer',
-  'initEvaluations',
+/** The package root's runtime exports for Evaluations from Code. */
+const EVALUATIONS_VALUES = ['EvalTool', 'EvaluationsError', 'EvaluationsModule', 'Judge', 'Scorer', 'initEvaluations'];
+
+/** The package root's type-only exports for Evaluations from Code. */
+const EVALUATIONS_TYPES = [
+  'AIConfig',
+  'Criterion',
+  'DatasetRow',
+  'EvalRunResult',
+  'GenerationConfig',
+  'GenerationMode',
+  'GenerationOverrides',
+  'InitEvaluationsOptions',
+  'InlineDatasetRow',
+  'RunOptions',
+  'RunSummary',
 ];
 
 /** The package root's type-only exports for Agent Skills. */
@@ -434,21 +439,15 @@ const ROOT_VALUES = [
 ];
 
 describe('package exports', () => {
-  it('the experimental entry point exports exactly the documented evaluations values', () => {
-    expect(Object.keys(experimental).sort()).toEqual([...EXPERIMENTAL_EVALUATIONS_VALUES].sort());
+  it('the experimental entry point exports no value', () => {
+    expect(Object.keys(experimental)).toEqual([]);
   });
 
-  it('no evaluations value is exported from the package root', () => {
-    for (const name of EXPERIMENTAL_EVALUATIONS_VALUES) {
-      expect(name in packageIndex, name).toBe(false);
-    }
+  it('the package root exports exactly the snapshotted, skills and evaluations values', () => {
+    expect(Object.keys(packageIndex).sort()).toEqual([...ROOT_VALUES, ...SKILLS_VALUES, ...EVALUATIONS_VALUES].sort());
   });
 
-  it('the package root exports exactly the snapshotted values and the skills values', () => {
-    expect(Object.keys(packageIndex).sort()).toEqual([...ROOT_VALUES, ...SKILLS_VALUES].sort());
-  });
-
-  it('names every skills export in the root API report and none in the experimental one', () => {
+  it('names every skills and evaluations export in the root API report and none in the experimental one', () => {
     // Types leave nothing to enumerate at runtime, so the checked-in API
     // Extractor reports are what pin them.
     const report = readFileSync(new URL('../../etc/ai-server.api.md', import.meta.url), 'utf-8');
@@ -456,7 +455,7 @@ describe('package exports', () => {
       new URL('../../etc/ai-server-experimental.api.md', import.meta.url),
       'utf-8',
     );
-    for (const name of [...SKILLS_TYPES, ...SKILLS_VALUES]) {
+    for (const name of [...SKILLS_TYPES, ...SKILLS_VALUES, ...EVALUATIONS_TYPES, ...EVALUATIONS_VALUES]) {
       // Anchored on the declaration, so a name that only appears in another export's signature
       // (`Skill` in `getSkill(): Promise<Skill | null>`) does not count as exported.
       const declaration = new RegExp(`^export (declare )?(type|interface|class|function|const|enum) ${name}\\b`, 'm');

@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateRows, generationPayload, type RowResult, SUMMARY_POLL_DEFAULTS } from '../evaluations-runner.js';
-import { EvalTool, type RunOptions } from '../experimental.js';
+import { EvalTool, type RunOptions } from '../index.js';
 import { NativeTool } from '../types.js';
 import {
   completion,

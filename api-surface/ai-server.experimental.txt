@@ -6,20 +6,20 @@
 #   - Name    leaving the public surface; may be exported or not
 #   + Name    joining the public surface; may be exported or not
 
-+ AIConfig
-+ Criterion
-+ DatasetRow
-+ EvalRunResult
-+ EvalTool
-+ EvaluationsError
-+ EvaluationsModule
-+ GenerationConfig
-+ GenerationMode
-+ GenerationOverrides
-+ initEvaluations  usage=experimental.initEvaluations
-+ InitEvaluationsOptions
-+ InlineDatasetRow
-+ Judge
-+ RunOptions
-+ RunSummary
-+ Scorer
+- AIConfig
+- Criterion
+- DatasetRow
+- EvalRunResult
+- EvalTool
+- EvaluationsError
+- EvaluationsModule
+- GenerationConfig
+- GenerationMode
+- GenerationOverrides
+- initEvaluations
+- InitEvaluationsOptions
+- InlineDatasetRow
+- Judge
+- RunOptions
+- RunSummary
+- Scorer

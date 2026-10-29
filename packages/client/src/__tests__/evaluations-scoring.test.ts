@@ -7,7 +7,7 @@
 
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EvalTool, Judge, type RunOptions, Scorer } from '../experimental.js';
+import { EvalTool, Judge, type RunOptions, Scorer } from '../index.js';
 import { buildMessageHistory, FORMATTING_INSTRUCTIONS } from '../judge-scoring.js';
 import { FORMATTING_INSTRUCTIONS as ONLINE_FORMATTING_INSTRUCTIONS } from '../judges.js';
 import { parseTemplate } from '../utils.js';

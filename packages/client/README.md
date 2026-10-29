@@ -39,7 +39,7 @@ No code changes are required — `initClient()` detects the packages at runtime 
 | `LD_SERVICE_NAME` | No | OTel `service.name` resource attribute (default: `nodejs-sdk`) |
 | `LD_ENVIRONMENT` | No | `deployment.environment` resource attribute attached to telemetry |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OTLP endpoint override (default: LaunchDarkly Observability backend) |
-| `LD_PROJECT_KEY` | For evaluations | Project that holds the evaluations, datasets and tools (see [Evaluations from Code](#evaluations-from-code-experimental)) |
+| `LD_PROJECT_KEY` | For evaluations | Project that holds the evaluations, datasets and tools (see [Evaluations from Code](#evaluations-from-code)) |
 | `LD_API_TOKEN` | For evaluations | Management API access token used by the evaluations harness |
 | `LD_API_BASE_URI` | No | Evaluations management API host override; separate from `LD_BASE_URI` |
 | `LD_UI_BASE_URI` | No | Host for evaluation run links (default: `https://app.launchdarkly.com`) |
@@ -647,9 +647,9 @@ Ancestors matter for the same reason. An identity that can rename a directory ab
 
 ---
 
-### Evaluations from Code (experimental)
+### Evaluations from Code
 
-> **Experimental.** Import every name in this section from `@launchdarkly/ai-server/experimental` (or `@launchdarkly/ai-node/experimental` if you install `@launchdarkly/ai-node`). None is exported from the package root. Names may change in a minor release, so read the changelog before upgrading.
+Import every name in this section from `@launchdarkly/ai-server` (or `@launchdarkly/ai-node` if you install `@launchdarkly/ai-node`).
 
 An evaluation from code runs a dataset through your own code and reports the results to LaunchDarkly. One `run()` call:
 
@@ -662,7 +662,7 @@ Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row an
 
 ```ts
 import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
-import { initEvaluations } from '@launchdarkly/ai-server/experimental';
+import { initEvaluations } from '@launchdarkly/ai-server';
 
 // Reads LD_PROJECT_KEY, LD_API_TOKEN and LD_SDK_KEY unless you pass them.
 const evals = initEvaluations({ projectKey: 'my-project' });
@@ -760,7 +760,7 @@ Your handler receives each row's rendered input, plus its variables with `input`
 Pass `tools` as an array of `EvalTool`. Construct one to define a tool in code, or `await evals.tools.get()` to read one from your project's AI library, which pins its version then. One array can hold both kinds.
 
 ```ts
-import { EvalTool } from '@launchdarkly/ai-server/experimental';
+import { EvalTool } from '@launchdarkly/ai-server';
 
 const searchDocs = await evals.tools.get('search_docs', { implementation: searchDocsImpl });
 
@@ -782,7 +782,7 @@ Pass `criteria` to score every generated row. A `Judge` refers to an AI Judge co
 
 ```ts
 import { createClaudeMessagesHandler } from '@launchdarkly/ai-claude-messages';
-import { Judge, Scorer } from '@launchdarkly/ai-server/experimental';
+import { Judge, Scorer } from '@launchdarkly/ai-server';
 
 await evals.run({
   key: `support-qa-${Date.now()}`,

@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EvalTool, EvaluationsError, initEvaluations, Judge, type RunOptions, Scorer } from '../experimental.js';
+import { EvalTool, EvaluationsError, initEvaluations, Judge, type RunOptions, Scorer } from '../index.js';
 import { NativeTool } from '../types.js';
 import {
   completion,
