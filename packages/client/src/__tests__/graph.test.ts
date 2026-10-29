@@ -5,11 +5,22 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
 
-const { mockTrack, mockVariation, mockExtractVariation } = vi.hoisted(() => ({
+const { mockTrack, mockVariation, mockExtractVariation, captureDefault } = vi.hoisted(() => ({
   mockTrack: vi.fn(),
   mockVariation: vi.fn(),
   mockExtractVariation: vi.fn(),
+  // Stands in for the process-wide content capture default, which is off on this branch.
+  captureDefault: { value: false },
 }));
+
+vi.mock('../content.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../content.js')>();
+  return {
+    ...actual,
+    captureContentFor: (handler: { captureContent?: boolean } | undefined) =>
+      typeof handler?.captureContent === 'boolean' ? handler.captureContent : captureDefault.value,
+  };
+});
 
 vi.mock('../lifecycle.js', () => ({
   getClient: vi.fn().mockReturnValue({ track: mockTrack, variation: mockVariation }),
@@ -665,6 +676,36 @@ describe('graph() conversation id', () => {
     const flagEvents = graphSpan?.events.filter((e) => e.name === 'feature_flag') ?? [];
     expect(flagEvents).toHaveLength(1);
     expect(flagEvents[0].attributes?.['feature_flag.key']).toBe('graph-flag');
+  });
+
+  it.each([
+    ['invoke', false],
+    ['stream', false],
+    ['invoke', true],
+    ['stream', true],
+  ] as const)('writes feature_flag.result.value on the launchdarkly.graph span on %s with default capture %s', async (mode, capture) => {
+    setupTwoNodeGraph();
+    const rawGraphVariation = {
+      root: 'root-node',
+      edges: { 'root-node': [{ key: 'leaf-node' }] },
+      _ldMeta: { variationKey: 'graph-v1', version: 3 },
+    };
+    mockVariation.mockResolvedValue(rawGraphVariation);
+    captureDefault.value = capture;
+    try {
+      const g = graph('graph-flag', { handlers: [makeStreamingHandler(['ok'])] });
+      if (mode === 'invoke') await g.invoke('hi', mockContext);
+      else await collectStream(g.stream('hi', mockContext));
+    } finally {
+      captureDefault.value = false;
+    }
+
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
+    const flagEvent = graphSpan?.events.find((e) => e.name === 'feature_flag');
+    expect(flagEvent?.attributes?.['feature_flag.result.variant']).toBe('graph-v1');
+    expect(flagEvent?.attributes?.['feature_flag.result.value']).toBe(
+      capture ? JSON.stringify(rawGraphVariation) : JSON.stringify('graph-v1'),
+    );
   });
 
   it('gives each invocation with the same context its own run id', async () => {

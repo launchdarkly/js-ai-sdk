@@ -479,7 +479,8 @@ function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | und
  *   feature_flag.result.value is `JSON.stringify` of `variables.__ldValue`, the
  *   raw variation (as the OTel TracingHook writes it with `includeValue: true`),
  *   when present. The core sets `__ldValue` only for handlers with
- *   `captureContent` on. Otherwise it is `JSON.stringify(variationKey)` when the
+ *   `captureContent` on, and on the graph root only when the process-wide
+ *   default captures content. Otherwise it is `JSON.stringify(variationKey)` when the
  *   key is non-empty, and omitted when there is neither.
  *   The observability backend projects these event attrs to span-level attrs,
  *   satisfying the query: events.name=feature_flag AND
