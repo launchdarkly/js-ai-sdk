@@ -18,6 +18,7 @@ import {
   HumanMessage,
   SystemMessage,
   ToolMessage,
+  ToolMessageChunk,
 } from '@langchain/core/messages';
 import { getClient } from '@launchdarkly/ai-server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -184,7 +185,8 @@ function expectNeutral(model: any) {
   }
 }
 
-const REASONING = { type: 'reasoning_content', reasoningText: { text: 'hmm' } };
+// Same literal as the Python tests' _REASONING, so the two rewrite tests share one input.
+const REASONING = { type: 'reasoning_content', reasoning_content: { text: 'hmm' } };
 
 function handoffSuccessCount(): number {
   const track = (getClient() as any).track as ReturnType<typeof vi.fn>;
@@ -366,6 +368,7 @@ describe('toNeutralHistory', () => {
       new ToolMessage({ content: 'one', tool_call_id: 'c1' }),
       new AIMessage({ content: [REASONING] as any }),
       new AIMessageChunk({ content: 'chunk', tool_calls: [{ name: 't', args: {}, id: 'c3' }] }),
+      new ToolMessageChunk({ content: 'three', tool_call_id: 'c3' }),
     ];
 
     const out = toNeutralHistory(history);
@@ -376,6 +379,7 @@ describe('toNeutralHistory', () => {
       ['ai', 'ab\n[Tool call] first {"q":"café","n":{"x":[1,2]}}\n[Tool call] second {}'],
       ['human', '[Tool result] first: one\n[Tool result] second: two\n[Tool result] lost: orphan'],
       ['ai', 'chunk\n[Tool call] t {}'],
+      ['human', '[Tool result] t: three'],
     ]);
     for (const m of out) expect((m as AIMessage).tool_calls ?? []).toHaveLength(0);
   });
