@@ -333,7 +333,7 @@ export function createLangChainMessagesHandler(
   llm?: LangChainModelSource,
   options: ContentCaptureOptions & { providers?: readonly string[] } = {},
 ): ProviderHandler {
-  reportUsage('langchain-messages.createLangChainHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  reportUsage('langchain-messages.createLangChainMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createLangChainMessagesHandlerInternal(llm, options);
 }
 

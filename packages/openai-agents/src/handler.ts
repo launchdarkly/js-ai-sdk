@@ -599,7 +599,7 @@ function promptToSpanMessages(prompt: string | OpenAIInputItem[]): SpanMessage[]
 }
 
 export function createOpenAIAgentsHandler({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
-  reportUsage('openai-agents.createOpenAIAgentHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  reportUsage('openai-agents.createOpenAIAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createOpenAIAgentsHandlerInternal({ captureContent });
 }
 
