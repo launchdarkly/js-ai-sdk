@@ -119,11 +119,13 @@ you need no direct dependency on `@launchdarkly/ai-server`. Names there may chan
 release. No feature is experimental now.
 
 Agent Skills is no longer experimental: import it from the package root, for example
-`import { InMemorySkillStore, setSkillStore } from '@launchdarkly/ai-node';`. See the
+`import { InMemorySkillStore, setSkillStore } from '@launchdarkly/ai-node';`. It requires
+`@launchdarkly/ai-node` 1.0.0 or later. See the
 [Agent Skills guide](../client/README.md#agent-skills).
 
 Evaluations from Code is no longer experimental: import it from the package root, for example
-`import { initEvaluations } from '@launchdarkly/ai-node';`. See the
+`import { initEvaluations } from '@launchdarkly/ai-node';`. It requires
+`@launchdarkly/ai-node` 1.0.0 or later. See the
 [Evaluations from Code guide](../client/README.md#evaluations-from-code).
 
 ## Full API reference
