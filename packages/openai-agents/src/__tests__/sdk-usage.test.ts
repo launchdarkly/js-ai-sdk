@@ -1,5 +1,5 @@
 /**
- * TESTING.md §3.27 — `$ld:ai:sdk:usage` for openai-agents.
+ * `$ld:ai:sdk:usage` for openai-agents.
  */
 
 import type { LDClientInterface, LDContext } from '@launchdarkly/ai-server';
@@ -10,7 +10,7 @@ import {
   LD_AI_PACKAGE_NAME as AI_SDK_NAME,
   LD_AI_PACKAGE_VERSION as AI_SDK_VERSION,
 } from '../../../client/src/version.js';
-import { createOpenAIAgentHandler } from '../handler.js';
+import { createOpenAIAgentsHandler } from '../handler.js';
 import * as entry from '../index.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from '../version.js';
 
@@ -96,7 +96,7 @@ it('has a call for every usage ID its list reports, and none it does not', () =>
   expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());
 });
 
-describe('§3.27 openai-agents helper usage', () => {
+describe('openai-agents helper usage', () => {
   let client: FakeClient;
 
   beforeEach(async () => {
@@ -126,7 +126,7 @@ describe('§3.27 openai-agents helper usage', () => {
   it('sends a helper called before a client exists with its package fields once the client exists', async () => {
     await shutdown();
     try {
-      createOpenAIAgentHandler();
+      createOpenAIAgentsHandler();
     } catch {
       // A factory may throw after the report. The held record is what is under test.
     }

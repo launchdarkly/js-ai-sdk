@@ -112,10 +112,10 @@ async function prepareSkills(config: AiConfigRep, parent: string): Promise<Query
  * the run throws before the model is called.
  *
  * ```ts
- * import { config, FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server';
+ * import { config, LaunchDarklySkillStore, setSkillStore } from '@launchdarkly/ai-server';
  * import { createClaudeAgentsSkillsHandler } from '@launchdarkly/ai-claude-agents';
  *
- * const store = new FDv2SkillStore(process.env.LD_SDK_KEY!).start();
+ * const store = new LaunchDarklySkillStore(process.env.LD_SDK_KEY!).start();
  * await store.waitForSkills({ timeoutSeconds: 10 });
  * setSkillStore(store);
  *

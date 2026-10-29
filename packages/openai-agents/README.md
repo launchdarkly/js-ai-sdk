@@ -19,11 +19,11 @@ Set `OPENAI_API_KEY` in your environment (the OpenAI SDK reads it automatically)
 ```ts
 import 'dotenv/config';
 import { config, shutdown } from '@launchdarkly/ai-server';
-import { createOpenAIAgentHandler } from '@launchdarkly/ai-openai-agents';
+import { createOpenAIAgentsHandler } from '@launchdarkly/ai-openai-agents';
 
 const result = await config({
   key: 'my-ai-config-flag',
-  handler: createOpenAIAgentHandler(),
+  handler: createOpenAIAgentsHandler(),
   toolHandlers: {
     search: async ({ query }) => { /* ... */ },
   },

@@ -434,7 +434,7 @@ describe('setLdSpanAttributes', () => {
   });
 });
 
-// ─── setLdSpanAttributes — context identity (TESTING.md §3.18) ────────────────
+// ─── setLdSpanAttributes — context identity ───────────────────────────────────
 
 function spanAttrs(span: ReturnType<typeof makeMockSpan>): Record<string, unknown> {
   return Object.fromEntries(span.setAttribute.mock.calls.map((call: unknown[]) => [call[0], call[1]]));

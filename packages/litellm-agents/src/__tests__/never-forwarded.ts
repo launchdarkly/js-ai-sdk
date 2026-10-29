@@ -2,11 +2,11 @@ import { createNeverForwarded } from '../../../client/src/__tests__/never-forwar
 
 export { NEVER_FORWARDED } from '../../../client/src/__tests__/never-forwarded-keys.js';
 
-// `top_logprobs` is not on the LiteLLM Agents list (§1.12).
+// `top_logprobs` is not on the LiteLLM Agents list.
 const PACKAGE_NEVER_FORWARDED_KEYS = ['top_logprobs', 'topLogprobs'];
 
 /**
- * This package's never-forward bag (ai-sdks-monorepo TESTING.md §1.12): the shared key list from
+ * This package's never-forward bag: the shared key list from
  * every never-forward category, plus the keys only the LiteLLM Agents list leaves out.
  */
 const bag = createNeverForwarded(PACKAGE_NEVER_FORWARDED_KEYS);

@@ -1,5 +1,5 @@
 /**
- * TESTING.md §3.27 — `$ld:ai:sdk:usage`.
+ * `$ld:ai:sdk:usage`.
  */
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -202,13 +202,13 @@ const CALLS: Record<string, Call> = {
   'client.createHandler': (createHandler) =>
     fire(() => createHandler(['OpenAI', 'messages'], async () => ({ output: '' }))),
   // Throws on missing credentials; the report is the first statement, so it still lands.
-  'experimental.initEvaluations': (initEvaluations) =>
+  'client.initEvaluations': (initEvaluations) =>
     fire(() => {
       try {
         initEvaluations({ projectKey: 'p', apiKey: 't', sdkKey: 's' });
       } catch {}
     }),
-  // Agent Skills (§3.27). install() runs shutdown(), which clears the store, so each call sets one.
+  // Agent Skills. install() runs shutdown(), which clears the store, so each call sets one.
   'client.skillRefs': (skillRefs) =>
     fire(() => skillRefs({ ...enabledConfig, skills: [{ key: 'usage-skill', version: 1 }] })),
   'client.getSkill': (getSkill) => {
@@ -255,7 +255,7 @@ it('has a call for every usage ID the lists report, and none they do not', () =>
   expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());
 });
 
-describe('§3.27 helper usage', () => {
+describe('helper usage', () => {
   let client: FakeClient;
 
   beforeEach(async () => {
@@ -389,7 +389,7 @@ describe('§3.27 helper usage', () => {
   });
 });
 
-describe('§3.27 one call emits only its own helper', () => {
+describe('one call emits only its own helper', () => {
   let client: FakeClient;
 
   beforeEach(async () => {
@@ -430,11 +430,14 @@ describe('§3.27 one call emits only its own helper', () => {
   });
 });
 
-describe('§3.27 a helper called from application code inside a call still reports', () => {
+describe('a helper called from application code inside a call still reports', () => {
   let client: FakeClient;
 
   beforeEach(async () => {
-    client = await install(enabledConfig);
+    client = await install({
+      ...enabledConfig,
+      tools: { lookup: { name: 'lookup', type: 'function', parameters: {} } },
+    });
   });
 
   afterEach(async () => {
@@ -503,7 +506,7 @@ describe('§3.27 a helper called from application code inside a call still repor
   });
 });
 
-describe('§3.27 Agent Skills helper usage', () => {
+describe('Agent Skills helper usage', () => {
   let client: FakeClient;
 
   beforeEach(async () => {
@@ -522,7 +525,7 @@ describe('§3.27 Agent Skills helper usage', () => {
 
     await shutdown();
     client = await install();
-    // shutdown clears the store (§3.21), so configure it again.
+    // shutdown clears the store, so configure it again.
     setSkillStore(skillStore());
     await getSkill('usage-skill');
     expectUsage(client, 'client.getSkill');
@@ -530,7 +533,7 @@ describe('§3.27 Agent Skills helper usage', () => {
 
   it('skillRefs called before a client exists reports once the client exists', async () => {
     await shutdown();
-    // skillRefs needs neither a client nor a store (§3.20).
+    // skillRefs needs neither a client nor a store.
     skillRefs({ ...enabledConfig, skills: [{ key: 'usage-skill', version: 1 }] });
     client = fakeClient();
     expect(usageCalls(client, 'client.skillRefs')).toHaveLength(0);

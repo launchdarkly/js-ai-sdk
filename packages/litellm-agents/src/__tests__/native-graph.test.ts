@@ -170,7 +170,7 @@ describe('toLiteLLMAgents', () => {
     );
   });
 
-  // The LiteLLM Agents list in the cross-SDK spec (TESTING.md §1.12): a native adapter uses the
+  // The cross-SDK LiteLLM Agents list: a native adapter uses the
   // same list as the handler.
   it("forwards exactly the LiteLLM Agents keys from each node's model.parameters", async () => {
     const definition = graphDefinition();

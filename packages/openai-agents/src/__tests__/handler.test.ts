@@ -100,7 +100,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 });
 
 import { openaiGraph } from '../graph.js';
-import { createOpenAIAgentHandler } from '../handler.js';
+import { createOpenAIAgentsHandler } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -145,7 +145,7 @@ function driveAgentRun({ tool }: { tool?: string } = {}) {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-describe('createOpenAIAgentHandler', () => {
+describe('createOpenAIAgentsHandler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockChildSpans.length = 0;
@@ -157,22 +157,22 @@ describe('createOpenAIAgentHandler', () => {
   // ── 1.1 Factory and metadata ────────────────────────────────────────────────
 
   it('returns a callable function', () => {
-    expect(typeof createOpenAIAgentHandler()).toBe('function');
+    expect(typeof createOpenAIAgentsHandler()).toBe('function');
   });
 
   it('attaches providesFor = ["OpenAI", "agent"]', () => {
-    expect(createOpenAIAgentHandler().providesFor).toEqual(['OpenAI', 'agent']);
+    expect(createOpenAIAgentsHandler().providesFor).toEqual(['OpenAI', 'agent']);
   });
 
   it('returns independent instances on multiple calls', () => {
-    expect(createOpenAIAgentHandler()).not.toBe(createOpenAIAgentHandler());
+    expect(createOpenAIAgentsHandler()).not.toBe(createOpenAIAgentsHandler());
   });
 
   // ── 1.2 Prompt construction ─────────────────────────────────────────────────
 
   it('passes instructions and model to Agent', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await createOpenAIAgentHandler()(baseConfig as any, 'hi');
+    await createOpenAIAgentsHandler()(baseConfig as any, 'hi');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
     expect(agentArgs.instructions).toBe('You are helpful.');
     expect(agentArgs.model).toBe('gpt-4o');
@@ -181,7 +181,7 @@ describe('createOpenAIAgentHandler', () => {
   it('substitutes variables in instructions', async () => {
     mockRun.mockResolvedValue(mockRunResult());
     const config = { ...baseConfig, instructions: 'Hello {{name}}.' };
-    await createOpenAIAgentHandler()(config as any, 'q', {}, { name: 'Dave' });
+    await createOpenAIAgentsHandler()(config as any, 'q', {}, { name: 'Dave' });
     expect(mockAgentConstructor.mock.calls[0][0].instructions).toBe('Hello Dave.');
   });
 
@@ -195,7 +195,7 @@ describe('createOpenAIAgentHandler', () => {
         { role: 'user', content: 'Old message' },
       ],
     };
-    await createOpenAIAgentHandler()(config as any, 'new input');
+    await createOpenAIAgentsHandler()(config as any, 'new input');
     // instructions should come from system messages
     expect(mockAgentConstructor.mock.calls[0][0].instructions).toBe('Be helpful.');
     // prompt passed to run should include history + new input
@@ -208,12 +208,12 @@ describe('createOpenAIAgentHandler', () => {
 
   it('does not throw when userInput is undefined', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await expect(createOpenAIAgentHandler()(baseConfig as any, undefined)).resolves.toBeDefined();
+    await expect(createOpenAIAgentsHandler()(baseConfig as any, undefined)).resolves.toBeDefined();
   });
 
   it('does not throw when userInput is an empty string', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await expect(createOpenAIAgentHandler()(baseConfig as any, '')).resolves.toBeDefined();
+    await expect(createOpenAIAgentsHandler()(baseConfig as any, '')).resolves.toBeDefined();
   });
 
   it('prefers instructions over messages when both are present', async () => {
@@ -224,7 +224,7 @@ describe('createOpenAIAgentHandler', () => {
       instructions: 'From instructions.',
       messages: [{ role: 'system', content: 'From messages.' }],
     };
-    await createOpenAIAgentHandler()(config as any, 'q');
+    await createOpenAIAgentsHandler()(config as any, 'q');
     expect(mockAgentConstructor.mock.calls[0][0].instructions).toBe('From instructions.');
   });
 
@@ -239,7 +239,7 @@ describe('createOpenAIAgentHandler', () => {
         parameters: { temperature: 0.4, topP: 0.9, maxTokens: 256, frequencyPenalty: 0.1, presencePenalty: 0.2 },
       },
     };
-    await createOpenAIAgentHandler()(config as any, 'q');
+    await createOpenAIAgentsHandler()(config as any, 'q');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
     expect(agentArgs.modelSettings).toEqual({
       temperature: 0.4,
@@ -256,7 +256,7 @@ describe('createOpenAIAgentHandler', () => {
       ...baseConfig,
       model: { ...baseConfig.model, parameters: { someUnknownKey: 'nope', anotherOne: 42, temperature: 0.1 } },
     };
-    await createOpenAIAgentHandler()(config as any, 'q');
+    await createOpenAIAgentsHandler()(config as any, 'q');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
     expect(agentArgs.modelSettings).toEqual({ temperature: 0.1 });
   });
@@ -264,7 +264,7 @@ describe('createOpenAIAgentHandler', () => {
   it('never forwards request headers, body or query overrides, credentials or retry policy', async () => {
     mockRun.mockResolvedValue(mockRunResult());
     const config = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
-    await createOpenAIAgentHandler()(config as any, 'q');
+    await createOpenAIAgentsHandler()(config as any, 'q');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
     expect(agentArgs.modelSettings).toBeUndefined();
     // The handler sets `instructions` itself; the deep check proves it does not carry the config's value.
@@ -272,7 +272,7 @@ describe('createOpenAIAgentHandler', () => {
     expect(mockRun.mock.calls[0][2]).toBeUndefined();
   });
 
-  // The OpenAI Agents list in the cross-SDK spec (TESTING.md §1.12), each key with a well-formed
+  // The cross-SDK OpenAI Agents list, each key with a well-formed
   // value, plus keys that are not on it.
   const CANONICAL_PARAMETERS = {
     frequency_penalty: 0.1,
@@ -313,7 +313,7 @@ describe('createOpenAIAgentHandler', () => {
       ...baseConfig,
       model: { ...baseConfig.model, parameters: { ...CANONICAL_PARAMETERS, ...REMOVED_PARAMETERS } },
     };
-    await createOpenAIAgentHandler()(config as any, 'q');
+    await createOpenAIAgentsHandler()(config as any, 'q');
     expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual(EXPECTED_MODEL_SETTINGS);
     expect(mockRun.mock.calls[0][2]).toEqual({ maxTurns: 4 });
   });
@@ -328,7 +328,7 @@ describe('createOpenAIAgentHandler', () => {
       ...baseConfig,
       model: { ...baseConfig.model, parameters: { ...CANONICAL_PARAMETERS, ...REMOVED_PARAMETERS } },
     };
-    for await (const _e of createOpenAIAgentHandler().stream?.(config as any, 'q', {}, {}) ?? []) {
+    for await (const _e of createOpenAIAgentsHandler().stream?.(config as any, 'q', {}, {}) ?? []) {
       // drain
     }
     expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual(EXPECTED_MODEL_SETTINGS);
@@ -344,7 +344,7 @@ describe('createOpenAIAgentHandler', () => {
   ])('drops a malformed %s (%j)', async (key, value) => {
     mockRun.mockResolvedValue(mockRunResult());
     const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { [key]: value, temperature: 0.1 } } };
-    await createOpenAIAgentHandler()(config as any, 'q');
+    await createOpenAIAgentsHandler()(config as any, 'q');
     expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ temperature: 0.1 });
   });
 
@@ -354,13 +354,13 @@ describe('createOpenAIAgentHandler', () => {
       ...baseConfig,
       model: { ...baseConfig.model, parameters: { verbosity: 'low', text: { verbosity: 'high', format: 'x' } } },
     };
-    await createOpenAIAgentHandler()(config as any, 'q');
+    await createOpenAIAgentsHandler()(config as any, 'q');
     expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ text: { verbosity: 'high' } });
   });
 
   it('does not set modelSettings or maxTurns when model.parameters is absent', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await createOpenAIAgentHandler()(baseConfig as any, 'q');
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
     expect(agentArgs.modelSettings).toBeUndefined();
     const runOptions = mockRun.mock.calls[0][2];
@@ -370,7 +370,7 @@ describe('createOpenAIAgentHandler', () => {
   it('forwards model.parameters.maxTurns to Runner.run options', async () => {
     mockRun.mockResolvedValue(mockRunResult());
     const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { maxTurns: 3 } } };
-    await createOpenAIAgentHandler()(config as any, 'q');
+    await createOpenAIAgentsHandler()(config as any, 'q');
     const runOptions = mockRun.mock.calls[0][2];
     expect(runOptions).toEqual({ maxTurns: 3 });
   });
@@ -384,7 +384,7 @@ describe('createOpenAIAgentHandler', () => {
       ...baseConfig,
       model: { ...baseConfig.model, parameters: { max_turns: 4, top_p: 0.9, max_tokens: 256 } },
     };
-    await createOpenAIAgentHandler()(config as any, 'q');
+    await createOpenAIAgentsHandler()(config as any, 'q');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
     // maxTurns is a Runner.run option, so it is not left in modelSettings.
     expect(agentArgs.modelSettings).toEqual({ topP: 0.9, maxTokens: 256 });
@@ -402,7 +402,7 @@ describe('createOpenAIAgentHandler', () => {
         search: { name: 'search', type: 'function' as const, parameters: { type: 'object' }, description: 'Search' },
       },
     };
-    await createOpenAIAgentHandler()(config as any, 'q', { search: vi.fn() });
+    await createOpenAIAgentsHandler()(config as any, 'q', { search: vi.fn() });
     expect(mockTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'search' }));
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
     expect(agentArgs.tools).toHaveLength(1);
@@ -410,7 +410,7 @@ describe('createOpenAIAgentHandler', () => {
 
   it('creates agent with no tools when config.tools is absent', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await createOpenAIAgentHandler()(baseConfig as any, 'q');
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
     expect(agentArgs.tools ?? []).toHaveLength(0);
   });
@@ -423,7 +423,7 @@ describe('createOpenAIAgentHandler', () => {
       ...baseConfig,
       tools: { search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } } },
     };
-    await createOpenAIAgentHandler()(config as any, 'q', {});
+    await createOpenAIAgentsHandler()(config as any, 'q', {});
     // Tool is filtered out — agent receives no tools and tool() is never called
     expect(mockTool).not.toHaveBeenCalled();
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
@@ -437,7 +437,7 @@ describe('createOpenAIAgentHandler', () => {
       ...baseConfig,
       tools: { search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } } },
     };
-    await createOpenAIAgentHandler()(config as any, 'q', { search: vi.fn().mockRejectedValue(err) });
+    await createOpenAIAgentsHandler()(config as any, 'q', { search: vi.fn().mockRejectedValue(err) });
     const toolObj = mockTool.mock.results[0].value;
     await expect(toolObj.execute({})).rejects.toThrow('tool exploded');
   });
@@ -450,7 +450,7 @@ describe('createOpenAIAgentHandler', () => {
       ...baseConfig,
       tools: { search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } } },
     };
-    await createOpenAIAgentHandler()(config as any, 'q', {
+    await createOpenAIAgentsHandler()(config as any, 'q', {
       search: vi.fn().mockRejectedValue(new Error('tool exploded')),
     });
     const sdkTool = realTool(mockTool.mock.calls[0][0]) as any;
@@ -459,7 +459,7 @@ describe('createOpenAIAgentHandler', () => {
 
   it('does not call tool() when config.tools is absent, even if toolHandlers is non-empty', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await createOpenAIAgentHandler()(baseConfig as any, 'q', { search: vi.fn() });
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q', { search: vi.fn() });
     expect(mockTool).not.toHaveBeenCalled();
   });
 
@@ -473,7 +473,7 @@ describe('createOpenAIAgentHandler', () => {
       ...baseConfig,
       tools: { search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } } },
     };
-    await createOpenAIAgentHandler()(config as any, 'q', { search: nativeToolLike as any });
+    await createOpenAIAgentsHandler()(config as any, 'q', { search: nativeToolLike as any });
     // Non-function handler is filtered out — the agent receives no tools
     expect(mockTool).not.toHaveBeenCalled();
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
@@ -485,7 +485,7 @@ describe('createOpenAIAgentHandler', () => {
   it('sets invoke_agent on the root and gen_ai usage on the chat model span', async () => {
     mockInnerGetResponse.mockResolvedValue({ output: [], usage: { inputTokens: 8, outputTokens: 4, totalTokens: 12 } });
     mockRun.mockImplementation(driveAgentRun());
-    await createOpenAIAgentHandler()(baseConfig as any, 'q');
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q');
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.operation.name', 'invoke_agent');
     const modelSpan = latestModelSpan();
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.system', 'openai');
@@ -509,7 +509,7 @@ describe('createOpenAIAgentHandler', () => {
       usage: { inputTokens: 10, outputTokens: 5, totalTokens: 999 },
     });
     mockRun.mockImplementation(driveAgentRun());
-    await createOpenAIAgentHandler()(baseConfig as any, 'q');
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q');
     const modelSpan = latestModelSpan();
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.usage.total_tokens', 15);
     expect(modelSpan?.setAttribute).not.toHaveBeenCalledWith('gen_ai.usage.total_tokens', 999);
@@ -517,7 +517,7 @@ describe('createOpenAIAgentHandler', () => {
 
   it('emits no content at all by default', async () => {
     mockRun.mockResolvedValue(mockRunResult('answer'));
-    await createOpenAIAgentHandler()(baseConfig as any, 'question');
+    await createOpenAIAgentsHandler()(baseConfig as any, 'question');
 
     // Conversation content is PII, so a caller has to ask for it. Asserting on the recorded
     // arguments rather than on specific keys catches a new content attribute added without a gate.
@@ -528,7 +528,7 @@ describe('createOpenAIAgentHandler', () => {
 
   it('puts prompt and completion on span attributes when capture is enabled', async () => {
     mockRun.mockResolvedValue(mockRunResult('answer'));
-    await createOpenAIAgentHandler({ captureContent: true })(baseConfig as any, 'question');
+    await createOpenAIAgentsHandler({ captureContent: true })(baseConfig as any, 'question');
 
     // Attributes, not events: OTEP 4430 deprecated event-recorded content and LaunchDarkly's
     // readers parse only attributes.
@@ -539,7 +539,7 @@ describe('createOpenAIAgentHandler', () => {
 
   it('sets OK status and ends span on success', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await createOpenAIAgentHandler()(baseConfig as any, 'q');
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q');
     expect(mockSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.OK });
     expect(mockSpan.end).toHaveBeenCalled();
   });
@@ -549,7 +549,7 @@ describe('createOpenAIAgentHandler', () => {
   it('emits one chat child span per model turn under the invoke_agent root', async () => {
     mockInnerGetResponse.mockResolvedValue({ output: [], usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } });
     mockRun.mockImplementation(driveAgentRun({ tool: 'search' }));
-    await createOpenAIAgentHandler()(baseConfig as any, 'q', { search: vi.fn() });
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q', { search: vi.fn() });
 
     const chats = modelSpans();
     expect(chats).toHaveLength(2);
@@ -561,7 +561,7 @@ describe('createOpenAIAgentHandler', () => {
   it('emits an execute_tool child span per tool call, keyed by call id', async () => {
     mockInnerGetResponse.mockResolvedValue({ output: [], usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } });
     mockRun.mockImplementation(driveAgentRun({ tool: 'search' }));
-    await createOpenAIAgentHandler()(baseConfig as any, 'q', { search: vi.fn() });
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q', { search: vi.fn() });
 
     const toolSpan = mockChildSpans.find(({ name }) => name === 'execute_tool search')?.span;
     expect(toolSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.operation.name', 'execute_tool');
@@ -578,7 +578,7 @@ describe('createOpenAIAgentHandler', () => {
       usage: { inputTokens: 50, outputTokens: 5, totalTokens: 55, inputTokensDetails: [{ cached_tokens: 30 }] },
     });
     mockRun.mockImplementation(driveAgentRun());
-    await createOpenAIAgentHandler()(baseConfig as any, 'q');
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q');
 
     const modelSpan = latestModelSpan();
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 50);
@@ -611,7 +611,7 @@ describe('createOpenAIAgentHandler', () => {
   it('emits the feature_flag correlation event on the invoke_agent root', async () => {
     mockInnerGetResponse.mockResolvedValue({ output: [], usage: { inputTokens: 1, outputTokens: 1 } });
     mockRun.mockImplementation(driveAgentRun());
-    await createOpenAIAgentHandler()(baseConfig as any, 'q', {}, ldFixture);
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q', {}, ldFixture);
 
     expect(mockSpan.addEvent).toHaveBeenCalledWith('feature_flag', {
       'feature_flag.key': 'test-config',
@@ -627,7 +627,7 @@ describe('createOpenAIAgentHandler', () => {
   it('does not emit the feature_flag event on child spans', async () => {
     mockInnerGetResponse.mockResolvedValue({ output: [], usage: { inputTokens: 1, outputTokens: 1 } });
     mockRun.mockImplementation(driveAgentRun());
-    await createOpenAIAgentHandler()(baseConfig as any, 'q', {}, ldFixture);
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q', {}, ldFixture);
 
     const childEvents = mockChildSpans.flatMap(({ span }) => span.addEvent.mock.calls.map((c: unknown[]) => c[0]));
     expect(childEvents).not.toContain('feature_flag');
@@ -641,7 +641,7 @@ describe('createOpenAIAgentHandler', () => {
       await model.getResponse({});
       return mockRunResult();
     });
-    await expect(createOpenAIAgentHandler()(baseConfig as any, 'q')).rejects.toThrow('model down');
+    await expect(createOpenAIAgentsHandler()(baseConfig as any, 'q')).rejects.toThrow('model down');
 
     const modelSpan = latestModelSpan();
     expect(modelSpan?.recordException).toHaveBeenCalledWith(err);
@@ -658,7 +658,7 @@ describe('createOpenAIAgentHandler', () => {
       agent.emit('agent_tool_start', {}, { name: 'search' }, { toolCall: { callId: 'call_1', name: 'search' } });
       throw err; // crash before agent_tool_end — tool span left open
     });
-    await expect(createOpenAIAgentHandler()(baseConfig as any, 'q', { search: vi.fn() })).rejects.toThrow('run boom');
+    await expect(createOpenAIAgentsHandler()(baseConfig as any, 'q', { search: vi.fn() })).rejects.toThrow('run boom');
 
     const toolSpan = mockChildSpans.find(({ name }) => name === 'execute_tool search')?.span;
     expect(toolSpan?.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR, message: 'run boom' });
@@ -670,7 +670,7 @@ describe('createOpenAIAgentHandler', () => {
   it('records exception, sets ERROR status, ends span, and re-throws', async () => {
     const err = new Error('OpenAI agent failed');
     mockRun.mockRejectedValue(err);
-    await expect(createOpenAIAgentHandler()(baseConfig as any, 'q')).rejects.toThrow('OpenAI agent failed');
+    await expect(createOpenAIAgentsHandler()(baseConfig as any, 'q')).rejects.toThrow('OpenAI agent failed');
     expect(mockSpan.recordException).toHaveBeenCalledWith(err);
     expect(mockSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR, message: 'OpenAI agent failed' });
     expect(mockSpan.end).toHaveBeenCalled();
@@ -703,7 +703,7 @@ describe('createOpenAIAgentHandler', () => {
   }
 
   it('handler.stream is defined', () => {
-    const handler = createOpenAIAgentHandler();
+    const handler = createOpenAIAgentsHandler();
     expect(typeof handler.stream).toBe('function');
   });
 
@@ -718,7 +718,7 @@ describe('createOpenAIAgentHandler', () => {
       finalOutput: 'Hello world',
     };
     mockRun.mockResolvedValue(streamedResult);
-    const handler = createOpenAIAgentHandler();
+    const handler = createOpenAIAgentsHandler();
     const events = await collectStream(handler.stream?.(baseConfig as any, 'q', {}, {}));
     const chunks = events.filter((e: any) => e.type === 'chunk').map((e: any) => e.text);
     expect(chunks).toEqual(['Hello', ' world']);
@@ -733,7 +733,7 @@ describe('createOpenAIAgentHandler', () => {
       finalOutput: 'hi',
     };
     mockRun.mockResolvedValue(streamedResult);
-    const handler = createOpenAIAgentHandler();
+    const handler = createOpenAIAgentsHandler();
     const events = await collectStream(handler.stream?.(baseConfig as any, 'q', {}, {}));
     const done = events.at(-1) as any;
     expect(done.type).toBe('done');
@@ -751,7 +751,7 @@ describe('createOpenAIAgentHandler', () => {
       ...baseConfig,
       model: { ...baseConfig.model, parameters: { temperature: 0.5, maxTurns: 5, unknownKey: 'nope' } },
     };
-    const handler = createOpenAIAgentHandler();
+    const handler = createOpenAIAgentsHandler();
     await collectStream(handler.stream?.(config as any, 'q', {}, {}));
     // `maxTurns` goes to Runner.run only; the unknown key is dropped.
     expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ temperature: 0.5 });
@@ -767,7 +767,7 @@ describe('createOpenAIAgentHandler', () => {
     };
     mockRun.mockResolvedValue(streamedResult);
     const config = { ...baseConfig, model: { ...baseConfig.model, parameters: { max_turns: 6, top_p: 0.8 } } };
-    const handler = createOpenAIAgentHandler();
+    const handler = createOpenAIAgentsHandler();
     await collectStream(handler.stream?.(config as any, 'q', {}, {}));
     expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toEqual({ topP: 0.8 });
     const runOptions = mockRun.mock.calls[0][2];
@@ -781,7 +781,7 @@ describe('createOpenAIAgentHandler', () => {
       finalOutput: '',
     };
     mockRun.mockResolvedValue(streamedResult);
-    const handler = createOpenAIAgentHandler();
+    const handler = createOpenAIAgentsHandler();
     await collectStream(handler.stream?.(baseConfig as any, 'q', {}, {}));
     expect(mockAgentConstructor.mock.calls[0][0].modelSettings).toBeUndefined();
     const runOptions = mockRun.mock.calls[0][2];
@@ -804,7 +804,7 @@ describe('createOpenAIAgentHandler', () => {
         finalOutput: '',
       };
     });
-    await collectStream(createOpenAIAgentHandler({ captureContent: true }).stream?.(baseConfig as any, 'q', {}, {}));
+    await collectStream(createOpenAIAgentsHandler({ captureContent: true }).stream?.(baseConfig as any, 'q', {}, {}));
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.operation.name', 'invoke_agent');
     expect(latestModelSpan()?.setAttribute).toHaveBeenCalledWith('gen_ai.system', 'openai');
     expect(latestModelSpan()?.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 1);
@@ -816,14 +816,14 @@ describe('createOpenAIAgentHandler', () => {
   it('records exception on stream error', async () => {
     const err = new Error('agent stream fail');
     mockRun.mockRejectedValue(err);
-    await expect(collectStream(createOpenAIAgentHandler().stream?.(baseConfig as any, 'q', {}, {}))).rejects.toThrow(
+    await expect(collectStream(createOpenAIAgentsHandler().stream?.(baseConfig as any, 'q', {}, {}))).rejects.toThrow(
       'agent stream fail',
     );
     expect(mockSpan.recordException).toHaveBeenCalledWith(err);
     expect(mockSpan.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: SpanStatusCode.ERROR }));
   });
 
-  // ── History (§1.11 — structured Runner input, not system-prompt text) ────────
+  // ── History (structured Runner input, not system-prompt text) ────────────────
 
   const sampleHistory = [
     { role: 'user' as const, content: 'What is feature flagging?' },
@@ -841,7 +841,7 @@ describe('createOpenAIAgentHandler', () => {
 
   it('history is structured Runner input, not stuffed into instructions', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await createOpenAIAgentHandler()(baseConfig as any, 'q', {}, {}, sampleHistory);
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q', {}, {}, sampleHistory);
     const instructions = mockAgentConstructor.mock.calls[0][0].instructions;
     expect(instructions).toContain('You are helpful.');
     expect(instructions).not.toContain('Conversation History:');
@@ -857,7 +857,7 @@ describe('createOpenAIAgentHandler', () => {
 
   it('history turns appear before userInput in Runner input', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await createOpenAIAgentHandler()(baseConfig as any, 'follow up', {}, {}, sampleHistory);
+    await createOpenAIAgentsHandler()(baseConfig as any, 'follow up', {}, {}, sampleHistory);
     const input = mockRun.mock.calls[0][1] as Array<{ role: string; content: unknown }>;
     expect(input.at(-1)).toMatchObject({ role: 'user' });
     const textOf = (c: unknown) => (typeof c === 'string' ? c : JSON.stringify(c));
@@ -867,7 +867,7 @@ describe('createOpenAIAgentHandler', () => {
 
   it('empty history is treated like no history', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await createOpenAIAgentHandler()(baseConfig as any, 'q', {}, {}, []);
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q', {}, {}, []);
     const instructions = mockAgentConstructor.mock.calls[0][0].instructions;
     expect(instructions).not.toContain('Conversation History:');
     expect(instructions).toBe('You are helpful.');
@@ -877,7 +877,7 @@ describe('createOpenAIAgentHandler', () => {
   it('system-role history messages are filtered from Runner input', async () => {
     mockRun.mockResolvedValue(mockRunResult());
     const withSystem = [{ role: 'system' as const, content: 'secret system' }, ...sampleHistory];
-    await createOpenAIAgentHandler()(baseConfig as any, 'q', {}, {}, withSystem);
+    await createOpenAIAgentsHandler()(baseConfig as any, 'q', {}, {}, withSystem);
     const input = mockRun.mock.calls[0][1] as Array<{ role: string; content: unknown }>;
     expect(input.every((m) => m.role !== 'system')).toBe(true);
     expect(JSON.stringify(input)).not.toContain('secret system');
@@ -885,7 +885,7 @@ describe('createOpenAIAgentHandler', () => {
 
   it('multimodal image history maps to input_image on Runner input', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await createOpenAIAgentHandler()(baseConfig as any, 'describe', {}, {}, imageHistory);
+    await createOpenAIAgentsHandler()(baseConfig as any, 'describe', {}, {}, imageHistory);
     const input = mockRun.mock.calls[0][1] as Array<{ role: string; content: unknown }>;
     const serialized = JSON.stringify(input);
     expect(serialized).toContain('input_image');
@@ -904,15 +904,15 @@ describe('createOpenAIAgentHandler', () => {
         ],
       },
     ];
-    await createOpenAIAgentHandler()(baseConfig as any, '', {}, {}, fullTurn);
+    await createOpenAIAgentsHandler()(baseConfig as any, '', {}, {}, fullTurn);
     const input = mockRun.mock.calls[0][1] as Array<{ role: string; content: unknown }>;
     expect(input.filter((m) => m.role === 'user')).toHaveLength(1);
   });
 });
 
-// ── §1.9 outputFormat — first-class (Agent outputType) ───────────────────────
+// ── outputFormat — first-class (Agent outputType) ────────────────────────────
 
-describe('createOpenAIAgentHandler — outputFormat (§1.9)', () => {
+describe('createOpenAIAgentsHandler — outputFormat', () => {
   const outputFormat = { type: 'object', properties: { score: { type: 'number' } } };
 
   beforeEach(() => {
@@ -929,7 +929,7 @@ describe('createOpenAIAgentHandler — outputFormat (§1.9)', () => {
       state: { usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 } },
     });
     const config = { ...baseConfig, outputFormat };
-    await createOpenAIAgentHandler()(config as any, 'hello');
+    await createOpenAIAgentsHandler()(config as any, 'hello');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
     // outputFormat (the raw schema content) must be nested under `schema` inside
     // the JsonSchemaDefinition wrapper — not spread at the top level.
@@ -948,13 +948,13 @@ describe('createOpenAIAgentHandler — outputFormat (§1.9)', () => {
       state: { usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 } },
     });
     const config = { ...baseConfig, outputFormat };
-    const result = await createOpenAIAgentHandler()(config as any, 'hello');
+    const result = await createOpenAIAgentsHandler()(config as any, 'hello');
     expect(result.output).toEqual(parsedOutput);
   });
 
   it('does not pass outputType when outputFormat is absent', async () => {
     mockRun.mockResolvedValue(mockRunResult());
-    await createOpenAIAgentHandler()(baseConfig as any, 'hello');
+    await createOpenAIAgentsHandler()(baseConfig as any, 'hello');
     const agentArgs = mockAgentConstructor.mock.calls[0][0];
     expect(agentArgs.outputType).toBeUndefined();
   });

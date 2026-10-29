@@ -54,7 +54,7 @@ const fakeModelProvider = {
 } as never;
 
 import { setDefaultModelProvider, setTracingDisabled, Usage } from '@openai/agents';
-import { createOpenAIAgentHandler } from '../handler.js';
+import { createOpenAIAgentsHandler } from '../handler.js';
 
 const exporter = new InMemorySpanExporter();
 const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
@@ -145,7 +145,7 @@ describe('openai-agents span tree against the real Runner', () => {
   it('nests the chat span under the invoke_agent root', async () => {
     responseQueue.push(textResponse());
 
-    await createOpenAIAgentHandler()(baseConfig as never, 'q');
+    await createOpenAIAgentsHandler()(baseConfig as never, 'q');
 
     const [chat] = named('chat');
     expect(chat).toBeDefined();
@@ -155,7 +155,7 @@ describe('openai-agents span tree against the real Runner', () => {
   it('keeps every chat span of a real multi-turn tool loop a direct child of the root', async () => {
     responseQueue.push(toolCallResponse(), textResponse('Final'));
 
-    const result = await createOpenAIAgentHandler()(toolConfig as never, 'q', {
+    const result = await createOpenAIAgentsHandler()(toolConfig as never, 'q', {
       search: vi.fn().mockReturnValue('r'),
     });
 
@@ -176,7 +176,7 @@ describe('openai-agents span tree against the real Runner', () => {
   it('maps a completed run onto stop', async () => {
     responseQueue.push({ ...textResponse(), providerData: { status: 'completed' } });
 
-    await createOpenAIAgentHandler()(baseConfig as never, 'q');
+    await createOpenAIAgentsHandler()(baseConfig as never, 'q');
 
     expect(named('chat')[0].attributes['gen_ai.response.finish_reasons']).toEqual(['stop']);
   });
@@ -190,7 +190,7 @@ describe('openai-agents span tree against the real Runner', () => {
       { ...textResponse('Final'), providerData: { status: 'completed' } },
     );
 
-    await createOpenAIAgentHandler()(toolConfig as never, 'q', { search: vi.fn().mockReturnValue('r') });
+    await createOpenAIAgentsHandler()(toolConfig as never, 'q', { search: vi.fn().mockReturnValue('r') });
 
     expect(named('chat').map((s) => s.attributes['gen_ai.response.finish_reasons'])).toEqual([
       ['tool_calls'],
@@ -207,8 +207,8 @@ describe('openai-agents span tree against the real Runner', () => {
       { ...textResponse(), providerData: { status: 'incomplete', incomplete_details: { reason: 'content_filter' } } },
     );
 
-    await createOpenAIAgentHandler()(baseConfig as never, 'q');
-    await createOpenAIAgentHandler()(baseConfig as never, 'q');
+    await createOpenAIAgentsHandler()(baseConfig as never, 'q');
+    await createOpenAIAgentsHandler()(baseConfig as never, 'q');
 
     expect(named('chat').map((s) => s.attributes['gen_ai.response.finish_reasons'])).toEqual([
       ['length'],
@@ -221,7 +221,7 @@ describe('openai-agents span tree against the real Runner', () => {
   it('omits the finish reason when the response carries no providerData', async () => {
     responseQueue.push(textResponse());
 
-    await createOpenAIAgentHandler()(baseConfig as never, 'q');
+    await createOpenAIAgentsHandler()(baseConfig as never, 'q');
 
     expect(named('chat')[0].attributes['gen_ai.response.finish_reasons']).toBeUndefined();
   });
@@ -234,7 +234,7 @@ describe('openai-agents span tree against the real Runner', () => {
     const search = vi.fn().mockReturnValue('r');
     responseQueue.push(toolCallResponse(), textResponse('Final'));
 
-    await createOpenAIAgentHandler({ captureContent: true })(toolConfig as never, 'q', { search });
+    await createOpenAIAgentsHandler({ captureContent: true })(toolConfig as never, 'q', { search });
 
     const chat = named('chat').find((c) => String(c.attributes['gen_ai.output.messages'] ?? '').includes('search'));
     const parts = JSON.parse(String(chat?.attributes['gen_ai.output.messages']))[0].parts;
@@ -252,7 +252,7 @@ describe('openai-agents span tree against the real Runner', () => {
     broken.output[0].arguments = '{"q":';
     responseQueue.push(broken, textResponse('Final'));
 
-    const run = createOpenAIAgentHandler({ captureContent: true })(toolConfig as never, 'q', { search });
+    const run = createOpenAIAgentsHandler({ captureContent: true })(toolConfig as never, 'q', { search });
     await run.catch(() => undefined);
 
     const chat = named('chat').find((c) => String(c.attributes['gen_ai.output.messages'] ?? '').includes('search'));
@@ -264,7 +264,7 @@ describe('openai-agents span tree against the real Runner', () => {
     const search = vi.fn().mockReturnValue('r');
     responseQueue.push(toolCallResponse(), textResponse('Final'));
 
-    await createOpenAIAgentHandler()(toolConfig as never, 'q', { search });
+    await createOpenAIAgentsHandler()(toolConfig as never, 'q', { search });
 
     // The span exists because the real Runner invoked the tool and emitted agent_tool_start/end.
     expect(search).toHaveBeenCalledTimes(1);
@@ -291,7 +291,7 @@ describe('openai-agents span tree against the real Runner', () => {
       },
     ]);
 
-    await collectStream(createOpenAIAgentHandler().stream?.(baseConfig as never, 'q', {}, {}) as never);
+    await collectStream(createOpenAIAgentsHandler().stream?.(baseConfig as never, 'q', {}, {}) as never);
 
     const [chat] = named('chat');
     expect(chat).toBeDefined();
@@ -306,7 +306,7 @@ describe('openai-agents span tree against the real Runner', () => {
     setDefaultModelProvider({ getModel } as never);
     responseQueue.push(textResponse());
 
-    await createOpenAIAgentHandler()(baseConfig as never, 'q');
+    await createOpenAIAgentsHandler()(baseConfig as never, 'q');
 
     expect(getModel).toHaveBeenCalled();
     setDefaultModelProvider(fakeModelProvider);
@@ -315,7 +315,7 @@ describe('openai-agents span tree against the real Runner', () => {
   it('carries the run-level token totals on the invoke_agent root, not only on the children', async () => {
     responseQueue.push(toolCallResponse(), textResponse('Final'));
 
-    await createOpenAIAgentHandler()(toolConfig as never, 'q', { search: vi.fn().mockReturnValue('r') });
+    await createOpenAIAgentsHandler()(toolConfig as never, 'q', { search: vi.fn().mockReturnValue('r') });
 
     // The root is the only span carrying `launchdarkly.*` and the `feature_flag` event, so a
     // config-scoped query finds it and nothing else. Totals must be readable there.
@@ -329,7 +329,7 @@ describe('openai-agents span tree against the real Runner', () => {
   it('ends and parents both spans when the model call throws', async () => {
     responseQueue.push(new Error('provider down'));
 
-    await expect(createOpenAIAgentHandler()(baseConfig as never, 'q')).rejects.toThrow('provider down');
+    await expect(createOpenAIAgentsHandler()(baseConfig as never, 'q')).rejects.toThrow('provider down');
 
     // The exporter only receives ended spans, so seeing both proves neither was orphaned.
     const [chat] = named('chat');
@@ -351,7 +351,7 @@ describe('openai-agents span tree against the real Runner', () => {
     });
     responseQueue.push(failure);
 
-    await expect(createOpenAIAgentHandler()(baseConfig as never, 'q')).rejects.toThrow('Max turns (10) exceeded');
+    await expect(createOpenAIAgentsHandler()(baseConfig as never, 'q')).rejects.toThrow('Max turns (10) exceeded');
 
     const attrs = root()?.attributes ?? {};
     expect(attrs['gen_ai.usage.input_tokens']).toBe(155_000);
@@ -365,7 +365,7 @@ describe('openai-agents span tree against the real Runner', () => {
   it('writes no token attributes on the root when the error carries no run state', async () => {
     responseQueue.push(new Error('provider down'));
 
-    await expect(createOpenAIAgentHandler()(baseConfig as never, 'q')).rejects.toThrow('provider down');
+    await expect(createOpenAIAgentsHandler()(baseConfig as never, 'q')).rejects.toThrow('provider down');
 
     expect(root()?.attributes['gen_ai.usage.input_tokens']).toBeUndefined();
     expect(root()?.attributes['gen_ai.usage.output_tokens']).toBeUndefined();
@@ -374,7 +374,7 @@ describe('openai-agents span tree against the real Runner', () => {
   it('puts context identity on the invoke_agent root and on no child span', async () => {
     responseQueue.push(toolCallResponse(), textResponse('Final'));
 
-    await createOpenAIAgentHandler()(
+    await createOpenAIAgentsHandler()(
       toolConfig as never,
       'q',
       { search: vi.fn().mockReturnValue('r') },

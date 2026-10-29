@@ -21,7 +21,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 
 | File | Responsibility |
 |---|---|
-| `src/conversation.ts` | `withConversationId`, `ConversationIdSpanProcessor` — stamps `gen_ai.conversation.id` |
+| `src/conversation.ts` | `withConversationId`, `ConversationIdSpanProcessor` — stamps `gen_ai.conversation.id`; `withSpanAttributes` (stamp a caller-supplied attribute set, write-if-absent, on SDK spans) and `countSdkSpans`, which know no feature |
 | `src/sdk-info.ts` | `$ld:ai:sdk:info` package registry and flush |
 | `src/lifecycle.ts` | `initClient` (options or BYOC overloads), `getClient`, `shutdown`, `waitForTelemetry`, `shutdownTelemetry`, `extractVariation` |
 | `src/client.ts` | `config()` |
@@ -33,13 +33,14 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/shutdown-hooks.ts` | The cleanup hooks `shutdown()` runs — how `lifecycle.ts` clears feature state (Agent Skills') without importing it |
 | `src/skills-core.ts` | Agent Skills internals shared by the two layers above it: the store and telemetry seams, module state, integrity verification, store resolution |
 | `src/skills.ts` | `skillRefs`, the content accessors, `InMemorySkillStore`, and the documented test-injection hooks |
-| `src/skills-fdv2.ts` | Agent Skills delivery transport — the FDv2 protocol, the wire-key/`version` translation, the held object set, and `FDv2SkillStore`. Sits **below** the store seam; imports `skills-core` only, and nothing imports it |
+| `src/skills-fdv2.ts` | Agent Skills delivery transport — the FDv2 protocol, the wire-key/`version` translation, the held object set, and `LaunchDarklySkillStore`. Sits **below** the store seam; imports `skills-core` only, and nothing imports it |
 | `src/skills-watch.ts` | Agent Skills eager re-reconcile — `watchSkills` / `SkillWatcher`, wiring the store's change listener, and for a `SkillSource` the base client's `update:<key>` events, to `writeSkills`. Sits **above** `skills-fs` and modifies none of it |
 | `src/skills-source.ts` | `configSkills` — the `SkillSource` that evaluates one AI Config. With `skills-watch`, the only skills module that imports `lifecycle`, and only for `getClient` |
 | `src/skills-fs.ts` | `writeSkills` — the manifest format, on-disk filenames, and reconcile semantics. Recognizes a `SkillSource` by shape alone and never imports `skills-source` |
 | `src/evaluations.ts` | Evaluations from Code — `initEvaluations`, `EvaluationsModule.run()` and its argument validation and orchestration, the public option and result types |
 | `src/evaluations-api.ts` | Evaluations from Code — the retrying management API client, its injectable `Transport` seam, `EvaluationsError`, and the strict-JSON check |
 | `src/evaluations-runner.ts` | Evaluations from Code — the management API operations, row rendering, handler config, the generation phase, event payloads and flushing, and summary parsing. `canonicalJson` is RFC 8785 (JCS), the form `eventId` and `contentHash` hash in every SDK; the Python SDK's `evaluations/canonical_json.py` produces the same bytes |
+| `src/evaluations-spans.ts` | Evaluations from Code — the spans `run()` exports per row: the `launchdarkly.dataset_row` root, the row binding (`gen_ai.conversation.id` as the UUIDv5 of `{runId}:{rowIndex}`, `launchdarkly.evaluation_run.*`), the `chat` / `execute_tool` spans written for a plain function, and the `evaluate` spans. Built on the feature-neutral `withSpanAttributes` and `countSdkSpans` in `conversation.ts`, which name none of its attributes |
 | `src/evaluations-tools.ts` | Evaluations from Code — `EvalTool` (inline and library), tool validation, and `tools.get()` |
 | `src/evaluations-criteria.ts` | Evaluations from Code — `Judge`, `Scorer`, `Criterion`, validated where constructed, and the `criteria` entries pinned on the create body |
 | `src/evaluations-scoring.ts` | Evaluations from Code — the evaluation phase: judge resolution and handler selection, judge and scorer invocation, criterion event payloads |
@@ -47,7 +48,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/trajectory.ts` | Tool-call trajectory capture and rendering — `TrajectoryRecorder` (one per online invocation in `tracking.ts`, one per evaluation row offline), `exposedToolKeys`, and `renderTrajectory`, the text a judge reads in `message_history`. `HANDOFF_TOOL_PREFIX` is defined here once and used by `tracking.ts` and `graph.ts` |
 | `src/safe-fs.ts` | Symlink-refusing filesystem primitives. Knows nothing about skills; owns the single interceptable rename and unlink call sites |
 | `src/index.ts` | Public barrel — the package root, and the only surface handler packages import from |
-| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Evaluations from Code is exported here and only here |
+| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. No feature is experimental now, so it exports no name |
 
 The Agent Skills module dependencies run **one way only**:
 
@@ -61,7 +62,7 @@ Do not add an edge that closes a cycle. The store and the emitter live in `skill
 
 ## Agent Skills — the delivery transport, and the one field that will bite you
 
-`FDv2SkillStore` speaks LaunchDarkly's SDK-facing FDv2 channel (`GET /sdk/poll`, `GET /sdk/stream`, server-side SDK key in `Authorization`, a `basis` param once a payload has committed, `If-None-Match`/304). It sits below the seam and produces raw objects in the shape `SkillStore` documents; **nothing above the seam knows it exists**. If a transport change seems to require editing an accessor, verification, or `writeSkills`, the adapter boundary is wrong.
+`LaunchDarklySkillStore` speaks LaunchDarkly's SDK-facing FDv2 channel (`GET /sdk/poll`, `GET /sdk/stream`, server-side SDK key in `Authorization`, a `basis` param once a payload has committed, `If-None-Match`/304). It sits below the seam and produces raw objects in the shape `SkillStore` documents; **nothing above the seam knows it exists**. If a transport change seems to require editing an accessor, verification, or `writeSkills`, the adapter boundary is wrong.
 
 **The skill's version is in the object's `key`. `version` is the payload's.** Each version of a skill is its own object on the wire, identified as `<key>:<version>`:
 
@@ -106,7 +107,7 @@ The `3` after the delimiter is what a `{key, version}` reference pins; it become
 
 **There is one network timeout.** `readTimeoutSeconds` is applied, converted by `secondsToMs`, through a `ReadDeadline` composed with the store's abort signal, so connect, headers and each body read share it. Its default is per mode: `DEFAULT_POLL_TIMEOUT_SECONDS` for a whole poll request, `DEFAULT_STREAM_READ_TIMEOUT_SECONDS` for the gap between reads on a stream (tripping it on a quiet stream *reconnects*). The `timeouts` suite measures the bound against a socket that accepts and never answers. Do not add a separate connect timeout.
 
-**Every `FDv2SkillStore` time option is in seconds**, as in the Python SDK and the base Node SDK: `pollIntervalSeconds`, `readTimeoutSeconds`, `initialBackoffSeconds`, `maxBackoffSeconds`, and `waitForSkills({ timeoutSeconds })`. `watchSkills`' `debounceMs` is the one millisecond option in the skills API.
+**Every `LaunchDarklySkillStore` time option is in seconds**, as in the Python SDK and the base Node SDK: `pollIntervalSeconds`, `readTimeoutSeconds`, `initialBackoffSeconds`, `maxBackoffSeconds`, and `waitForSkills({ timeoutSeconds })`. `watchSkills`' `debounceMs` is the one millisecond option in the skills API.
 
 - Values stay in seconds until `secondsToMs` at the `setTimeout` or `ReadDeadline` they set. It rounds rather than truncates (`1.005 * 1000` is `1004.9999999999999`) and floors a positive option at 1 ms, so a sub-millisecond value never becomes a zero delay. Validate in seconds, before converting.
 - A unit change is a rename, never a reinterpretation of an existing name. The retired `...Ms` option keys are not read.
@@ -117,7 +118,7 @@ The `3` after the delimiter is what a `{key, version}` reference pins; it become
 - `iterSse` wraps read failures (a reset, a truncated chunk, the read deadline) as `RecoverableTransportError`, since a live stream dies mid-body far more often than it refuses to open. The delivery loop treats anything else as a bug and stops for the process lifetime.
 - A known streamed event whose `data` is not JSON is a `RecoverableTransportError` too, never skipped. Skipping it let the `payload-transferred` after it commit the transfer without it and advance `basis` past it, so a lost `delete-object` kept a revoked skill served and the reconnect never asked for it again, and a lost `put-object` in an `xfer-full` revoked that skill by omission. Ending the connection abandons the in-flight payload, and the reconnect resumes from the last committed basis, as js-sdk-common's `PayloadStreamReader` does (it reports `InvalidData` and the streaming processor stops the source). Both cases have a store-level test.
 - Only the events in `EVENTS_WITH_DATA` (the six `ProtocolReader.handle` reads) are parsed. A `heart-beat` or an unknown event is yielded with `null` data, so its data cannot end the connection: unknown events are ignored by contract, and `PayloadStreamReader` attaches handlers to those six only. Empty data on one of the six is not JSON either and ends the connection the same way (`PayloadStreamReader` reports a known event with no data as an error too): read as `null`, a `delete-object` would be ignored and a `payload-transferred` would commit with no selector.
-- A put or delete that is valid JSON but has no usable `key` is warned and ignored. Its transfer still commits, so a keyless `delete-object` loses its revocation, and a keyless `put-object` in an `xfer-full` revokes that skill by omission (and `writeSkills('*')` prunes it). Base `ldclient` interrupts instead. Interrupting is not strictly safer, because a server that keeps resending the object would then block every later change, so the rule was kept at promotion (TESTING.md §3.25). Two protocol-reader tests pin it, so changing it fails them.
+- A put or delete that is valid JSON but has no usable `key` is warned and ignored. Its transfer still commits, so a keyless `delete-object` loses its revocation, and a keyless `put-object` in an `xfer-full` revokes that skill by omission (and `writeSkills('*')` prunes it). Base `ldclient` interrupts instead. Interrupting is not strictly safer, because a server that keeps resending the object would then block every later change, so the rule was kept at promotion. Two protocol-reader tests pin it, so changing it fails them.
 - An error thrown by the consumer's loop body while the generator is suspended at a `yield` passes through unwrapped, so a bug still surfaces as one.
 - A poll body or streamed event over `MAX_RESPONSE_CHARS` is a `FatalTransportError`, not a read failure, and takes the give-up path like a 422 (`failed` and `lastError` set, `connectionFailures` untouched). The size belongs to the environment, so a retry would re-download up to 64 Mi characters on every backoff step, from every process, and never set `failed`.
 - Every retry delay is clamped to `maxBackoffSeconds` and floored at `initialBackoffSeconds`, so `Retry-After: 0` cannot cause a tight reconnect loop. A blank `Retry-After` means "no delay given", not zero (`Number("")` is `0`).
@@ -137,7 +138,7 @@ Keep both halves — the reset rule and the `reachedServer` qualifier.
 
 **The SDK key goes only where it was pointed, enforced in two places.** Every request carries the server-side SDK key in `Authorization`.
 
-- `requireHttpsUri` checks both `baseUri` and `streamUri` in the `FDv2SkillStore` constructor (after the lone-`baseUri` resolution, even with an injected `Requester`): `https://` with a host, or plain `http://` to loopback only (`localhost`, `127.0.0.1`, `::1`, where the test doubles listen). Anything else throws with a message naming `https://` and the defaults.
+- `requireHttpsUri` checks both `baseUri` and `streamUri` in the `LaunchDarklySkillStore` constructor (after the lone-`baseUri` resolution, even with an injected `Requester`): `https://` with a host, or plain `http://` to loopback only (`localhost`, `127.0.0.1`, `::1`, where the test doubles listen). Anything else throws with a message naming `https://` and the defaults.
 - Both fetches in `FetchRequester` use `redirect: 'manual'`, because `fetch`'s default `'follow'` copies `Authorization` onto whatever host `Location` names. Any 3xx — same host included, and an `opaqueredirect` if the runtime produces one — is a `FatalTransportError` through `classifyStatus`, handled exactly like 401/403. A 304 is not a redirect and is settled first.
 
 The Python SDK enforces the same pair with the same wording; change both or neither.
@@ -152,7 +153,7 @@ The Python SDK enforces the same pair with the same wording; change both or neit
 
 **The store refuses two things loudly rather than degrading.**
 
-- `addListener` throws for any kind but `'skill'`, in `FDv2SkillStore` and `InMemorySkillStore` alike: a listener on another kind would silently never fire. `removeListener` accepts any kind, so a consumer can detach unconditionally.
+- `addListener` throws for any kind but `'skill'`, in `LaunchDarklySkillStore` and `InMemorySkillStore` alike: a listener on another kind would silently never fire. `removeListener` accepts any kind, so a consumer can detach unconditionally.
 - `close` is final: `start` throws afterwards rather than opening a second delivery loop. A store that gave up on its own is different: `start` runs delivery again with the failure count and backoff started over, and clears `failed`, and is a no-op while delivery is running. Closing leaves `failed` as `null` (it is the caller's decision, not a delivery failure), and both a closed store and one that gave up answer `waitForSkills` immediately.
 
 ---
@@ -183,6 +184,22 @@ export {
   setConversationIdIfAbsent,
   withConversationId,
 } from './conversation.js';
+export type {
+  AIConfig,
+  DatasetRow,
+  EvalRunResult,
+  GenerationConfig,
+  GenerationMode,
+  GenerationOverrides,
+  InitEvaluationsOptions,
+  InlineDatasetRow,
+  RunOptions,
+  RunSummary,
+} from './evaluations.js';
+export { EvaluationsError, EvaluationsModule, initEvaluations } from './evaluations.js';
+export type { Criterion } from './evaluations-criteria.js';
+export { Judge, Scorer } from './evaluations-criteria.js';
+export { EvalTool } from './evaluations-tools.js';
 export { graph, graphInternal, resolveGraph } from './graph.js';
 export type { CanonicalTurn, ConfigTurn } from './history.js';
 export {
@@ -215,11 +232,23 @@ export {
   InMemorySkillStore,
   setSkillStore,
   skillRefs,
+  skillRefsInternal,
 } from './skills.js';
-export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills-fdv2.js';
-export { FDv2SkillStore, SKILLS_DEFAULT_BASE_URI, SKILLS_DEFAULT_STREAM_URI } from './skills-fdv2.js';
+export type {
+  FDv2Mode,
+  FDv2SkillStoreOptions,
+  LaunchDarklySkillStoreMode,
+  LaunchDarklySkillStoreOptions,
+  StoreDiagnostics,
+} from './skills-fdv2.js';
+export {
+  FDv2SkillStore,
+  LaunchDarklySkillStore,
+  SKILLS_DEFAULT_BASE_URI,
+  SKILLS_DEFAULT_STREAM_URI,
+} from './skills-fdv2.js';
 export type { WriteSkillsOptions } from './skills-fs.js';
-export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
+export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills, writeSkillsInternal } from './skills-fs.js';
 export { configSkills } from './skills-source.js';
 export type { WatchSkillsOptions } from './skills-watch.js';
 export { SKILLS_DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
@@ -308,33 +337,19 @@ export {
 
 Published as `@launchdarkly/ai-server/experimental` (a subpath in `package.json` `exports`, built
 alongside the root by `tsup.config.ts`). Names here may change in a minor release and are **absent
-from the package root**. Agent Skills was promoted to core and is exported from the root only.
+from the package root**. No feature is experimental now. Agent Skills and Evaluations from Code
+were promoted to core and are exported from the root only.
 `@launchdarkly/ai-node/experimental` re-exports this entry point. Generated from
 `src/experimental.ts` the same way as the block above.
 
 ```ts
-export type {
-  AIConfig,
-  DatasetRow,
-  EvalRunResult,
-  GenerationConfig,
-  GenerationMode,
-  GenerationOverrides,
-  InitEvaluationsOptions,
-  InlineDatasetRow,
-  RunOptions,
-  RunSummary,
-} from './evaluations.js';
-export { EvaluationsError, EvaluationsModule, initEvaluations } from './evaluations.js';
-export type { Criterion } from './evaluations-criteria.js';
-export { Judge, Scorer } from './evaluations-criteria.js';
-export { EvalTool } from './evaluations-tools.js';
+export {};
 ```
 
 The stage rules, which every change here must keep:
 
 - **Core never names experimental.** No root export, core type, function signature, or option may
-  mention an experimental name (today, an Evaluations from Code name).
+  mention an experimental name.
 - **An experimental field never fails a core call.** Experimental code may import core freely.
 - **Core reaches feature state only through an internal hook**, and a failure there is caught and
   logged, never thrown into the core call. `lifecycle.ts` never imports a feature module: the module
@@ -346,11 +361,12 @@ The stage rules, which every change here must keep:
   `yarn api:check` for every package. After an intended surface change run
   `yarn workspace @launchdarkly/ai-server api:update` (or `yarn api:update` from this directory) and
   commit both reports.
-- **Promotion to core** (done for Agent Skills, before 1.0) moves the feature's names from
+- **Promotion to core** (done for Agent Skills and Evaluations from Code, before 1.0) moves the feature's names from
   `src/experimental.ts` to `src/index.ts` with the same spelling, and removes them from the
   experimental entry point; this is a breaking change (`!` in the PR title). Also remove the
   feature's rows from `changelog-sections` in `release-please-config.json`, and update both API
-  reports. A test asserts the skills names are in the root report and not in the experimental one.
+  reports. A test asserts the skills and evaluations names are in the root report and not in the
+  experimental one.
 
 Agent Skills still keeps one rule from its experimental stage: `AiConfigRep.skills` is typed
 `unknown` and `parseAiConfig` passes it through unvalidated, so a malformed field never fails a
@@ -481,6 +497,7 @@ npm install @opentelemetry/sdk-trace-node @opentelemetry/sdk-trace-base \
 **Other env vars / options read by `initClient()`:**
 - `LD_SERVICE_NAME` / `options.serviceName` — sets `service.name` resource attribute (default: `'nodejs-sdk'`)
 - `LD_ENVIRONMENT` / `options.environment` — sets `deployment.environment` resource attribute
+- Not configurable: the `launchdarkly.project_id` resource attribute is always set to the resolved SDK key, not the project's ID
 
 **Graceful degradation:** if any OTel package cannot be imported, telemetry is silently skipped and a `console.warn` is emitted with the install command. The LD client still initializes and all AI API calls work normally.
 
@@ -721,7 +738,7 @@ Two decisions here look like unfinished work and are not. Do not reverse either 
   - **The two `integrity_failure` rows differ.** The `verifyRawSkill` row fires inside verification: the `AgentControl Skill Integrity Failure` signal **and** the `ld.skills.integrity_failure` log record. The key-mismatch row fires after verification passed, via `recordKeyMismatch`: **the log record only** (`reason_code: key_mismatch`, plus a `served_key` field no other record carries), no signal.
   - **The `wrong_version` row also writes a record only**, via `recordVersionMismatch`: `reason_code: version_mismatch`, a record-only `served_version` field, and a `version` field carrying the version *requested*. `getSkill` collapses `wrong_version` to `null`, so without the record an operator on the default accessor could not see a store answering pins with the wrong version.
   - **Why a record but no signal, for both boundary rows.** The record is the customer-owned detection path, and sharing the event identity lets one SIEM rule catch both, with the code as the discriminator. The usual cause is a broken custom store adapter, not an attacker, so LaunchDarkly's counter stays out — the same false positive the not-an-object row avoids by reading as `absent`. The two rows are one decision: a change that gives either a signal must justify it for both. Tests pin both directions for each row; do not emit the signal or drop the record.
-  - **Shipped stores never produce the mismatch rows.** `FDv2SkillStore` and `InMemorySkillStore` answer a pin with that version or nothing, so `wrong_version` needs a **hand-built** store that ignores its version argument. A test using a shipped store gets `absent` and silently stops covering the row.
+  - **Shipped stores never produce the mismatch rows.** `LaunchDarklySkillStore` and `InMemorySkillStore` answer a pin with that version or nothing, so `wrong_version` needs a **hand-built** store that ignores its version argument. A test using a shipped store gets `absent` and silently stops covering the row.
   - **Keep both checks in `resolveFromStore`.** `verifyRawSkill` is unary (is one object self-consistent?); a mismatch is relational (object vs. request). Threading an expected key or version into it would make the parameter optional at every call site, and a check that vanishes when a caller forgets an argument is worse than one at the single site where both values are in hand.
   - **Adding a row** means answering "which of the five does a caller see?" before writing the code. `unavailable` stays a separate field: it is narrower, it is what suppresses pruning, and the `skills-fs.ts` row never reaches an accessor.
 - `wantedVersion` is passed **into** `SkillStore.getObject(kind, key, version)`, and the post-hoc `skill.version !== wantedVersion` check is kept too. Removing either is wrong:

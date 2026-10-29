@@ -759,12 +759,14 @@ export const partitionTools = (
   const userConfigTools: Record<string, Tool> = {};
 
   for (const [ldName, stub] of Object.entries(toolHandlers)) {
+    // Only tools attached to the active variation are enabled (SEC-9507).
+    if (!configTools || !Object.hasOwn(configTools, ldName)) continue;
     const nativeTool = (stub as unknown as Record<symbol, unknown>)[NATIVE_TOOL_KEY] as NativeTool | undefined;
     if (nativeTool) {
       // Carrying NATIVE_TOOL_KEY makes it the wrapper's callable stub, not the NativeTool.
       nativeToolMap.set(nativeTool.toolName, stub as ToolHandlerFn);
       nativeToolAliases.set(ldName, nativeTool.toolName);
-    } else if (configTools?.[ldName]) {
+    } else {
       userConfigTools[ldName] = configTools[ldName];
     }
   }
@@ -1002,7 +1004,7 @@ export type ClaudeAgentsHostOptions = {
 /**
  * What a per-invoke preparation adds to one run. Package-internal and generic: it names no
  * feature, so code at a later stage can register through it without this module importing or
- * naming that code (TESTING.md §0.3).
+ * naming that code.
  */
 export type QueryPreparation = {
   /** Extra `query()` options, spread with the handler's own, after `model.parameters`. */

@@ -86,7 +86,7 @@ async function readConfigSkills(key: string, context: LDContext): Promise<SkillR
  *
  * ```ts
  * await initClient();
- * setSkillStore(new FDv2SkillStore(process.env.LD_SDK_KEY!).start());
+ * setSkillStore(new LaunchDarklySkillStore(process.env.LD_SDK_KEY!).start());
  * const { watcher } = await watchSkills(configSkills('support-agent', context), '.claude/skills');
  * ```
  *

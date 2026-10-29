@@ -173,7 +173,7 @@ describe('toLangGraph', () => {
     await expect(toLangGraph(Promise.resolve(def)).invoke('hello')).rejects.toThrow(/disabled/);
   });
 
-  it('throws when root is null (§2.x.3)', async () => {
+  it('throws when root is null', async () => {
     const def = { ...makeGraphDef([makeNode('root')], {}, 'root'), root: null };
     await expect(toLangGraph(Promise.resolve(def as any)).invoke('hello')).rejects.toThrow(/root/i);
   });

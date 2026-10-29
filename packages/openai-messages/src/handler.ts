@@ -376,10 +376,10 @@ const toToolDefinitions = (tools: FunctionTool[]): ToolDefinitionInput[] =>
  * offers the Chat Completions parameter set, and the Responses API this handler calls accepts
  * neither of those two names. `invoke` and `stream` forward the same keys.
  *
- * This is the OpenAI Messages list in the cross-SDK spec (ai-sdks-monorepo TESTING.md §1.12), the
+ * This is the cross-SDK OpenAI Messages list, the
  * same list the Python SDK forwards: settings that shape what the model generates, and nothing
  * else. Adding a key after 1.0 breaks nobody, and removing one does, so a key that does not
- * clearly shape generation stays off. The spec also lists `max_tool_calls`, which
+ * clearly shape generation stays off. The cross-SDK list also has `max_tool_calls`, which
  * `ResponseCreateParamsBase` in the installed `openai` package does not have, so it is not
  * forwarded.
  *
@@ -484,12 +484,12 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
   return picked;
 }
 
-export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createOpenAIMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('openai-messages.createOpenAIHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  return createOpenAIHandlerInternal({ captureContent });
+  return createOpenAIMessagesHandlerInternal({ captureContent });
 }
 
-function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+function createOpenAIMessagesHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   const openai = new OpenAI();
 
   const MAX_STEPS = 10;
@@ -825,6 +825,6 @@ export const openaiMessages = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createOpenAIHandlerInternal({ captureContent }),
+    handler: createOpenAIMessagesHandlerInternal({ captureContent }),
   }).invoke(userInput, context, variables);
 };

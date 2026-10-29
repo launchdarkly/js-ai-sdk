@@ -7,7 +7,7 @@
 
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EvalTool, Judge, type RunOptions, Scorer } from '../experimental.js';
+import { EvalTool, Judge, type RunOptions, Scorer } from '../index.js';
 import { buildMessageHistory, FORMATTING_INSTRUCTIONS } from '../judge-scoring.js';
 import { FORMATTING_INSTRUCTIONS as ONLINE_FORMATTING_INSTRUCTIONS } from '../judges.js';
 import { parseTemplate } from '../utils.js';
@@ -92,11 +92,11 @@ const createBody = (api: FakeApi) =>
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
 
 // ---------------------------------------------------------------------------
-// §8.8.2 Pinning
+// Pinning
 // ---------------------------------------------------------------------------
 
 describe('criteria on the create body', () => {
-  it('pins a judge left on its defaults, with both thresholds and no success direction', async () => {
+  it('pins a judge left on its defaults, with its row threshold and no success direction', async () => {
     const api = routeHostedRun(new FakeApi());
     await makeModule(api).run(run());
     expect(createBody(api).criteria).toEqual([
@@ -104,7 +104,7 @@ describe('criteria on the create body', () => {
         criterionType: 'accuracy',
         kind: 'judge',
         judgeKey: 'accuracy',
-        options: { threshold: 0.5, passRateThreshold: 0.95 },
+        options: { threshold: 0.5 },
       },
     ]);
   });
@@ -124,13 +124,13 @@ describe('criteria on the create body', () => {
         criterionType: 'typos',
         kind: 'scorer',
         successDirection: 'lower_is_better',
-        options: { threshold: 0.2, passRateThreshold: 0.95 },
+        options: { threshold: 0.2 },
       },
       {
         criterionType: 'accuracy',
         kind: 'judge',
         judgeKey: 'accuracy',
-        options: { threshold: 0.5, passRateThreshold: 0.95, groundTruthContext: 'The policy is {{policy}}' },
+        options: { threshold: 0.5, groundTruthContext: 'The policy is {{policy}}' },
       },
     ]);
   });
@@ -144,7 +144,7 @@ describe('criteria on the create body', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.2 Resolution
+// Resolution
 // ---------------------------------------------------------------------------
 
 describe('judge resolution', () => {
@@ -204,7 +204,7 @@ describe('judge resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.3 Judge handler selection
+// Judge handler selection
 // ---------------------------------------------------------------------------
 
 describe('judge handler selection', () => {
@@ -282,7 +282,7 @@ describe('judge handler selection', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.3 Judge invocation
+// Judge invocation
 // ---------------------------------------------------------------------------
 
 describe('judge invocation', () => {
@@ -523,7 +523,7 @@ describe('judge invocation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.4 Scorers
+// Scorers
 // ---------------------------------------------------------------------------
 
 describe('scorers', () => {
@@ -653,7 +653,7 @@ describe('scorers', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.5 Criterion events
+// Criterion events
 // ---------------------------------------------------------------------------
 
 describe('criterion events', () => {
@@ -731,7 +731,7 @@ describe('criterion events', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.6 Sequencing, concurrency and isolation
+// Sequencing, concurrency and isolation
 // ---------------------------------------------------------------------------
 
 describe('phase sequencing', () => {

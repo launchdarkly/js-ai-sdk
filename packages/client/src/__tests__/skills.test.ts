@@ -302,6 +302,7 @@ describe('ReconcileReport ok and errors', () => {
  */
 const SKILLS_VALUES = [
   'FDv2SkillStore',
+  'LaunchDarklySkillStore',
   'InMemorySkillStore',
   'MANIFEST_FILENAME',
   'MANIFEST_VERSION',
@@ -325,23 +326,30 @@ const SKILLS_VALUES = [
   'writeSkills',
 ];
 
-/**
- * The experimental entry point's runtime exports for Evaluations from Code.
- * Listed here so the exact-equality check below covers the whole entry point.
- */
-const EXPERIMENTAL_EVALUATIONS_VALUES = [
-  'EvalTool',
-  'EvaluationsError',
-  'EvaluationsModule',
-  'Judge',
-  'Scorer',
-  'initEvaluations',
+/** The package root's runtime exports for Evaluations from Code. */
+const EVALUATIONS_VALUES = ['EvalTool', 'EvaluationsError', 'EvaluationsModule', 'Judge', 'Scorer', 'initEvaluations'];
+
+/** The package root's type-only exports for Evaluations from Code. */
+const EVALUATIONS_TYPES = [
+  'AIConfig',
+  'Criterion',
+  'DatasetRow',
+  'EvalRunResult',
+  'GenerationConfig',
+  'GenerationMode',
+  'GenerationOverrides',
+  'InitEvaluationsOptions',
+  'InlineDatasetRow',
+  'RunOptions',
+  'RunSummary',
 ];
 
 /** The package root's type-only exports for Agent Skills. */
 const SKILLS_TYPES = [
   'FDv2Mode',
   'FDv2SkillStoreOptions',
+  'LaunchDarklySkillStoreMode',
+  'LaunchDarklySkillStoreOptions',
   'OnUnavailable',
   'RawSkillObject',
   'ReconcileAction',
@@ -420,7 +428,7 @@ const ROOT_VALUES = [
   'setUsageSpanAttributes',
   'shutdown',
   'shutdownTelemetry',
-  // Non-reporting skills plumbing for the handler packages (TESTING.md §3.27).
+  // Non-reporting skills plumbing for the handler packages.
   'skillRefsInternal',
   'textMessage',
   'toolResultString',
@@ -431,21 +439,15 @@ const ROOT_VALUES = [
 ];
 
 describe('package exports', () => {
-  it('the experimental entry point exports exactly the documented evaluations values', () => {
-    expect(Object.keys(experimental).sort()).toEqual([...EXPERIMENTAL_EVALUATIONS_VALUES].sort());
+  it('the experimental entry point exports no value', () => {
+    expect(Object.keys(experimental)).toEqual([]);
   });
 
-  it('no evaluations value is exported from the package root', () => {
-    for (const name of EXPERIMENTAL_EVALUATIONS_VALUES) {
-      expect(name in packageIndex, name).toBe(false);
-    }
+  it('the package root exports exactly the snapshotted, skills and evaluations values', () => {
+    expect(Object.keys(packageIndex).sort()).toEqual([...ROOT_VALUES, ...SKILLS_VALUES, ...EVALUATIONS_VALUES].sort());
   });
 
-  it('the package root exports exactly the snapshotted values and the skills values', () => {
-    expect(Object.keys(packageIndex).sort()).toEqual([...ROOT_VALUES, ...SKILLS_VALUES].sort());
-  });
-
-  it('names every skills export in the root API report and none in the experimental one', () => {
+  it('names every skills and evaluations export in the root API report and none in the experimental one', () => {
     // Types leave nothing to enumerate at runtime, so the checked-in API
     // Extractor reports are what pin them.
     const report = readFileSync(new URL('../../etc/ai-server.api.md', import.meta.url), 'utf-8');
@@ -453,7 +455,7 @@ describe('package exports', () => {
       new URL('../../etc/ai-server-experimental.api.md', import.meta.url),
       'utf-8',
     );
-    for (const name of [...SKILLS_TYPES, ...SKILLS_VALUES]) {
+    for (const name of [...SKILLS_TYPES, ...SKILLS_VALUES, ...EVALUATIONS_TYPES, ...EVALUATIONS_VALUES]) {
       // Anchored on the declaration, so a name that only appears in another export's signature
       // (`Skill` in `getSkill(): Promise<Skill | null>`) does not count as exported.
       const declaration = new RegExp(`^export (declare )?(type|interface|class|function|const|enum) ${name}\\b`, 'm');
@@ -535,12 +537,18 @@ describe('package exports', () => {
   it('exports the delivery transport, the watcher, and their defaults from the package root', () => {
     // The transport and the watcher are root exports in both languages;
     // the base-URI and debounce defaults are TypeScript-only.
-    expect(typeof packageIndex.FDv2SkillStore).toBe('function');
+    expect(typeof packageIndex.LaunchDarklySkillStore).toBe('function');
     expect(typeof packageIndex.watchSkills).toBe('function');
     expect(typeof packageIndex.SkillWatcher).toBe('function');
     expect(packageIndex.SKILLS_DEFAULT_BASE_URI).toBe('https://sdk.launchdarkly.com');
     expect(packageIndex.SKILLS_DEFAULT_STREAM_URI).toBe('https://stream.launchdarkly.com');
     expect(packageIndex.SKILLS_DEFAULT_DEBOUNCE_MS).toBe(500);
+  });
+
+  it('keeps the deprecated FDv2SkillStore name as an alias of LaunchDarklySkillStore', () => {
+    expect(packageIndex.FDv2SkillStore).toBe(packageIndex.LaunchDarklySkillStore);
+    const store: packageIndex.LaunchDarklySkillStore = new packageIndex.FDv2SkillStore('sdk-test-key');
+    expect(store).toBeInstanceOf(packageIndex.LaunchDarklySkillStore);
   });
 
   it('exports getSkillResult and the outcome factory from the package root', () => {
@@ -745,7 +753,7 @@ describe('InMemorySkillStore', () => {
     expect(new InMemorySkillStore().getObject('skill', 'nope')).toBeNull();
   });
 
-  it('implements no isInitialized probe — a hand-populated store is never waiting (§3.21)', () => {
+  it('implements no isInitialized probe — a hand-populated store is never waiting', () => {
     expect('isInitialized' in new InMemorySkillStore()).toBe(false);
   });
 
@@ -1014,9 +1022,9 @@ describe('store configuration', () => {
       () => '',
       (cause: Error) => cause.message,
     );
-    expect(message).toContain('FDv2SkillStore');
+    expect(message).toContain('LaunchDarklySkillStore');
     expect(message).toContain('InMemorySkillStore');
-    expect(message.indexOf('FDv2SkillStore')).toBeLessThan(message.indexOf('InMemorySkillStore'));
+    expect(message.indexOf('LaunchDarklySkillStore')).toBeLessThan(message.indexOf('InMemorySkillStore'));
     expect(message).not.toContain('follow-up release');
   });
 
@@ -1656,7 +1664,7 @@ describe('allSkills', () => {
     //
     // The seam never promised a map key spells a skill key, either: a store
     // holding several versions of one key has reason to spell it `key:version`,
-    // which is exactly what FDv2SkillStore does. Pinned because the asymmetry
+    // which is exactly what LaunchDarklySkillStore does. Pinned because the asymmetry
     // with the pinned path is surprising enough to invite a "fix" that would
     // break every multi-version store.
     const emitter = new RecordingEmitter();
@@ -1686,7 +1694,7 @@ describe('allSkills', () => {
     // `resolveFromStore`'s equality check is only reached with a pin.
     //
     // The map key is the thing that invites a "fix" here, because
-    // `FDv2SkillStore` spells it `key:version` — so a store whose map key says
+    // `LaunchDarklySkillStore` spells it `key:version` — so a store whose map key says
     // version 3 while the object says 5 looks like a disagreement and is not
     // one. Pinned because a check added on the listing path would report a
     // mismatch for every store that spells its map keys that way.
@@ -1836,7 +1844,7 @@ describe('integrity verification', () => {
     expect(emitter.signals(INTEGRITY_SIGNAL)).toHaveLength(1);
   });
 
-  it('reports over_size_cap, not not_utf8, for over-cap content that also carries a lone surrogate (§3.21)', async () => {
+  it('reports over_size_cap, not not_utf8, for over-cap content that also carries a lone surrogate', async () => {
     // The checks run in a fixed order — shape, size, encoding, hash — and size
     // precedes encoding deliberately: running an encoding pass over a 10 MiB
     // body before rejecting it for being 10 MiB is a DoS foothold. This is the
@@ -1924,7 +1932,7 @@ describe('integrity verification', () => {
     expect(await getSkill('a')).toBeNull();
   });
 
-  it('rejects a non-object raw entry — absent when pinned, not_an_object when listed (§3.21)', async () => {
+  it('rejects a non-object raw entry — absent when pinned, not_an_object when listed', async () => {
     // The asymmetry is the contract. A pinned lookup that comes back as a
     // non-object is a broken store adapter answering "nothing", reported as
     // `absent` with no signal and no log record — firing a tampering signal on
@@ -2165,7 +2173,7 @@ describe('telemetry seam, accessor half', () => {
     skillRefs({ model: { name: 'm' }, provider: { name: 'p' }, instructions: 'i', skills: [{ key: 'a', version: 1 }] });
 
     // Skills telemetry goes through the private emitter, never client.track. The only track calls
-    // are the $ld:ai:sdk:usage events for the helpers themselves (§3.27). Which helpers still
+    // are the $ld:ai:sdk:usage events for the helpers themselves. Which helpers still
     // report here depends on earlier tests, since each reports once per client.
     const calls = mockClient.track.mock.calls as unknown[][];
     const helpers = ['client.allSkills', 'client.getSkill', 'client.getSkills', 'client.skillRefs'];
@@ -2278,7 +2286,7 @@ describe('integrity-failure log record', () => {
    * A store that answers a pin with a well-formed object at another version.
    *
    * Hand-built on purpose: neither shipped store can produce this outcome.
-   * `FDv2SkillStore` and `InMemorySkillStore` both answer a pin with exactly
+   * `LaunchDarklySkillStore` and `InMemorySkillStore` both answer a pin with exactly
    * that version or with `null`, so a pin that misses reads as `absent` — a
    * test that tried to provoke this from a shipped store would get `absent`
    * instead and silently stop covering the case. Only `getObject` is

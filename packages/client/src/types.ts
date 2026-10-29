@@ -109,8 +109,7 @@ export type TextContentBlock = { type: 'text'; text: string };
 /**
  * An image block inside a multimodal message, in LaunchDarkly-canonical form.
  * `source.type` is either an inline base64 payload (with its media type) or a
- * URL. Handlers map this into each provider's native image shape — see the
- * per-provider table in TESTING.md Appendix A.7.
+ * URL. Handlers map this into each provider's native image shape.
  */
 export type ImageContentBlock =
   | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
@@ -307,7 +306,7 @@ export type RawSkillObject = {
 
 /**
  * The interface a source of skill content implements. Structurally typed: pass
- * any object with these methods. `FDv2SkillStore` (LaunchDarkly delivery) and
+ * any object with these methods. `LaunchDarklySkillStore` (LaunchDarkly delivery) and
  * `InMemorySkillStore` are the built-in implementations.
  *
  * Everything a store serves is treated as untrusted; the accessors re-verify
@@ -753,7 +752,14 @@ export type StreamEvent =
 export type GraphStreamEvent =
   | { type: 'node_start'; nodeKey: string }
   | { type: 'chunk'; text: string; nodeKey: string }
-  | { type: 'node_done'; nodeKey: string; response: string; usage: TokenUsage }
+  | {
+      type: 'node_done';
+      nodeKey: string;
+      response: string;
+      usage: TokenUsage;
+      /** This node's own judge results. Absent when none of its judges produced one. */
+      judgeResults?: ProviderResponse['judgeResults'];
+    }
   | { type: 'handoff'; sourceKey: string; targetKey: string }
   | {
       type: 'done';

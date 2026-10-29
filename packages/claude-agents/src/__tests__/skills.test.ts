@@ -1,5 +1,5 @@
 /**
- * TESTING.md §2.x "Claude Agents Skills Integration", A.21.
+ * Claude Agents Skills Integration.
  *
  * `query()` is mocked; everything else is real: the skills store, `writeSkills`, the filesystem
  * under a per-test temp directory, and an OTel tracer provider for the span assertion. What the
@@ -501,7 +501,11 @@ describe('query() options', () => {
   it('adds Skill after the native tools, once', async () => {
     const seen: Seen[] = [];
     mockQuery.mockImplementation(recordingQuery(seen));
-    await handlerFor()(withSkills(refs) as any, 'q', { read: nativeStub('Read') } as any);
+    await handlerFor()(
+      withSkills(refs, { tools: { read: { name: 'read', type: 'function', parameters: {} } } }) as any,
+      'q',
+      { read: nativeStub('Read') } as any,
+    );
     expect(seen[0].options.tools).toEqual(['Read', 'Skill']);
   });
 
@@ -548,7 +552,7 @@ describe('query() options', () => {
   });
 });
 
-// ─── Helper usage (TESTING.md §3.27) ──────────────────────────────────────────
+// ─── Helper usage ─────────────────────────────────────────────────────────────
 
 describe('helper usage', () => {
   it('reports only its own ID on a run with skills, not skillRefs or writeSkills', async () => {

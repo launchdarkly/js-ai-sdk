@@ -10,6 +10,12 @@ import { Span } from '@opentelemetry/api';
 // @public
 export function addCachedTokensToInput(rawUsage: Record<string, unknown>): SpanUsage;
 
+// @public
+export type AIConfig = {
+    key: string;
+    variation: string;
+};
+
 // @public (undocumented)
 export type AiConfigRep = {
     instructions?: string;
@@ -185,42 +191,89 @@ export function createSkillSource(init: {
 }): SkillSource;
 
 // @public
-export function endSpanOnce(span: Span, tracker: Set<Span>, abandoned?: boolean): void;
-
-// @public (undocumented)
-export type FDv2Mode = 'stream' | 'poll';
+export type Criterion = Judge | Scorer;
 
 // @public
-export class FDv2SkillStore implements SkillStore {
-    constructor(sdkKey: string, options?: FDv2SkillStoreOptions);
-    addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
-    // (undocumented)
-    allObjects(kind: string): Record<string, RawSkillObject>;
-    _backoffResetIntervalMs: number;
-    close(): Promise<void>;
-    get diagnostics(): StoreDiagnostics;
-    get failed(): string | null;
-    // (undocumented)
-    getObject(kind: string, key: string, version?: number | null): RawSkillObject | null;
-    isInitialized(): boolean;
-    removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
-    start(): this;
-    waitForSkills(options?: {
-        readonly timeoutSeconds?: number;
-    }): Promise<boolean>;
+export type DatasetRow = {
+    rowIndex: number;
+    input: string | null;
+    expectedOutput: string | null;
+    variables: Record<string, unknown>;
+    metadata: Record<string, unknown> | null;
+};
+
+// @public
+export function endSpanOnce(span: Span, tracker: Set<Span>, abandoned?: boolean): void;
+
+// @public
+export type EvalRunResult = {
+    passed: boolean;
+    url: string;
+    runId: string;
+    summary: RunSummary;
+};
+
+// @public
+export class EvalTool {
+    constructor(key: string, implementation: EvalToolImplementation, schema: Record<string, unknown>, description?: string);
+    readonly description: string;
+    // Warning: (ae-forgotten-export) The symbol "EvalToolImplementation" needs to be exported by the entry point index.d.ts
+    readonly implementation: EvalToolImplementation;
+    readonly key: string;
+    readonly projectKey: string | undefined;
+    readonly schema: Readonly<Record<string, unknown>>;
+    readonly source: 'library' | 'inline';
+    readonly version: number | undefined;
 }
 
-// @public (undocumented)
-export type FDv2SkillStoreOptions = {
-    readonly mode?: FDv2Mode;
-    readonly baseUri?: string;
-    readonly streamUri?: string;
-    readonly pollIntervalSeconds?: number;
-    readonly readTimeoutSeconds?: number;
-    readonly initialBackoffSeconds?: number;
-    readonly maxBackoffSeconds?: number;
-    readonly requester?: Requester;
+// @public
+export class EvaluationsError extends Error {
+    constructor(message: string, options?: {
+        cause?: unknown;
+    });
+}
+
+// @public
+export class EvaluationsModule {
+    // @internal
+    constructor(internalsArg: unknown);
+    readonly projectKey: string;
+    run(options: RunOptions): Promise<EvalRunResult>;
+    readonly sdkKey: string | undefined;
+    // Warning: (ae-forgotten-export) The symbol "ToolsClient" needs to be exported by the entry point index.d.ts
+    readonly tools: ToolsClient;
+    readonly uiBaseUri: string;
+}
+
+// @public @deprecated (undocumented)
+export type FDv2Mode = LaunchDarklySkillStoreMode;
+
+// @public @deprecated (undocumented)
+export const FDv2SkillStore: typeof LaunchDarklySkillStore;
+
+// @public @deprecated (undocumented)
+export type FDv2SkillStore = LaunchDarklySkillStore;
+
+// @public @deprecated (undocumented)
+export type FDv2SkillStoreOptions = LaunchDarklySkillStoreOptions;
+
+// @public
+export type GenerationConfig = {
+    provider: string;
+    model: string;
+    mode: GenerationMode;
+    parameters?: Record<string, unknown>;
+    instructions?: string;
+    messages?: ConfigMessage[];
+    promptSnippets?: Record<string, string>;
+    outputFormat?: Record<string, unknown>;
 };
+
+// @public
+export type GenerationMode = 'completion' | 'agent';
+
+// @public
+export type GenerationOverrides = Partial<Omit<GenerationConfig, 'mode'>>;
 
 // @public (undocumented)
 export function getClient(): LDClientInterface;
@@ -310,6 +363,7 @@ export type GraphStreamEvent = {
     nodeKey: string;
     response: string;
     usage: TokenUsage;
+    judgeResults?: ProviderResponse['judgeResults'];
 } | {
     type: 'handoff';
     sourceKey: string;
@@ -377,6 +431,29 @@ export function initClient(client: LDClientInterface, options?: InitBaseClientOp
 export function initClient(options?: InitBaseClientOptions): Promise<LDClientInterface>;
 
 // @public
+export function initEvaluations(options?: InitEvaluationsOptions): EvaluationsModule;
+
+// @public
+export type InitEvaluationsOptions = {
+    projectKey?: string;
+    apiKey?: string;
+    sdkKey?: string;
+    apiBaseUri?: string;
+    uiBaseUri?: string;
+    logEvents?: boolean;
+    transport?: Transport;
+};
+
+// @public
+export type InlineDatasetRow = {
+    rowIdx?: number;
+    input: string;
+    expectedOutput?: string;
+    variables?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+};
+
+// @public
 export class InMemorySkillStore implements SkillStore {
     constructor(objects?: Record<string, RawSkillObject>);
     addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
@@ -403,6 +480,19 @@ export type InspectConfigResult = {
 
 // @public
 export function isContentBlocks(content: MessageContent): content is ContentBlock[];
+
+// @public
+export class Judge {
+    constructor(key: string, options?: {
+        threshold?: number;
+        passRateThreshold?: number;
+        groundTruthContext?: string;
+    });
+    readonly groundTruthContext?: string;
+    readonly key: string;
+    readonly passRateThreshold?: number;
+    readonly threshold: number;
+}
 
 // @public
 export type JudgeCallResult = {
@@ -460,6 +550,41 @@ export function langChainSpanMessages(messages: ReadonlyArray<unknown>): {
 
 // @public
 export function langChainSpanUsage(usage: Record<string, unknown> | undefined): SpanUsage | undefined;
+
+// @public
+export class LaunchDarklySkillStore implements SkillStore {
+    constructor(sdkKey: string, options?: LaunchDarklySkillStoreOptions);
+    addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    // (undocumented)
+    allObjects(kind: string): Record<string, RawSkillObject>;
+    _backoffResetIntervalMs: number;
+    close(): Promise<void>;
+    get diagnostics(): StoreDiagnostics;
+    get failed(): string | null;
+    // (undocumented)
+    getObject(kind: string, key: string, version?: number | null): RawSkillObject | null;
+    isInitialized(): boolean;
+    removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    start(): this;
+    waitForSkills(options?: {
+        readonly timeoutSeconds?: number;
+    }): Promise<boolean>;
+}
+
+// @public (undocumented)
+export type LaunchDarklySkillStoreMode = 'stream' | 'poll';
+
+// @public (undocumented)
+export type LaunchDarklySkillStoreOptions = {
+    readonly mode?: LaunchDarklySkillStoreMode;
+    readonly baseUri?: string;
+    readonly streamUri?: string;
+    readonly pollIntervalSeconds?: number;
+    readonly readTimeoutSeconds?: number;
+    readonly initialBackoffSeconds?: number;
+    readonly maxBackoffSeconds?: number;
+    readonly requester?: Requester;
+};
 
 // @public (undocumented)
 export interface LDClientInterface {
@@ -685,11 +810,59 @@ export type RunNodeOptions = {
 };
 
 // @public
+export type RunOptions = {
+    key: string;
+    dataset: string | readonly InlineDatasetRow[];
+    tools?: readonly EvalTool[];
+    criteria?: readonly Criterion[];
+    concurrency?: number;
+    pollIntervalSeconds?: number;
+    pollTimeoutSeconds?: number;
+} & ({
+    handler: ProviderHandler;
+    handlers?: never;
+} | {
+    handlers: ProviderHandler[];
+    handler?: never;
+}) & ({
+    generation: GenerationConfig;
+    aiConfig?: never;
+} | {
+    aiConfig: AIConfig;
+    generation?: GenerationOverrides;
+});
+
+// @public
+export type RunSummary = {
+    totalRows: number;
+    passedRows: number;
+    failedRows: number;
+    errorRows: number;
+    pendingRows: number;
+};
+
+// @public
 export interface RunUsage {
     add(turn: SpanUsage | undefined): void;
     readonly reported: boolean;
     // (undocumented)
     readonly total: SpanUsage;
+}
+
+// @public
+export class Scorer {
+    constructor(name: string, fn: ScorerFn, options?: {
+        threshold?: number;
+        passRateThreshold?: number;
+        successDirection?: SuccessDirection;
+    });
+    // Warning: (ae-forgotten-export) The symbol "ScorerFn" needs to be exported by the entry point index.d.ts
+    readonly fn: ScorerFn;
+    readonly name: string;
+    readonly passRateThreshold?: number;
+    // Warning: (ae-forgotten-export) The symbol "SuccessDirection" needs to be exported by the entry point index.d.ts
+    readonly successDirection: SuccessDirection;
+    readonly threshold: number;
 }
 
 // @public
@@ -959,8 +1132,9 @@ export type WriteSkillsOptions = {
 
 // Warnings were encountered during analysis:
 //
+// temp/dts/evaluations.d.ts:48:5 - (ae-forgotten-export) The symbol "Transport" needs to be exported by the entry point index.d.ts
 // temp/dts/skills-fdv2.d.ts:460:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point index.d.ts
-// temp/dts/types.d.ts:426:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
+// temp/dts/types.d.ts:425:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
 // temp/dts/utils.d.ts:36:5 - (ae-forgotten-export) The symbol "StreamHandlerInput" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)

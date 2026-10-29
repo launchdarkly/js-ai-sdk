@@ -468,7 +468,7 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
         strict: false,
         // biome-ignore lint/suspicious/noExplicitAny: OpenAI Agents SDK tool parameters type does not accept Record<string, unknown>
         parameters: toolConfig.parameters as any,
-        // null, not undefined: the SDK default feeds a tool error back to the model; the spec (TESTING.md §1.4) says it must propagate.
+        // null, not undefined: the SDK default feeds a tool error back to the model, but it must propagate.
         errorFunction: null,
         execute: async (args) => {
           const handler = toolHandlers[name] as (...args: unknown[]) => unknown;
@@ -598,13 +598,13 @@ function promptToSpanMessages(prompt: string | OpenAIInputItem[]): SpanMessage[]
   }));
 }
 
-export function createOpenAIAgentHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createOpenAIAgentsHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('openai-agents.createOpenAIAgentHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  return createOpenAIAgentHandlerInternal({ captureContent });
+  return createOpenAIAgentsHandlerInternal({ captureContent });
 }
 
-/** `createOpenAIAgentHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
-export function createOpenAIAgentHandlerInternal({
+/** `createOpenAIAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createOpenAIAgentsHandlerInternal({
   captureContent = false,
 }: ContentCaptureOptions = {}): ProviderHandler {
   return createHandlerInternal(
@@ -799,6 +799,6 @@ export const openaiAgents = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createOpenAIAgentHandlerInternal({ captureContent }),
+    handler: createOpenAIAgentsHandlerInternal({ captureContent }),
   }).invoke(userInput, context, variables);
 };

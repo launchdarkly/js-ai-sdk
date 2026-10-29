@@ -13,11 +13,11 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { createClaudeMessagesHandler } from '@launchdarkly/ai-claude-messages';
 import type { JudgeTask } from '@launchdarkly/ai-node';
 import { getClient, initClient, runJudge, shutdown } from '@launchdarkly/ai-node';
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
 import { createTypesafeHandler } from '@launchdarkly/ai-typesafe';
 
 const task = workerData as JudgeTask;
-const handlers = [createOpenAIHandler(), createClaudeMessagesHandler(), createTypesafeHandler()];
+const handlers = [createOpenAIMessagesHandler(), createClaudeMessagesHandler(), createTypesafeHandler()];
 
 async function main(): Promise<void> {
   // Initialize the LD client in this worker so we can track the evaluation

@@ -23,6 +23,7 @@ import {
   type ProviderResponse,
   type RouteResult,
   type RunNodeOptions,
+  type TokenUsage,
   type Tool,
   type TrackData,
   type TraverseVisitor,
@@ -42,6 +43,20 @@ const drain = async <T, TReturn>(generator: AsyncGenerator<T, TReturn>): Promise
   while (!step.done) step = await generator.next();
   return step.value;
 };
+
+/**
+ * A node's `node_done` event. Carries the node's own judge results, and leaves
+ * the key out when no judge produced one. `done` holds only the graph-level judge.
+ */
+const nodeDoneEvent = (
+  nodeKey: string,
+  response: string,
+  usage: TokenUsage,
+  judgeResults: ProviderResponse['judgeResults'],
+): Extract<GraphStreamEvent, { type: 'node_done' }> =>
+  judgeResults && Object.keys(judgeResults).length > 0
+    ? { type: 'node_done', nodeKey, response, usage, judgeResults }
+    : { type: 'node_done', nodeKey, response, usage };
 
 /**
  * Selects the handler responsible for a node from the candidate `handlers`,
@@ -261,16 +276,14 @@ const buildGraph = async (
       };
       handoffHandlers[toolName] = () => {
         if (!chosen) chosen = edge.targetKey;
-        // Selecting an edge does not end the turn; execution continues until the model
-        // produces its final text. A "transferring now" reply reads as though control has
-        // already left, and the model stops short of its own work.
-        return `Handoff to ${edge.targetKey} recorded. Finish your own work and provide your final response.`;
+        // Same bytes as the Python and Go SDKs. The last sentence stops the router answering for its target.
+        return `Handoff to ${edge.targetKey} recorded. ${edge.targetKey} takes over when your turn ends. Finish your own part, then end your turn. Do not answer for ${edge.targetKey}.`;
       };
     }
 
     const routedConfig: AiConfigRep = {
       ...node.config,
-      instructions: `${node.config.instructions ?? ''}\n\nComplete your task using your available tools first. Only once you have your final answer, call exactly one transfer tool to route to the next agent.`,
+      instructions: `${node.config.instructions ?? ''}\n\nComplete your task using your available tools first. Only once your own part is done, call exactly one transfer tool to route to the next agent. Do not answer the parts of the request that belong to the agent you route to.`,
       tools: { ...(node.config.tools ?? {}), ...handoffTools },
     };
 
@@ -360,7 +373,7 @@ const buildGraph = async (
         );
       }
 
-      yield { type: 'node_done', nodeKey: node.key, response, usage };
+      yield nodeDoneEvent(node.key, response, usage, judgeResults);
       return { response, usage, judgeResults, trackData };
     } catch (err) {
       if (opts.from) {
@@ -470,7 +483,7 @@ const buildGraph = async (
         );
       }
 
-      yield { type: 'node_done', nodeKey: node.key, response, usage };
+      yield nodeDoneEvent(node.key, response, usage, judgeResults);
       return { response, usage, judgeResults, trackData, next };
     } catch (err) {
       const chosenKey = chosen();

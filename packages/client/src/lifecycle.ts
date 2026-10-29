@@ -133,7 +133,7 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
   // A teardown ran while the imports were pending: `shutdown()` abandoned the
   // init this setup belongs to, or the application stopped telemetry itself.
   // Either way, a provider built now would outlive it, and the next init would
-  // reuse it with this attempt's options (its sdkKey as highlight.project_id).
+  // reuse it with this attempt's options (its sdkKey as launchdarkly.project_id).
   if (telemetryTeardowns !== teardownsAtStart) return null;
 
   const baseEndpoint = options.otlpEndpoint ?? env('OTEL_EXPORTER_OTLP_ENDPOINT') ?? LD_DEFAULT_OTLP_ENDPOINT;
@@ -146,7 +146,7 @@ async function setupTelemetry(options: InitBaseClientOptions, sdkKey: string): P
   const resource = resourceFromAttributes({
     'service.name': options.serviceName ?? process.env.LD_SERVICE_NAME ?? 'nodejs-sdk',
     // Required for the LaunchDarkly (Highlight.io-based) OTLP backend to route traces.
-    'highlight.project_id': sdkKey,
+    'launchdarkly.project_id': sdkKey,
     ...(options.environment || process.env.LD_ENVIRONMENT
       ? { 'deployment.environment': options.environment ?? process.env.LD_ENVIRONMENT }
       : {}),
@@ -232,6 +232,48 @@ export async function shutdownTelemetry(): Promise<void> {
   }
 }
 
+/** The provider behind the global proxy, or the global itself when it is not a proxy. */
+// biome-ignore lint/suspicious/noExplicitAny: the delegate is whatever provider was registered, with no static type
+const globalTracerProvider = (): any => {
+  // biome-ignore lint/suspicious/noExplicitAny: getDelegate is on ProxyTracerProvider, not the TracerProvider interface
+  const global = trace.getTracerProvider() as any;
+  return typeof global?.getDelegate === 'function' ? global.getDelegate() : global;
+};
+
+/**
+ * Whether the active tracer provider carries {@link ConversationIdSpanProcessor}.
+ *
+ * Only then does `countSdkSpans` see a handler's spans. Under a foreign provider the count stays 0
+ * even when the handler traced itself, so a caller that writes spans on a 0 count would write them
+ * twice.
+ *
+ * Not part of the public API.
+ */
+export function sdkSpanProcessorIsActive(): boolean {
+  if (tracerProvider && ownedOtelGlobals.trace) return true;
+  // Reads the SDK provider's private processor list. A provider without it (a vendor wrapper) reads
+  // as foreign, which only means the caller writes nothing on its behalf.
+  const processors = globalTracerProvider()?._activeSpanProcessor?._spanProcessors;
+  return Array.isArray(processors) && processors.some((p) => p instanceof ConversationIdSpanProcessor);
+}
+
+/**
+ * Exports the spans queued on the registered tracer provider, without shutting it down. A provider
+ * with no `forceFlush` (the API's no-op default) makes this a no-op, and a failed flush is not
+ * reported: spans are best effort, and the caller's own work has already completed.
+ *
+ * Not part of the public API.
+ */
+export async function flushTracerProvider(): Promise<void> {
+  const provider = globalTracerProvider();
+  if (typeof provider?.forceFlush !== 'function') return;
+  try {
+    await provider.forceFlush();
+  } catch {
+    // See above: nothing to recover, and nothing the caller can do about it.
+  }
+}
+
 // Use a Symbol.for key so the singleton is shared across all module instances of
 // this package in the same process (e.g. multiple workspace packages each importing
 // @launchdarkly/ai-server resolve separate module instances through their own symlinks,
@@ -269,7 +311,7 @@ async function initBaseClient(options: InitBaseClientOptions = {}): Promise<LDCl
     return await startBaseClient(sdkKey, options);
   } catch (err) {
     // A rejected init is retried rather than cached, and the retry may bring
-    // different options (another sdkKey is another highlight.project_id), so
+    // different options (another sdkKey is another launchdarkly.project_id), so
     // drop the provider this attempt built instead of leaving the retry to reuse
     // it. Only if it is still the current one: `shutdown()` may have torn it
     // down already and a newer attempt built its own. And not if a BYOC call
@@ -425,7 +467,7 @@ export async function initClient(
     // Pre-initialized client path (edge / custom runtimes).
     // Still run telemetry setup (with the caller's options) so OTel traces work
     // regardless of which LD SDK provides the client. The SDK key is optional
-    // here — it's only used for the highlight.project_id resource attribute.
+    // here — it's only used for the launchdarkly.project_id resource attribute.
     await setupTelemetry(clientOptions ?? {}, clientOptions?.sdkKey ?? process.env.LD_SDK_KEY ?? '');
     singleton.client = optionsOrClient;
     singleton.initPromise = Promise.resolve(optionsOrClient);

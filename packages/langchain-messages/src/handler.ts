@@ -329,15 +329,15 @@ const assistantOutput = (content: unknown, toolCalls: ReadonlyArray<unknown> | u
   langChainSpanMessages([{ _getType: () => 'ai', content, tool_calls: toolCalls ?? [] }]).messages;
 
 /** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
-export function createLangChainHandler(
+export function createLangChainMessagesHandler(
   llm?: LangChainModelSource,
   options: ContentCaptureOptions & { providers?: readonly string[] } = {},
 ): ProviderHandler {
   reportUsage('langchain-messages.createLangChainHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  return createLangChainHandlerInternal(llm, options);
+  return createLangChainMessagesHandlerInternal(llm, options);
 }
 
-function createLangChainHandlerInternal(
+function createLangChainMessagesHandlerInternal(
   llm?: LangChainModelSource,
   { captureContent = false, providers }: ContentCaptureOptions & { providers?: readonly string[] } = {},
 ): ProviderHandler {
@@ -766,6 +766,6 @@ export const langchainMessages = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createLangChainHandlerInternal(undefined, { captureContent, providers }),
+    handler: createLangChainMessagesHandlerInternal(undefined, { captureContent, providers }),
   }).invoke(userInput, context, variables);
 };

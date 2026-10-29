@@ -31,7 +31,7 @@ vi.mock('openai', () => ({
   },
 }));
 
-import { createOpenAIHandler } from '../handler.js';
+import { createOpenAIMessagesHandler } from '../handler.js';
 
 const exporter = new InMemorySpanExporter();
 const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
@@ -101,7 +101,7 @@ describe('openai-messages span tree against a real tracer', () => {
   it('nests the chat span under the invoke_agent root', async () => {
     mockResponsesCreate.mockResolvedValue(finalResponse());
 
-    await createOpenAIHandler()(baseConfig as never, 'q');
+    await createOpenAIMessagesHandler()(baseConfig as never, 'q');
 
     const [chat] = named('chat');
     expect(chat).toBeDefined();
@@ -111,7 +111,7 @@ describe('openai-messages span tree against a real tracer', () => {
   it('keeps every chat span of a multi-turn tool loop a direct child of the root', async () => {
     mockResponsesCreate.mockResolvedValueOnce(toolCallResponse()).mockResolvedValueOnce(finalResponse('Final'));
 
-    await createOpenAIHandler()(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') });
+    await createOpenAIMessagesHandler()(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') });
 
     const chats = named('chat');
     const rootId = root()?.spanContext().spanId;
@@ -124,7 +124,7 @@ describe('openai-messages span tree against a real tracer', () => {
   it('nests the execute_tool span under the root and keeps one trace id across the tree', async () => {
     mockResponsesCreate.mockResolvedValueOnce(toolCallResponse()).mockResolvedValueOnce(finalResponse('Final'));
 
-    await createOpenAIHandler()(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') });
+    await createOpenAIMessagesHandler()(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') });
 
     const [tool] = named('execute_tool ');
     expect(tool).toBeDefined();
@@ -141,7 +141,7 @@ describe('openai-messages span tree against a real tracer', () => {
     // Anthropic one. The handler already parses this string to call the tool; only the span disagreed.
     mockResponsesCreate.mockResolvedValueOnce(toolCallResponse()).mockResolvedValueOnce(finalResponse('Final'));
 
-    await createOpenAIHandler({ captureContent: true })(toolConfig as never, 'q', {
+    await createOpenAIMessagesHandler({ captureContent: true })(toolConfig as never, 'q', {
       myTool: vi.fn().mockReturnValue('r'),
     });
 
@@ -170,7 +170,7 @@ describe('openai-messages span tree against a real tracer', () => {
     });
 
     await expect(
-      createOpenAIHandler({ captureContent: true })(toolConfig as never, 'q', { myTool: vi.fn() }),
+      createOpenAIMessagesHandler({ captureContent: true })(toolConfig as never, 'q', { myTool: vi.fn() }),
     ).rejects.toThrow();
 
     const [tool] = named('execute_tool ');
@@ -182,7 +182,7 @@ describe('openai-messages span tree against a real tracer', () => {
       makeStreamMock([{ type: 'response.output_text.delta', delta: 'Hi' }], finalResponse('Hi')),
     );
 
-    await collectStream(createOpenAIHandler().stream?.(baseConfig as never, 'q', {}, {}) as never);
+    await collectStream(createOpenAIMessagesHandler().stream?.(baseConfig as never, 'q', {}, {}) as never);
 
     const [chat] = named('chat');
     expect(chat).toBeDefined();
@@ -192,7 +192,7 @@ describe('openai-messages span tree against a real tracer', () => {
   it('carries the run-level token totals on the invoke_agent root, not only on the children', async () => {
     mockResponsesCreate.mockResolvedValueOnce(toolCallResponse()).mockResolvedValueOnce(finalResponse('Final'));
 
-    await createOpenAIHandler()(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') });
+    await createOpenAIMessagesHandler()(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') });
 
     // The root is the only span carrying `launchdarkly.*` and the `feature_flag` event, so a
     // config-scoped query finds it and nothing else. Totals must be readable there.
@@ -217,7 +217,7 @@ describe('openai-messages span tree against a real tracer', () => {
     // `break` makes the generator run `finally` without ever entering `catch`. Without cleanup
     // there the root span is never ended, so it is never exported, and the run vanishes from AI
     // Config Monitoring along with its `feature_flag` event.
-    const gen = createOpenAIHandler().stream?.(baseConfig as never, 'q', {}, {}) as AsyncGenerator<unknown>;
+    const gen = createOpenAIMessagesHandler().stream?.(baseConfig as never, 'q', {}, {}) as AsyncGenerator<unknown>;
     for await (const _chunk of gen) break;
 
     const rootSpan = root();
@@ -233,7 +233,7 @@ describe('openai-messages span tree against a real tracer', () => {
   it('ends and parents both spans when the provider call throws', async () => {
     mockResponsesCreate.mockRejectedValue(new Error('provider down'));
 
-    await expect(createOpenAIHandler()(baseConfig as never, 'q')).rejects.toThrow('provider down');
+    await expect(createOpenAIMessagesHandler()(baseConfig as never, 'q')).rejects.toThrow('provider down');
 
     // The exporter only receives ended spans, so seeing both proves neither was orphaned.
     const [chat] = named('chat');
@@ -250,7 +250,7 @@ describe('openai-messages span tree against a real tracer', () => {
       .mockRejectedValueOnce(new Error('provider down mid-loop'));
 
     await expect(
-      createOpenAIHandler()(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') }),
+      createOpenAIMessagesHandler()(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') }),
     ).rejects.toThrow('provider down mid-loop');
 
     // Exactly the one completed turn's usage — `toolCallResponse` reports 5 in, 2 out.
@@ -266,7 +266,7 @@ describe('openai-messages span tree against a real tracer', () => {
   it('writes no token attributes on the root when no turn ever completed', async () => {
     mockResponsesCreate.mockRejectedValue(new Error('provider down'));
 
-    await expect(createOpenAIHandler()(baseConfig as never, 'q')).rejects.toThrow('provider down');
+    await expect(createOpenAIMessagesHandler()(baseConfig as never, 'q')).rejects.toThrow('provider down');
 
     expect(root()?.attributes['gen_ai.usage.input_tokens']).toBeUndefined();
     expect(root()?.attributes['gen_ai.usage.output_tokens']).toBeUndefined();
@@ -275,7 +275,7 @@ describe('openai-messages span tree against a real tracer', () => {
   it('puts context identity on the invoke_agent root and on no child span', async () => {
     mockResponsesCreate.mockResolvedValueOnce(toolCallResponse()).mockResolvedValueOnce(finalResponse('Final'));
 
-    await createOpenAIHandler()(
+    await createOpenAIMessagesHandler()(
       toolConfig as never,
       'q',
       { myTool: vi.fn().mockReturnValue('r') },

@@ -27,6 +27,22 @@ export {
   setConversationIdIfAbsent,
   withConversationId,
 } from './conversation.js';
+export type {
+  AIConfig,
+  DatasetRow,
+  EvalRunResult,
+  GenerationConfig,
+  GenerationMode,
+  GenerationOverrides,
+  InitEvaluationsOptions,
+  InlineDatasetRow,
+  RunOptions,
+  RunSummary,
+} from './evaluations.js';
+export { EvaluationsError, EvaluationsModule, initEvaluations } from './evaluations.js';
+export type { Criterion } from './evaluations-criteria.js';
+export { Judge, Scorer } from './evaluations-criteria.js';
+export { EvalTool } from './evaluations-tools.js';
 export { graph, graphInternal, resolveGraph } from './graph.js';
 export type { CanonicalTurn, ConfigTurn } from './history.js';
 export {
@@ -61,8 +77,19 @@ export {
   skillRefs,
   skillRefsInternal,
 } from './skills.js';
-export type { FDv2Mode, FDv2SkillStoreOptions, StoreDiagnostics } from './skills-fdv2.js';
-export { FDv2SkillStore, SKILLS_DEFAULT_BASE_URI, SKILLS_DEFAULT_STREAM_URI } from './skills-fdv2.js';
+export type {
+  FDv2Mode,
+  FDv2SkillStoreOptions,
+  LaunchDarklySkillStoreMode,
+  LaunchDarklySkillStoreOptions,
+  StoreDiagnostics,
+} from './skills-fdv2.js';
+export {
+  FDv2SkillStore,
+  LaunchDarklySkillStore,
+  SKILLS_DEFAULT_BASE_URI,
+  SKILLS_DEFAULT_STREAM_URI,
+} from './skills-fdv2.js';
 export type { WriteSkillsOptions } from './skills-fs.js';
 export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills, writeSkillsInternal } from './skills-fs.js';
 export { configSkills } from './skills-source.js';

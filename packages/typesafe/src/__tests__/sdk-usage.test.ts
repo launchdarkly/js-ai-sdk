@@ -1,5 +1,5 @@
 /**
- * TESTING.md §3.27 — `$ld:ai:sdk:usage` for typesafe.
+ * `$ld:ai:sdk:usage` for typesafe.
  */
 
 import type { LDClientInterface } from '@launchdarkly/ai-server';
@@ -37,7 +37,7 @@ function fakeClient(): FakeClient {
   } as unknown as FakeClient;
 }
 
-describe('§3.27 typesafe helper usage', () => {
+describe('typesafe helper usage', () => {
   let client: FakeClient;
 
   beforeEach(async () => {

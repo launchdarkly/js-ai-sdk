@@ -70,9 +70,9 @@ export function _clearState(): void {
  * replacement.
  *
  * ```ts
- * import { FDv2SkillStore, setSkillStore } from '@launchdarkly/ai-server';
+ * import { LaunchDarklySkillStore, setSkillStore } from '@launchdarkly/ai-server';
  *
- * setSkillStore(new FDv2SkillStore(process.env.LD_SDK_KEY!).start());
+ * setSkillStore(new LaunchDarklySkillStore(process.env.LD_SDK_KEY!).start());
  * ```
  *
  * @throws TypeError if `store` is not nullish and has no `getObject` and
@@ -268,7 +268,7 @@ export function skillRefs(config: AiConfigRep | null | undefined): SkillReferenc
 }
 
 /**
- * `skillRefs` without the helper-usage report (TESTING.md §3.27). Handler packages call this, so
+ * `skillRefs` without the helper-usage report. Handler packages call this, so
  * a run that reads its config's skills doesn't report a `skillRefs` call the application never made.
  * `configSkills` projects through it too, so a read of its source never reports `skillRefs`.
  */

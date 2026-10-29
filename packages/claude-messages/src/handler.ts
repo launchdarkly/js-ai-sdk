@@ -356,7 +356,7 @@ const buildMessages = (
  * `effort` rename below is folded into `output_config`), beyond `max_tokens`, which is handled
  * separately because it carries a default of 1024.
  *
- * This is the Claude Messages list in the cross-SDK spec (ai-sdks-monorepo TESTING.md §1.12), the
+ * This is the cross-SDK Claude Messages list, the
  * same list the Python SDK forwards: settings that shape what the model generates, and nothing
  * else. Adding a key after 1.0 breaks nobody, and removing one does, so a key that does not
  * clearly shape generation stays off.

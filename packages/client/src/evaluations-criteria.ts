@@ -15,13 +15,6 @@ const DEFAULT_JUDGE_THRESHOLD = 0.5;
 /** A scorer's row threshold when its reference sets none: a row passes only on a perfect score. */
 const DEFAULT_SCORER_THRESHOLD = 1.0;
 
-/**
- * The share of rows that must pass when a reference sets none, for both
- * criterion kinds. The request always carries both thresholds, so the client
- * fills in its own defaults rather than relying on a server-side one.
- */
-const DEFAULT_PASS_RATE_THRESHOLD = 0.95;
-
 /** Which way a scorer's score points. */
 export type SuccessDirection = 'higher_is_better' | 'lower_is_better';
 
@@ -62,8 +55,8 @@ export class Judge {
   readonly key: string;
   /** Score from 0 to 1 a row must reach to pass. Defaults to `0.5`. */
   readonly threshold: number;
-  /** Fraction of rows, from 0 to 1, that must pass for the criterion to pass. Defaults to `0.95`. */
-  readonly passRateThreshold: number;
+  /** Fraction of rows, from 0 to 1, that must pass for the criterion to pass. Unset by default. */
+  readonly passRateThreshold?: number;
   /**
    * Reference material the judge scores the output against, available to the
    * rubric as `{{ground_truth_context}}`. Rendered against each row's
@@ -88,10 +81,9 @@ export class Judge {
     }
     this.key = key;
     this.threshold = validateThreshold('threshold', options.threshold ?? DEFAULT_JUDGE_THRESHOLD);
-    this.passRateThreshold = validateThreshold(
-      'passRateThreshold',
-      options.passRateThreshold ?? DEFAULT_PASS_RATE_THRESHOLD,
-    );
+    if (options.passRateThreshold !== undefined) {
+      this.passRateThreshold = validateThreshold('passRateThreshold', options.passRateThreshold);
+    }
     this.groundTruthContext = options.groundTruthContext;
     Object.freeze(this);
   }
@@ -124,8 +116,8 @@ export class Scorer {
   readonly fn: ScorerFn;
   /** Score from 0 to 1 a row must reach to pass. Defaults to `1.0`. */
   readonly threshold: number;
-  /** Fraction of rows, from 0 to 1, that must pass for the criterion to pass. Defaults to `0.95`. */
-  readonly passRateThreshold: number;
+  /** Fraction of rows, from 0 to 1, that must pass for the criterion to pass. Unset by default. */
+  readonly passRateThreshold?: number;
   /** Which way the score points. Defaults to `'higher_is_better'`. */
   readonly successDirection: SuccessDirection;
 
@@ -154,10 +146,9 @@ export class Scorer {
     this.name = name;
     this.fn = fn;
     this.threshold = validateThreshold('threshold', options.threshold ?? DEFAULT_SCORER_THRESHOLD);
-    this.passRateThreshold = validateThreshold(
-      'passRateThreshold',
-      options.passRateThreshold ?? DEFAULT_PASS_RATE_THRESHOLD,
-    );
+    if (options.passRateThreshold !== undefined) {
+      this.passRateThreshold = validateThreshold('passRateThreshold', options.passRateThreshold);
+    }
     this.successDirection = successDirection;
     Object.freeze(this);
   }
@@ -171,15 +162,13 @@ export const criterionType = (criterion: Criterion): string =>
   criterion instanceof Judge ? criterion.key : criterion.name;
 
 /**
- * The entry a criterion pins on the evaluation create body. Both thresholds
- * are always sent. A judge carries no success direction: LaunchDarkly
- * hydrates it from the judge's own config.
+ * The entry a criterion pins on the evaluation create body. The row threshold
+ * is always sent; the pass-rate threshold only when set. A judge carries no
+ * success direction: LaunchDarkly hydrates it from the judge's own config.
  */
 export function criterionWire(criterion: Criterion): Record<string, unknown> {
-  const options: Record<string, unknown> = {
-    threshold: criterion.threshold,
-    passRateThreshold: criterion.passRateThreshold,
-  };
+  const options: Record<string, unknown> = { threshold: criterion.threshold };
+  if (criterion.passRateThreshold !== undefined) options.passRateThreshold = criterion.passRateThreshold;
   if (criterion instanceof Judge) {
     if (criterion.groundTruthContext !== undefined) options.groundTruthContext = criterion.groundTruthContext;
     return { criterionType: criterion.key, kind: 'judge', judgeKey: criterion.key, options };
