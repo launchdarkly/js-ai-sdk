@@ -102,8 +102,9 @@ export const captureContentFor = (handler: ProviderHandler | undefined): boolean
   effectiveCaptureContent(typeof handler?.captureContent === 'boolean' ? handler.captureContent : undefined);
 
 /**
- * Latches the process so `configure` can no longer change options. The SDK calls it before every
- * handler invocation it makes, and a handler's stream calls it when the stream starts.
+ * Latches the process so `configure` can no longer change options. Every handler built with
+ * `createHandler` calls it when invoked, its stream calls it when the stream starts, and the SDK
+ * calls it before each handler invocation it makes, so a plain function handler latches too.
  *
  * Internal: not exported from an entry point.
  */

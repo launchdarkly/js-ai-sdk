@@ -38,8 +38,10 @@ type StreamHandlerInput = (
  * both package-internal factories and user-supplied custom handlers should use
  * this helper instead of manually assigning `handler.providesFor`.
  *
- * The returned value is the same function reference; `createHandler` mutates
- * in place rather than wrapping.
+ * The returned value is a new function that latches `configure()` and then
+ * calls `handler` with the same `this` and arguments, returning its result. It
+ * carries `handler`'s own properties, so passing an existing handler through
+ * again keeps them. Calling the original function directly does not latch.
  *
  * Pass an optional `streamHandler` as the third argument to attach a streaming
  * implementation. When present, `model().stream()` will call it instead of
@@ -69,7 +71,13 @@ export function createHandlerInternal(
   streamHandler?: StreamHandlerInput,
   captureContent?: boolean,
 ): ProviderHandler {
-  const ph = handler as ProviderHandler;
+  // A plain function rather than an async one, so every call, including a direct
+  // `await handler(...)`, latches `configure` when it is made rather than after a microtask.
+  const ph = function (this: unknown, ...args: Parameters<HandlerInput>) {
+    noteAiInvocation();
+    return handler.apply(this, args);
+  } as ProviderHandler;
+  copyOwnProperties(ph, handler);
   ph.providesFor = providesFor;
   if (streamHandler) {
     // A plain function rather than a generator, so starting the stream latches `configure` at call
@@ -81,6 +89,22 @@ export function createHandlerInternal(
   }
   defineCaptureContent(ph, captureContent);
   return ph;
+}
+
+/** Function properties every function owns; the wrapper keeps its own. */
+const FUNCTION_OWN_KEYS = new Set<PropertyKey>(['length', 'name', 'prototype', 'arguments', 'caller']);
+
+/**
+ * Copies `source`'s own properties (accessors included) onto `target`, so a wrapper keeps what a
+ * caller attached to the function it wraps, such as a test spy's state or an earlier handler's
+ * `stream`. `captureContent` is skipped: the wrapper gets its own from {@link defineCaptureContent}.
+ */
+function copyOwnProperties(target: object, source: object): void {
+  for (const key of Reflect.ownKeys(source)) {
+    if (FUNCTION_OWN_KEYS.has(key) || key === 'captureContent') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (descriptor) Object.defineProperty(target, key, descriptor);
+  }
 }
 
 /**

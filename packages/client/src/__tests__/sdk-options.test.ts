@@ -119,6 +119,34 @@ describe('configure', () => {
     expect(() => configure({ options: { captureContent: false } })).toThrow(/cannot change/);
   });
 
+  it('latches on a direct handler call, outside the SDK, and still accepts identical options', async () => {
+    configure({ options: { captureContent: true } });
+    await handler()(CONFIG, 'hi');
+    expect(() => configure({ options: { captureContent: false } })).toThrow(/cannot change/);
+    configure({ options: { captureContent: true } });
+  });
+
+  it('latches when a direct call starts, before its promise settles', () => {
+    let finish: (value: { output: string; usage: Record<string, unknown> }) => void = () => {};
+    const h = createHandler(
+      ['TestProvider', 'messages'],
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = h(CONFIG);
+    expect(() => configure({ options: { captureContent: false } })).toThrow(/cannot change/);
+    finish({ output: 'ok', usage: {} });
+    return pending;
+  });
+
+  it('latches on a direct call to a handler wrapped twice', async () => {
+    const twice = createHandler(['TestProvider', 'messages'], handler());
+    await twice(CONFIG);
+    expect(() => configure({ options: { captureContent: false } })).toThrow(/cannot change/);
+  });
+
   it('latches when a handler stream starts, even if it is never iterated', () => {
     const body = vi.fn();
     const h = createHandler(['TestProvider', 'messages'], fn, async function* () {
