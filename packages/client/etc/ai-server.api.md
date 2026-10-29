@@ -524,6 +524,7 @@ export type JudgeTask = {
     configKey: string;
     judgeConfig: AiConfigRep;
     judgeMeta: LDVariationMeta;
+    judgeValue?: unknown;
     actualOutput: string;
     userInput?: string;
     trajectory?: string;

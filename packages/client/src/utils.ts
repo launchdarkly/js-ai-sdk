@@ -568,7 +568,17 @@ function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | und
  * Span event (required for AI Config Monitoring tab trace correlation):
  *   name: 'feature_flag'
  *   attributes: feature_flag.key, feature_flag.provider.name, feature_flag.set.id,
- *               feature_flag.context.id, feature_flag.contextKeys
+ *               feature_flag.result.variant, feature_flag.result.value,
+ *               feature_flag.context.id,
+ *               feature_flag.contextKeys
+ *   feature_flag.result.variant is the served variationKey, omitted when empty
+ *   (graph spans can carry an empty variationKey).
+ *   feature_flag.result.value is `JSON.stringify` of `variables.__ldValue`, the
+ *   raw variation (as the OTel TracingHook writes it with `includeValue: true`),
+ *   when present. The core sets `__ldValue` only for handlers with
+ *   `captureContent` on, and on the graph root only when the process-wide
+ *   default captures content. Otherwise it is `JSON.stringify(variationKey)` when the
+ *   key is non-empty, and omitted when there is neither.
  *   The observability backend projects these event attrs to span-level attrs,
  *   satisfying the query: events.name=feature_flag AND
  *   events.attributes.feature_flag.key=<configKey> AND
@@ -589,6 +599,20 @@ export function setLdSpanAttributes(span: Span, variables: Record<string, unknow
   };
   if (ld.environmentId) {
     featureFlagAttrs['feature_flag.set.id'] = ld.environmentId;
+  }
+  if (typeof ld.variationKey === 'string' && ld.variationKey !== '') {
+    featureFlagAttrs['feature_flag.result.variant'] = ld.variationKey;
+  }
+  // Same serialization as the LaunchDarkly OTel TracingHook with `includeValue: true`:
+  // `JSON.stringify(detail.value)`. The raw variation holds the prompt, so the core passes it only
+  // to handlers with content capture on; otherwise the variation key stands in, JSON-encoded like
+  // any flag value.
+  const raw = variables?.__ldValue;
+  const serializedRaw = raw !== undefined ? JSON.stringify(raw) : undefined;
+  if (typeof serializedRaw === 'string') {
+    featureFlagAttrs['feature_flag.result.value'] = serializedRaw;
+  } else if (typeof ld.variationKey === 'string' && ld.variationKey !== '') {
+    featureFlagAttrs['feature_flag.result.value'] = JSON.stringify(ld.variationKey);
   }
 
   const identity = contextIdentityFromLdContext(variables?.ldContext);

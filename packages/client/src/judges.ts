@@ -60,7 +60,7 @@ function selectJudgeExecution(
 const resolveJudge = async (
   key: string,
   userContext: LDContext,
-): Promise<{ config: AiConfigRep; meta: VariationMeta } | null> => {
+): Promise<{ config: AiConfigRep; meta: VariationMeta; value: unknown } | null> => {
   try {
     return await extractVariation(key, userContext);
   } catch (err) {
@@ -158,7 +158,7 @@ export const runJudges = async ({
 
     const resolved = await resolveJudge(judge.key, userContext);
     if (!resolved) continue;
-    const { config: judgeConfig, meta: judgeMeta } = resolved;
+    const { config: judgeConfig, meta: judgeMeta, value: judgeValue } = resolved;
 
     const judgeProvider = judgeConfig.provider?.name;
     const judgeMode = normalizeMode(judgeMeta.mode);
@@ -210,6 +210,7 @@ export const runJudges = async ({
         configKey: judge.key,
         config: effectiveJudgeConfig,
         meta: judgeMeta,
+        evaluatedValue: judgeValue,
         userContext,
         handler: judgeHandler,
         userInput: llmResponse,
@@ -335,7 +336,7 @@ export const buildJudgeTasksInternal = async ({
 
     const resolved = await resolveJudge(judge.key, userContext);
     if (!resolved) continue;
-    const { config: judgeConfig, meta: judgeMeta } = resolved;
+    const { config: judgeConfig, meta: judgeMeta, value: judgeValue } = resolved;
 
     const judgeProvider = judgeConfig.provider?.name;
     const judgeMode = normalizeMode(judgeMeta.mode);
@@ -359,6 +360,7 @@ export const buildJudgeTasksInternal = async ({
       configKey: judge.key,
       judgeConfig: withoutOutputFormat(judgeConfig, judge.key),
       judgeMeta,
+      judgeValue,
       actualOutput: llmResponse,
       userInput,
       trajectory,
@@ -392,6 +394,7 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
   const {
     judgeConfig,
     judgeMeta,
+    judgeValue,
     actualOutput,
     userInput,
     trajectory,
@@ -433,6 +436,7 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
         response_to_evaluate: actualOutput,
         ...(userInput ? { input: userInput } : {}),
       },
+      evaluatedValue: judgeValue,
     });
 
     const judgeResponse = typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse);

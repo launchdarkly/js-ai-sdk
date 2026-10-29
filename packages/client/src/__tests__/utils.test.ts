@@ -460,6 +460,48 @@ describe('setLdSpanAttributes', () => {
     const eventCall = span.addEvent.mock.calls.find((c: any[]) => c[0] === 'feature_flag');
     expect(eventCall?.[1]).not.toHaveProperty('feature_flag.set.id');
   });
+
+  it('includes feature_flag.result.variant in the event from variationKey', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: 'var-a' } });
+    expect(span.addEvent).toHaveBeenCalledWith(
+      'feature_flag',
+      expect.objectContaining({ 'feature_flag.result.variant': 'var-a' }),
+    );
+  });
+
+  it('omits feature_flag.result.variant when variationKey is empty', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: '', graphKey: 'my-graph' } });
+    const eventCall = span.addEvent.mock.calls.find((c: any[]) => c[0] === 'feature_flag');
+    expect(eventCall?.[1]).not.toHaveProperty('feature_flag.result.variant');
+  });
+
+  const rawVariation = {
+    model: { name: 'gpt-x', parameters: { temperature: 0.2 } },
+    provider: { name: 'openai' },
+    messages: [{ role: 'system', content: 'Be brief.' }],
+    _ldMeta: { enabled: true, variationKey: 'var-a', version: 3 },
+  };
+
+  it('writes the raw variation JSON as feature_flag.result.value when __ldValue is present', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: 'var-a' }, __ldValue: rawVariation });
+    // Same serialization as the LaunchDarkly OTel TracingHook with includeValue: JSON.stringify(detail.value).
+    expect(featureFlagAttrs(span)['feature_flag.result.value']).toBe(JSON.stringify(rawVariation));
+  });
+
+  it('writes the variation key JSON as feature_flag.result.value when there is no raw variation', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: 'opus' } });
+    expect(featureFlagAttrs(span)['feature_flag.result.value']).toBe('"opus"');
+  });
+
+  it('omits feature_flag.result.value when there is no variation key and no raw variation (graph spans)', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: '', graphKey: 'my-graph' } });
+    expect(featureFlagAttrs(span)).not.toHaveProperty('feature_flag.result.value');
+  });
 });
 
 // ─── setLdSpanAttributes — context identity ───────────────────────────────────
