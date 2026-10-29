@@ -204,6 +204,11 @@ export type DatasetRow = {
     metadata: Record<string, unknown> | null;
 };
 
+// Warning: (ae-internal-missing-underscore) The name "effectiveCaptureContent" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export function effectiveCaptureContent(override: boolean | undefined): boolean;
+
 // @public
 export function endSpanOnce(span: Span, tracker: Set<Span>, abandoned?: boolean): void;
 
@@ -684,6 +689,11 @@ export class NativeTool {
 
 // @public
 export function normalizeModelParameters(parameters: unknown): Record<string, unknown>;
+
+// Warning: (ae-internal-missing-underscore) The name "noteAiInvocation" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export function noteAiInvocation(): void;
 
 // @public
 export const omitModelStamps: <T extends {

@@ -85,7 +85,8 @@ export function configure({ options }: { options: SDKOptions }): void {
  * `undefined` reads the configured default, which itself defaults to `true`. An explicit `false`
  * removes conversation content everywhere, including on offline evaluation spans.
  *
- * Internal: not exported from an entry point.
+ * @internal Exported for the LaunchDarkly handler packages, for a call that is not a provider
+ * handler call; applications should call {@link configure}.
  */
 export function effectiveCaptureContent(override: boolean | undefined): boolean {
   return typeof override === 'boolean' ? override : currentOptions().captureContent;
@@ -106,7 +107,8 @@ export const captureContentFor = (handler: ProviderHandler | undefined): boolean
  * `createHandler` calls it when invoked, its stream calls it when the stream starts, and the SDK
  * calls it before each handler invocation it makes, so a plain function handler latches too.
  *
- * Internal: not exported from an entry point.
+ * @internal Exported for the LaunchDarkly handler packages, for an AI call that is not a provider
+ * handler call; applications should not call it.
  */
 export function noteAiInvocation(): void {
   state().aiInvoked = true;

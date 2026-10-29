@@ -66,7 +66,7 @@ export {
 } from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';
 export { registerAiSdkPackage } from './sdk-info.js';
-export { configure } from './sdk-options.js';
+export { configure, effectiveCaptureContent, noteAiInvocation } from './sdk-options.js';
 export { reportUsage } from './sdk-usage.js';
 export {
   allSkills,

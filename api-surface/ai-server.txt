@@ -38,6 +38,7 @@ createHandler  usage=client.createHandler
 + createSkillSource
 + Criterion
 + DatasetRow
+- effectiveCaptureContent  # internal: plumbing for the handler packages; moves to the internal entry point
 - endSpanOnce
 + EvalRunResult
 + EvalTool
@@ -110,6 +111,7 @@ MessageContent
 - NATIVE_TOOL_KEY
 NativeTool
 - normalizeModelParameters
+- noteAiInvocation  # internal: plumbing for the handler packages; moves to the internal entry point
 - omitModelStamps
 + OnUnavailable
 - parseJSONWithPossibleFences

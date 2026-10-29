@@ -1,11 +1,12 @@
 import {
   type AiConfigRep,
   type ContentCaptureOptions,
-  createHandlerInternal,
+  effectiveCaptureContent,
   getClient,
   inspectConfigInternal,
   type LDContext,
   makeRunTrackData,
+  noteAiInvocation,
   reportUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
@@ -80,15 +81,6 @@ async function resolveModel(
   return gatewayModelId(config);
 }
 
-/**
- * `vercelEvaluate` is not a provider handler, so it goes through a handler built for this one call
- * rather than duplicating the handler rules. Its `captureContent` is the effective content capture:
- * an explicit `captureContent`, otherwise the process default from `configure()` (itself `true`).
- * Calling it latches `configure()`, as every handler call does.
- */
-const evaluationHandler = (captureContent: boolean | undefined) =>
-  createHandlerInternal(['*', 'messages'], async () => ({}), undefined, captureContent);
-
 async function resolveConfig(
   configKey: string,
   context: LDContext,
@@ -112,8 +104,9 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
   reportUsage('vercel-messages.vercelEvaluate', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   assertQuestions(options.questions);
   const { config, meta } = await resolveConfig(configKey, context);
-  const handler = evaluationHandler(options.captureContent);
-  const captureContent = handler.captureContent === true;
+  // Not a provider handler call, so it applies the handler rules itself: an explicit
+  // `captureContent`, otherwise the process default from `configure()`.
+  const captureContent = effectiveCaptureContent(options.captureContent);
   const trackData = makeRunTrackData({ configKey, config, meta });
   const model = await resolveModel(config, options);
   const startTime = Date.now();
@@ -129,7 +122,7 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
 
     try {
       // Latches `configure()` as the AI call starts, the same as a provider handler call.
-      await handler(config);
+      noteAiInvocation();
       const result = await experimental_evaluate({
         model,
         state,
