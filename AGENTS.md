@@ -641,6 +641,10 @@ key (for example `"\"opus\""`), and it is left off when there is neither.
 The core client sets `__ldValue`, beside `__ld`, only when the handler that
 runs has `captureContent` on (`ProviderHandler.captureContent`, the same gate
 judge reasoning uses), so the raw config never reaches a capture-off handler.
+A deferred judge carries its variation on `JudgeTask.judgeValue`, and
+`runJudge` applies the same gate with the judge's handler. The
+`launchdarkly.graph` root span has no single handler, so it gets the graph
+flag's raw variation only when the process-wide default captures content.
 It is not in `TrackData`, because `TrackData` is the `$ld:ai:*` event payload.
 When `variables.ldContext` has a usable identity, that
 event also carries `feature_flag.context.id` and `feature_flag.contextKeys`,
