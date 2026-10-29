@@ -1100,6 +1100,9 @@ export type TrackData = {
 export type TraverseVisitor<T = any> = (node: GraphNode, ctx: Record<string, unknown>) => T | Promise<T>;
 
 // @public
+export function validateMaxRetries(maxRetries: number | undefined): number | undefined;
+
+// @public
 export function waitForTelemetry(timeoutMs?: number): Promise<void>;
 
 // @public

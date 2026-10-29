@@ -618,6 +618,28 @@ export function collapseMessagesToInstructions(config: AiConfigRep): AiConfigRep
 }
 
 /**
+ * Checks a handler factory's `maxRetries` option and returns it unchanged.
+ *
+ * `undefined` means the option was not given, so the vendor default applies. Any other value must
+ * be a non-negative integer; `0` is a valid count. `null` is refused rather than treated as unset,
+ * and so are `true`, `'3'`, `1.5`, `NaN` and `Infinity`: the provider clients accept most of these
+ * silently. Factories call this at construction, so a bad value fails when the handler is built
+ * rather than on its first call.
+ *
+ * Throws `TypeError` for a value that is not an integer and `RangeError` for a negative one. Both
+ * messages name the option.
+ */
+export function validateMaxRetries(maxRetries: number | undefined): number | undefined {
+  if (maxRetries === undefined) return undefined;
+  if (typeof maxRetries !== 'number' || !Number.isInteger(maxRetries)) {
+    const got = typeof maxRetries === 'number' ? String(maxRetries) : maxRetries === null ? 'null' : typeof maxRetries;
+    throw new TypeError(`maxRetries must be a non-negative integer or undefined, got ${got}`);
+  }
+  if (maxRetries < 0) throw new RangeError(`maxRetries must be non-negative, got ${maxRetries}`);
+  return maxRetries;
+}
+
+/**
  * Parses a JSON string that may be wrapped in markdown code fences (```json or ```).
  * Also handles text with preamble before the fence block.
  * Returns null if the text cannot be parsed as valid JSON.

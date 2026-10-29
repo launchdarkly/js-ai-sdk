@@ -34,6 +34,7 @@ import {
   type ToolDefinitionInput,
   type ToolHandlerFn,
   toolResultString,
+  validateMaxRetries,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { type LangChainModelClass, modelConstructorParameters } from './model-parameters.js';
@@ -178,11 +179,15 @@ function modelConstructorArgs(
   config: AiConfigRep,
   fallbackName: string,
   modelClass: LangChainModelClass,
+  maxRetries: number | undefined,
 ): Record<string, unknown> {
   // Name from the config always wins; `model` is never on a forwarded-keys list anyway.
   return {
     ...modelConstructorParameters(config.model?.parameters, modelClass),
     model: resolvedModelName(config, fallbackName),
+    // From the handler's options, never from model.parameters, which excludes it above. Set only
+    // when given, so an omitted value keeps each chat model's own default.
+    ...(maxRetries !== undefined ? { maxRetries } : {}),
   };
 }
 
@@ -193,9 +198,13 @@ function modelConstructorArgs(
  * instantiate the appropriate model via a dynamic import, so that neither
  * @langchain/openai, @langchain/anthropic, nor @langchain/aws is a hard
  * dependency. Only the model class's allowlisted model.parameters are passed; see
- * modelConstructorParameters.
+ * modelConstructorParameters. `maxRetries`, when set, is passed to whichever class is built.
  */
-async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource): Promise<BaseChatModel> {
+async function resolveBaseModel(
+  config: AiConfigRep,
+  llm: LangChainModelSource | undefined,
+  maxRetries: number | undefined,
+): Promise<BaseChatModel> {
   const invocation = configForModelCall(config);
   if (typeof llm === 'function') return llm(invocation);
   if (llm) return llm;
@@ -210,7 +219,9 @@ async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource)
         'Using Anthropic models requires @langchain/anthropic. Install it with: npm install @langchain/anthropic',
       );
     }
-    return new mod.ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022', 'anthropic'));
+    return new mod.ChatAnthropic(
+      modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022', 'anthropic', maxRetries),
+    );
   }
   if (providerName === 'bedrock') {
     // biome-ignore lint/suspicious/noExplicitAny: @langchain/aws loaded via dynamic import with no static types
@@ -220,7 +231,7 @@ async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource)
     } catch {
       throw new Error('Using Bedrock models requires @langchain/aws. Install it with: npm install @langchain/aws');
     }
-    return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '', 'bedrock'));
+    return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '', 'bedrock', maxRetries));
   }
   // biome-ignore lint/suspicious/noExplicitAny: @langchain/openai loaded via dynamic import with no static types
   let mod: any;
@@ -229,7 +240,7 @@ async function resolveBaseModel(config: AiConfigRep, llm?: LangChainModelSource)
   } catch {
     throw new Error('Using OpenAI models requires @langchain/openai. Install it with: npm install @langchain/openai');
   }
-  return new mod.ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o', 'openai'));
+  return new mod.ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o', 'openai', maxRetries));
 }
 
 const buildTools = (
@@ -331,16 +342,32 @@ const assistantOutput = (content: unknown, toolCalls: ReadonlyArray<unknown> | u
 /** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
 export function createLangChainMessagesHandler(
   llm?: LangChainModelSource,
-  options: ContentCaptureOptions & { providers?: readonly string[] } = {},
+  options: ContentCaptureOptions & {
+    providers?: readonly string[];
+    maxRetries?: number;
+  } = {},
 ): ProviderHandler {
-  reportUsage('langchain-messages.createLangChainHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  reportUsage('langchain-messages.createLangChainMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createLangChainMessagesHandlerInternal(llm, options);
 }
 
 function createLangChainMessagesHandlerInternal(
   llm?: LangChainModelSource,
-  { captureContent = false, providers }: ContentCaptureOptions & { providers?: readonly string[] } = {},
+  {
+    captureContent = false,
+    providers,
+    maxRetries,
+  }: ContentCaptureOptions & { providers?: readonly string[]; maxRetries?: number } = {},
 ): ProviderHandler {
+  // Checked at construction rather than when the first model is built, on the first request.
+  validateMaxRetries(maxRetries);
+  // Refused rather than ignored: the handler never constructs a model it is given, so the value
+  // would go nowhere and the caller would believe their retries had been raised.
+  if (llm !== undefined && maxRetries !== undefined) {
+    throw new Error(
+      'maxRetries applies only to the default chat model. Set maxRetries on the model passed as llm instead.',
+    );
+  }
   const MAX_STEPS = 10;
 
   return createHandlerInternal(
@@ -373,7 +400,7 @@ function createLangChainMessagesHandlerInternal(
         const runUsage = createRunUsage();
         try {
           // Resolved per-request so the correct provider/model from the AI config is used.
-          const baseModel = await resolveBaseModel(config, llm);
+          const baseModel = await resolveBaseModel(config, llm, maxRetries);
 
           const { tools: toolDefs, executableTools } = config.tools
             ? buildTools(config.tools, toolHandlers)
@@ -555,7 +582,7 @@ function createLangChainMessagesHandlerInternal(
 
       try {
         // Resolved per-request so the correct provider/model from the AI config is used.
-        const baseModel = await resolveBaseModel(config, llm);
+        const baseModel = await resolveBaseModel(config, llm, maxRetries);
 
         const { tools: toolDefs, executableTools } = config.tools
           ? buildTools(config.tools, toolHandlers)
@@ -745,19 +772,22 @@ export const langchainMessages = (
   configKey: string,
   userInput: string,
   context: LDContext,
-  // `captureContent` and `providers` configure the handler; `variables` belongs to the invocation.
-  // Passing any of them through to `config()` drops it — which is how a `{{user_input}}` placeholder
-  // used to reach the model unsubstituted whenever a caller used one of these wrappers instead of
-  // `config().invoke()`.
+  // `captureContent` and `providers` configure the handler; `maxRetries` and `variables` are lifted out
+  // of `options` and belong to the invocation. Passing any through to `config()`
+  // drops it — which is how a `{{user_input}}` placeholder used to reach the model unsubstituted
+  // whenever a caller used one of these wrappers instead of `config().invoke()`.
   {
     captureContent,
     providers,
+    maxRetries,
     variables,
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     ContentCaptureOptions & {
       /** Provider names this wildcard accepts. Forwarded to the handler, not to `config`. */
       providers?: readonly string[];
+      /** Retry count for the default chat model. See `createLangChainMessagesHandler`. */
+      maxRetries?: number;
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
@@ -766,6 +796,6 @@ export const langchainMessages = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createLangChainMessagesHandlerInternal(undefined, { captureContent, providers }),
+    handler: createLangChainMessagesHandlerInternal(undefined, { captureContent, providers, maxRetries }),
   }).invoke(userInput, context, variables);
 };
