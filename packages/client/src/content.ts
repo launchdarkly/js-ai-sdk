@@ -1,4 +1,5 @@
 import type { Span } from '@opentelemetry/api';
+import type { ProviderHandler } from './types.js';
 
 /**
  * Conversation content on spans, per LaunchDarkly's "Richer LLM spans" proposal.
@@ -58,6 +59,19 @@ export interface ContentCaptureOptions {
    */
   captureContent?: boolean;
 }
+
+/** Content capture when nothing states a preference. Conversation content is PII, so it is off. */
+const DEFAULT_CAPTURE_CONTENT = false;
+
+/**
+ * Content capture for a call made through `handler`: its own `captureContent` when it states one,
+ * otherwise the process-wide default. Pass `undefined` for a span that has no single handler, such
+ * as the graph root.
+ *
+ * Internal: not exported from an entry point.
+ */
+export const captureContentFor = (handler: ProviderHandler | undefined): boolean =>
+  typeof handler?.captureContent === 'boolean' ? handler.captureContent : DEFAULT_CAPTURE_CONTENT;
 
 /** A typed piece of one message, mirroring the `parts` union in the GenAI JSON schemas. */
 export type SpanMessagePart =

@@ -1,3 +1,4 @@
+import { captureContentFor } from './content.js';
 import { getClient } from './lifecycle.js';
 import { exposedToolKeys, HANDOFF_TOOL_PREFIX, renderTrajectory, TrajectoryRecorder } from './trajectory.js';
 import type {
@@ -260,7 +261,7 @@ export const executeAndTrack = async ({
         ...variables,
         ldContext: { ...userContext },
         __ld: trackData,
-        ...(evaluatedValue !== undefined && handler.captureContent === true ? { __ldValue: evaluatedValue } : {}),
+        ...(evaluatedValue !== undefined && captureContentFor(handler) ? { __ldValue: evaluatedValue } : {}),
       },
       history,
     );
@@ -338,7 +339,7 @@ export async function* executeAndStream({
     ...variables,
     ldContext: { ...userContext },
     __ld: trackData,
-    ...(evaluatedValue !== undefined && handler.captureContent === true ? { __ldValue: evaluatedValue } : {}),
+    ...(evaluatedValue !== undefined && captureContentFor(handler) ? { __ldValue: evaluatedValue } : {}),
   };
 
   const startTime = Date.now();
