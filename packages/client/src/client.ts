@@ -1,7 +1,7 @@
 import { bindConversationId } from './conversation.js';
 import { buildJudgeTasksInternal, runJudges } from './judges.js';
 import { extractVariation } from './lifecycle.js';
-import { findHandler, resolveHandlers, resolveTools } from './registry.js';
+import { resolveHandlers, resolveTools } from './registry.js';
 import { reportUsage } from './sdk-usage.js';
 import { type ExecuteStreamDoneEvent, executeAndStream, executeAndTrack } from './tracking.js';
 import type {
@@ -14,7 +14,7 @@ import type {
   StreamEvent,
   VariationMeta,
 } from './types.js';
-import { normalizeMode, parseJSONWithPossibleFences } from './utils.js';
+import { coversProviderName, normalizeMode, parseJSONWithPossibleFences, selectModeHandler } from './utils.js';
 
 function resolveOutputFormatResponse(rawResponse: unknown, outputFormat: Record<string, unknown> | undefined): unknown {
   if (!outputFormat) return rawResponse ?? '';
@@ -43,10 +43,10 @@ function selectHandler(
   if (!provider) throw new Error('Provider not found');
   const normalizedMode = normalizeMode(mode);
 
-  const selected = findHandler(resolvedHandlers, provider, normalizedMode);
-  if (selected) return selected;
+  const chosen = resolvedHandlers ? selectModeHandler(resolvedHandlers, provider, normalizedMode) : undefined;
+  if (chosen) return chosen;
 
-  if (!resolvedHandlers?.some((h) => h.providesFor?.[0] === provider || h.providesFor?.[0] === '*')) {
+  if (!resolvedHandlers?.some((handler) => coversProviderName(handler, provider))) {
     throw new Error(`Handler for provider ${provider} not found`);
   }
   throw new Error(`Handler for provider ${provider} with mode ${normalizedMode} not found`);

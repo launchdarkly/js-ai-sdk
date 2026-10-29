@@ -124,6 +124,20 @@ describe('createLangChainMessagesHandler', () => {
     expect(createLangChainMessagesHandler(makeMockLLM() as any).providesFor).toEqual(['*', 'messages']);
   });
 
+  it('leaves providers unset by default', () => {
+    expect(createLangChainMessagesHandler(makeMockLLM() as any).providers).toBeUndefined();
+  });
+
+  it('scopes the wildcard to the given providers', () => {
+    const handler = createLangChainMessagesHandler(makeMockLLM() as any, { providers: ['Bedrock', 'Anthropic'] });
+    expect(handler.providesFor).toEqual(['*', 'messages']);
+    expect(handler.providers).toEqual(['Bedrock', 'Anthropic']);
+  });
+
+  it('rejects an empty provider list', () => {
+    expect(() => createLangChainMessagesHandler(makeMockLLM() as any, { providers: [] })).toThrow(/providers/i);
+  });
+
   it('returns independent instances on multiple calls', () => {
     const llm = makeMockLLM() as any;
     expect(createLangChainMessagesHandler(llm)).not.toBe(createLangChainMessagesHandler(llm));
@@ -748,6 +762,20 @@ describe('createLangChainMessagesHandler', () => {
       }),
     );
     expect(mockInvoke).toHaveBeenCalledWith('hello', ctx, undefined);
+  });
+
+  it('forwards providers onto the handler and not to config()', async () => {
+    const { langchainMessages } = await import('../handler.js');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
+    const ctx = { kind: 'user' as const, key: 'u' };
+    (config as any).mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) });
+    await langchainMessages('flag', 'hello', ctx, { providers: ['Bedrock'] } as any);
+    expect(config).toHaveBeenCalledWith(
+      expect.objectContaining({
+        handler: expect.objectContaining({ providesFor: ['*', 'messages'], providers: ['Bedrock'] }),
+      }),
+    );
+    expect((config as any).mock.calls[0][0].providers).toBeUndefined();
   });
 
   // ── 1.8 Streaming ────────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ This is a **Tier 1 handler package**. It wraps LangGraph's `createReactAgent` (`
 providesFor = ['*', 'agent']
 ```
 
-The `'*'` wildcard means this handler acts as a fallback for any `meta.mode === "agent"` variation that has no more-specific (exact-provider-name) handler registered. LangChain is a framework adapter — not a provider itself — so it routes through `langchain-anthropic`, `langchain-openai`, or other `BaseChatModel` implementations at runtime by inspecting `config.provider.name`. Using `'*'` lets users keep their flag variations configured with their real provider name (`"Anthropic"`, `"OpenAI"`, etc.) without needing a native handler for each.
+The `'*'` wildcard means this handler acts as a fallback for any `meta.mode === "agent"` variation that has no more-specific (exact-provider-name) handler registered. LangChain is a framework adapter — not a provider itself — so it routes through `langchain-anthropic`, `langchain-openai`, or other `BaseChatModel` implementations at runtime by inspecting `config.provider.name`. Using `'*'` lets users keep their flag variations configured with their real provider name (`"Anthropic"`, `"OpenAI"`, etc.) without needing a native handler for each. Pass `{ providers: ['Bedrock'] }` to `createLangChainAgentsHandler` or `langchainGraph` to accept only those names; an omitted list still matches every provider.
 
 > **Priority rule:** if the caller also registers an explicit provider handler (e.g. `['OpenAI', 'agent']`), that handler takes precedence over the wildcard for matching variations.
 

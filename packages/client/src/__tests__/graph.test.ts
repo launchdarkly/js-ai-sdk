@@ -349,6 +349,15 @@ describe('graph().invoke()', () => {
     await expect(graph('graph-flag', {}).invoke('hi', mockContext)).rejects.toThrow(/handlers/i);
   });
 
+  it('does not run a scoped wildcard for a provider outside its list', async () => {
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+    handler.providesFor = ['*', 'messages'];
+    handler.providers = ['Bedrock'];
+    await expect(graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext)).rejects.toThrow(/OpenAI/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('visits all nodes and accumulates usage', async () => {
     setupTwoNodeGraph();
     const handler = makeHandler();
@@ -511,6 +520,18 @@ describe('graph().invoke()', () => {
     );
     expect(runJudges).toHaveBeenCalled();
     expect(result.judgeResults).toEqual(judgeData);
+  });
+
+  it('passes the graph handlers to the graphJudge, so its provider allowlist applies', async () => {
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+    await graph('graph-flag', { handlers: [handler], graphJudge: 'graph-judge' }).invoke('hi', mockContext);
+    const graphJudgeCall = (runJudges as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([args]) => args.config.judgeConfiguration?.judges?.[0]?.key === 'graph-judge',
+    );
+    expect(graphJudgeCall?.[0].handlers).toEqual([handler]);
   });
 
   it('forwards history as the 4th invoke arg to the root handler only', async () => {
