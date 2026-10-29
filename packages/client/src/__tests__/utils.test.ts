@@ -255,6 +255,34 @@ describe('createHandler', () => {
     expect(handler.captureContent).toBe(true);
   });
 
+  it('rejects a stream function passed positionally', () => {
+    const create = createHandler as (...args: unknown[]) => unknown;
+    expect(() => create(['MyProvider', 'messages'], makeRawHandler(), vi.fn())).toThrow(
+      new TypeError(
+        'createHandler takes { stream, captureContent, providers } as its third argument: ' +
+          'createHandler(providesFor, fn, streamFn, captureContent) is now ' +
+          'createHandler(providesFor, fn, { stream: streamFn, captureContent }).',
+      ),
+    );
+  });
+
+  it('rejects captureContent passed as a fourth argument', () => {
+    const create = createHandler as (...args: unknown[]) => unknown;
+    expect(() => create(['MyProvider', 'messages'], makeRawHandler(), undefined, true)).toThrow(TypeError);
+  });
+
+  it('rejects a third argument that is not an options object', () => {
+    const create = createHandler as (...args: unknown[]) => unknown;
+    for (const bad of [null, true, 'stream', []]) {
+      expect(() => create(['MyProvider', 'messages'], makeRawHandler(), bad)).toThrow(TypeError);
+    }
+  });
+
+  it('accepts an explicit undefined third argument', () => {
+    const handler = createHandler(['MyProvider', 'messages'], makeRawHandler() as any, undefined);
+    expect(handler.providesFor).toEqual(['MyProvider', 'messages']);
+  });
+
   it('drops repeated provider names, keeping first-seen order', () => {
     const handler = createHandler(['*', 'messages'], makeRawHandler() as any, {
       providers: ['Bedrock', 'Anthropic', 'Bedrock'],

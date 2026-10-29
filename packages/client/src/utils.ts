@@ -50,6 +50,10 @@ type StreamHandlerInput = (
  *   repeats are dropped, and the list is copied. Omit it to leave the property
  *   unset, which means the wildcard accepts every provider.
  *
+ * Throws a `TypeError` when the third argument is not an options object, or
+ * when more than three arguments are passed, so a caller still on the old
+ * positional `(providesFor, fn, stream?, captureContent?)` form fails loudly.
+ *
  * Calling `createHandler` again on the same function overwrites the options
  * passed this time and keeps any earlier `captureContent` or `providers` that
  * are not passed.
@@ -59,6 +63,17 @@ export function createHandler(
   handler: HandlerInput,
   options: { stream?: StreamHandlerInput; captureContent?: boolean; providers?: readonly string[] } = {},
 ): ProviderHandler {
+  // A plain JavaScript caller still on the old positional form,
+  // `createHandler(pf, fn, streamFn, captureContent)`, would otherwise lose its
+  // stream and `captureContent` without an error.
+  // biome-ignore lint/complexity/noArguments: counts extra positional arguments without widening the signature
+  if (typeof options !== 'object' || options === null || Array.isArray(options) || arguments.length > 3) {
+    throw new TypeError(
+      'createHandler takes { stream, captureContent, providers } as its third argument: ' +
+        'createHandler(providesFor, fn, streamFn, captureContent) is now ' +
+        'createHandler(providesFor, fn, { stream: streamFn, captureContent }).',
+    );
+  }
   reportUsage('client.createHandler');
   return createHandlerInternal(providesFor, handler, options.stream, options.captureContent, options.providers);
 }
