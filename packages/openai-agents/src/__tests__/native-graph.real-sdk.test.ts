@@ -2,7 +2,14 @@
 // the whole package, which is how the Python twin of this adapter shipped a tool builder that crashed on
 // every node with a tool (AIC-3716). Kept in its own file because vi.mock applies per file.
 import type { GraphDefinition, GraphNode } from '@launchdarkly/ai-server';
-import { type Model, type ModelRequest, type ModelResponse, setDefaultModelProvider, Usage } from '@openai/agents';
+import {
+  type Model,
+  type ModelRequest,
+  type ModelResponse,
+  setDefaultModelProvider,
+  setTracingDisabled,
+  Usage,
+} from '@openai/agents';
 import { describe, expect, it } from 'vitest';
 import { toOpenAIAgents } from '../native-graph.js';
 
@@ -76,6 +83,8 @@ describe('toOpenAIAgents on the real @openai/agents', () => {
     const model = new FakeModel();
     // Module state, but vitest isolates each test file, so no other file sees it.
     setDefaultModelProvider({ getModel: () => model });
+    // Never export this run's trace to OpenAI, whatever OPENAI_API_KEY is set.
+    setTracingDisabled(true);
     const calls: unknown[] = [];
 
     const result = await toOpenAIAgents(Promise.resolve(graphDef), {
