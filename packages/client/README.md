@@ -39,7 +39,7 @@ No code changes are required — `initClient()` detects the packages at runtime 
 | `LD_SERVICE_NAME` | No | OTel `service.name` resource attribute (default: `nodejs-sdk`) |
 | `LD_ENVIRONMENT` | No | `deployment.environment` resource attribute attached to telemetry |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OTLP endpoint override (default: LaunchDarkly Observability backend) |
-| `LD_PROJECT_KEY` | For evaluations | Project that holds the evaluations, datasets and tools (see [Evaluations from Code](#evaluations-from-code-experimental)) |
+| `LD_PROJECT_KEY` | For evaluations | Project that holds the evaluations, datasets and tools (see [Evaluations from Code](#evaluations-from-code)) |
 | `LD_API_TOKEN` | For evaluations | Management API access token used by the evaluations harness |
 | `LD_API_BASE_URI` | No | Evaluations management API host override; separate from `LD_BASE_URI` |
 | `LD_UI_BASE_URI` | No | Host for evaluation run links (default: `https://app.launchdarkly.com`) |
@@ -178,6 +178,8 @@ await shutdown();
 Routing is by each node config's `provider.name` + `meta.mode`, so a single graph can mix providers when you pass multiple handlers. Provider packages also export a single-provider convenience (e.g. `claudeGraph`, `openaiGraph`, `langchainGraph`) that pre-binds their handler.
 
 `graph(...).stream()` yields `GraphStreamEvent` values (`node_start`, `chunk` with `nodeKey`, `node_done`, `handoff`, final `done`) while keeping the same handoff / path / graph-level telemetry as `invoke()`. Handlers without `.stream` fall back to a single chunk per node, matching `config().stream()`.
+
+A node's own judges are reported on its `node_done` event as `judgeResults`, which is omitted when none of them produced a result. `done.judgeResults` holds only the graph-level judge (`graphJudge`), so to collect every score, read each `node_done`.
 
 `resolveGraph(key, options)` returns a `GraphDefinition` without executing it. It still requires `context` at resolution time (it has no deferred `.invoke()`). The definition carries `.enabled` so you can branch on a disabled graph before traversing. `graph(...).invoke()` / `.stream()` throw if the graph is disabled.
 
@@ -647,9 +649,9 @@ Ancestors matter for the same reason. An identity that can rename a directory ab
 
 ---
 
-### Evaluations from Code (experimental)
+### Evaluations from Code
 
-> **Experimental.** Import every name in this section from `@launchdarkly/ai-server/experimental` (or `@launchdarkly/ai-node/experimental` if you install `@launchdarkly/ai-node`). None is exported from the package root. Names may change in a minor release, so read the changelog before upgrading.
+Import every name in this section from `@launchdarkly/ai-server` (or `@launchdarkly/ai-node` if you install `@launchdarkly/ai-node`).
 
 An evaluation from code runs a dataset through your own code and reports the results to LaunchDarkly. One `run()` call:
 
@@ -660,9 +662,11 @@ An evaluation from code runs a dataset through your own code and reports the res
 
 Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row and on the run; the SDK reports scores and never computes a verdict itself.
 
+Each row is also exported as one trace on the tracer provider `initClient()` registered: a `launchdarkly.dataset_row` root with the generation, its tool calls and each criterion's `evaluate` span beneath it, all sharing the row's `gen_ai.conversation.id`. A provider handler traces its own call; for a plain function the runner writes the `chat` and `execute_tool` spans. **By default the transcript is not sent:** prompts, the row input, model output, tool arguments and results, judge prompts and completions, and judge explanations are left off every span, the evaluation spans included. Setting `captureContent: true` on a handler sends them for that handler's calls, on the evaluation spans too. The result events never carry the transcript.
+
 ```ts
 import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
-import { initEvaluations } from '@launchdarkly/ai-server/experimental';
+import { initEvaluations } from '@launchdarkly/ai-server';
 
 // Reads LD_PROJECT_KEY, LD_API_TOKEN and LD_SDK_KEY unless you pass them.
 const evals = initEvaluations({ projectKey: 'my-project' });
@@ -760,7 +764,7 @@ Your handler receives each row's rendered input, plus its variables with `input`
 Pass `tools` as an array of `EvalTool`. Construct one to define a tool in code, or `await evals.tools.get()` to read one from your project's AI library, which pins its version then. One array can hold both kinds.
 
 ```ts
-import { EvalTool } from '@launchdarkly/ai-server/experimental';
+import { EvalTool } from '@launchdarkly/ai-server';
 
 const searchDocs = await evals.tools.get('search_docs', { implementation: searchDocsImpl });
 
@@ -782,7 +786,7 @@ Pass `criteria` to score every generated row. A `Judge` refers to an AI Judge co
 
 ```ts
 import { createClaudeMessagesHandler } from '@launchdarkly/ai-claude-messages';
-import { Judge, Scorer } from '@launchdarkly/ai-server/experimental';
+import { Judge, Scorer } from '@launchdarkly/ai-server';
 
 await evals.run({
   key: `support-qa-${Date.now()}`,
@@ -800,7 +804,7 @@ await evals.run({
 | | `Judge` | `Scorer` |
 |---|---|---|
 | `threshold`: score a row must reach | default `0.5` | default `1.0` |
-| `passRateThreshold`: share of rows that must pass | default `0.95` | default `0.95` |
+| `passRateThreshold`: share of rows that must pass | optional, unset by default | optional, unset by default |
 | Direction | Set on the judge's AI Config in LaunchDarkly | `successDirection`, default `'higher_is_better'`. Use `'lower_is_better'` for a scorer that counts something unwanted |
 | Other | `groundTruthContext`: what to grade against, when it is not the row's expected output | `fn(row, output)` may be async and must return a number from 0 to 1. Booleans are not accepted: return `1` or `0` |
 

@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateRows, generationPayload, type RowResult, SUMMARY_POLL_DEFAULTS } from '../evaluations-runner.js';
-import { EvalTool, type RunOptions } from '../experimental.js';
+import { EvalTool, type RunOptions } from '../index.js';
 import { NativeTool } from '../types.js';
 import {
   completion,
@@ -592,7 +592,7 @@ describe('aiConfig source', () => {
           criterionType: 'accuracy',
           kind: 'judge',
           judgeKey: 'accuracy',
-          options: { threshold: 0.5, passRateThreshold: 0.95 },
+          options: { threshold: 0.5 },
         },
       ]);
     });
@@ -881,7 +881,9 @@ describe('trajectory per row', () => {
       1,
     );
     expect(result.status).toBe('ERROR');
-    expect(result.trajectory.calls).toEqual([{ key: 'lookup', result: 'hit', done: true }]);
+    expect(result.trajectory.calls).toEqual([
+      { key: 'lookup', result: 'hit', done: true, startedAt: expect.any(Number), endedAt: expect.any(Number) },
+    ]);
   });
 
   it('leaves a native tool unwrapped', async () => {

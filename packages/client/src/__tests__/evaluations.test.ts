@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EvalTool, EvaluationsError, initEvaluations, Judge, type RunOptions, Scorer } from '../experimental.js';
+import { EvalTool, EvaluationsError, initEvaluations, Judge, type RunOptions, Scorer } from '../index.js';
 import { NativeTool } from '../types.js';
 import {
   completion,
@@ -203,15 +203,16 @@ describe('initEvaluations', () => {
 
 describe('criterion references', () => {
   it('a Judge defaults its thresholds', () => {
-    expect(new Judge('accuracy')).toMatchObject({ threshold: 0.5, passRateThreshold: 0.95 });
+    expect(new Judge('accuracy')).toMatchObject({ threshold: 0.5 });
+    expect(new Judge('accuracy').passRateThreshold).toBeUndefined();
   });
 
   it('a Scorer defaults its thresholds and success direction', () => {
     expect(new Scorer('exact', () => true)).toMatchObject({
       threshold: 1.0,
-      passRateThreshold: 0.95,
       successDirection: 'higher_is_better',
     });
+    expect(new Scorer('exact', () => true).passRateThreshold).toBeUndefined();
   });
 
   it('rejects a blank judge key and a blank scorer name', () => {

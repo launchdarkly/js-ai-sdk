@@ -19,6 +19,7 @@ import {
   makeNodeTrackData,
   makeRunTrackData,
   modelStampsFromMeta,
+  scopeToolHandlers,
   wrapToolHandlers,
 } from '../tracking.js';
 
@@ -42,6 +43,13 @@ describe('wrapToolHandlers', () => {
 
   it('returns an empty object when toolHandlers is undefined', () => {
     expect(wrapToolHandlers(undefined, mockContext, mockTrackData)).toEqual({});
+  });
+
+  it('returns a map without inherited names, so `toString` resolves to no handler (SEC-9507)', () => {
+    const wrapped = wrapToolHandlers({ safe: vi.fn() }, mockContext, mockTrackData);
+    expect(wrapped.toString).toBeUndefined();
+    expect(wrapped.constructor).toBeUndefined();
+    expect(wrapToolHandlers(undefined, mockContext, mockTrackData).toString).toBeUndefined();
   });
 
   it('wraps a regular function and calls the original with args', () => {
@@ -126,6 +134,36 @@ function makeHandler(output: string, usage: Record<string, any> = { input_tokens
   (fn as any).providesFor = ['OpenAI', 'messages'];
   return fn as any;
 }
+
+// ─── scopeToolHandlers (SEC-9507) ────────────────────────────────────────────
+
+describe('scopeToolHandlers', () => {
+  const fnTool = { name: 'x', type: 'function' as const, parameters: {} };
+
+  it('keeps only handlers attached to the active config', () => {
+    const safe = vi.fn();
+    const scoped = scopeToolHandlers({ tools: { safe: fnTool } }, { safe, privileged: vi.fn() });
+    expect(scoped).toEqual({ safe });
+  });
+
+  it('returns no handlers when config.tools is absent', () => {
+    expect(scopeToolHandlers({}, { privileged: vi.fn() })).toEqual({});
+  });
+
+  it('ignores inherited handler names', () => {
+    expect(scopeToolHandlers({ tools: { constructor: fnTool, toString: fnTool } }, {})).toEqual({});
+  });
+
+  it('scopes native tools the same way', () => {
+    const native = new NativeTool(Symbol('bash'), 'Bash');
+    expect(scopeToolHandlers({ tools: {} }, { bash: native })).toEqual({});
+    expect(scopeToolHandlers({ tools: { bash: fnTool } }, { bash: native })).toEqual({ bash: native });
+  });
+
+  it('returns undefined when no handlers were supplied', () => {
+    expect(scopeToolHandlers({ tools: { safe: fnTool } }, undefined)).toBeUndefined();
+  });
+});
 
 // ─── executeAndTrack ─────────────────────────────────────────────────────────
 
@@ -342,6 +380,19 @@ describe('executeAndTrack', () => {
       graphKey: 'my-graph',
     });
     expect(result.trackData.graphKey).toBe('my-graph');
+  });
+
+  it('passes the handler only the tools attached to the active config (SEC-9507)', async () => {
+    const handler = makeHandler('ok');
+    await executeAndTrack({
+      configKey: 'f',
+      config: { ...execConfig, tools: { safe: { name: 'safe', type: 'function', parameters: {} } } } as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+      toolHandlers: { safe: vi.fn(), privileged: vi.fn() },
+    });
+    expect(Object.keys(handler.mock.calls[0][2])).toEqual(['safe']);
   });
 });
 

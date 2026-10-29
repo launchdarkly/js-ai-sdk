@@ -388,6 +388,15 @@ export function endSpanOnce(span: Span, tracker: Set<Span>, abandoned = false): 
   span.end();
 }
 
+/**
+ * Epoch milliseconds, with sub-millisecond precision, for a span's explicit start or end time.
+ *
+ * Every span written after the fact must take its times from this one clock, or a child can land
+ * outside its parent. `Date.now()` is whole milliseconds, which would make a fast call zero-length.
+ * This is the clock OTel's own `hrTime()` reads.
+ */
+export const spanTimestamp = (): number => performance.timeOrigin + performance.now();
+
 type ContextIdentity = { canonical: string; keys: Record<string, string> };
 
 function usableContextKey(value: unknown): string | undefined {
