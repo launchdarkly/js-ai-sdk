@@ -682,8 +682,15 @@ describe('toLangGraph', () => {
     const handoffCall = toolCalls.find((c: any[]) => c[1]?.name === 'transfer_to_leaf');
     expect(handoffCall).toBeDefined();
     const handoffFn = handoffCall?.[0];
-    const result = await handoffFn();
-    expect(Command).toHaveBeenCalledWith(expect.objectContaining({ goto: 'leaf' }));
+    // The node function never ran here (compile is mocked), so no first hand-off id is
+    // recorded; a call with no id matches it and routes.
+    const result = await handoffFn({}, {});
+    expect(Command).toHaveBeenCalledWith(
+      expect.objectContaining({
+        goto: 'leaf',
+        update: { messages: [expect.objectContaining({ name: 'transfer_to_leaf' })] },
+      }),
+    );
     expect((result as any).goto).toBe('leaf');
   });
 
