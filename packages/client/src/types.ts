@@ -657,6 +657,11 @@ export type JudgeTask = {
   judgeConfig: AiConfigRep;
   /** Variation metadata for the judge config. */
   judgeMeta: VariationMeta;
+  /**
+   * The judge variation exactly as the LaunchDarkly SDK returned it. Written as
+   * `feature_flag.result.value` on the judge span when the judge's handler captures content.
+   */
+  judgeValue?: unknown;
   /** The LLM response to evaluate. */
   actualOutput: string;
   /**

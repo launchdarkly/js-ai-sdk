@@ -24,7 +24,7 @@ vi.mock('../judges.js', async (importOriginal) => {
 });
 
 import { config } from '../client.js';
-import { runJudges } from '../judges.js';
+import { buildJudgeTasks, runJudge, runJudges } from '../judges.js';
 import { extractVariation, getClient } from '../lifecycle.js';
 import type { ProviderHandler } from '../types.js';
 import { createHandler, setLdSpanAttributes } from '../utils.js';
@@ -856,5 +856,74 @@ describe('config().invoke — capture-on handler', () => {
 
     const event = span.addEvent.mock.calls.find((c: unknown[]) => c[0] === 'feature_flag');
     expect((event?.[1] as Record<string, unknown>)['feature_flag.result.value']).toBe(JSON.stringify(rawVariation));
+  });
+});
+
+// ─── buildJudgeTasks / runJudge — feature_flag.result.value on the deferred judge span ─────
+
+describe('deferred judge feature_flag.result.value', () => {
+  const judgeConfig = {
+    model: { name: 'gpt-4o' },
+    provider: { name: 'OpenAI' },
+    instructions: 'You are a judge.',
+    evaluationMetricKey: 'judge-metric',
+  };
+  const judgeMeta = { enabled: true, variationKey: 'judge-v1', version: 2, mode: 'messages' as const };
+  const rawJudgeVariation = { ...judgeConfig, _ldMeta: { ...judgeMeta } };
+  const parentConfig = {
+    ...mockConfig,
+    judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack });
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: judgeConfig,
+      meta: judgeMeta,
+      value: rawJudgeVariation,
+    });
+  });
+
+  const judgeHandler = (span: { setAttribute: unknown; addEvent: unknown }, capture: boolean) =>
+    createHandler(
+      ['OpenAI', 'messages'],
+      async (_config, _input, _tools, variables) => {
+        setLdSpanAttributes(span as any, variables);
+        return { output: '{"score":0.9,"reasoning":"ok"}', usage: { input_tokens: 1, output_tokens: 1 } };
+      },
+      undefined,
+      capture,
+    );
+
+  const featureFlagValue = (span: { addEvent: ReturnType<typeof vi.fn> }) => {
+    const event = span.addEvent.mock.calls.find((c: unknown[]) => c[0] === 'feature_flag');
+    return (event?.[1] as Record<string, unknown>)['feature_flag.result.value'];
+  };
+
+  it.each([
+    ['on', true, JSON.stringify(rawJudgeVariation)],
+    ['off', false, JSON.stringify('judge-v1')],
+  ])('with capture %s, the task carries the raw judge variation and its run writes the expected value', async (_label, capture, expected) => {
+    const span = { setAttribute: vi.fn(), addEvent: vi.fn() };
+    const handler = judgeHandler(span, capture);
+    const tasks = await buildJudgeTasks({
+      config: parentConfig,
+      userContext: mockContext,
+      handler,
+      handlers: [handler],
+      llmResponse: 'hello',
+      baseTrackData: { runId: 'r', configKey: 'flag', variationKey: 'v1', version: 1, modelName: '', providerName: '' },
+    });
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].judgeValue).toEqual(rawJudgeVariation);
+    // A worker receives the task through structured clone.
+    const task = structuredClone(tasks[0]);
+
+    const result = await runJudge(task, [handler]);
+
+    expect(result?.score).toBe(0.9);
+    expect(featureFlagValue(span)).toBe(expected);
   });
 });
