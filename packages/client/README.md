@@ -242,6 +242,8 @@ if (!result.enabled) {
 
 ### Agent Skills
 
+> **Requires `@launchdarkly/ai-server` 1.0.0 or later** (or `@launchdarkly/ai-node` 1.0.0 or later). Earlier versions do not include Agent Skills in core.
+
 Import every name in this section from `@launchdarkly/ai-server` (or `@launchdarkly/ai-node` if you install `@launchdarkly/ai-node`).
 
 Agent Skills are versioned `SKILL.md` documents managed in LaunchDarkly and attached to AI Config variations by reference. This package tells you which skills a config references, retrieves their content, and writes them to `<root>/<key>/SKILL.md`, where agent runtimes such as the Claude Agent SDK discover them.
@@ -650,6 +652,8 @@ Ancestors matter for the same reason. An identity that can rename a directory ab
 ---
 
 ### Evaluations from Code
+
+> **Requires `@launchdarkly/ai-server` 1.0.0 or later** (or `@launchdarkly/ai-node` 1.0.0 or later). Earlier versions do not include Evaluations from Code in core.
 
 Import every name in this section from `@launchdarkly/ai-server` (or `@launchdarkly/ai-node` if you install `@launchdarkly/ai-node`).
 
