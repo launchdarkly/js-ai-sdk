@@ -470,6 +470,20 @@ describe('onTask', () => {
     warn.mockRestore();
   });
 
+  it('copies the context so later changes by the caller do not reach the task', async () => {
+    const client = await use(makeClient(variationA()));
+    const context = { kind: 'multi', user: { key: 'u1', name: 'Ann' } } as LDContext;
+    const tasks: ShadowTask[] = [];
+    await shadowConfig({
+      key: 'flag',
+      handler: [recorder('TestProvider', 'a').handler, recorder('ShadowProvider', 'b').handler],
+      onTask: (task) => tasks.push(task),
+    }).invoke('hi', context);
+    (context as { user: { key: string } }).user.key = 'someone-else';
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].context).toEqual({ kind: 'multi', user: { key: 'u1', name: 'Ann' } });
+  });
+
   it('hands over a task that survives structuredClone', async () => {
     const task = await deferredTask(makeClient(variationA()));
     expect(structuredClone(task)).toEqual(task);

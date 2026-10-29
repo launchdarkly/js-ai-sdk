@@ -263,7 +263,7 @@ function buildTasks(
       userInput: request.userInput,
       history: request.history ? [...request.history] : undefined,
       variables: request.variables ? { ...request.variables } : undefined,
-      context: request.context,
+      context: structuredClone(request.context),
       timeoutMs,
       trackData: {
         runId: evaluation.runId,
