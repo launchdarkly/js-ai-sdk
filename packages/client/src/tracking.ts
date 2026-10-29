@@ -237,6 +237,27 @@ export const makeRunTrackData = ({
   environmentId: tryGetEnvironmentId(),
 });
 
+/**
+ * The variables a handler receives. `ldContext`, `__ld` and `__ldValue` are SDK-owned, so a
+ * caller-supplied value never survives: `__ldValue` is the evaluated variation for a handler
+ * that captures content, and absent otherwise.
+ */
+const handlerVariables = (
+  variables: Record<string, unknown> | undefined,
+  userContext: LDContext,
+  trackData: TrackData,
+  handler: ProviderHandler,
+  evaluatedValue: unknown,
+): Record<string, unknown> => {
+  const merged: Record<string, unknown> = { ...variables, ldContext: { ...userContext }, __ld: trackData };
+  if (evaluatedValue !== undefined && captureContentFor(handler)) {
+    merged.__ldValue = evaluatedValue;
+  } else {
+    delete merged.__ldValue;
+  }
+  return merged;
+};
+
 export const executeAndTrack = async ({
   configKey,
   config,
@@ -271,23 +292,13 @@ export const executeAndTrack = async ({
   const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
   const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
+  const mergedVariables = handlerVariables(variables, userContext, trackData, handler, evaluatedValue);
 
   const startTime = Date.now();
   let response: Awaited<ReturnType<ProviderHandler>>;
 
   try {
-    response = await handler(
-      config,
-      userInput,
-      trackedToolHandlers,
-      {
-        ...variables,
-        ldContext: { ...userContext },
-        __ld: trackData,
-        ...(evaluatedValue !== undefined && captureContentFor(handler) ? { __ldValue: evaluatedValue } : {}),
-      },
-      history,
-    );
+    response = await handler(config, userInput, trackedToolHandlers, mergedVariables, history);
   } catch (err) {
     getClient().track('$ld:ai:duration:total', userContext, trackData, Date.now() - startTime);
     getClient().track('$ld:ai:generation:error', userContext, trackData, 1);
@@ -358,12 +369,7 @@ export async function* executeAndStream({
   const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
   const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
-  const mergedVariables = {
-    ...variables,
-    ldContext: { ...userContext },
-    __ld: trackData,
-    ...(evaluatedValue !== undefined && captureContentFor(handler) ? { __ldValue: evaluatedValue } : {}),
-  };
+  const mergedVariables = handlerVariables(variables, userContext, trackData, handler, evaluatedValue);
 
   const startTime = Date.now();
   let fullText = '';

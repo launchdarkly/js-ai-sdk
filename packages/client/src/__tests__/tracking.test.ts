@@ -221,6 +221,24 @@ describe('executeAndTrack', () => {
     expect(handler.mock.calls[0][3]).not.toHaveProperty('__ldValue');
   });
 
+  it.each([
+    ['capture off', false, undefined],
+    ['capture on', true, 'evaluated'],
+  ])('never passes a caller-supplied __ldValue to a handler with %s', async (_label, capture, expected) => {
+    const handler = makeHandler('ok');
+    handler.captureContent = capture;
+    await executeAndTrack({
+      configKey: 'my-flag',
+      config: execConfig as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+      variables: { __ldValue: 'from-caller' },
+      evaluatedValue: 'evaluated',
+    });
+    expect(handler.mock.calls[0][3].__ldValue).toBe(expected);
+  });
+
   it('does not set __ldValue when evaluatedValue is absent', async () => {
     const handler = makeHandler('ok');
     handler.captureContent = true;
