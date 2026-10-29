@@ -112,6 +112,11 @@ configure({ options: { captureContent: false } });
 
 Leaving the option out means unset, not `false`. A handler reads the default when it runs, so a handler built before `configure` still follows it, and `handler.captureContent` returns the value a run starting now would use. `configure` can replace its options until the first AI invocation (a handler call, or the start of a handler's stream). After that, identical options are accepted and different ones throw. `shutdown()` restores the built-in defaults. `initClient` does not take this option.
 
+Migrating from an earlier version:
+
+- The default used to be off. To keep content off spans, call `configure({ options: { captureContent: false } })` at startup.
+- `createHandler` now returns a new function instead of adding `providesFor` to the one you pass in, so the function you passed no longer carries `providesFor`. Use the handler `createHandler` returns.
+
 ### `config(args)`
 
 The primary entry point for AI config invocations. Accepts either a single handler or an array of handlers and routes to the correct one at invoke-time based on the flag variation's provider and mode.

@@ -327,7 +327,7 @@ The handler package wires it to the provider SDK's built-in implementation and e
 
 #### `ProviderHandler`
 
-The callable data type that handler packages produce. Use `createHandler(providesFor, fn)` to construct one — it attaches `providesFor` and returns the function as a typed `ProviderHandler`. See [Handler Package Contract](#handler-package-contract) for full details.
+The callable data type that handler packages produce. Use `createHandler(providesFor, fn)` to construct one — it returns a new function, a typed `ProviderHandler` that carries `providesFor` and calls yours. See [Handler Package Contract](#handler-package-contract) for full details.
 
 ---
 
@@ -473,7 +473,7 @@ const combined = compose(globalRegistry, localRegistry);
 
 | Export | Description |
 |---|---|
-| `createHandler(providesFor, handler)` | Attaches `providesFor` metadata to a handler function and returns it as a `ProviderHandler`. This is the canonical way to build any handler — both package-internal factories and user-supplied custom handlers. See [Factory Function](#factory-function). |
+| `createHandler(providesFor, handler)` | Returns a new `ProviderHandler` that carries `providesFor` and calls `handler`; `handler` itself is not changed. This is the canonical way to build any handler — both package-internal factories and user-supplied custom handlers. See [Factory Function](#factory-function). |
 | `makeNodeTrackData(node, graphKey, runId)` | Builds the standard `TrackData` for a graph node event (including the `_ldMeta` model stamps). Native graph adapter packages must use this instead of building their own payload. |
 | `parseTemplate(template, variables)` | Replaces `{{variable}}` placeholders in a string. Supports dot-notation for nested values (e.g. `{{user.name}}`). Unrecognized placeholders are left as-is. |
 | `parseJSONWithPossibleFences(text)` | Parses a JSON string that may be wrapped in markdown code fences (` ```json ` or ` ``` `). Returns `null` if the text is not valid JSON. |
@@ -518,7 +518,7 @@ Each handler package must export a **factory function** that:
 
 The naming convention is `create<Provider>Handler()`. For example: `createClaudeAgentsHandler()`, `createOpenAIAgentsHandler()`.
 
-**Always use `createHandler` to build and return the handler.** It attaches `providesFor` in place and returns the same function reference as a properly typed `ProviderHandler`. Do not manually assign `handler.providesFor` — `createHandler` is the single canonical path.
+**Always use `createHandler` to build and return the handler.** It returns a new function, a properly typed `ProviderHandler` that carries `providesFor` and calls yours. The function you pass in is not changed, so always use the returned handler. Do not manually assign `handler.providesFor` — `createHandler` is the single canonical path.
 
 ```ts
 import { createHandler, parseTemplate } from '@launchdarkly/ai-server';

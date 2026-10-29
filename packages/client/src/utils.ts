@@ -33,8 +33,8 @@ type StreamHandlerInput = (
 ) => AsyncGenerator<HandlerStreamEvent>;
 
 /**
- * Attaches `providesFor` metadata to a handler function and returns it as a
- * typed `ProviderHandler`. This is the canonical way to build a handler —
+ * Wraps a handler function in a new, typed `ProviderHandler` that carries
+ * `providesFor` metadata. This is the canonical way to build a handler —
  * both package-internal factories and user-supplied custom handlers should use
  * this helper instead of manually assigning `handler.providesFor`.
  *
