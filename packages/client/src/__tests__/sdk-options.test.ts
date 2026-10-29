@@ -23,10 +23,10 @@ vi.mock('../lifecycle.js', async (importOriginal) => ({
 
 import { ConversationIdSpanProcessor } from '../conversation.js';
 import { configure, createHandler, type SDKOptions, shutdown } from '../index.js';
-import { runJudges } from '../judges.js';
+import { runJudge, runJudges } from '../judges.js';
 import { effectiveCaptureContent } from '../sdk-options.js';
 import { executeAndStream, executeAndTrack } from '../tracking.js';
-import type { AiConfigRep, HandlerStreamEvent, ProviderHandler } from '../types.js';
+import type { AiConfigRep, HandlerStreamEvent, JudgeTask, ProviderHandler } from '../types.js';
 
 const fn = async () => ({ output: 'ok', usage: {} });
 const handler = (captureContent?: boolean): ProviderHandler =>
@@ -287,5 +287,72 @@ describe('runJudges explanation follows the judge handler’s effective capture 
   it('omits it for a re-wrapped judge that kept an explicit false', async () => {
     const inner = createHandler(['TestProvider', 'messages'], judgeFn, undefined, false);
     expect(await explanation(createHandler(['TestProvider', 'messages'], inner))).toBeUndefined();
+  });
+});
+
+describe('deferred runJudge explanation follows the judge handler’s effective capture flag', () => {
+  const exporter = new InMemorySpanExporter();
+  const provider = new BasicTracerProvider({
+    spanProcessors: [new ConversationIdSpanProcessor(), new SimpleSpanProcessor(exporter)],
+  });
+  const tracer = provider.getTracer('@launchdarkly/ai-server');
+  const contextManager = new AsyncLocalStorageContextManager();
+
+  beforeAll(() => {
+    contextManager.enable();
+    context.setGlobalContextManager(contextManager);
+    trace.setGlobalTracerProvider(provider);
+  });
+
+  afterAll(async () => {
+    context.disable();
+    trace.disable();
+    await provider.shutdown();
+  });
+
+  const judgeFn = async () => {
+    tracer.startActiveSpan('invoke_agent', (span) => span.end());
+    return { output: '{"score": 0.9, "reasoning": "good"}', usage: { input_tokens: 1, output_tokens: 1 } };
+  };
+
+  const task: JudgeTask = {
+    configKey: 'judge-1',
+    judgeConfig: { model: { name: 'gpt-4' }, provider: { name: 'TestProvider' }, instructions: 'judge' } as AiConfigRep,
+    judgeMeta: { enabled: true, variationKey: 'j1', version: 1, mode: 'messages' },
+    actualOutput: 'r',
+    userInput: 'q',
+    userContext: USER,
+    judgeProvider: 'TestProvider',
+    judgeMode: 'messages',
+    collapseMessages: false,
+    parentTrackData: { runId: 'x' } as never,
+  };
+
+  const explanation = async (judge: ProviderHandler): Promise<unknown> => {
+    exporter.reset();
+    const result = await runJudge(task, [judge]);
+    expect(result?.score).toBe(0.9);
+    const spans = exporter.getFinishedSpans().filter((s) => s.name === 'invoke_agent');
+    expect(spans.length).toBeGreaterThan(0);
+    return spans[spans.length - 1].attributes['gen_ai.evaluation.explanation'];
+  };
+
+  it('writes it under the built-in default', async () => {
+    expect(await explanation(createHandler(['TestProvider', 'messages'], judgeFn))).toBe('good');
+  });
+
+  it('omits it for an explicit false', async () => {
+    expect(await explanation(createHandler(['TestProvider', 'messages'], judgeFn, undefined, false))).toBeUndefined();
+  });
+
+  it('omits it when configure turns the default off', async () => {
+    const judge = createHandler(['TestProvider', 'messages'], judgeFn);
+    configure({ options: { captureContent: false } });
+    expect(await explanation(judge)).toBeUndefined();
+  });
+
+  it('writes it for an explicit true when the configured default is false', async () => {
+    configure({ options: { captureContent: false } });
+    expect(await explanation(createHandler(['TestProvider', 'messages'], judgeFn, undefined, true))).toBe('good');
   });
 });
