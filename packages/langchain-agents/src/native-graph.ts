@@ -47,9 +47,10 @@ const contentText = (content: unknown): string =>
 /**
  * Rewrites the history a node finds when it is entered as provider-neutral text, so a
  * target on another provider never sees the previous node's tool or reasoning blocks
- * (spec §2.x.3). Human and system messages pass through.
+ * (spec §2.x.3). Human and system messages pass through. Exported for tests only; the
+ * package index does not re-export it.
  */
-const toNeutralHistory = (messages: BaseMessage[]): BaseMessage[] => {
+export const toNeutralHistory = (messages: BaseMessage[]): BaseMessage[] => {
   const out: BaseMessage[] = [];
   let calls: { name: string; id?: string }[] = [];
   let results: ToolMessage[] = [];
@@ -187,7 +188,6 @@ export const toLangGraph = (
   invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 } => {
   reportUsage('langchain-agents.toLangGraph', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  type ContentBlock = { type: string; text?: string };
 
   const invoke = async (
     input = '',
@@ -329,16 +329,6 @@ export const toLangGraph = (
             totalUsage.output += usage.output;
             totalUsage.total += usage.total;
 
-            const _text =
-              typeof result.content === 'string'
-                ? result.content
-                : Array.isArray(result.content)
-                  ? result.content
-                      .filter((c: ContentBlock) => c.type === 'text')
-                      .map((c: ContentBlock) => c.text)
-                      .join('')
-                  : '';
-
             trackNode(node, nodeStartTime, usage, ldContext, def, runId);
 
             return { messages: [result] };
@@ -395,16 +385,7 @@ export const toLangGraph = (
 
         // Extract final output from last AI message
         const lastMsg: BaseMessage | undefined = result.messages?.[result.messages.length - 1];
-        const finalOutput = lastMsg
-          ? typeof lastMsg.content === 'string'
-            ? lastMsg.content
-            : Array.isArray(lastMsg.content)
-              ? lastMsg.content
-                  .filter((c: ContentBlock) => c.type === 'text')
-                  .map((c: ContentBlock) => c.text)
-                  .join('')
-              : ''
-          : '';
+        const finalOutput = contentText(lastMsg?.content);
 
         span.setAttribute('launchdarkly.graph.path', path.join('->'));
         span.setAttribute('gen_ai.usage.input_tokens', totalUsage.input);

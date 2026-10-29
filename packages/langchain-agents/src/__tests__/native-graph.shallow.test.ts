@@ -11,7 +11,14 @@
  * and the LLM are substituted.
  */
 
-import { AIMessage, type BaseMessage, ToolMessage } from '@langchain/core/messages';
+import {
+  AIMessage,
+  AIMessageChunk,
+  type BaseMessage,
+  HumanMessage,
+  SystemMessage,
+  ToolMessage,
+} from '@langchain/core/messages';
 import { getClient } from '@launchdarkly/ai-server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -46,7 +53,7 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
   };
 });
 
-import { toLangGraph } from '../native-graph.js';
+import { toLangGraph, toNeutralHistory } from '../native-graph.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -328,5 +335,48 @@ describe('toLangGraph — hand-offs through a real StateGraph', () => {
     expect((second[2] as AIMessage).tool_calls?.[0].id).toBe('call_x');
     expect(second[2].content).toEqual([REASONING]);
     expect((second[3] as ToolMessage).tool_call_id).toBe('call_x');
+  });
+});
+
+describe('toNeutralHistory', () => {
+  // The rewrite rules in spec §2.x.3, on one input that hits each of them. The Python test
+  // uses the same input and expects the same output.
+  it('rewrites every case', () => {
+    const image = [
+      { type: 'text', text: 'look' },
+      { type: 'image_url', image_url: { url: 'data:x' } },
+    ];
+    const history = [
+      new SystemMessage('sys'),
+      new HumanMessage({ content: image }),
+      new AIMessage({
+        content: [
+          REASONING,
+          { type: 'text', text: 'a' },
+          { type: 'text', text: null },
+          { type: 'text', text: 'b' },
+        ] as any,
+        tool_calls: [
+          { name: 'first', args: { q: 'café', n: { x: [1, 2] } }, id: 'c1' },
+          { name: 'second', args: {}, id: 'c2' },
+        ],
+      }),
+      new ToolMessage({ content: 'orphan', tool_call_id: 'zz', name: 'lost' }),
+      new ToolMessage({ content: [{ type: 'text', text: 'two' }], tool_call_id: 'c2' }),
+      new ToolMessage({ content: 'one', tool_call_id: 'c1' }),
+      new AIMessage({ content: [REASONING] as any }),
+      new AIMessageChunk({ content: 'chunk', tool_calls: [{ name: 't', args: {}, id: 'c3' }] }),
+    ];
+
+    const out = toNeutralHistory(history);
+
+    expect(out.map((m) => [m.getType(), m.content])).toEqual([
+      ['system', 'sys'],
+      ['human', image],
+      ['ai', 'ab\n[Tool call] first {"q":"café","n":{"x":[1,2]}}\n[Tool call] second {}'],
+      ['human', '[Tool result] first: one\n[Tool result] second: two\n[Tool result] lost: orphan'],
+      ['ai', 'chunk\n[Tool call] t {}'],
+    ]);
+    for (const m of out) expect((m as AIMessage).tool_calls ?? []).toHaveLength(0);
   });
 });
