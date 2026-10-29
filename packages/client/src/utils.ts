@@ -1,15 +1,16 @@
 import type { Span } from '@opentelemetry/api';
 import { effectiveCaptureContent, noteAiInvocation } from './sdk-options.js';
 import { reportUsage } from './sdk-usage.js';
-import type {
-  AiConfigRep,
-  HandlerStreamEvent,
-  Message,
+import {
+  type AiConfigRep,
+  type HandlerStreamEvent,
+  type Message,
+  NATIVE_TOOL_KEY,
   NativeTool,
-  ProviderHandler,
-  TokenUsage,
-  ToolHandlerFn,
-  TrackData,
+  type ProviderHandler,
+  type TokenUsage,
+  type ToolHandlerFn,
+  type TrackData,
 } from './types.js';
 
 /**
@@ -845,3 +846,22 @@ export const omitModelStamps = <T extends { modelKey?: string; modelVersion?: nu
   const { modelKey: _modelKey, modelVersion: _modelVersion, ...rest } = trackData;
   return rest;
 };
+
+const warnedNativeTools = new Set<string>();
+
+/**
+ * Whether a handler may send `handler` to the model as a function tool. A `NativeTool`,
+ * or the tracking stub `wrapToolHandlers` makes from one, is a provider built-in, never a
+ * function tool: a handler with no built-in for it skips it, warning once per tool key.
+ */
+export function isFunctionTool(name: string, handler: unknown): handler is ToolHandlerFn {
+  if (handler instanceof NativeTool || (typeof handler === 'function' && NATIVE_TOOL_KEY in handler)) {
+    if (!warnedNativeTools.has(name)) {
+      warnedNativeTools.add(name);
+      // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a skipped tool must be visible
+      console.warn(`[LaunchDarkly] Skipping native tool "${name}": this handler has no built-in tool for it.`);
+    }
+    return false;
+  }
+  return typeof handler === 'function';
+}

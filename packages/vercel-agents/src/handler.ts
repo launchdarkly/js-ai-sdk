@@ -7,6 +7,7 @@ import {
   type config,
   configInternal,
   createHandlerInternal,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -199,7 +200,7 @@ function buildTools(
   parentSpan: Span,
   captureContent: boolean,
 ): { tools: ToolSet; definitions: ToolDefinitionInput[] } {
-  const available = Object.entries(configTools ?? {}).filter(([name]) => typeof handlers[name] === 'function');
+  const available = Object.entries(configTools ?? {}).filter(([name]) => isFunctionTool(name, handlers[name]));
   return {
     tools: Object.fromEntries(
       available.map(([name, definition]) => [

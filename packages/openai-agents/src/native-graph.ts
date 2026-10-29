@@ -5,6 +5,7 @@ import {
   type GraphNode,
   getClient,
   imageBlockToUrl,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -42,26 +43,23 @@ const buildInstructions = (node: GraphNode, variables: Record<string, unknown>):
 
 const buildNodeTools = (node: GraphNode, toolHandlers: Record<string, ToolHandlerFn | NativeTool>) => {
   if (!node.config.tools) return [];
-  return Object.entries(node.config.tools).map(([name, toolConfig]) =>
-    tool({
-      name,
-      description: toolConfig.description ?? '',
-      strict: false,
-      // biome-ignore lint/suspicious/noExplicitAny: OpenAI Agents SDK tool parameters type does not accept Record<string, unknown>
-      parameters: toolConfig.parameters as any,
-      // null, not undefined: the SDK default feeds a tool error back to the model, but it must propagate.
-      errorFunction: null,
-      execute: async (args) => {
-        const handler = toolHandlers[name];
-        if (!handler || (handler instanceof Object && 'id' in handler)) {
-          // NativeTool — native to provider; return empty
-          return '';
-        }
-        const result = await (handler as (...args: unknown[]) => unknown)(args);
-        return toolResultString(result);
-      },
-    }),
-  );
+  return Object.entries(node.config.tools)
+    .filter(([name]) => isFunctionTool(name, toolHandlers[name]))
+    .map(([name, toolConfig]) =>
+      tool({
+        name,
+        description: toolConfig.description ?? '',
+        strict: false,
+        // biome-ignore lint/suspicious/noExplicitAny: OpenAI Agents SDK tool parameters type does not accept Record<string, unknown>
+        parameters: toolConfig.parameters as any,
+        // null, not undefined: the SDK default feeds a tool error back to the model, but it must propagate.
+        errorFunction: null,
+        execute: async (args) => {
+          const result = await (toolHandlers[name] as (...args: unknown[]) => unknown)(args);
+          return toolResultString(result);
+        },
+      }),
+    );
 };
 
 // The Agents SDK names the image source `image` (URL / data URL), unlike the raw

@@ -10,6 +10,7 @@ import {
   createHandlerInternal,
   endSpanOnce,
   imageBlockToUrl,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -460,7 +461,7 @@ function attachToolSpanHooks(
 
 const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record<string, ToolHandlerFn | NativeTool>) =>
   Object.entries(configTools)
-    .filter(([name]) => typeof toolHandlers[name] === 'function')
+    .filter(([name]) => isFunctionTool(name, toolHandlers[name]))
     .map(([name, toolConfig]) =>
       tool({
         name,

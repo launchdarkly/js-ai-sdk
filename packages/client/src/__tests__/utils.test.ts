@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { configure, shutdown } from '../index.js';
+import { wrapToolHandlers } from '../tracking.js';
+import { NativeTool } from '../types.js';
 import {
   camelizeModelParameters,
   createHandler,
+  isFunctionTool,
   normalizeMode,
   normalizeModelParameters,
   numberOrZero,
@@ -13,6 +16,30 @@ import {
   setLdSpanAttributes,
   setUsageSpanAttributes,
 } from '../utils.js';
+
+// ─── isFunctionTool ───────────────────────────────────────────────────────────
+
+describe('isFunctionTool', () => {
+  it('accepts a plain function and rejects a missing handler', () => {
+    expect(isFunctionTool('fn', () => 1)).toBe(true);
+    expect(isFunctionTool('missing', undefined)).toBe(false);
+  });
+
+  it('rejects a NativeTool and its tracking stub, warning once per tool key', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'WebSearch');
+    const { web: stub } = wrapToolHandlers({ web: native }, { kind: 'user', key: 'u' }, {} as never);
+    expect(typeof stub).toBe('function');
+    expect(isFunctionTool('web', stub)).toBe(false);
+    expect(isFunctionTool('web', native)).toBe(false);
+    expect(isFunctionTool('other', native)).toBe(false);
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      '[LaunchDarkly] Skipping native tool "web": this handler has no built-in tool for it.',
+      '[LaunchDarkly] Skipping native tool "other": this handler has no built-in tool for it.',
+    ]);
+    warn.mockRestore();
+  });
+});
 
 // ─── parseTemplate ────────────────────────────────────────────────────────────
 

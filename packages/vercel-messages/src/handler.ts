@@ -7,6 +7,7 @@ import {
   type config,
   configInternal,
   createHandlerInternal,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -170,7 +171,7 @@ function finishChatSpan(span: Span, usage: Usage): void {
 
 function toolDefinitions(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn | NativeTool>) {
   return Object.entries(configTools)
-    .filter(([name]) => typeof handlers[name] === 'function')
+    .filter(([name]) => isFunctionTool(name, handlers[name]))
     .map(([name, definition]) => ({ name, definition }));
 }
 

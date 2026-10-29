@@ -7,6 +7,7 @@ import {
   createHandlerInternal,
   endSpanOnce,
   imageBlockToUrl,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -242,7 +243,7 @@ function runSettings(configRep: AiConfigRep) {
 
 function buildTools(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn | NativeTool>) {
   return Object.entries(configTools)
-    .filter(([name]) => typeof handlers[name] === 'function')
+    .filter(([name]) => isFunctionTool(name, handlers[name]))
     .map(([name, definition]) =>
       tool({
         name,

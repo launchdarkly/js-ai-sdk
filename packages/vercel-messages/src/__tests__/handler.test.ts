@@ -65,7 +65,7 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
   };
 });
 
-import { configure, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
+import { configure, NATIVE_TOOL_KEY, NativeTool, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { createVercelMessagesHandler, vercelMessages } from '../handler.js';
 
 const baseConfig = {
@@ -381,6 +381,29 @@ describe('createVercelMessagesHandler', () => {
     expect(content[1]).toMatchObject({ type: 'file', mediaType: 'image/png' });
     expect(content[1].data).toBeInstanceOf(Uint8Array);
     expect(content[2]).toEqual({ type: 'file', data: new URL('https://example.com/image.png'), mediaType: 'image' });
+  });
+
+  it('never sends a NativeTool as a function tool, and warns once per tool key', async () => {
+    aiMocks.generateText.mockResolvedValue(generation('ok'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'web_search');
+    // The tracking stub core's wrapToolHandlers makes from a NativeTool.
+    const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
+    const config = {
+      ...baseConfig,
+      tools: {
+        search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } },
+        'native-web': { name: 'native-web', type: 'function' as const, parameters: { type: 'object' } },
+      },
+    };
+    const handler = createVercelMessagesHandler();
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': stub } as any);
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': native } as any);
+    expect(aiMocks.generateText.mock.calls.slice(-2).flatMap(([request]: any[]) => Object.keys(request.tools))).toEqual(
+      ['search', 'search'],
+    );
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('"native-web"'))).toHaveLength(1);
+    warn.mockRestore();
   });
 
   it('offers only tools with callable handlers and preserves JSON Schema', async () => {

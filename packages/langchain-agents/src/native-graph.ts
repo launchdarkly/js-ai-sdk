@@ -9,6 +9,7 @@ import {
   type GraphDefinition,
   type GraphNode,
   getClient,
+  isFunctionTool,
   type LDContext,
   type Message,
   makeGraphTrackData,
@@ -54,24 +55,22 @@ const buildSystemPrompt = (node: GraphNode, variables: Record<string, unknown>):
 
 const buildNodeTools = (node: GraphNode, toolHandlers: Record<string, ToolHandlerFn | NativeTool>) => {
   if (!node.config.tools) return [];
-  return Object.entries(node.config.tools).map(([name, toolConfig]) =>
-    tool(
-      async (args: Record<string, unknown>) => {
-        const handler = toolHandlers[name];
-        if (!handler || (handler instanceof Object && 'id' in handler)) {
-          return '';
-        }
-        const result = await (handler as (...args: unknown[]) => unknown)(args);
-        return toolResultString(result);
-      },
-      {
-        name,
-        description: toolConfig.description ?? '',
-        // biome-ignore lint/suspicious/noExplicitAny: LangChain tool schema type does not accept Record<string, unknown>
-        schema: toolConfig.parameters as any,
-      },
-    ),
-  );
+  return Object.entries(node.config.tools)
+    .filter(([name]) => isFunctionTool(name, toolHandlers[name]))
+    .map(([name, toolConfig]) =>
+      tool(
+        async (args: Record<string, unknown>) => {
+          const result = await (toolHandlers[name] as (...args: unknown[]) => unknown)(args);
+          return toolResultString(result);
+        },
+        {
+          name,
+          description: toolConfig.description ?? '',
+          // biome-ignore lint/suspicious/noExplicitAny: LangChain tool schema type does not accept Record<string, unknown>
+          schema: toolConfig.parameters as any,
+        },
+      ),
+    );
 };
 
 const trackNode = (

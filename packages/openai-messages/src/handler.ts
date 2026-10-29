@@ -11,6 +11,7 @@ import {
   endSpanOnce,
   imageBlockToUrl,
   isContentBlocks,
+  isFunctionTool,
   type LDContext,
   type Message,
   type NativeTool,
@@ -136,7 +137,7 @@ const buildTools = (
   const tools = Object.entries(configTools).flatMap<FunctionTool>(([name, toolConfig]) => {
     if (!Object.hasOwn(toolHandlers, name)) return [];
     const handler = toolHandlers[name];
-    if (typeof handler !== 'function') return [];
+    if (!isFunctionTool(name, handler)) return [];
     executableTools.set(name, handler as (...args: unknown[]) => unknown);
     return [
       {

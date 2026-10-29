@@ -80,6 +80,7 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
   };
 });
 
+import { NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
 import { toVercelAgents } from '../native-graph.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -253,6 +254,19 @@ describe('toVercelAgents', () => {
     await toVercelAgents(Promise.resolve(makeGraph() as any), { toolHandlers: {} } as any).invoke('hi');
     const leafOptions = aiMocks.agentArguments.find((args) => args.model === 'anthropic/leaf-model');
     expect(Object.keys(leafOptions.tools ?? {})).not.toContain('lookup');
+  });
+
+  it('never registers a NativeTool as a node tool, and warns once per tool key', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'web_search');
+    // The tracking stub core's wrapToolHandlers makes from a NativeTool.
+    const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
+    await toVercelAgents(Promise.resolve(makeGraph() as any), { toolHandlers: { lookup: stub } } as any).invoke('hi');
+    await toVercelAgents(Promise.resolve(makeGraph() as any), { toolHandlers: { lookup: native } } as any).invoke('hi');
+    const leafOptions = aiMocks.agentArguments.filter((args) => args.model === 'anthropic/leaf-model');
+    expect(leafOptions.flatMap((args) => Object.keys(args.tools ?? {}))).not.toContain('lookup');
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('"lookup"'))).toHaveLength(1);
+    warn.mockRestore();
   });
 
   it('starts at the graph root and applies caller history only to its first invocation', async () => {

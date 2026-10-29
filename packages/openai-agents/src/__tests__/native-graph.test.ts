@@ -78,7 +78,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
-import { initClient, resolveGraph } from '@launchdarkly/ai-server';
+import { initClient, NATIVE_TOOL_KEY, NativeTool, resolveGraph } from '@launchdarkly/ai-server';
 import { toOpenAIAgents } from '../native-graph.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -207,6 +207,27 @@ describe('toOpenAIAgents', () => {
     await toOpenAIAgents(Promise.resolve(graph), { toolHandlers: { search } }).invoke('hi');
     const sdkTool = realTool(mockTool.mock.calls[0][0]) as any;
     await expect(sdkTool.invoke(new RunContext({}), '{}')).rejects.toThrow('tool exploded');
+  });
+
+  it('never registers a NativeTool as a tool, and warns once per tool key', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'web_search');
+    // The tracking stub core's wrapToolHandlers makes from a NativeTool.
+    const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
+    const graph = makeTwoNodeGraph();
+    (graph.root.config as any).tools = {
+      search: { name: 'search', type: 'function', parameters: { type: 'object' } },
+      'native-web': { name: 'native-web', type: 'function', parameters: { type: 'object' } },
+    };
+    await toOpenAIAgents(Promise.resolve(graph), { toolHandlers: { search: vi.fn(), 'native-web': stub } }).invoke(
+      'hi',
+    );
+    await toOpenAIAgents(Promise.resolve(graph), { toolHandlers: { search: vi.fn(), 'native-web': native } }).invoke(
+      'hi',
+    );
+    expect(mockTool.mock.calls.map(([options]: any[]) => options.name)).toEqual(['search', 'search']);
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('"native-web"'))).toHaveLength(1);
+    warn.mockRestore();
   });
 
   it('creates one Agent per node in a two-node graph', async () => {

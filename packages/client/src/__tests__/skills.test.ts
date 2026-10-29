@@ -402,6 +402,7 @@ const ROOT_VALUES = [
   'imageBlockToUrl',
   'initClient',
   'inspectConfig',
+  'isFunctionTool',
   'inspectConfigInternal',
   'isContentBlocks',
   'langChainContentText',

@@ -56,7 +56,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => ({
   getClient: () => ({ track: mockTrack }),
 }));
 
-import type { GraphDefinition, GraphNode } from '@launchdarkly/ai-server';
+import { type GraphDefinition, type GraphNode, NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
 import { toLiteLLMAgents } from '../native-graph.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -230,6 +230,24 @@ describe('toLiteLLMAgents', () => {
     }).invoke('q');
     expect(mockTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'search', errorFunction: null }));
     await expect(mockTool.mock.results[0].value.execute({ query: 'x' })).resolves.toBe('found');
+  });
+
+  it('never registers a NativeTool as a node tool, and warns once per tool key', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'web_search');
+    // The tracking stub core's wrapToolHandlers makes from a NativeTool.
+    const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
+    await toLiteLLMAgents(Promise.resolve(graphDefinition()), {
+      client: {} as never,
+      toolHandlers: { search: stub },
+    }).invoke('q');
+    await toLiteLLMAgents(Promise.resolve(graphDefinition()), {
+      client: {} as never,
+      toolHandlers: { search: native },
+    }).invoke('q');
+    expect(mockTool).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'search' }));
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('"search"'))).toHaveLength(1);
+    warn.mockRestore();
   });
 
   it('forwards structured history to the root run', async () => {
