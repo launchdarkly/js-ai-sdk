@@ -5,11 +5,22 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
 
-const { mockTrack, mockVariation, mockExtractVariation } = vi.hoisted(() => ({
+const { mockTrack, mockVariation, mockExtractVariation, captureDefault } = vi.hoisted(() => ({
   mockTrack: vi.fn(),
   mockVariation: vi.fn(),
   mockExtractVariation: vi.fn(),
+  // Stands in for the process-wide content capture default, which is off on this branch.
+  captureDefault: { value: false },
 }));
+
+vi.mock('../content.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../content.js')>();
+  return {
+    ...actual,
+    captureContentFor: (handler: { captureContent?: boolean } | undefined) =>
+      typeof handler?.captureContent === 'boolean' ? handler.captureContent : captureDefault.value,
+  };
+});
 
 vi.mock('../lifecycle.js', () => ({
   getClient: vi.fn().mockReturnValue({ track: mockTrack, variation: mockVariation }),
@@ -338,6 +349,15 @@ describe('graph().invoke()', () => {
     await expect(graph('graph-flag', {}).invoke('hi', mockContext)).rejects.toThrow(/handlers/i);
   });
 
+  it('does not run a scoped wildcard for a provider outside its list', async () => {
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+    handler.providesFor = ['*', 'messages'];
+    handler.providers = ['Bedrock'];
+    await expect(graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext)).rejects.toThrow(/OpenAI/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('visits all nodes and accumulates usage', async () => {
     setupTwoNodeGraph();
     const handler = makeHandler();
@@ -500,6 +520,18 @@ describe('graph().invoke()', () => {
     );
     expect(runJudges).toHaveBeenCalled();
     expect(result.judgeResults).toEqual(judgeData);
+  });
+
+  it('passes the graph handlers to the graphJudge, so its provider allowlist applies', async () => {
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+    await graph('graph-flag', { handlers: [handler], graphJudge: 'graph-judge' }).invoke('hi', mockContext);
+    const graphJudgeCall = (runJudges as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([args]) => args.config.judgeConfiguration?.judges?.[0]?.key === 'graph-judge',
+    );
+    expect(graphJudgeCall?.[0].handlers).toEqual([handler]);
   });
 
   it('forwards history as the 4th invoke arg to the root handler only', async () => {
@@ -665,6 +697,36 @@ describe('graph() conversation id', () => {
     const flagEvents = graphSpan?.events.filter((e) => e.name === 'feature_flag') ?? [];
     expect(flagEvents).toHaveLength(1);
     expect(flagEvents[0].attributes?.['feature_flag.key']).toBe('graph-flag');
+  });
+
+  it.each([
+    ['invoke', false],
+    ['stream', false],
+    ['invoke', true],
+    ['stream', true],
+  ] as const)('writes feature_flag.result.value on the launchdarkly.graph span on %s with default capture %s', async (mode, capture) => {
+    setupTwoNodeGraph();
+    const rawGraphVariation = {
+      root: 'root-node',
+      edges: { 'root-node': [{ key: 'leaf-node' }] },
+      _ldMeta: { variationKey: 'graph-v1', version: 3 },
+    };
+    mockVariation.mockResolvedValue(rawGraphVariation);
+    captureDefault.value = capture;
+    try {
+      const g = graph('graph-flag', { handlers: [makeStreamingHandler(['ok'])] });
+      if (mode === 'invoke') await g.invoke('hi', mockContext);
+      else await collectStream(g.stream('hi', mockContext));
+    } finally {
+      captureDefault.value = false;
+    }
+
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
+    const flagEvent = graphSpan?.events.find((e) => e.name === 'feature_flag');
+    expect(flagEvent?.attributes?.['feature_flag.result.variant']).toBe('graph-v1');
+    expect(flagEvent?.attributes?.['feature_flag.result.value']).toBe(
+      capture ? JSON.stringify(rawGraphVariation) : JSON.stringify('graph-v1'),
+    );
   });
 
   it('gives each invocation with the same context its own run id', async () => {

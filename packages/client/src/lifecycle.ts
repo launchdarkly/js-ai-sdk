@@ -620,7 +620,7 @@ export async function inspectConfigInternal(key: string, context: LDContext): Pr
 export const extractVariation = async (
   key: string,
   userContext: LDContext,
-): Promise<{ config: AiConfigRep; meta: VariationMeta }> => {
+): Promise<{ config: AiConfigRep; meta: VariationMeta; value: unknown }> => {
   const { value } = await fetchVariation(key, userContext);
   return parseVariation(key, value);
 };
@@ -650,8 +650,11 @@ export async function fetchVariation(
   return { value: await client.variation(key, userContext, { enabled: false }) };
 }
 
-/** @internal Parses a raw variation value into its config and meta. */
-export function parseVariation(key: string, variation: unknown): { config: AiConfigRep; meta: VariationMeta } {
+/** @internal Parses a raw variation value into its config and meta, and keeps the value. */
+export function parseVariation(
+  key: string,
+  variation: unknown,
+): { config: AiConfigRep; meta: VariationMeta; value: unknown } {
   // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
   if (!(variation as any)?._ldMeta?.enabled) {
     throw new Error(`Variation ${key} is not enabled`);
@@ -661,6 +664,8 @@ export function parseVariation(key: string, variation: unknown): { config: AiCon
     throw new Error(`Invalid AI config for "${key}": ${parsed.error.message}`);
   }
 
+  // `value` is the variation exactly as the SDK returned it, before parsing. It is written to the
+  // `feature_flag` span event as `feature_flag.result.value`.
   // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
-  return { config: parsed.data, meta: (variation as any)._ldMeta as VariationMeta };
+  return { config: parsed.data, meta: (variation as any)._ldMeta as VariationMeta, value: variation };
 }

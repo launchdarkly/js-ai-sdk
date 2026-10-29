@@ -657,6 +657,11 @@ export type JudgeTask = {
   judgeConfig: AiConfigRep;
   /** Variation metadata for the judge config. */
   judgeMeta: VariationMeta;
+  /**
+   * The judge variation exactly as the LaunchDarkly SDK returned it. Written as
+   * `feature_flag.result.value` on the judge span when the judge's handler captures content.
+   */
+  judgeValue?: unknown;
   /** The LLM response to evaluate. */
   actualOutput: string;
   /**
@@ -779,6 +784,11 @@ export type ProviderHandler = ((
   usage?: Record<string, unknown>;
 }>) & {
   providesFor?: [provider: string, type: 'agent' | 'messages'];
+  /**
+   * Allowlist consulted only when `providesFor` starts with `'*'`. Names must match
+   * `config.provider.name` exactly. Omitted means the wildcard accepts every provider.
+   */
+  providers?: readonly string[];
   /**
    * Whether this handler was built with content capture on. Declared here so the client core can
    * apply the same gate to content it writes on the handler's behalf — notably the judge's

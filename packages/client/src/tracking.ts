@@ -1,3 +1,4 @@
+import { captureContentFor } from './content.js';
 import { getClient } from './lifecycle.js';
 import { exposedToolKeys, HANDOFF_TOOL_PREFIX, renderTrajectory, TrajectoryRecorder } from './trajectory.js';
 import type {
@@ -236,6 +237,27 @@ export const makeRunTrackData = ({
   environmentId: tryGetEnvironmentId(),
 });
 
+/**
+ * The variables a handler receives. `ldContext`, `__ld` and `__ldValue` are SDK-owned, so a
+ * caller-supplied value never survives: `__ldValue` is the evaluated variation for a handler
+ * that captures content, and absent otherwise.
+ */
+const handlerVariables = (
+  variables: Record<string, unknown> | undefined,
+  userContext: LDContext,
+  trackData: TrackData,
+  handler: ProviderHandler,
+  evaluatedValue: unknown,
+): Record<string, unknown> => {
+  const merged: Record<string, unknown> = { ...variables, ldContext: { ...userContext }, __ld: trackData };
+  if (evaluatedValue !== undefined && captureContentFor(handler)) {
+    merged.__ldValue = evaluatedValue;
+  } else {
+    delete merged.__ldValue;
+  }
+  return merged;
+};
+
 export const executeAndTrack = async ({
   configKey,
   config,
@@ -247,6 +269,7 @@ export const executeAndTrack = async ({
   variables,
   graphKey,
   history,
+  evaluatedValue,
   runId,
   extraTrackData,
   spanAttributes,
@@ -261,6 +284,13 @@ export const executeAndTrack = async ({
   variables?: Record<string, unknown>;
   graphKey?: string;
   history?: Message[];
+  /**
+   * The flag value as the LaunchDarkly SDK returned it, before parsing. Passed to the handler as
+   * `variables.__ldValue` (not in `TrackData`, which is the `$ld:ai:*` event payload) so
+   * `setLdSpanAttributes` can write `feature_flag.result.value`, but only when the handler has
+   * `captureContent` on: the value holds the prompt. Omit it when there is none.
+   */
+  evaluatedValue?: unknown;
   runId?: string;
   extraTrackData?: Record<string, unknown>;
   spanAttributes?: Record<string, string | boolean>;
@@ -272,23 +302,16 @@ export const executeAndTrack = async ({
   };
 
   const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
+  const mergedVariables = {
+    ...handlerVariables(variables, userContext, trackData, handler, evaluatedValue),
+    ...(spanAttributes && { [SPAN_ATTRIBUTES_KEY]: spanAttributes }),
+  };
 
   const startTime = Date.now();
   let response: Awaited<ReturnType<ProviderHandler>>;
 
   try {
-    response = await handler(
-      config,
-      userInput,
-      trackedToolHandlers,
-      {
-        ...variables,
-        ldContext: { ...userContext },
-        __ld: trackData,
-        ...(spanAttributes && { [SPAN_ATTRIBUTES_KEY]: spanAttributes }),
-      },
-      history,
-    );
+    response = await handler(config, userInput, trackedToolHandlers, mergedVariables, history);
   } catch (err) {
     getClient().track('$ld:ai:duration:total', userContext, trackData, Date.now() - startTime);
     getClient().track('$ld:ai:generation:error', userContext, trackData, 1);
@@ -336,6 +359,7 @@ export async function* executeAndStream({
   variables,
   graphKey,
   history,
+  evaluatedValue,
   runId,
 }: {
   configKey: string;
@@ -348,12 +372,19 @@ export async function* executeAndStream({
   variables?: Record<string, unknown>;
   graphKey?: string;
   history?: Message[];
+  /**
+   * The flag value as the LaunchDarkly SDK returned it, before parsing. Passed to the handler as
+   * `variables.__ldValue` (not in `TrackData`, which is the `$ld:ai:*` event payload) so
+   * `setLdSpanAttributes` can write `feature_flag.result.value`, but only when the handler has
+   * `captureContent` on: the value holds the prompt. Omit it when there is none.
+   */
+  evaluatedValue?: unknown;
   runId?: string;
 }): AsyncGenerator<ExecuteStreamEvent> {
   const trackData = { ...makeRunTrackData({ configKey, config, meta, graphKey }), ...(runId && { runId }) };
 
   const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
-  const mergedVariables = { ...variables, ldContext: { ...userContext }, __ld: trackData };
+  const mergedVariables = handlerVariables(variables, userContext, trackData, handler, evaluatedValue);
 
   const startTime = Date.now();
   let fullText = '';

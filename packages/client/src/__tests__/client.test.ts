@@ -24,9 +24,10 @@ vi.mock('../judges.js', async (importOriginal) => {
 });
 
 import { config } from '../client.js';
-import { runJudges } from '../judges.js';
+import { buildJudgeTasks, runJudge, runJudges } from '../judges.js';
 import { extractVariation, getClient } from '../lifecycle.js';
 import type { ProviderHandler } from '../types.js';
+import { createHandler, setLdSpanAttributes } from '../utils.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -369,6 +370,107 @@ describe('config() — multi-handler routing', () => {
     const wildcardHandler: ProviderHandler = vi.fn().mockResolvedValue({ output: '', usage: {} });
     wildcardHandler.providesFor = ['*', 'messages'];
     await expect(config({ key: 'flag', handler: [wildcardHandler] }).invoke('q', mockContext)).rejects.toThrow();
+  });
+
+  const scoped = (providers: string[], output: string): ProviderHandler => {
+    const handler: ProviderHandler = vi.fn().mockResolvedValue({ output, usage: {} });
+    handler.providesFor = ['*', 'messages'];
+    handler.providers = providers;
+    return handler;
+  };
+
+  it('selects a scoped wildcard when the provider is listed', async () => {
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: { ...mockConfig, provider: { name: 'Bedrock' } },
+      meta: mockMeta,
+    });
+    const handler = scoped(['Bedrock'], 'from bedrock');
+    const result = await config({ key: 'flag', handler: [handler] }).invoke('q', mockContext);
+    expect(result.response).toBe('from bedrock');
+  });
+
+  it('rejects a scoped wildcard when the provider is not listed', async () => {
+    const handler = scoped(['Bedrock'], 'from bedrock');
+    await expect(config({ key: 'flag', handler: [handler] }).invoke('q', mockContext)).rejects.toThrow(
+      /^Handler for provider OpenAI not found$/,
+    );
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('prefers a scoped wildcard that lists the provider over an unscoped one', async () => {
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: { ...mockConfig, provider: { name: 'Bedrock' } },
+      meta: mockMeta,
+    });
+    const bedrock = scoped(['Bedrock'], 'bedrock');
+    const unscoped: ProviderHandler = vi.fn().mockResolvedValue({ output: 'any', usage: {} });
+    unscoped.providesFor = ['*', 'messages'];
+    const result = await config({ key: 'flag', handler: [unscoped, bedrock] }).invoke('q', mockContext);
+    expect(result.response).toBe('bedrock');
+    expect(unscoped).not.toHaveBeenCalled();
+  });
+
+  it('routes each provider to its own scoped wildcard', async () => {
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: { ...mockConfig, provider: { name: 'Anthropic' } },
+      meta: mockMeta,
+    });
+    const bedrock = scoped(['Bedrock'], 'bedrock');
+    const anthropic = scoped(['Anthropic'], 'anthropic');
+    const result = await config({ key: 'flag', handler: [bedrock, anthropic] }).invoke('q', mockContext);
+    expect(result.response).toBe('anthropic');
+    expect(bedrock).not.toHaveBeenCalled();
+  });
+
+  it('prefers an exact provider handler over a scoped wildcard', async () => {
+    const wildcard = scoped(['OpenAI'], 'scoped');
+    const explicit = makeHandler('exact');
+    const result = await config({ key: 'flag', handler: [wildcard, explicit] }).invoke('q', mockContext);
+    expect(result.response).toBe('exact');
+    expect(wildcard).not.toHaveBeenCalled();
+  });
+
+  it('falls back to an unscoped wildcard when no scoped list matches', async () => {
+    const bedrock = scoped(['Bedrock'], 'bedrock');
+    const unscoped: ProviderHandler = vi.fn().mockResolvedValue({ output: 'any', usage: {} });
+    unscoped.providesFor = ['*', 'messages'];
+    const result = await config({ key: 'flag', handler: [bedrock, unscoped] }).invoke('q', mockContext);
+    expect(result.response).toBe('any');
+    expect(bedrock).not.toHaveBeenCalled();
+  });
+
+  it('prefers the shorter provider list when both match', async () => {
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: { ...mockConfig, provider: { name: 'Bedrock' } },
+      meta: mockMeta,
+    });
+    const wide = scoped(['Bedrock', 'Anthropic'], 'wide');
+    const narrow = scoped(['Bedrock'], 'narrow');
+    const result = await config({ key: 'flag', handler: [wide, narrow] }).invoke('q', mockContext);
+    expect(result.response).toBe('narrow');
+    expect(wide).not.toHaveBeenCalled();
+  });
+
+  it('keeps the earlier handler when overlapping lists are the same length', async () => {
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: { ...mockConfig, provider: { name: 'Bedrock' } },
+      meta: mockMeta,
+    });
+    const earlier = scoped(['Bedrock', 'Gemini'], 'earlier');
+    const later = scoped(['Bedrock', 'Anthropic'], 'later');
+    const result = await config({ key: 'flag', handler: [earlier, later] }).invoke('q', mockContext);
+    expect(result.response).toBe('earlier');
+    expect(later).not.toHaveBeenCalled();
+  });
+
+  it('a scoped wildcard does not match a different mode', async () => {
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: { ...mockConfig, provider: { name: 'Bedrock' } },
+      meta: { ...mockMeta, mode: 'agent' as const },
+    });
+    const handler = scoped(['Bedrock'], 'bedrock');
+    await expect(config({ key: 'flag', handler: [handler] }).invoke('q', mockContext)).rejects.toThrow(/Bedrock/);
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it('throws a mode-specific error when provider matches but mode does not', async () => {
@@ -818,5 +920,109 @@ describe('config().stream() — multi-handler routing', () => {
     claudeHandler.providesFor = ['Anthropic', 'messages'];
     const gen = config({ key: 'flag', handler: [claudeHandler] }).stream('q', mockContext);
     await expect(collectStream(gen)).rejects.toThrow(/OpenAI/i);
+  });
+});
+
+// ─── config().invoke — feature_flag.result.value with content capture on ─────
+
+describe('config().invoke — capture-on handler', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack });
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+  });
+
+  it('writes the raw variation JSON as feature_flag.result.value on the root feature_flag event', async () => {
+    const rawVariation = {
+      ...mockConfig,
+      _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'messages' },
+    };
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: mockConfig,
+      meta: mockMeta,
+      value: rawVariation,
+    });
+    const span = { setAttribute: vi.fn(), addEvent: vi.fn() };
+    const handler = createHandler(
+      ['OpenAI', 'messages'],
+      async (_config, _input, _tools, variables) => {
+        setLdSpanAttributes(span as any, variables);
+        return { output: 'ok', usage: { input_tokens: 1, output_tokens: 1 } };
+      },
+      { captureContent: true },
+    );
+
+    await config({ key: 'my-flag', handler }).invoke('hi', mockContext);
+
+    const event = span.addEvent.mock.calls.find((c: unknown[]) => c[0] === 'feature_flag');
+    expect((event?.[1] as Record<string, unknown>)['feature_flag.result.value']).toBe(JSON.stringify(rawVariation));
+  });
+});
+
+// ─── buildJudgeTasks / runJudge — feature_flag.result.value on the deferred judge span ─────
+
+describe('deferred judge feature_flag.result.value', () => {
+  const judgeConfig = {
+    model: { name: 'gpt-4o' },
+    provider: { name: 'OpenAI' },
+    instructions: 'You are a judge.',
+    evaluationMetricKey: 'judge-metric',
+  };
+  const judgeMeta = { enabled: true, variationKey: 'judge-v1', version: 2, mode: 'messages' as const };
+  const rawJudgeVariation = { ...judgeConfig, _ldMeta: { ...judgeMeta } };
+  const parentConfig = {
+    ...mockConfig,
+    judgeConfiguration: { judges: [{ key: 'judge-flag', samplingRate: 1 }] },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack });
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: judgeConfig,
+      meta: judgeMeta,
+      value: rawJudgeVariation,
+    });
+  });
+
+  const judgeHandler = (span: { setAttribute: unknown; addEvent: unknown }, capture: boolean) =>
+    createHandler(
+      ['OpenAI', 'messages'],
+      async (_config, _input, _tools, variables) => {
+        setLdSpanAttributes(span as any, variables);
+        return { output: '{"score":0.9,"reasoning":"ok"}', usage: { input_tokens: 1, output_tokens: 1 } };
+      },
+      { captureContent: capture },
+    );
+
+  const featureFlagValue = (span: { addEvent: ReturnType<typeof vi.fn> }) => {
+    const event = span.addEvent.mock.calls.find((c: unknown[]) => c[0] === 'feature_flag');
+    return (event?.[1] as Record<string, unknown>)['feature_flag.result.value'];
+  };
+
+  it.each([
+    ['on', true, JSON.stringify(rawJudgeVariation)],
+    ['off', false, JSON.stringify('judge-v1')],
+  ])('with capture %s, the task carries the raw judge variation and its run writes the expected value', async (_label, capture, expected) => {
+    const span = { setAttribute: vi.fn(), addEvent: vi.fn() };
+    const handler = judgeHandler(span, capture);
+    const tasks = await buildJudgeTasks({
+      config: parentConfig,
+      userContext: mockContext,
+      handler,
+      handlers: [handler],
+      llmResponse: 'hello',
+      baseTrackData: { runId: 'r', configKey: 'flag', variationKey: 'v1', version: 1, modelName: '', providerName: '' },
+    });
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].judgeValue).toEqual(rawJudgeVariation);
+    // A worker receives the task through structured clone.
+    const task = structuredClone(tasks[0]);
+
+    const result = await runJudge(task, [handler]);
+
+    expect(result?.score).toBe(0.9);
+    expect(featureFlagValue(span)).toBe(expected);
   });
 });

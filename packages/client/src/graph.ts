@@ -1,5 +1,6 @@
 import type { Context, Span } from '@opentelemetry/api';
 import { context as otelContext, SpanStatusCode, trace } from '@opentelemetry/api';
+import { captureContentFor } from './content.js';
 import { bindConversationId, bindSpanContext } from './conversation.js';
 import { runJudges } from './judges.js';
 import { extractVariation, getClient, initClient } from './lifecycle.js';
@@ -29,7 +30,7 @@ import {
   type TraverseVisitor,
   type VariationMeta,
 } from './types.js';
-import { endSpanOnce, normalizeMode, setLdSpanAttributes } from './utils.js';
+import { endSpanOnce, normalizeMode, selectModeHandler, setLdSpanAttributes } from './utils.js';
 
 // Cycle protection: cap how many BFS layers a traversal will expand.
 const MAX_TRAVERSAL_DEPTH = 100;
@@ -71,16 +72,19 @@ const selectHandler = (config: AiConfigRep, meta: VariationMeta, handlers: Provi
 
   const mode = normalizeMode(meta.mode);
 
-  const exact = handlers.find((h) => h.providesFor?.[0] === provider && h.providesFor?.[1] === mode);
-  if (exact) return exact;
-
-  const wildcard = handlers.find((h) => h.providesFor?.[0] === '*' && h.providesFor?.[1] === mode);
-  if (wildcard) return wildcard;
+  const chosen = selectModeHandler(handlers, provider, mode);
+  if (chosen) return chosen;
 
   const byProvider = handlers.find((h) => h.providesFor?.[0] === provider);
   if (byProvider) return byProvider;
 
-  if (handlers.length === 1) return handlers[0];
+  if (handlers.length === 1) {
+    const only = handlers[0];
+    if (only.providers !== undefined && !only.providers.includes(provider)) {
+      throw new Error(`Handler for provider ${provider} not found`);
+    }
+    return only;
+  }
 
   throw new Error(`Handler for provider ${provider} not found`);
 };
@@ -107,7 +111,7 @@ const disabledDefinition = (key: string): GraphDefinition => ({
 const fetchGraphVariation = async (
   key: string,
   context: LDContext,
-): Promise<{ enabled: boolean; topology?: GraphTopology; meta: VariationMeta }> => {
+): Promise<{ enabled: boolean; topology?: GraphTopology; meta: VariationMeta; value: unknown }> => {
   await initClient();
   const variation: unknown = await getClient().variation(key, context, {});
 
@@ -118,10 +122,10 @@ const fetchGraphVariation = async (
 
   const parsed = GraphTopologySchema.safeParse(variation);
   if (!parsed.success || !parsed.data.root) {
-    return { enabled: false, meta };
+    return { enabled: false, meta, value: variation };
   }
 
-  return { enabled: true, topology: parsed.data, meta };
+  return { enabled: true, topology: parsed.data, meta, value: variation };
 };
 
 /**
@@ -139,6 +143,8 @@ const buildGraph = async (
 ): Promise<{
   def: GraphDefinition;
   graphTrackData: TrackData;
+  /** The graph flag variation exactly as the LaunchDarkly SDK returned it. */
+  graphValue: unknown;
   streamRoute: (
     node: GraphNode,
     input?: string,
@@ -146,7 +152,7 @@ const buildGraph = async (
     runTrackData?: TrackData,
   ) => AsyncGenerator<GraphStreamEvent, RouteResult>;
 }> => {
-  const { enabled, topology, meta } = await fetchGraphVariation(key, context);
+  const { enabled, topology, meta, value: graphValue } = await fetchGraphVariation(key, context);
 
   const graphTrackData: TrackData = {
     runId: crypto.randomUUID(),
@@ -168,6 +174,7 @@ const buildGraph = async (
     return {
       def: disabledDefinition(key),
       graphTrackData,
+      graphValue,
       streamRoute: disabledStreamRoute,
     };
   }
@@ -193,9 +200,12 @@ const buildGraph = async (
   const edgesFrom = (nodeKey: string): GraphEdge[] => edges.filter((e) => e.sourceKey === nodeKey);
 
   const nodes = new Map<string, GraphNode>();
+  // Raw variation per node, kept beside `GraphNode` so the public type is unchanged.
+  const nodeValues = new Map<string, unknown>();
   try {
     for (const nodeKey of allKeys) {
-      const { config, meta: nodeMeta } = await extractVariation(nodeKey, context);
+      const { config, meta: nodeMeta, value } = await extractVariation(nodeKey, context);
+      nodeValues.set(nodeKey, value);
       const nodeEdges = edgesFrom(nodeKey);
       nodes.set(nodeKey, {
         key: nodeKey,
@@ -213,6 +223,7 @@ const buildGraph = async (
     return {
       def: disabledDefinition(key),
       graphTrackData,
+      graphValue,
       streamRoute: disabledStreamRoute,
     };
   }
@@ -335,6 +346,7 @@ const buildGraph = async (
         variables: opts.variables,
         graphKey: key,
         history: opts.history,
+        evaluatedValue: nodeValues.get(node.key),
       })) {
         if (event.type === 'chunk') {
           yield { type: 'chunk', text: event.text, nodeKey: node.key };
@@ -442,6 +454,7 @@ const buildGraph = async (
         variables: opts.variables,
         graphKey: key,
         history: opts.history,
+        evaluatedValue: nodeValues.get(node.key),
       })) {
         if (event.type === 'chunk') {
           yield { type: 'chunk', text: event.text, nodeKey: node.key };
@@ -594,7 +607,7 @@ const buildGraph = async (
     reverseTraverse,
   };
 
-  return { def, graphTrackData, streamRoute };
+  return { def, graphTrackData, graphValue, streamRoute };
 };
 
 /**
@@ -731,7 +744,12 @@ export const graphInternal = (key: string, options: GraphOptions): GraphCaller =
       );
     }
 
-    const { def, graphTrackData: builtTrackData, streamRoute } = await buildGraph(key, context, resolvedOptions);
+    const {
+      def,
+      graphTrackData: builtTrackData,
+      graphValue,
+      streamRoute,
+    } = await buildGraph(key, context, resolvedOptions);
     if (!def.enabled) {
       throw new Error(`Agent graph "${key}" is disabled`);
     }
@@ -740,7 +758,13 @@ export const graphInternal = (key: string, options: GraphOptions): GraphCaller =
     const graphTrackData: TrackData = { ...builtTrackData, runId: crypto.randomUUID() };
 
     const span = trace.getTracer('@launchdarkly/ai-server').startSpan('launchdarkly.graph', undefined, callerContext);
-    setLdSpanAttributes(span, { __ld: graphTrackData, ldContext: context });
+    // The root span has no single handler, so the raw graph variation follows the process-wide
+    // content capture default. Without it, feature_flag.result.value falls back to the variation key.
+    setLdSpanAttributes(span, {
+      __ld: graphTrackData,
+      ldContext: context,
+      ...(graphValue !== undefined && captureContentFor(undefined) ? { __ldValue: graphValue } : {}),
+    });
     const spanContext = trace.setSpan(callerContext, span);
     const ended = new Set<Span>();
 
@@ -816,6 +840,7 @@ export const graphInternal = (key: string, options: GraphOptions): GraphCaller =
             } as unknown as AiConfigRep,
             userContext: context,
             handler: selectHandler(judgeRoot.config, judgeRoot.meta, judgeHandlers),
+            handlers: judgeHandlers,
             userInput: resolvedInput,
             llmResponse: finalResponse,
             baseTrackData: graphTrackData,

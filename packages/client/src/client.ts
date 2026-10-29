@@ -1,7 +1,7 @@
 import { bindConversationId } from './conversation.js';
 import { buildJudgeTasksInternal, runJudges } from './judges.js';
 import { extractVariation } from './lifecycle.js';
-import { findHandler, resolveHandlers, resolveTools } from './registry.js';
+import { resolveHandlers, resolveTools } from './registry.js';
 import { reportUsage } from './sdk-usage.js';
 import { type ExecuteStreamDoneEvent, executeAndStream, executeAndTrack } from './tracking.js';
 import type {
@@ -14,7 +14,7 @@ import type {
   StreamEvent,
   VariationMeta,
 } from './types.js';
-import { normalizeMode, parseJSONWithPossibleFences } from './utils.js';
+import { coversProviderName, normalizeMode, parseJSONWithPossibleFences, selectModeHandler } from './utils.js';
 
 function resolveOutputFormatResponse(rawResponse: unknown, outputFormat: Record<string, unknown> | undefined): unknown {
   if (!outputFormat) return rawResponse ?? '';
@@ -43,10 +43,10 @@ function selectHandler(
   if (!provider) throw new Error('Provider not found');
   const normalizedMode = normalizeMode(mode);
 
-  const selected = findHandler(resolvedHandlers, provider, normalizedMode);
-  if (selected) return selected;
+  const chosen = resolvedHandlers ? selectModeHandler(resolvedHandlers, provider, normalizedMode) : undefined;
+  if (chosen) return chosen;
 
-  if (!resolvedHandlers?.some((h) => h.providesFor?.[0] === provider || h.providesFor?.[0] === '*')) {
+  if (!resolvedHandlers?.some((handler) => coversProviderName(handler, provider))) {
     throw new Error(`Handler for provider ${provider} not found`);
   }
   throw new Error(`Handler for provider ${provider} with mode ${normalizedMode} not found`);
@@ -66,7 +66,9 @@ export const configInternal = (input: ConfigArgs) =>
 /** @internal {@link configInternal} on the variation `evaluate` returns, instead of on a flag evaluation. */
 export const configFromVariation = (
   { key, handler, toolHandlers, registry, skipJudges = false }: ConfigArgs,
-  evaluate: (context: LDContext) => Promise<{ config: AiConfigRep; meta: VariationMeta; runId?: string }>,
+  evaluate: (
+    context: LDContext,
+  ) => Promise<{ config: AiConfigRep; meta: VariationMeta; value?: unknown; runId?: string }>,
 ) => {
   const normalizeHandlers = (): ProviderHandler[] | undefined => {
     if (handler === undefined) return undefined;
@@ -82,7 +84,7 @@ export const configFromVariation = (
     const resolvedHandlerArray = resolveHandlers(registry, normalizeHandlers());
     const resolvedTools = resolveTools(registry, toolHandlers);
 
-    const { config: aiConfig, meta, runId } = await evaluate(context);
+    const { config: aiConfig, meta, value: evaluatedValue, runId } = await evaluate(context);
     const resolvedHandler = selectHandler(aiConfig, meta, resolvedHandlerArray);
 
     const {
@@ -100,6 +102,7 @@ export const configFromVariation = (
       toolHandlers: resolvedTools,
       variables,
       history,
+      evaluatedValue,
       runId,
     });
 
@@ -169,7 +172,7 @@ export const configFromVariation = (
     const resolvedHandlerArray = resolveHandlers(registry, normalizeHandlers());
     const resolvedTools = resolveTools(registry, toolHandlers);
 
-    const { config: aiConfig, meta, runId } = await evaluate(context);
+    const { config: aiConfig, meta, value: evaluatedValue, runId } = await evaluate(context);
     const resolvedHandler = selectHandler(aiConfig, meta, resolvedHandlerArray);
 
     let doneEvent: ExecuteStreamDoneEvent | undefined;
@@ -184,6 +187,7 @@ export const configFromVariation = (
       toolHandlers: resolvedTools,
       variables,
       history,
+      evaluatedValue,
       runId,
     })) {
       if (event.type === 'chunk') {
