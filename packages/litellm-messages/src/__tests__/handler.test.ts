@@ -458,6 +458,83 @@ describe('createLiteLLMMessagesHandler', () => {
     });
   });
 
+  describe('tool authorization (SEC-9507)', () => {
+    const client = (create: ReturnType<typeof vi.fn>) =>
+      createLiteLLMMessagesHandler({ client: { chat: { completions: { create } } } as never });
+
+    it('rejects a registered tool that is excluded from the active config on invoke', async () => {
+      const create = vi.fn().mockResolvedValueOnce(toolCompletion([{ arguments: '{}', id: 'c1', name: 'host_shell' }]));
+      const handlers = { host_shell: vi.fn(), safe_lookup: vi.fn() };
+      await expect(
+        client(create)({ ...baseConfig, tools: { safe_lookup: tool('safe_lookup') } } as never, 'q', handlers),
+      ).rejects.toThrow(/host_shell/);
+      expect(handlers.host_shell).not.toHaveBeenCalled();
+    });
+
+    it('rejects a registered tool when config.tools is absent on invoke', async () => {
+      const create = vi.fn().mockResolvedValueOnce(toolCompletion([{ arguments: '{}', id: 'c1', name: 'host_shell' }]));
+      const hostShell = vi.fn();
+      await expect(client(create)(baseConfig as never, 'q', { host_shell: hostShell })).rejects.toThrow(/host_shell/);
+      expect(hostShell).not.toHaveBeenCalled();
+    });
+
+    it('rejects inherited callable names on invoke', async () => {
+      const create = vi
+        .fn()
+        .mockResolvedValueOnce(toolCompletion([{ arguments: '{}', id: 'c1', name: 'constructor' }]));
+      await expect(
+        client(create)({ ...baseConfig, tools: { constructor: tool('constructor') } } as never, 'q', {}),
+      ).rejects.toThrow(/constructor/);
+      expect(create.mock.calls[0][0].tools).toBeUndefined();
+    });
+
+    it('rejects a registered tool that is excluded from the active config on stream', async () => {
+      const create = vi.fn().mockResolvedValueOnce(
+        stream([
+          {
+            choices: [
+              { delta: { tool_calls: [{ function: { arguments: '{}', name: 'host_shell' }, id: 'c1', index: 0 }] } },
+            ],
+          },
+        ]),
+      );
+      const handlers = { host_shell: vi.fn(), safe_lookup: vi.fn() };
+      await expect(
+        collect(
+          client(create).stream?.(
+            { ...baseConfig, tools: { safe_lookup: tool('safe_lookup') } } as never,
+            'q',
+            handlers,
+            {},
+          ) as AsyncIterable<unknown>,
+        ),
+      ).rejects.toThrow(/host_shell/);
+      expect(handlers.host_shell).not.toHaveBeenCalled();
+    });
+
+    it('rejects inherited callable names on stream', async () => {
+      const create = vi.fn().mockResolvedValueOnce(
+        stream([
+          {
+            choices: [
+              { delta: { tool_calls: [{ function: { arguments: '{}', name: 'constructor' }, id: 'c1', index: 0 }] } },
+            ],
+          },
+        ]),
+      );
+      await expect(
+        collect(
+          client(create).stream?.(
+            { ...baseConfig, tools: { constructor: tool('constructor') } } as never,
+            'q',
+            {},
+            {},
+          ) as AsyncIterable<unknown>,
+        ),
+      ).rejects.toThrow(/constructor/);
+    });
+  });
+
   describe('streaming', () => {
     it('yields text deltas, one done event, and terminal usage', async () => {
       const create = vi

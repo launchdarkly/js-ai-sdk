@@ -134,9 +134,34 @@ describe('partitionTools', () => {
     const native = new NativeTool(Symbol('n'), 'WebSearch');
     const stub = () => {};
     (stub as any)[NATIVE_TOOL_KEY] = native;
-    const { nativeToolMap, nativeToolNames } = partitionTools({}, { webSearch: stub });
+    const { nativeToolMap, nativeToolNames } = partitionTools(
+      { webSearch: { name: 'webSearch', type: 'function' as const, parameters: {} } },
+      { webSearch: stub },
+    );
     expect(nativeToolMap.has('WebSearch')).toBe(true);
     expect(nativeToolNames).toContain('WebSearch');
+  });
+
+  it('does not enable a native tool that is not attached to the active config (SEC-9507)', () => {
+    const native = new NativeTool(Symbol('bash'), 'Bash');
+    const stub = () => {};
+    (stub as any)[NATIVE_TOOL_KEY] = native;
+    for (const configTools of [
+      undefined,
+      {},
+      { other: { name: 'other', type: 'function' as const, parameters: {} } },
+    ]) {
+      const { nativeToolMap, nativeToolNames, nativeToolAliases } = partitionTools(configTools, { runBash: stub });
+      expect(nativeToolMap.size).toBe(0);
+      expect(nativeToolNames).toEqual([]);
+      expect(nativeToolAliases.size).toBe(0);
+    }
+  });
+
+  it('ignores inherited config tool names (SEC-9507)', () => {
+    const configTools = Object.create({ search: { name: 'search', type: 'function', parameters: {} } });
+    const { userConfigTools } = partitionTools(configTools, { search: vi.fn() });
+    expect(userConfigTools).toEqual({});
   });
 
   it('routes user-defined tool handlers to userConfigTools', () => {
@@ -1394,7 +1419,14 @@ describe('createClaudeAgentsHandler — host options and built-in tool set', () 
     });
 
     it('sends exactly the provider names of the native tools', async () => {
-      const options = await queryOptions(createClaudeAgentsHandler(), path, baseConfig, {
+      const nativeConfig = {
+        ...baseConfig,
+        tools: {
+          read: { name: 'read', type: 'function', parameters: {} },
+          bash: { name: 'bash', type: 'function', parameters: {} },
+        },
+      };
+      const options = await queryOptions(createClaudeAgentsHandler(), path, nativeConfig, {
         read: nativeStub('Read'),
         bash: nativeStub('Bash'),
       });
