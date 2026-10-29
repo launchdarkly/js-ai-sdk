@@ -237,15 +237,23 @@ describe('toLiteLLMAgents', () => {
     const native = new NativeTool(Symbol('web'), 'web_search');
     // The tracking stub core's wrapToolHandlers makes from a NativeTool.
     const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
-    await toLiteLLMAgents(Promise.resolve(graphDefinition()), {
+    const graph = () => {
+      const g = graphDefinition();
+      (g.root as any).config.tools = {
+        ...(g.root as any).config.tools,
+        fetch: { name: 'fetch', type: 'function', parameters: { type: 'object' } },
+      };
+      return g;
+    };
+    await toLiteLLMAgents(Promise.resolve(graph()), {
       client: {} as never,
-      toolHandlers: { search: stub },
+      toolHandlers: { fetch: vi.fn(), search: stub },
     }).invoke('q');
-    await toLiteLLMAgents(Promise.resolve(graphDefinition()), {
+    await toLiteLLMAgents(Promise.resolve(graph()), {
       client: {} as never,
-      toolHandlers: { search: native },
+      toolHandlers: { fetch: vi.fn(), search: native },
     }).invoke('q');
-    expect(mockTool).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'search' }));
+    expect(mockTool.mock.calls.map(([options]: any[]) => options.name)).toEqual(['fetch', 'fetch']);
     expect(warn.mock.calls.filter(([message]) => String(message).includes('"search"'))).toHaveLength(1);
     warn.mockRestore();
   });

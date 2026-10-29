@@ -261,10 +261,25 @@ describe('toVercelAgents', () => {
     const native = new NativeTool(Symbol('web'), 'web_search');
     // The tracking stub core's wrapToolHandlers makes from a NativeTool.
     const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
-    await toVercelAgents(Promise.resolve(makeGraph() as any), { toolHandlers: { lookup: stub } } as any).invoke('hi');
-    await toVercelAgents(Promise.resolve(makeGraph() as any), { toolHandlers: { lookup: native } } as any).invoke('hi');
+    const graph = () => {
+      const g = makeGraph();
+      (g.getNode('leaf') as any).config.tools.search = {
+        name: 'search',
+        type: 'function',
+        parameters: { type: 'object' },
+      };
+      return g;
+    };
+    await toVercelAgents(Promise.resolve(graph() as any), {
+      toolHandlers: { search: vi.fn(), lookup: stub },
+    } as any).invoke('hi');
+    await toVercelAgents(Promise.resolve(graph() as any), {
+      toolHandlers: { search: vi.fn(), lookup: native },
+    } as any).invoke('hi');
     const leafOptions = aiMocks.agentArguments.filter((args) => args.model === 'anthropic/leaf-model');
-    expect(leafOptions.flatMap((args) => Object.keys(args.tools ?? {}))).not.toContain('lookup');
+    expect(
+      leafOptions.map((args) => Object.keys(args.tools ?? {}).filter((key) => !key.startsWith('transfer'))),
+    ).toEqual([['search'], ['search']]);
     expect(warn.mock.calls.filter(([message]) => String(message).includes('"lookup"'))).toHaveLength(1);
     warn.mockRestore();
   });

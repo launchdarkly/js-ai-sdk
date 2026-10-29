@@ -230,6 +230,17 @@ describe('toOpenAIAgents', () => {
     warn.mockRestore();
   });
 
+  it('never registers a node tool that has no handler', async () => {
+    const graph = makeTwoNodeGraph();
+    (graph.root.config as any).tools = {
+      search: { name: 'search', type: 'function', parameters: { type: 'object' } },
+      missing: { name: 'missing', type: 'function', parameters: { type: 'object' } },
+      constructor: { name: 'constructor', type: 'function', parameters: { type: 'object' } },
+    };
+    await toOpenAIAgents(Promise.resolve(graph), { toolHandlers: { search: vi.fn() } }).invoke('hi');
+    expect(mockTool.mock.calls.map(([options]: any[]) => options.name)).toEqual(['search']);
+  });
+
   it('creates one Agent per node in a two-node graph', async () => {
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
     expect(mockAgentConstructor).toHaveBeenCalledTimes(2);

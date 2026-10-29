@@ -56,7 +56,7 @@ const buildSystemPrompt = (node: GraphNode, variables: Record<string, unknown>):
 const buildNodeTools = (node: GraphNode, toolHandlers: Record<string, ToolHandlerFn | NativeTool>) => {
   if (!node.config.tools) return [];
   return Object.entries(node.config.tools)
-    .filter(([name]) => isFunctionTool(name, toolHandlers[name]))
+    .filter(([name]) => Object.hasOwn(toolHandlers, name) && isFunctionTool(name, toolHandlers[name]))
     .map(([name, toolConfig]) =>
       tool(
         async (args: Record<string, unknown>) => {

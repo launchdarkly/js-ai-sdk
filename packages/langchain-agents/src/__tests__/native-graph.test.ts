@@ -588,6 +588,21 @@ describe('toLangGraph', () => {
     expect(ToolNode).toHaveBeenCalled();
   });
 
+  it('never registers a node tool that has no handler', async () => {
+    const { tool } = await import('@langchain/core/tools');
+    const root = makeNode('root', 'instr', [], {
+      search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } },
+      missing: { name: 'missing', type: 'function' as const, parameters: { type: 'object' } },
+      constructor: { name: 'constructor', type: 'function' as const, parameters: { type: 'object' } },
+    });
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { toolHandlers: { search: vi.fn() } }).invoke('hi');
+    const names = (tool as ReturnType<typeof vi.fn>).mock.calls.map((c: any[]) => c[1]?.name);
+    expect(names).toContain('search');
+    expect(names).not.toContain('missing');
+    expect(names).not.toContain('constructor');
+  });
+
   // ── NativeTool is skipped ───────────────────────────────────────────────────
 
   it('NativeTool in toolHandlers is never registered as a tool, and warns once per tool key', async () => {

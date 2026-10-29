@@ -83,7 +83,7 @@ inspectConfig  usage=client.inspectConfig
 - inspectConfigInternal  # internal: plumbing for the handler packages; moves to the internal entry point
 InspectConfigResult
 - isContentBlocks
-- isFunctionTool  # internal: plumbing for the handler packages; moves to the internal entry point
+- isFunctionTool
 + Judge
 - JudgeCallResult  # renamed to JudgeResult
 + JudgeResult  # rename of JudgeCallResult
