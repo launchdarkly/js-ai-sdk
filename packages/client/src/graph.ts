@@ -1,10 +1,10 @@
 import type { Context, Span } from '@opentelemetry/api';
 import { context as otelContext, SpanStatusCode, trace } from '@opentelemetry/api';
-import { captureContentFor } from './content.js';
 import { bindConversationId, bindSpanContext } from './conversation.js';
 import { runJudges } from './judges.js';
 import { extractVariation, getClient, initClient } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
+import { captureContentFor } from './sdk-options.js';
 import { reportUsage } from './sdk-usage.js';
 import { executeAndStream, modelStampsFromMeta, tryGetEnvironmentId } from './tracking.js';
 import { HANDOFF_TOOL_PREFIX } from './trajectory.js';

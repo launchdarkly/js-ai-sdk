@@ -1,6 +1,5 @@
-import { captureContentFor } from './content.js';
 import { getClient } from './lifecycle.js';
-import { noteAiInvocation } from './sdk-options.js';
+import { captureContentFor, noteAiInvocation } from './sdk-options.js';
 import { exposedToolKeys, HANDOFF_TOOL_PREFIX, renderTrajectory, TrajectoryRecorder } from './trajectory.js';
 import type {
   AiConfigRep,
