@@ -484,17 +484,17 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
   return picked;
 }
 
-export function createOpenAIMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createOpenAIMessagesHandler({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('openai-messages.createOpenAIHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createOpenAIMessagesHandlerInternal({ captureContent });
 }
 
-function createOpenAIMessagesHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+function createOpenAIMessagesHandlerInternal({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
   const openai = new OpenAI();
 
   const MAX_STEPS = 10;
 
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['OpenAI', 'messages'],
     async (
       config: AiConfigRep,
@@ -503,6 +503,8 @@ function createOpenAIMessagesHandlerInternal({ captureContent = false }: Content
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      // Resolved per run, not per factory call, so a `configure()` after construction applies.
+      const captureContent = handler.captureContent === true;
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, 'openai', config.model.name);
@@ -649,6 +651,7 @@ function createOpenAIMessagesHandlerInternal({ captureContent = false }: Content
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, 'openai', config.model.name);
@@ -801,6 +804,7 @@ function createOpenAIMessagesHandlerInternal({ captureContent = false }: Content
     },
     captureContent,
   );
+  return handler;
 }
 
 export const openaiMessages = (

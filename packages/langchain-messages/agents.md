@@ -122,8 +122,9 @@ Span attributes set before the call:
 - `gen_ai.system` = `'langchain'`
 - `gen_ai.request.model` = `config.model.name`
 
-Conversation content, only when the handler is built with `captureContent: true`
-(off by default — content is PII): `gen_ai.system_instructions`,
+Conversation content, written unless capture is off for the run (the handler's
+explicit `captureContent`, otherwise the `configure()` default, which is `true`):
+`gen_ai.system_instructions`,
 `gen_ai.input.messages`, `gen_ai.output.messages` and `gen_ai.tool.definitions`
 as canonical JSON, mirrored into the flat `gen_ai.prompt.{i}.*` /
 `gen_ai.completion.{i}.*` attributes the LaunchDarkly trace view reads today.

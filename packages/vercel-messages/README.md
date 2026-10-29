@@ -80,4 +80,4 @@ console.log(result.answers);
 - Preserves gateway model ids and forwards safe generation parameters.
 - Uses native structured messages, JSON Schema output, tools, and streaming.
 - Maps text and image history into AI SDK model messages.
-- Emits LaunchDarkly-correlated OpenTelemetry spans. Content capture is off by default.
+- Emits LaunchDarkly-correlated OpenTelemetry spans. Content capture follows the `configure()` default, which is on; pass `captureContent: false` to turn it off for this handler.

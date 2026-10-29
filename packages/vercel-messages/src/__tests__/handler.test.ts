@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const aiMocks = vi.hoisted(() => ({
   generateText: vi.fn(),
@@ -65,6 +65,7 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
   };
 });
 
+import { configure, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { createVercelMessagesHandler, vercelMessages } from '../handler.js';
 
 const baseConfig = {
@@ -96,6 +97,40 @@ describe('createVercelMessagesHandler', () => {
     spanMocks.children.length = 0;
     aiMocks.generateText.mockResolvedValue(generation());
     serverMocks.config.mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) });
+  });
+
+  describe('content capture resolves at run time', () => {
+    // `configure` is process-wide; shutdown() restores the built-in default and clears its lock.
+    afterEach(() => shutdown());
+
+    const run = async (handler: ProviderHandler = createVercelMessagesHandler()) => {
+      await handler(baseConfig as any, 'question');
+      return JSON.stringify(spanMocks.root.setAttribute.mock.calls);
+    };
+
+    it('captures content when nothing sets it', async () => {
+      expect(await run()).toContain('question');
+    });
+
+    it('captures nothing with an explicit false', async () => {
+      expect(await run(createVercelMessagesHandler({ captureContent: false }))).not.toContain('question');
+    });
+
+    it('captures nothing when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run()).not.toContain('question');
+    });
+
+    it('reads configure when the handler runs, not when it is built', async () => {
+      const handler = createVercelMessagesHandler();
+      configure({ options: { captureContent: false } });
+      expect(await run(handler)).not.toContain('question');
+    });
+
+    it('captures content with an explicit true when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run(createVercelMessagesHandler({ captureContent: true }))).toContain('question');
+    });
   });
 
   it('advertises wildcard messages metadata', () => {

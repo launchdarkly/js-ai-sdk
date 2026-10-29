@@ -612,9 +612,13 @@ two names for one concept. Don't reintroduce it: a reader filtering on
 `launchdarkly.` should see everything this SDK owns and nothing should hide
 elsewhere.
 
-**Content attributes** — only when the caller passes `captureContent: true`.
-Conversation content is PII, so it is off by default and every write goes
-through `client/src/content.ts`, which takes the flag as an argument:
+**Content attributes** — written unless capture is off for the run. Each handler
+resolves its effective `captureContent` when it runs: an explicit `true` or
+`false` from the factory (or convenience wrapper), otherwise the process default
+from `configure({ options })`, otherwise `true`. Factories leave the option unset
+by default and read `handler.captureContent` at the start of each run, so a
+`configure()` after construction applies. Every write goes through
+`client/src/content.ts`, which takes the resolved flag as an argument:
 - `gen_ai.system_instructions` — the system prompt, as a JSON part array
 - `gen_ai.input.messages` / `gen_ai.output.messages` — the canonical
   `[{ role, parts }]` JSON from the OTel GenAI semconv
@@ -642,12 +646,12 @@ a number, no conversation content — and the same two keys are mirrored as span
 attributes. It is defined by the GenAI semantic conventions and read by the
 conversation view's turn badges, so do not "fix" it by deleting it.
 
-The judge's reasoning is deliberately **not** on the span or the event.
-`gen_ai.evaluation.explanation` is model-generated prose about the user's
-conversation, which makes it a content attribute under the rule above, and
-`captureContent` is a handler-factory option the client core never receives.
-The reasoning still reaches the caller in `judgeResults`; only the telemetry
-copy is withheld. Adding it back needs its own opt-in, not a quiet write.
+The judge's reasoning, `gen_ai.evaluation.explanation`, is model-generated
+prose about the user's conversation, which makes it a content attribute under
+the rule above. It is written on the span and the event only when the judge
+handler's effective capture flag is true (`handler.captureContent`, or the
+process default for a plain function). The reasoning always reaches the caller
+in `judgeResults`.
 
 **Span status:**
 - Set to OK on success.

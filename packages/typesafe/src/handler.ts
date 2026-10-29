@@ -23,6 +23,10 @@ import {
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 export type TypesafeHandlerOptions = {
+  /**
+   * Put the judged state and Jev's answers on the emitted spans. Omitted means unset: the handler
+   * follows the process default from `configure()` when it runs, and that default is `true`.
+   */
   captureContent?: boolean;
 };
 
@@ -65,10 +69,9 @@ function usageOf(usage: SystemOneUsage | null | undefined): { input_tokens: numb
  */
 export function createTypesafeHandler(options: TypesafeHandlerOptions = {}): ProviderHandler {
   reportUsage('typesafe.createTypesafeHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  const captureContent = options.captureContent ?? false;
   const tracer = trace.getTracer('@launchdarkly/ai-typesafe');
 
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['TypeSafe', 'messages'],
     async (
       config: AiConfigRep,
@@ -77,6 +80,8 @@ export function createTypesafeHandler(options: TypesafeHandlerOptions = {}): Pro
       variables?: Record<string, unknown>,
       history?: Message[],
     ) => {
+      // Resolved per run, not per factory call, so a `configure()` after construction applies.
+      const captureContent = handler.captureContent === true;
       const extracted = extractTypesafeQuestions(config);
       const state = JSON.parse(JSON.stringify(buildTypesafeState({ userInput, variables, history }))) as EntryType;
       const questions: Questions = {};
@@ -130,6 +135,7 @@ export function createTypesafeHandler(options: TypesafeHandlerOptions = {}): Pro
       }
     },
     undefined,
-    captureContent,
+    options.captureContent,
   );
+  return handler;
 }

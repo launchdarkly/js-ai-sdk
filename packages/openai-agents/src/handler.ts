@@ -598,16 +598,14 @@ function promptToSpanMessages(prompt: string | OpenAIInputItem[]): SpanMessage[]
   }));
 }
 
-export function createOpenAIAgentsHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createOpenAIAgentsHandler({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('openai-agents.createOpenAIAgentHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createOpenAIAgentsHandlerInternal({ captureContent });
 }
 
 /** `createOpenAIAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
-export function createOpenAIAgentsHandlerInternal({
-  captureContent = false,
-}: ContentCaptureOptions = {}): ProviderHandler {
-  return createHandlerInternal(
+export function createOpenAIAgentsHandlerInternal({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
+  const handler = createHandlerInternal(
     ['OpenAI', 'agent'],
     async (
       config: AiConfigRep,
@@ -616,6 +614,8 @@ export function createOpenAIAgentsHandlerInternal({
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      // Resolved per run, not per factory call, so a `configure()` after construction applies.
+      const captureContent = handler.captureContent === true;
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, 'openai', config.model.name);
@@ -675,6 +675,7 @@ export function createOpenAIAgentsHandlerInternal({
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, 'openai', config.model.name);
@@ -775,6 +776,7 @@ export function createOpenAIAgentsHandlerInternal({
     },
     captureContent,
   );
+  return handler;
 }
 
 export const openaiAgents = (

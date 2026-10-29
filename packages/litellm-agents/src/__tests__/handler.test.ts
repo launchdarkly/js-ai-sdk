@@ -1,5 +1,5 @@
 import { SpanStatusCode } from '@opentelemetry/api';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   agentArgs,
@@ -113,6 +113,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
+import { configure, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { litellmGraph } from '../graph.js';
 import { createLiteLLMAgentsHandler, litellmAgents } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
@@ -155,7 +156,11 @@ describe('createLiteLLMAgentsHandler', () => {
 
   it('advertises wildcard agent metadata and captureContent', () => {
     expect(createLiteLLMAgentsHandler({ baseURL: 'https://proxy.test/v1' }).providesFor).toEqual(['*', 'agent']);
-    expect(createLiteLLMAgentsHandler({ baseURL: 'https://proxy.test/v1' }).captureContent).toBe(false);
+    // Unset follows the process default, which is on.
+    expect(createLiteLLMAgentsHandler({ baseURL: 'https://proxy.test/v1' }).captureContent).toBe(true);
+    expect(createLiteLLMAgentsHandler({ baseURL: 'https://proxy.test/v1', captureContent: false }).captureContent).toBe(
+      false,
+    );
     expect(createLiteLLMAgentsHandler({ baseURL: 'https://proxy.test/v1', captureContent: true }).captureContent).toBe(
       true,
     );
@@ -415,7 +420,7 @@ describe('createLiteLLMAgentsHandler', () => {
 
   it('disables duplicate Agents SDK tracing and emits LaunchDarkly telemetry with content gated', async () => {
     mockRun.mockResolvedValue(result('secret answer', 8, 4));
-    await createLiteLLMAgentsHandler({ client: {} as never })(
+    await createLiteLLMAgentsHandler({ captureContent: false, client: {} as never })(
       baseConfig as never,
       'secret question',
       {},
@@ -432,6 +437,44 @@ describe('createLiteLLMAgentsHandler', () => {
     expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 8);
     expect(mockRootSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.OK });
     expect(mockRootSpan.end).toHaveBeenCalledOnce();
+  });
+
+  describe('content capture resolves at run time', () => {
+    const make = (options: { captureContent?: boolean } = {}) =>
+      createLiteLLMAgentsHandler({ client: {} as never, ...options });
+
+    // `configure` is process-wide; shutdown() restores the built-in default and clears its lock.
+    afterEach(() => shutdown());
+
+    const run = async (handler: ProviderHandler = make()) => {
+      mockRun.mockResolvedValue(result('secret answer', 8, 4));
+      await handler(baseConfig as never, 'secret question');
+      return JSON.stringify(mockRootSpan.setAttribute.mock.calls);
+    };
+
+    it('captures content when nothing sets it', async () => {
+      expect(await run()).toContain('secret question');
+    });
+
+    it('captures nothing with an explicit false', async () => {
+      expect(await run(make({ captureContent: false }))).not.toContain('secret question');
+    });
+
+    it('captures nothing when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run()).not.toContain('secret question');
+    });
+
+    it('reads configure when the handler runs, not when it is built', async () => {
+      const handler = make();
+      configure({ options: { captureContent: false } });
+      expect(await run(handler)).not.toContain('secret question');
+    });
+
+    it('captures content with an explicit true when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run(make({ captureContent: true }))).toContain('secret question');
+    });
   });
 
   it('defaults gen_ai.provider.name to litellm when the config names no provider', async () => {

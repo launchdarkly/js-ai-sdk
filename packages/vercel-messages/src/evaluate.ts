@@ -1,6 +1,7 @@
 import {
   type AiConfigRep,
   type ContentCaptureOptions,
+  createHandlerInternal,
   getClient,
   inspectConfigInternal,
   type LDContext,
@@ -79,6 +80,14 @@ async function resolveModel(
   return gatewayModelId(config);
 }
 
+/**
+ * The effective content capture for one evaluation: an explicit `captureContent`, otherwise the
+ * process default from `configure()` (itself `true`). `vercelEvaluate` is not a provider handler,
+ * so it reads the same gate through a handler built for this one call rather than duplicating it.
+ */
+const captureFor = (captureContent: boolean | undefined): boolean =>
+  createHandlerInternal(['*', 'messages'], async () => ({}), undefined, captureContent).captureContent === true;
+
 async function resolveConfig(
   configKey: string,
   context: LDContext,
@@ -102,7 +111,7 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
   reportUsage('vercel-messages.vercelEvaluate', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   assertQuestions(options.questions);
   const { config, meta } = await resolveConfig(configKey, context);
-  const captureContent = options.captureContent ?? false;
+  const captureContent = captureFor(options.captureContent);
   const trackData = makeRunTrackData({ configKey, config, meta });
   const model = await resolveModel(config, options);
   const startTime = Date.now();
