@@ -1,4 +1,5 @@
 import type { Span } from '@opentelemetry/api';
+import { effectiveCaptureContent, noteAiInvocation } from './sdk-options.js';
 import { reportUsage } from './sdk-usage.js';
 import type {
   AiConfigRep,
@@ -70,9 +71,34 @@ export function createHandlerInternal(
 ): ProviderHandler {
   const ph = handler as ProviderHandler;
   ph.providesFor = providesFor;
-  if (streamHandler) ph.stream = streamHandler;
-  if (captureContent !== undefined) ph.captureContent = captureContent;
+  if (streamHandler) {
+    // A plain function rather than a generator, so starting the stream latches `configure` at call
+    // time, even if the caller never iterates it.
+    ph.stream = function (this: unknown, ...args: Parameters<StreamHandlerInput>) {
+      noteAiInvocation();
+      return streamHandler.apply(this, args);
+    };
+  }
+  defineCaptureContent(ph, captureContent);
   return ph;
+}
+
+/**
+ * Makes `handler.captureContent` read the effective value at use time rather than a value fixed at
+ * construction. `override` is the factory's explicit `true` or `false`; `undefined` leaves it unset,
+ * so each read follows the default from `configure` (otherwise `true`). Assigning `true` or `false`
+ * sets the override; it never changes the process default.
+ */
+function defineCaptureContent(handler: ProviderHandler, override: boolean | undefined): void {
+  let explicit = typeof override === 'boolean' ? override : undefined;
+  Object.defineProperty(handler, 'captureContent', {
+    configurable: true,
+    enumerable: true,
+    get: () => effectiveCaptureContent(explicit),
+    set: (value: boolean | undefined) => {
+      explicit = typeof value === 'boolean' ? value : undefined;
+    },
+  });
 }
 
 /**

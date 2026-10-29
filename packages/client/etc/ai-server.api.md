@@ -122,6 +122,11 @@ export type ConfigTurn = {
 };
 
 // @public
+export function configure(input: {
+    options: SDKOptions;
+}): void;
+
+// @public
 export type ContentBlock = TextContentBlock | ImageContentBlock;
 
 // @public
@@ -862,6 +867,11 @@ export class Scorer {
 }
 
 // @public
+export interface SDKOptions {
+    readonly captureContent?: boolean;
+}
+
+// @public
 export function setConversationIdIfAbsent(span: Span, id: string): void;
 
 // @public
@@ -895,7 +905,7 @@ export function setToolDefinitionAttributes(span: Span, capture: boolean, tools:
 // @public
 export function setUsageSpanAttributes(span: Span, usage: SpanUsage): void;
 
-// @public (undocumented)
+// @public
 export function shutdown(): Promise<void>;
 
 // @public

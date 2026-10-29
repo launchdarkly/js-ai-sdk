@@ -387,6 +387,7 @@ const ROOT_VALUES = [
   'composeHistory',
   'config',
   'configInternal',
+  'configure',
   'contentToText',
   'createHandler',
   'createHandlerInternal',

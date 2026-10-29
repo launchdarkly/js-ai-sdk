@@ -1,4 +1,5 @@
 import { getClient } from './lifecycle.js';
+import { noteAiInvocation } from './sdk-options.js';
 import { exposedToolKeys, HANDOFF_TOOL_PREFIX, renderTrajectory, TrajectoryRecorder } from './trajectory.js';
 import type {
   AiConfigRep,
@@ -267,6 +268,7 @@ export const executeAndTrack = async ({
   let response: Awaited<ReturnType<ProviderHandler>>;
 
   try {
+    noteAiInvocation();
     response = await handler(
       config,
       userInput,
@@ -347,6 +349,7 @@ export async function* executeAndStream({
   let rawUsage: Record<string, unknown> = {};
 
   try {
+    noteAiInvocation();
     if (handler.stream) {
       for await (const event of handler.stream(config, userInput, trackedToolHandlers, mergedVariables, history)) {
         if (event.type === 'chunk') {

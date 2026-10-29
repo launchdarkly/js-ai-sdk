@@ -24,6 +24,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/conversation.ts` | `withConversationId`, `ConversationIdSpanProcessor` — stamps `gen_ai.conversation.id`; `withSpanAttributes` (stamp a caller-supplied attribute set, write-if-absent, on SDK spans) and `countSdkSpans`, which know no feature |
 | `src/sdk-info.ts` | `$ld:ai:sdk:info` package registry and flush |
 | `src/lifecycle.ts` | `initClient` (options or BYOC overloads), `getClient`, `shutdown`, `waitForTelemetry`, `shutdownTelemetry`, `extractVariation` |
+| `src/sdk-options.ts` | `configure` and the `SDKOptions` it stores on the lifecycle singleton; the internal resolvers (`effectiveCaptureContent`, `captureContentFor`) every content gate reads, and the invocation latch (`noteAiInvocation`) that stops `configure` changing options after the first AI call |
 | `src/client.ts` | `config()` |
 | `src/tracking.ts` | `executeAndTrack`, `executeAndStream`, `wrapToolHandlers` |
 | `src/graph.ts` | `graph()`, `resolveGraph()` |
@@ -223,6 +224,7 @@ export {
 } from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';
 export { registerAiSdkPackage } from './sdk-info.js';
+export { configure } from './sdk-options.js';
 export { reportUsage } from './sdk-usage.js';
 export {
   allSkills,
@@ -288,6 +290,7 @@ export type {
   RegistryInput,
   RouteResult,
   RunNodeOptions,
+  SDKOptions,
   Skill,
   SkillOutcome,
   SkillOutcomeReason,

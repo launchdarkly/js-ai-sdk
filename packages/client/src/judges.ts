@@ -1,6 +1,7 @@
 import { withJudgeEvaluation } from './conversation.js';
 import { buildMessageHistory, numericScore, withoutOutputFormat } from './judge-scoring.js';
 import { extractVariation, getClient } from './lifecycle.js';
+import { captureContentFor } from './sdk-options.js';
 import { reportUsage } from './sdk-usage.js';
 import { executeAndTrack } from './tracking.js';
 import type {
@@ -246,7 +247,7 @@ export const runJudges = async ({
         // It is model prose about the user's conversation, so it follows the content gate.
         const metricScore = numericScore(score);
         if (metricScore !== undefined) {
-          recordEvaluation(metricScore, judgeHandler.captureContent ? reasoning : undefined);
+          recordEvaluation(metricScore, captureContentFor(judgeHandler) ? reasoning : undefined);
         }
 
         if (judgeConfig.evaluationMetricKey && score !== undefined) {
@@ -465,7 +466,7 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
     const { score, reasoning } = parsed as { score: number; reasoning: string };
     const metricScore = numericScore(score);
     if (metricScore !== undefined) {
-      recordEvaluation(metricScore, judgeHandler.captureContent ? reasoning : undefined);
+      recordEvaluation(metricScore, captureContentFor(judgeHandler) ? reasoning : undefined);
     }
 
     return {
