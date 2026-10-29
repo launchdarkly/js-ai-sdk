@@ -336,6 +336,21 @@ describe('lifecycle', () => {
       }
     });
 
+    it('treats captureContent as an unrecognized option that does not set the default', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const { initClient } = await import('../lifecycle.js');
+        const { effectiveCaptureContent } = await import('../sdk-options.js');
+        await initClient(makeMockClient(), { captureContent: false } as never);
+        expect(warn.mock.calls).toEqual([
+          ['[LaunchDarkly] Ignoring unrecognized initClient option(s): captureContent'],
+        ]);
+        expect(effectiveCaptureContent(undefined)).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it('does not warn about documented options', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       try {
@@ -507,6 +522,22 @@ describe('lifecycle', () => {
   });
 
   describe('shutdown', () => {
+    it('restores the configure defaults and clears the invocation lock, with no client', async () => {
+      const { shutdown } = await import('../lifecycle.js');
+      const { configure, effectiveCaptureContent, noteAiInvocation } = await import('../sdk-options.js');
+      configure({ options: { captureContent: false } });
+      noteAiInvocation();
+      expect(() => configure({ options: { captureContent: true } })).toThrow(/cannot change/);
+
+      const done = shutdown();
+      // Reset before any await, on the same early path as the rest of the singleton state.
+      expect(effectiveCaptureContent(undefined)).toBe(true);
+      await done;
+      configure({ options: { captureContent: false } });
+      expect(effectiveCaptureContent(undefined)).toBe(false);
+      await shutdown();
+    });
+
     it('clears the singleton so getClient throws again', async () => {
       const mockClient = makeMockClient();
       mockLdInit.mockReturnValue(mockClient);
@@ -1072,6 +1103,28 @@ describe('lifecycle', () => {
       expect(result.enabled).toBe(true);
       expect(result.config?.model.name).toBe('gpt-4o');
       expect(result.meta?.variationKey).toBe('v1');
+    });
+
+    it('does not latch configure, since it makes no AI call', async () => {
+      const mockClient = makeMockClient();
+      mockClient.variation = vi.fn().mockResolvedValue({
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'messages' },
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'You are helpful.',
+      });
+      mockLdInit.mockReturnValue(mockClient);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { inspectConfig } = await import('../lifecycle.js');
+      const { configure, effectiveCaptureContent } = await import('../sdk-options.js');
+      configure({ options: { captureContent: true } });
+      const result = await inspectConfig('my-flag', { kind: 'user' as const, key: 'user-1' });
+
+      expect(result.enabled).toBe(true);
+      expect(mockClient.variation).toHaveBeenCalled();
+      expect(() => configure({ options: { captureContent: false } })).not.toThrow();
+      expect(effectiveCaptureContent(undefined)).toBe(false);
     });
 
     it('does not fail on a malformed skills field', async () => {

@@ -1,5 +1,5 @@
 import { propagation, SpanStatusCode, type TextMapPropagator } from '@opentelemetry/api';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -54,7 +54,14 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
-import { type Message, NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
+import {
+  configure,
+  type Message,
+  NATIVE_TOOL_KEY,
+  NativeTool,
+  type ProviderHandler,
+  shutdown,
+} from '@launchdarkly/ai-server';
 import { buildPrompt, buildToolMCP, createClaudeAgentsHandler, partitionTools } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -801,15 +808,62 @@ describe('createClaudeAgentsHandler', () => {
     expect(toolSpan?.end).toHaveBeenCalledOnce();
   });
 
-  it('emits no content at all by default', async () => {
-    mockQuery.mockImplementation(makeResultMessage('done'));
-    await createClaudeAgentsHandler()(baseConfig as any, 'question');
+  describe('content capture resolves at run time', () => {
+    // `configure` is process-wide; shutdown() restores the built-in default and clears its lock.
+    afterEach(() => shutdown());
 
-    // Conversation content is PII, so a caller has to ask for it. Asserting on the recorded
-    // arguments rather than on specific keys catches a new content attribute added without a gate.
-    const written = JSON.stringify(mockSpan.setAttribute.mock.calls);
-    expect(written).not.toContain('question');
-    expect(mockSpan.addEvent).not.toHaveBeenCalledWith('gen_ai.content.prompt', expect.anything());
+    const run = async (handler: ProviderHandler = createClaudeAgentsHandler()) => {
+      mockQuery.mockImplementation(makeResultMessage('done'));
+      await handler(baseConfig as any, 'question');
+      return JSON.stringify(mockSpan.setAttribute.mock.calls);
+    };
+
+    it('captures content when nothing sets it', async () => {
+      expect(await run()).toContain('question');
+    });
+
+    it('captures nothing with an explicit false', async () => {
+      expect(await run(createClaudeAgentsHandler({ captureContent: false }))).not.toContain('question');
+    });
+
+    it('captures nothing when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run()).not.toContain('question');
+    });
+
+    it('reads configure when the handler runs, not when it is built', async () => {
+      const handler = createClaudeAgentsHandler();
+      configure({ options: { captureContent: false } });
+      expect(await run(handler)).not.toContain('question');
+    });
+
+    it('captures content with an explicit true when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run(createClaudeAgentsHandler({ captureContent: true }))).toContain('question');
+    });
+
+    /** The handler `claudeAgents` built for its `config()` call. */
+    const wrapperHandler = async (options: { captureContent?: boolean }): Promise<ProviderHandler> => {
+      const { claudeAgents } = await import('../handler.js');
+      const { configInternal } = await import('@launchdarkly/ai-server');
+      await claudeAgents('flag', 'hello', { kind: 'user', key: 'u' }, options);
+      return vi.mocked(configInternal).mock.calls.at(-1)?.[0].handler as ProviderHandler;
+    };
+
+    it('lets an explicit false on claudeAgents beat a configured true', async () => {
+      configure({ options: { captureContent: true } });
+      const handler = await wrapperHandler({ captureContent: false });
+      expect(handler.captureContent).toBe(false);
+      expect(await run(handler)).not.toContain('question');
+    });
+
+    it('forwards an omitted claudeAgents option as unset, so it follows configure', async () => {
+      const handler = await wrapperHandler({});
+      expect(handler.captureContent).toBe(true);
+      configure({ options: { captureContent: false } });
+      expect(handler.captureContent).toBe(false);
+      expect(await run(handler)).not.toContain('question');
+    });
   });
 
   it('puts prompt and completion on span attributes when capture is enabled', async () => {

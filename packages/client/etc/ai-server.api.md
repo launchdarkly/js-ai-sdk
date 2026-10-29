@@ -122,6 +122,11 @@ export type ConfigTurn = {
 };
 
 // @public
+export function configure(input: {
+    options: SDKOptions;
+}): void;
+
+// @public
 export type ContentBlock = TextContentBlock | ImageContentBlock;
 
 // @public
@@ -201,6 +206,11 @@ export type DatasetRow = {
     variables: Record<string, unknown>;
     metadata: Record<string, unknown> | null;
 };
+
+// Warning: (ae-internal-missing-underscore) The name "effectiveCaptureContent" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export function effectiveCaptureContent(override: boolean | undefined): boolean;
 
 // @public
 export function endSpanOnce(span: Span, tracker: Set<Span>, abandoned?: boolean): void;
@@ -684,6 +694,11 @@ export class NativeTool {
 // @public
 export function normalizeModelParameters(parameters: unknown): Record<string, unknown>;
 
+// Warning: (ae-internal-missing-underscore) The name "noteAiInvocation" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export function noteAiInvocation(): void;
+
 // @public
 export const omitModelStamps: <T extends {
     modelKey?: string;
@@ -867,6 +882,11 @@ export class Scorer {
 }
 
 // @public
+export interface SDKOptions {
+    readonly captureContent?: boolean;
+}
+
+// @public
 export function setConversationIdIfAbsent(span: Span, id: string): void;
 
 // @public
@@ -900,7 +920,7 @@ export function setToolDefinitionAttributes(span: Span, capture: boolean, tools:
 // @public
 export function setUsageSpanAttributes(span: Span, usage: SpanUsage): void;
 
-// @public (undocumented)
+// @public
 export function shutdown(): Promise<void>;
 
 // @public
@@ -1136,7 +1156,7 @@ export type WriteSkillsOptions = {
 // temp/dts/evaluations.d.ts:48:5 - (ae-forgotten-export) The symbol "Transport" needs to be exported by the entry point index.d.ts
 // temp/dts/skills-fdv2.d.ts:460:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point index.d.ts
 // temp/dts/types.d.ts:425:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
-// temp/dts/utils.d.ts:40:5 - (ae-forgotten-export) The symbol "StreamHandlerInput" needs to be exported by the entry point index.d.ts
+// temp/dts/utils.d.ts:44:5 - (ae-forgotten-export) The symbol "StreamHandlerInput" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 

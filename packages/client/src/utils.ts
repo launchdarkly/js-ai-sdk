@@ -1,4 +1,5 @@
 import type { Span } from '@opentelemetry/api';
+import { effectiveCaptureContent, noteAiInvocation } from './sdk-options.js';
 import { reportUsage } from './sdk-usage.js';
 import type {
   AiConfigRep,
@@ -32,13 +33,17 @@ type StreamHandlerInput = (
 ) => AsyncGenerator<HandlerStreamEvent>;
 
 /**
- * Attaches `providesFor` metadata to a handler function and returns it as a
- * typed `ProviderHandler`. This is the canonical way to build a handler —
+ * Wraps a handler function in a new, typed `ProviderHandler` that carries
+ * `providesFor` metadata. This is the canonical way to build a handler —
  * both package-internal factories and user-supplied custom handlers should use
  * this helper instead of manually assigning `handler.providesFor`.
  *
- * The returned value is the same function reference; `createHandler` mutates
- * in place rather than wrapping.
+ * The returned value is a new function that latches `configure()` and then
+ * calls `handler` with the same `this` and arguments, returning its result. It
+ * carries `handler`'s own properties, so passing an existing handler through
+ * again keeps them, and an omitted `captureContent` keeps that handler's
+ * explicit override. Calling the original function directly does not latch,
+ * and the original carries no `providesFor`: use the returned handler.
  *
  * Options:
  * - `stream` attaches a streaming implementation. When present, `model().stream()`
@@ -54,9 +59,9 @@ type StreamHandlerInput = (
  * when more than three arguments are passed, so a caller still on the old
  * positional `(providesFor, fn, stream?, captureContent?)` form fails loudly.
  *
- * Calling `createHandler` again on the same function overwrites the options
- * passed this time and keeps any earlier `captureContent` or `providers` that
- * are not passed.
+ * Passing a handler that `createHandler` returned through it again applies
+ * the options passed this time and keeps any earlier `stream`, `captureContent`
+ * or `providers` that are not passed.
  */
 export function createHandler(
   providesFor: [string, 'agent' | 'messages'],
@@ -100,11 +105,25 @@ export function createHandlerInternal(
   providers?: readonly string[],
 ): ProviderHandler {
   const allow = providers === undefined ? undefined : normalizeProviders(providers);
-  const ph = handler as ProviderHandler;
-  ph.providesFor = providesFor;
-  if (streamHandler) ph.stream = streamHandler;
-  if (captureContent !== undefined) ph.captureContent = captureContent;
+  // A plain function rather than an async one, so every call, including a direct
+  // `await handler(...)`, latches `configure` when it is made rather than after a microtask.
+  const ph = function (this: unknown, ...args: Parameters<HandlerInput>) {
+    noteAiInvocation();
+    return handler.apply(this, args);
+  } as ProviderHandler;
+  copyOwnProperties(ph, handler);
+  // An omitted `providers` keeps the list copied from `handler` above.
   if (allow !== undefined) ph.providers = allow;
+  ph.providesFor = providesFor;
+  if (streamHandler) {
+    // A plain function rather than a generator, so starting the stream latches `configure` at call
+    // time, even if the caller never iterates it.
+    ph.stream = function (this: unknown, ...args: Parameters<StreamHandlerInput>) {
+      noteAiInvocation();
+      return streamHandler.apply(this, args);
+    };
+  }
+  defineCaptureContent(ph, captureContent ?? explicitCaptureContent.get(handler)?.());
   return ph;
 }
 
@@ -161,6 +180,49 @@ export function selectModeHandler(
 /** True when the handler names `provider` or its wildcard allowlist contains it, in any mode. */
 export function coversProviderName(handler: ProviderHandler, provider: string): boolean {
   return handler.providesFor?.[0] === provider || wildcardCovers(handler, provider);
+}
+
+/**
+ * Reads each handler's explicit `captureContent` override, or `undefined` when it is unset. Keyed by
+ * the wrapper, so re-wrapping a handler without a `captureContent` argument inherits the inner
+ * handler's override rather than its effective value: an unset inner handler stays unset and keeps
+ * following `configure`.
+ */
+const explicitCaptureContent = new WeakMap<object, () => boolean | undefined>();
+
+/** Function properties every function owns; the wrapper keeps its own. */
+const FUNCTION_OWN_KEYS = new Set<PropertyKey>(['length', 'name', 'prototype', 'arguments', 'caller']);
+
+/**
+ * Copies `source`'s own properties (accessors included) onto `target`, so a wrapper keeps what a
+ * caller attached to the function it wraps, such as a test spy's state or an earlier handler's
+ * `stream`. `captureContent` is skipped: the wrapper gets its own from {@link defineCaptureContent}.
+ */
+function copyOwnProperties(target: object, source: object): void {
+  for (const key of Reflect.ownKeys(source)) {
+    if (FUNCTION_OWN_KEYS.has(key) || key === 'captureContent') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (descriptor) Object.defineProperty(target, key, descriptor);
+  }
+}
+
+/**
+ * Makes `handler.captureContent` read the effective value at use time rather than a value fixed at
+ * construction. `override` is the factory's explicit `true` or `false`; `undefined` leaves it unset,
+ * so each read follows the default from `configure` (otherwise `true`). Assigning `true` or `false`
+ * sets the override; it never changes the process default.
+ */
+function defineCaptureContent(handler: ProviderHandler, override: boolean | undefined): void {
+  let explicit = typeof override === 'boolean' ? override : undefined;
+  Object.defineProperty(handler, 'captureContent', {
+    configurable: true,
+    enumerable: true,
+    get: () => effectiveCaptureContent(explicit),
+    set: (value: boolean | undefined) => {
+      explicit = typeof value === 'boolean' ? value : undefined;
+    },
+  });
+  explicitCaptureContent.set(handler, () => explicit);
 }
 
 /**

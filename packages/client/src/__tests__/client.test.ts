@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HandlerStreamEvent } from '../types.js';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -26,6 +26,7 @@ vi.mock('../judges.js', async (importOriginal) => {
 import { config } from '../client.js';
 import { buildJudgeTasks, runJudge, runJudges } from '../judges.js';
 import { extractVariation, getClient } from '../lifecycle.js';
+import { configure, resetSdkOptions } from '../sdk-options.js';
 import type { ProviderHandler } from '../types.js';
 import { createHandler, setLdSpanAttributes } from '../utils.js';
 
@@ -956,6 +957,57 @@ describe('config().invoke — capture-on handler', () => {
 
     const event = span.addEvent.mock.calls.find((c: unknown[]) => c[0] === 'feature_flag');
     expect((event?.[1] as Record<string, unknown>)['feature_flag.result.value']).toBe(JSON.stringify(rawVariation));
+  });
+});
+
+// ─── config().invoke — plain function handler follows configure() ─────
+
+describe('config().invoke — plain function handler', () => {
+  const rawVariation = {
+    ...mockConfig,
+    _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'messages' },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetSdkOptions();
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack });
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (extractVariation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      config: mockConfig,
+      meta: mockMeta,
+      value: rawVariation,
+    });
+  });
+
+  afterEach(() => resetSdkOptions());
+
+  // Not built with createHandler, so it carries no captureContent flag of its own.
+  const plainHandler = (span: { setAttribute: unknown; addEvent: unknown }): ProviderHandler => {
+    const fn: ProviderHandler = async (_config, _input, _tools, variables) => {
+      setLdSpanAttributes(span as any, variables);
+      return { output: 'ok', usage: { input_tokens: 1, output_tokens: 1 } };
+    };
+    fn.providesFor = ['OpenAI', 'messages'];
+    return fn;
+  };
+
+  const featureFlagValue = (span: { addEvent: ReturnType<typeof vi.fn> }) => {
+    const event = span.addEvent.mock.calls.find((c: unknown[]) => c[0] === 'feature_flag');
+    return (event?.[1] as Record<string, unknown>)['feature_flag.result.value'];
+  };
+
+  it('writes the raw variation as feature_flag.result.value under the built-in default', async () => {
+    const span = { setAttribute: vi.fn(), addEvent: vi.fn() };
+    await config({ key: 'my-flag', handler: plainHandler(span) }).invoke('hi', mockContext);
+    expect(featureFlagValue(span)).toBe(JSON.stringify(rawVariation));
+  });
+
+  it('writes the variation key as feature_flag.result.value when configure turns capture off', async () => {
+    configure({ options: { captureContent: false } });
+    const span = { setAttribute: vi.fn(), addEvent: vi.fn() };
+    await config({ key: 'my-flag', handler: plainHandler(span) }).invoke('hi', mockContext);
+    expect(featureFlagValue(span)).toBe(JSON.stringify('v1'));
   });
 });
 

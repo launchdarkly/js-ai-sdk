@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { configure, shutdown } from '../index.js';
 import {
   camelizeModelParameters,
   createHandler,
@@ -251,7 +252,8 @@ describe('createHandler', () => {
       stream: stream as any,
       captureContent: true,
     });
-    expect(handler.stream).toBe(stream);
+    handler.stream?.({ model: { name: 'gpt-4' } } as any, 'input');
+    expect(stream).toHaveBeenCalledWith({ model: { name: 'gpt-4' } }, 'input');
     expect(handler.captureContent).toBe(true);
   });
 
@@ -314,10 +316,54 @@ describe('createHandler', () => {
     );
   });
 
-  it('returns the same function reference', () => {
+  it('returns a callable that forwards this and arguments and returns the original result', async () => {
     const fn = makeRawHandler();
     const handler = createHandler(['MyProvider', 'agent'], fn as any);
-    expect(handler).toBe(fn);
+    expect(typeof handler).toBe('function');
+    const self = { marker: 1 };
+    const config = { model: { name: 'gpt-4' }, provider: { name: 'MyProvider' } };
+    const tools = { t: vi.fn() };
+    const result = await handler.call(self, config as any, 'input', tools, { v: 1 }, []);
+    expect(result).toEqual({ output: 'hello', usage: { input_tokens: 1, output_tokens: 2 } });
+    expect(fn).toHaveBeenCalledWith(config, 'input', tools, { v: 1 }, []);
+    expect(fn.mock.contexts[0]).toBe(self);
+  });
+
+  it('latches configure when called directly', async () => {
+    await shutdown();
+    try {
+      const handler = createHandler(['MyProvider', 'agent'], makeRawHandler() as any);
+      configure({ options: { captureContent: true } });
+      await handler({ model: { name: 'gpt-4' } } as any);
+      expect(() => configure({ options: { captureContent: false } })).toThrow(/cannot change/);
+    } finally {
+      await shutdown();
+    }
+  });
+
+  it('keeps properties attached to the wrapped function', () => {
+    const fn = Object.assign(makeRawHandler(), { extra: 'kept' });
+    const stream = vi.fn();
+    const first = createHandler(['MyProvider', 'agent'], fn as any, { stream: stream as any });
+    const again = createHandler(['Other', 'messages'], first);
+    expect((again as unknown as { extra: string }).extra).toBe('kept');
+    expect(again.providesFor).toEqual(['Other', 'messages']);
+    expect(again.stream).toBe(first.stream);
+  });
+
+  it('keeps the providers list when a handler is wrapped again without one', () => {
+    const first = createHandler(['*', 'messages'], makeRawHandler() as any, { providers: ['Bedrock'] });
+    const again = createHandler(['*', 'agent'], first);
+    expect(again.providers).toEqual(['Bedrock']);
+    expect(Object.isFrozen(again.providers)).toBe(true);
+  });
+
+  it('replaces the providers list when a handler is wrapped again with one, leaving the first unchanged', () => {
+    const first = createHandler(['*', 'messages'], makeRawHandler() as any, { providers: ['Bedrock'] });
+    const again = createHandler(['*', 'messages'], first, { providers: ['Anthropic', 'Anthropic'] });
+    expect(again.providers).toEqual(['Anthropic']);
+    expect(Object.isFrozen(again.providers)).toBe(true);
+    expect(first.providers).toEqual(['Bedrock']);
   });
 
   it('handler is still callable and returns expected output', async () => {

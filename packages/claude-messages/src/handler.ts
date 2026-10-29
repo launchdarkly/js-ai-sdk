@@ -486,12 +486,12 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
 
 const MAX_STEPS = 10;
 
-export function createClaudeMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createClaudeMessagesHandler({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
   reportUsage('claude-messages.createClaudeMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createClaudeMessagesHandlerInternal({ captureContent });
 }
 
-function createClaudeMessagesHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+function createClaudeMessagesHandlerInternal({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
   const anthropic = new Anthropic();
 
   async function runToolLoop(
@@ -501,6 +501,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
     toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
     parentContext: Context,
     runUsage: RawRunUsage,
+    captureContent: boolean,
   ) {
     const { tools, executableTools } = config.tools
       ? buildTools(config.tools, toolHandlers)
@@ -592,7 +593,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
     return { output, usage };
   }
 
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['Anthropic', 'messages'],
     async (
       config: AiConfigRep,
@@ -601,6 +602,8 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      // Resolved per run, not per factory call, so a `configure()` after construction applies.
+      const captureContent = handler.captureContent === true;
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, 'anthropic', config.model.name);
@@ -618,7 +621,15 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
 
         const runUsage = createRawRunUsage();
         try {
-          const { output, usage } = await runToolLoop(config, messages, system, toolHandlers, parentContext, runUsage);
+          const { output, usage } = await runToolLoop(
+            config,
+            messages,
+            system,
+            toolHandlers,
+            parentContext,
+            runUsage,
+            captureContent,
+          );
           setOutputContentAttributes(span, captureContent, [
             { role: 'assistant', parts: [{ type: 'text', content: output }] },
           ]);
@@ -643,6 +654,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, 'anthropic', config.model.name);
@@ -785,6 +797,7 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
     },
     captureContent,
   );
+  return handler;
 }
 
 export const claudeMessages = (

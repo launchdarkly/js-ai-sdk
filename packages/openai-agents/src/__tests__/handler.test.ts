@@ -1,5 +1,5 @@
 import { SpanStatusCode } from '@opentelemetry/api';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -99,6 +99,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
+import { configure, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { openaiGraph } from '../graph.js';
 import { createOpenAIAgentsHandler } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
@@ -515,15 +516,39 @@ describe('createOpenAIAgentsHandler', () => {
     expect(modelSpan?.setAttribute).not.toHaveBeenCalledWith('gen_ai.usage.total_tokens', 999);
   });
 
-  it('emits no content at all by default', async () => {
-    mockRun.mockResolvedValue(mockRunResult('answer'));
-    await createOpenAIAgentsHandler()(baseConfig as any, 'question');
+  describe('content capture resolves at run time', () => {
+    // `configure` is process-wide; shutdown() restores the built-in default and clears its lock.
+    afterEach(() => shutdown());
 
-    // Conversation content is PII, so a caller has to ask for it. Asserting on the recorded
-    // arguments rather than on specific keys catches a new content attribute added without a gate.
-    const written = JSON.stringify(mockSpan.setAttribute.mock.calls);
-    expect(written).not.toContain('question');
-    expect(mockSpan.addEvent).not.toHaveBeenCalledWith('gen_ai.content.prompt', expect.anything());
+    const run = async (handler: ProviderHandler = createOpenAIAgentsHandler()) => {
+      mockRun.mockResolvedValue(mockRunResult('answer'));
+      await handler(baseConfig as any, 'question');
+      return JSON.stringify(mockSpan.setAttribute.mock.calls);
+    };
+
+    it('captures content when nothing sets it', async () => {
+      expect(await run()).toContain('question');
+    });
+
+    it('captures nothing with an explicit false', async () => {
+      expect(await run(createOpenAIAgentsHandler({ captureContent: false }))).not.toContain('question');
+    });
+
+    it('captures nothing when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run()).not.toContain('question');
+    });
+
+    it('reads configure when the handler runs, not when it is built', async () => {
+      const handler = createOpenAIAgentsHandler();
+      configure({ options: { captureContent: false } });
+      expect(await run(handler)).not.toContain('question');
+    });
+
+    it('captures content with an explicit true when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run(createOpenAIAgentsHandler({ captureContent: true }))).toContain('question');
+    });
   });
 
   it('puts prompt and completion on span attributes when capture is enabled', async () => {

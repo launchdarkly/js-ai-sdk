@@ -1039,13 +1039,13 @@ export function createClaudeAgentsHandler(
 
 /** `createClaudeAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createClaudeAgentsHandlerInternal(
-  { captureContent = false, ...host }: ContentCaptureOptions & ClaudeAgentsHostOptions = {},
+  { captureContent, ...host }: ContentCaptureOptions & ClaudeAgentsHostOptions = {},
   /** Package-internal hooks; never part of the public factory's options. */
   { prepare }: { prepare?: PrepareQuery } = {},
 ): ProviderHandler {
   // Trusted, so spread with the handler's own options, after `model.parameters`.
   const hostOptions = hostQueryOptions(host);
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['Anthropic', 'agent'],
     async (
       config: AiConfigRep,
@@ -1054,6 +1054,8 @@ export function createClaudeAgentsHandlerInternal(
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      // Resolved per run, not per factory call, so a `configure()` after construction applies.
+      const captureContent = handler.captureContent === true;
       return trace.getTracer('@launchdarkly/ai-claude-agents').startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, 'anthropic', config.model.name);
@@ -1190,6 +1192,7 @@ export function createClaudeAgentsHandlerInternal(
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer('@launchdarkly/ai-claude-agents').startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, 'anthropic', config.model.name);
@@ -1340,6 +1343,7 @@ export function createClaudeAgentsHandlerInternal(
     },
     captureContent,
   );
+  return handler;
 }
 
 export const claudeAgents = (

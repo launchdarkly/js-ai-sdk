@@ -395,9 +395,9 @@ export function createLangChainAgentsHandler(
 /** `createLangChainAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createLangChainAgentsHandlerInternal(
   llm?: LangChainModelSource,
-  { captureContent = false, providers }: ContentCaptureOptions & { providers?: readonly string[] } = {},
+  { captureContent, providers }: ContentCaptureOptions & { providers?: readonly string[] } = {},
 ): ProviderHandler {
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['*', 'agent'],
     async (
       config: AiConfigRep,
@@ -406,6 +406,8 @@ export function createLangChainAgentsHandlerInternal(
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      // Resolved per run, not per factory call, so a `configure()` after construction applies.
+      const captureContent = handler.captureContent === true;
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, servingProvider(config), config.model.name, 'langchain');
@@ -479,6 +481,7 @@ export function createLangChainAgentsHandlerInternal(
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, servingProvider(config), config.model.name, 'langchain');
@@ -565,6 +568,7 @@ export function createLangChainAgentsHandlerInternal(
     captureContent,
     providers,
   );
+  return handler;
 }
 
 export const langchainAgents = (

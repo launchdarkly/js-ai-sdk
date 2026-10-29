@@ -458,11 +458,19 @@ describe('createClaudeMessagesHandler', () => {
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.usage.total_tokens', 15);
   });
 
-  it('emits no content at all by default', async () => {
+  it('emits content by default', async () => {
     mockMessagesCreate.mockResolvedValue(mockFinalResponse('answer'));
     await createClaudeMessagesHandler()(baseConfig as any, 'question');
 
-    // Conversation content is PII, so a caller has to ask for it. Asserting on the recorded
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.prompt.1.content', 'question');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.completion.0.content', 'answer');
+  });
+
+  it('emits no content at all with captureContent: false', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse('answer'));
+    await createClaudeMessagesHandler({ captureContent: false })(baseConfig as any, 'question');
+
+    // An explicit false keeps the run to metadata. Asserting on the recorded
     // arguments rather than on specific keys catches a new content attribute added without a gate.
     const written = JSON.stringify(mockSpan.setAttribute.mock.calls);
     expect(written).not.toContain('question');

@@ -1,26 +1,15 @@
 import { context, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
 
-const { mockTrack, mockVariation, mockExtractVariation, captureDefault } = vi.hoisted(() => ({
+const { mockTrack, mockVariation, mockExtractVariation } = vi.hoisted(() => ({
   mockTrack: vi.fn(),
   mockVariation: vi.fn(),
   mockExtractVariation: vi.fn(),
-  // Stands in for the process-wide content capture default, which is off on this branch.
-  captureDefault: { value: false },
 }));
-
-vi.mock('../content.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../content.js')>();
-  return {
-    ...actual,
-    captureContentFor: (handler: { captureContent?: boolean } | undefined) =>
-      typeof handler?.captureContent === 'boolean' ? handler.captureContent : captureDefault.value,
-  };
-});
 
 vi.mock('../lifecycle.js', () => ({
   getClient: vi.fn().mockReturnValue({ track: mockTrack, variation: mockVariation }),
@@ -38,7 +27,12 @@ vi.mock('../judges.js', () => ({
 import { ConversationIdSpanProcessor, GEN_AI_CONVERSATION_ID, withConversationId } from '../conversation.js';
 import { graph, resolveGraph } from '../graph.js';
 import { getClient } from '../lifecycle.js';
+import { configure, resetSdkOptions } from '../sdk-options.js';
 import type { HandlerStreamEvent, ProviderHandler } from '../types.js';
+
+// Every graph run latches the process options, so each test starts from the built-in defaults.
+beforeEach(() => resetSdkOptions());
+afterEach(() => resetSdkOptions());
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -700,11 +694,13 @@ describe('graph() conversation id', () => {
   });
 
   it.each([
+    ['invoke', undefined],
+    ['stream', undefined],
     ['invoke', false],
     ['stream', false],
     ['invoke', true],
     ['stream', true],
-  ] as const)('writes feature_flag.result.value on the launchdarkly.graph span on %s with default capture %s', async (mode, capture) => {
+  ] as const)('writes feature_flag.result.value on the launchdarkly.graph span on %s with configured capture %s', async (mode, capture) => {
     setupTwoNodeGraph();
     const rawGraphVariation = {
       root: 'root-node',
@@ -712,20 +708,17 @@ describe('graph() conversation id', () => {
       _ldMeta: { variationKey: 'graph-v1', version: 3 },
     };
     mockVariation.mockResolvedValue(rawGraphVariation);
-    captureDefault.value = capture;
-    try {
-      const g = graph('graph-flag', { handlers: [makeStreamingHandler(['ok'])] });
-      if (mode === 'invoke') await g.invoke('hi', mockContext);
-      else await collectStream(g.stream('hi', mockContext));
-    } finally {
-      captureDefault.value = false;
-    }
+    // undefined leaves configure() uncalled, so the graph root follows the built-in default (on).
+    if (capture !== undefined) configure({ options: { captureContent: capture } });
+    const g = graph('graph-flag', { handlers: [makeStreamingHandler(['ok'])] });
+    if (mode === 'invoke') await g.invoke('hi', mockContext);
+    else await collectStream(g.stream('hi', mockContext));
 
     const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
     const flagEvent = graphSpan?.events.find((e) => e.name === 'feature_flag');
     expect(flagEvent?.attributes?.['feature_flag.result.variant']).toBe('graph-v1');
     expect(flagEvent?.attributes?.['feature_flag.result.value']).toBe(
-      capture ? JSON.stringify(rawGraphVariation) : JSON.stringify('graph-v1'),
+      capture === false ? JSON.stringify('graph-v1') : JSON.stringify(rawGraphVariation),
     );
   });
 

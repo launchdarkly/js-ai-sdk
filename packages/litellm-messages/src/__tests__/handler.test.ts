@@ -1,5 +1,5 @@
 import { SpanStatusCode } from '@opentelemetry/api';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { constructedClients, mockChatCreate, mockConfig, mockInvoke, mockRootSpan, mockSpans } = vi.hoisted(() => {
   const span = () => ({
@@ -62,6 +62,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
+import { configure, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { createLiteLLMMessagesHandler, litellmMessages } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -141,7 +142,9 @@ describe('createLiteLLMMessagesHandler', () => {
     it('advertises wildcard messages metadata and captureContent', () => {
       const options = { baseURL: 'https://proxy.test/v1' };
       expect(createLiteLLMMessagesHandler(options).providesFor).toEqual(['*', 'messages']);
-      expect(createLiteLLMMessagesHandler(options).captureContent).toBe(false);
+      // Unset follows the process default, which is on.
+      expect(createLiteLLMMessagesHandler(options).captureContent).toBe(true);
+      expect(createLiteLLMMessagesHandler({ ...options, captureContent: false }).captureContent).toBe(false);
       expect(createLiteLLMMessagesHandler({ ...options, captureContent: true }).captureContent).toBe(true);
     });
 
@@ -664,12 +667,10 @@ describe('createLiteLLMMessagesHandler', () => {
         __ld: { configKey: 'cfg', runId: 'run', variationKey: 'variation' },
         ldContext: { key: 'user-1', kind: 'user' },
       };
-      await createLiteLLMMessagesHandler({ client: { chat: { completions: { create } } } as never })(
-        baseConfig as never,
-        'secret question',
-        {},
-        variables,
-      );
+      await createLiteLLMMessagesHandler({
+        captureContent: false,
+        client: { chat: { completions: { create } } } as never,
+      })(baseConfig as never, 'secret question', {}, variables);
       expect(JSON.stringify(mockRootSpan.setAttribute.mock.calls)).not.toContain('secret question');
       expect(mockRootSpan.addEvent).toHaveBeenCalledWith(
         'feature_flag',
@@ -688,6 +689,48 @@ describe('createLiteLLMMessagesHandler', () => {
         'q',
       );
       expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', 'litellm');
+    });
+
+    describe('content capture resolves at run time', () => {
+      const make = (options: { captureContent?: boolean } = {}) =>
+        createLiteLLMMessagesHandler({
+          client: {
+            chat: { completions: { create: vi.fn().mockResolvedValue(completion('secret answer')) } },
+          } as never,
+          ...options,
+        });
+
+      // `configure` is process-wide; shutdown() restores the built-in default and clears its lock.
+      afterEach(() => shutdown());
+
+      const run = async (handler: ProviderHandler = make()) => {
+        await handler(baseConfig as never, 'secret question');
+        return JSON.stringify(mockRootSpan.setAttribute.mock.calls);
+      };
+
+      it('captures content when nothing sets it', async () => {
+        expect(await run()).toContain('secret question');
+      });
+
+      it('captures nothing with an explicit false', async () => {
+        expect(await run(make({ captureContent: false }))).not.toContain('secret question');
+      });
+
+      it('captures nothing when configure turns the default off', async () => {
+        configure({ options: { captureContent: false } });
+        expect(await run()).not.toContain('secret question');
+      });
+
+      it('reads configure when the handler runs, not when it is built', async () => {
+        const handler = make();
+        configure({ options: { captureContent: false } });
+        expect(await run(handler)).not.toContain('secret question');
+      });
+
+      it('captures content with an explicit true when configure turns the default off', async () => {
+        configure({ options: { captureContent: false } });
+        expect(await run(make({ captureContent: true }))).toContain('secret question');
+      });
     });
 
     it('captures prompt and completion only when captureContent is enabled', async () => {

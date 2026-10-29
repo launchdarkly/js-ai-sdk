@@ -36,6 +36,7 @@ import {
 } from './judge-scoring.js';
 import { extractVariation } from './lifecycle.js';
 import { findHandler } from './registry.js';
+import { noteAiInvocation } from './sdk-options.js';
 import { renderTrajectory } from './trajectory.js';
 import type { AiConfigRep, LDContext, ProviderHandler } from './types.js';
 import { normalizeMode, parseTemplate, parseUsage } from './utils.js';
@@ -227,7 +228,10 @@ async function runJudge(result: RowResult, resolved: ResolvedJudge, span?: Span)
   // The config is passed unrendered: the handler makes the one template
   // pass, so `{{…}}` in generated output or dataset values is never expanded.
   // Judges get no tools.
-  const invoke = () => resolved.handler(resolved.config, judged, {}, variables);
+  const invoke = () => {
+    noteAiInvocation();
+    return resolved.handler(resolved.config, judged, {}, variables);
+  };
   try {
     if (span) {
       setConfigModelIdentity(span, resolved.config);

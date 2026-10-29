@@ -19,6 +19,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { setInputContentAttributes, setOutputContentAttributes, textMessage } from '../content.js';
 import { ConversationIdSpanProcessor, GEN_AI_CONVERSATION_ID, withConversationId } from '../conversation.js';
 import {
+  captureFor,
   conversationIdForEvaluationRow,
   LD_EVALUATION_RUN_ID,
   LD_EVALUATION_RUN_ROW_INDEX,
@@ -26,6 +27,7 @@ import {
 } from '../evaluations-spans.js';
 import { EvalTool, Judge, type RunOptions, Scorer } from '../index.js';
 import { flushTracerProvider } from '../lifecycle.js';
+import { configure, resetSdkOptions } from '../sdk-options.js';
 import type { ProviderHandler } from '../types.js';
 import { createHandlerInternal } from '../utils.js';
 import {
@@ -423,7 +425,40 @@ describe('content capture follows the one gate', () => {
     return spans()[0];
   };
 
-  it('omits every content field on the runner-written spans under the built-in default', async () => {
+  beforeEach(() => resetSdkOptions());
+  afterEach(() => resetSdkOptions());
+
+  /** Every content field the plain-function run writes when capture is on for both calls. */
+  const expectFullTranscript = () => {
+    expect(contentOn(only('chat gpt-4o'))).toEqual(
+      expect.arrayContaining(['gen_ai.system_instructions', 'gen_ai.input.messages', 'gen_ai.output.messages']),
+    );
+    expect(contentOn(only('execute_tool lookup_capital'))).toEqual(
+      expect.arrayContaining(['gen_ai.tool.call.arguments', 'gen_ai.tool.call.result']),
+    );
+    expect(contentOn(only('chat claude-judge'))).toEqual(
+      expect.arrayContaining(['gen_ai.system_instructions', 'gen_ai.input.messages', 'gen_ai.output.messages']),
+    );
+    expect(contentOn(only('evaluate accuracy'))).toContain('gen_ai.evaluation.explanation');
+  };
+
+  it('exports every content field on the runner-written spans under the built-in default', async () => {
+    await runWith({ handlers: [plain('OpenAI', callsTool), judgeHandler()] });
+    expect(spans()).toHaveLength(5);
+    expectFullTranscript();
+    expect(resultEvent(only('evaluate accuracy'))?.attributes).toEqual({
+      'gen_ai.evaluation.name': 'accuracy',
+      'gen_ai.evaluation.score.value': 0.9,
+      'gen_ai.evaluation.explanation': 'Names the right capital.',
+    });
+    // A non-evaluation span written with the same resolved default.
+    expect(contentOn(helperSpan(captureFor(undefined)))).toEqual(
+      expect.arrayContaining(['gen_ai.system_instructions', 'gen_ai.input.messages', 'gen_ai.output.messages']),
+    );
+  });
+
+  it('omits every content field when configure turns the default off', async () => {
+    configure({ options: { captureContent: false } });
     await runWith({ handlers: [plain('OpenAI', callsTool), judgeHandler()] });
     expect(spans()).toHaveLength(5);
     for (const span of spans()) expect(contentOn(span), span.name).toEqual([]);
@@ -437,7 +472,26 @@ describe('content capture follows the one gate', () => {
     expect(only('chat gpt-4o').attributes['gen_ai.usage.output_tokens']).toBe(7);
     expect(only('execute_tool lookup_capital').attributes['gen_ai.tool.name']).toBe('lookup_capital');
     // A non-evaluation span written with the same resolved default.
-    expect(contentOn(helperSpan(false))).toEqual([]);
+    expect(contentOn(helperSpan(captureFor(undefined)))).toEqual([]);
+  });
+
+  it('omits every content field when both handlers say false', async () => {
+    await runWith({ handlers: [plain('OpenAI', callsTool, false), judgeHandler(false)] });
+    for (const span of spans()) expect(contentOn(span), span.name).toEqual([]);
+  });
+
+  it('exports content for handlers that say true when the configured default is false', async () => {
+    configure({ options: { captureContent: false } });
+    await runWith({ handlers: [plain('OpenAI', callsTool, true), judgeHandler(true)] });
+    expectFullTranscript();
+  });
+
+  it('reads the configured default at run time for handlers built before configure', async () => {
+    const generation = plain('OpenAI', callsTool);
+    const judge = judgeHandler();
+    configure({ options: { captureContent: false } });
+    await runWith({ handlers: [generation, judge] });
+    for (const span of spans()) expect(contentOn(span), span.name).toEqual([]);
   });
 
   it('exports content on a non-evaluation span with an explicit true', () => {

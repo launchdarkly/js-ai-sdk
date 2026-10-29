@@ -397,9 +397,8 @@ export function createLiteLLMAgentsHandler(options: LiteLLMAgentsOptions = {}): 
 /** `createLiteLLMAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions = {}): ProviderHandler {
   const resolvedOptions = checkedOptions(options);
-  const captureContent = resolvedOptions.captureContent ?? false;
 
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['*', 'agent'],
     async (
       configRep: AiConfigRep,
@@ -409,6 +408,8 @@ export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions
       history?: Message[],
     ) =>
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
+        // Resolved per run, not per factory call, so a `configure()` after construction applies.
+        const captureContent = handler.captureContent === true;
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setIdentity(span, configRep);
         setLdSpanAttributes(span, variables);
@@ -458,6 +459,7 @@ export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setIdentity(span, configRep);
@@ -527,8 +529,9 @@ export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions
         }
       }
     },
-    captureContent,
+    resolvedOptions.captureContent,
   );
+  return handler;
 }
 
 export const litellmAgents = (
