@@ -24,7 +24,7 @@ import {
   LD_EVALUATION_RUN_ROW_INDEX,
   withEvaluationRow,
 } from '../evaluations-spans.js';
-import { EvalTool, Judge, type RunOptions, Scorer } from '../experimental.js';
+import { EvalTool, Judge, type RunOptions, Scorer } from '../index.js';
 import { flushTracerProvider } from '../lifecycle.js';
 import type { ProviderHandler } from '../types.js';
 import { createHandlerInternal } from '../utils.js';
