@@ -30,7 +30,7 @@ import type { AiConfigRep, HandlerStreamEvent, JudgeTask, ProviderHandler } from
 
 const fn = async () => ({ output: 'ok', usage: {} });
 const handler = (captureContent?: boolean): ProviderHandler =>
-  createHandler(['TestProvider', 'messages'], fn, undefined, captureContent);
+  createHandler(['TestProvider', 'messages'], fn, { captureContent });
 
 const CONFIG: AiConfigRep = {
   model: { name: 'gpt-4' },
@@ -104,7 +104,7 @@ describe('configure', () => {
     const rewrapped = createHandler(['Other', 'messages'], handler(false));
     expect(rewrapped.captureContent).toBe(false);
     expect(createHandler(['Other', 'messages'], handler(true)).captureContent).toBe(true);
-    expect(createHandler(['Other', 'messages'], handler(false), undefined, true).captureContent).toBe(true);
+    expect(createHandler(['Other', 'messages'], handler(false), { captureContent: true }).captureContent).toBe(true);
   });
 
   it('leaves a re-wrapped unset handler unset, so a later configure still applies', () => {
@@ -164,9 +164,11 @@ describe('configure', () => {
 
   it('latches when a handler stream starts, even if it is never iterated', () => {
     const body = vi.fn();
-    const h = createHandler(['TestProvider', 'messages'], fn, async function* () {
-      body();
-      yield { type: 'done', output: '', usage: {} } as HandlerStreamEvent;
+    const h = createHandler(['TestProvider', 'messages'], fn, {
+      stream: async function* () {
+        body();
+        yield { type: 'done', output: '', usage: {} } as HandlerStreamEvent;
+      },
     });
     const gen = h.stream?.(CONFIG);
     expect(gen).toBeDefined();
@@ -270,7 +272,9 @@ describe('runJudges explanation follows the judge handler’s effective capture 
   });
 
   it('omits it for an explicit false', async () => {
-    expect(await explanation(createHandler(['TestProvider', 'messages'], judgeFn, undefined, false))).toBeUndefined();
+    expect(
+      await explanation(createHandler(['TestProvider', 'messages'], judgeFn, { captureContent: false })),
+    ).toBeUndefined();
   });
 
   it('omits it when configure turns the default off', async () => {
@@ -281,11 +285,13 @@ describe('runJudges explanation follows the judge handler’s effective capture 
 
   it('writes it for an explicit true when the configured default is false', async () => {
     configure({ options: { captureContent: false } });
-    expect(await explanation(createHandler(['TestProvider', 'messages'], judgeFn, undefined, true))).toBe('good');
+    expect(await explanation(createHandler(['TestProvider', 'messages'], judgeFn, { captureContent: true }))).toBe(
+      'good',
+    );
   });
 
   it('omits it for a re-wrapped judge that kept an explicit false', async () => {
-    const inner = createHandler(['TestProvider', 'messages'], judgeFn, undefined, false);
+    const inner = createHandler(['TestProvider', 'messages'], judgeFn, { captureContent: false });
     expect(await explanation(createHandler(['TestProvider', 'messages'], inner))).toBeUndefined();
   });
 });
@@ -342,7 +348,9 @@ describe('deferred runJudge explanation follows the judge handler’s effective 
   });
 
   it('omits it for an explicit false', async () => {
-    expect(await explanation(createHandler(['TestProvider', 'messages'], judgeFn, undefined, false))).toBeUndefined();
+    expect(
+      await explanation(createHandler(['TestProvider', 'messages'], judgeFn, { captureContent: false })),
+    ).toBeUndefined();
   });
 
   it('omits it when configure turns the default off', async () => {
@@ -353,6 +361,8 @@ describe('deferred runJudge explanation follows the judge handler’s effective 
 
   it('writes it for an explicit true when the configured default is false', async () => {
     configure({ options: { captureContent: false } });
-    expect(await explanation(createHandler(['TestProvider', 'messages'], judgeFn, undefined, true))).toBe('good');
+    expect(await explanation(createHandler(['TestProvider', 'messages'], judgeFn, { captureContent: true }))).toBe(
+      'good',
+    );
   });
 });

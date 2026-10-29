@@ -16,7 +16,33 @@ import type {
   TrackData,
   VariationMeta,
 } from './types.js';
-import { collapseMessagesToInstructions, normalizeMode, parseJSONWithPossibleFences } from './utils.js';
+import {
+  collapseMessagesToInstructions,
+  normalizeMode,
+  parseJSONWithPossibleFences,
+  selectModeHandler,
+  wildcardCovers,
+} from './utils.js';
+
+function parentCovers(handler: ProviderHandler, provider: string | undefined): boolean {
+  if (provider !== undefined && handler.providesFor?.[0] === provider) return true;
+  return wildcardCovers(handler, provider);
+}
+
+/** Exact provider+mode, then the best wildcard of that mode, then an agent-mode fallback for a messages judge. */
+function selectJudgeExecution(
+  handlers: readonly ProviderHandler[],
+  provider: string | undefined,
+  mode: 'agent' | 'messages',
+): { handler: ProviderHandler; collapseMessages: boolean } | undefined {
+  const chosen = selectModeHandler(handlers, provider, mode);
+  if (chosen) return { handler: chosen, collapseMessages: false };
+  if (mode === 'messages') {
+    const agentFallback = selectModeHandler(handlers, provider, 'agent');
+    if (agentFallback) return { handler: agentFallback, collapseMessages: true };
+  }
+  return undefined;
+}
 
 /**
  * Resolves a judge's own AI Config, returning `null` instead of throwing when it
@@ -95,18 +121,6 @@ export function typesafeJudgeEntries(raw: unknown): TypesafeJudgeEntry[] | undef
   });
 }
 
-/** Exact `(provider, mode)` match, then a same-mode wildcard. */
-function handlerFor(
-  handlers: ProviderHandler[],
-  provider: string | undefined,
-  mode: string,
-): ProviderHandler | undefined {
-  return (
-    handlers.find((handler) => handler.providesFor?.[0] === provider && handler.providesFor?.[1] === mode) ??
-    handlers.find((handler) => handler.providesFor?.[0] === '*' && handler.providesFor?.[1] === mode)
-  );
-}
-
 export const runJudges = async ({
   config,
   userContext,
@@ -152,10 +166,11 @@ export const runJudges = async ({
 
     // Pick the handler matching the judge's own provider/mode. Priority:
     //   1. Exact provider + mode match
-    //   2. Wildcard provider (`*`) + same mode (e.g. LangChain agents handler)
+    //   2. Wildcard provider (`*`) + same mode (e.g. LangChain agents handler) whose
+    //      `providers` list, if any, contains the judge's provider; the shortest list wins
     //   3. Same provider, any mode (agent handler for the same provider)
-    //   4. Wildcard provider, any mode — agent-handler fallback for any provider
-    //   5. Parent node's handler, if it covers the same provider (or is a wildcard)
+    //   4. Wildcard provider, any mode, under the same `providers` rule — agent-handler fallback
+    //   5. Parent node's handler, if it names the provider or is a wildcard whose list allows it
     //   6. Skip — crossing providers would send the wrong model to an incompatible API.
     // When falling back to an agent-mode handler for a messages-mode judge config
     // (cases 2–5), messages are collapsed into a single instructions string so the
@@ -163,21 +178,18 @@ export const runJudges = async ({
     let judgeHandler: ProviderHandler;
     let collapseMessages = false;
     if (handlers) {
-      const exactMatch = handlerFor(handlers, judgeProvider, judgeMode);
-      const agentFallback =
-        judgeMode === 'messages' && !exactMatch ? handlerFor(handlers, judgeProvider, 'agent') : undefined;
-
-      if (exactMatch) {
-        judgeHandler = exactMatch;
-      } else if (agentFallback) {
-        judgeHandler = agentFallback;
-        collapseMessages = true;
-      } else if (handler.providesFor?.[0] === judgeProvider || handler.providesFor?.[0] === '*') {
+      const selected = selectJudgeExecution(handlers, judgeProvider, judgeMode);
+      if (selected) {
+        judgeHandler = selected.handler;
+        collapseMessages = selected.collapseMessages;
+      } else if (parentCovers(handler, judgeProvider)) {
         judgeHandler = handler;
         collapseMessages = judgeMode === 'messages' && handler.providesFor?.[1] === 'agent';
       } else {
         // No compatible handler found — skip this judge rather than calling the
         // wrong provider's API with an incompatible model name.
+        // biome-ignore lint/suspicious/noConsole: judges are non-fatal; say why one was skipped
+        console.warn(`Judge '${judge.key}' skipped: no handler covers provider ${judgeProvider}`);
         continue;
       }
     } else {
@@ -331,18 +343,15 @@ export const buildJudgeTasksInternal = async ({
 
     let collapseMessages = false;
     if (handlers) {
-      const exactMatch = handlerFor(handlers, judgeProvider, judgeMode);
-      const agentFallback =
-        judgeMode === 'messages' && !exactMatch ? handlerFor(handlers, judgeProvider, 'agent') : undefined;
-
-      if (exactMatch) {
-        collapseMessages = false;
-      } else if (agentFallback) {
-        collapseMessages = true;
-      } else if (handler.providesFor?.[0] === judgeProvider || handler.providesFor?.[0] === '*') {
+      const selected = selectJudgeExecution(handlers, judgeProvider, judgeMode);
+      if (selected) {
+        collapseMessages = selected.collapseMessages;
+      } else if (parentCovers(handler, judgeProvider)) {
         collapseMessages = judgeMode === 'messages' && handler.providesFor?.[1] === 'agent';
       } else {
         // No compatible handler — skip, same as runJudges.
+        // biome-ignore lint/suspicious/noConsole: judges are non-fatal; say why one was skipped
+        console.warn(`Judge '${judge.key}' skipped: no handler covers provider ${judgeProvider}`);
         continue;
       }
     }
@@ -396,12 +405,9 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
     configKey,
   } = task;
 
-  const exactMatch = handlerFor(handlers, judgeProvider, judgeMode);
-  const agentFallback =
-    judgeMode === 'messages' && !exactMatch ? handlerFor(handlers, judgeProvider, 'agent') : undefined;
-
-  const judgeHandler = exactMatch ?? agentFallback;
-  if (!judgeHandler) return null;
+  const selected = selectJudgeExecution(handlers, judgeProvider, judgeMode);
+  if (!selected) return null;
+  const judgeHandler = selected.handler;
 
   // Defensive: an older serialized `JudgeTask` (e.g. from a worker queue built before this fix)
   // may still carry `outputFormat` on `judgeConfig`, so strip it here too rather than trust the caller.

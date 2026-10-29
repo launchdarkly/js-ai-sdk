@@ -106,7 +106,7 @@ configure({ options: { captureContent: false } });
 `captureContent` is a default, not a ceiling. The first of these that is set wins for a run:
 
 1. `captureContent` on a convenience wrapper (`openaiMessages`, `claudeAgents`, and the others).
-2. `captureContent` on a handler factory (`createOpenAIMessagesHandler({ captureContent: false })`) or the fourth argument of `createHandler`.
+2. `captureContent` on a handler factory (`createOpenAIMessagesHandler({ captureContent: false })`) or the `captureContent` option of `createHandler` (`createHandler(providesFor, fn, { captureContent: false })`).
 3. The options from the latest accepted `configure`.
 4. The built-in `true`.
 

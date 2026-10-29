@@ -235,6 +235,87 @@ describe('createHandler', () => {
     expect(handler.providesFor).toEqual(['MyProvider', 'agent']);
   });
 
+  it('leaves providers unset when omitted', () => {
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any);
+    expect(handler.providers).toBeUndefined();
+  });
+
+  it('attaches a provider list', () => {
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any, { providers: ['Bedrock', 'Anthropic'] });
+    expect(handler.providesFor).toEqual(['*', 'messages']);
+    expect(handler.providers).toEqual(['Bedrock', 'Anthropic']);
+  });
+
+  it('takes stream and captureContent as options', () => {
+    const stream = vi.fn();
+    const handler = createHandler(['MyProvider', 'messages'], makeRawHandler() as any, {
+      stream: stream as any,
+      captureContent: true,
+    });
+    handler.stream?.({ model: { name: 'gpt-4' } } as any, 'input');
+    expect(stream).toHaveBeenCalledWith({ model: { name: 'gpt-4' } }, 'input');
+    expect(handler.captureContent).toBe(true);
+  });
+
+  it('rejects a stream function passed positionally', () => {
+    const create = createHandler as (...args: unknown[]) => unknown;
+    expect(() => create(['MyProvider', 'messages'], makeRawHandler(), vi.fn())).toThrow(
+      new TypeError(
+        'createHandler takes { stream, captureContent, providers } as its third argument: ' +
+          'createHandler(providesFor, fn, streamFn, captureContent) is now ' +
+          'createHandler(providesFor, fn, { stream: streamFn, captureContent }).',
+      ),
+    );
+  });
+
+  it('rejects captureContent passed as a fourth argument', () => {
+    const create = createHandler as (...args: unknown[]) => unknown;
+    expect(() => create(['MyProvider', 'messages'], makeRawHandler(), undefined, true)).toThrow(TypeError);
+  });
+
+  it('rejects a third argument that is not an options object', () => {
+    const create = createHandler as (...args: unknown[]) => unknown;
+    for (const bad of [null, true, 'stream', []]) {
+      expect(() => create(['MyProvider', 'messages'], makeRawHandler(), bad)).toThrow(TypeError);
+    }
+  });
+
+  it('accepts an explicit undefined third argument', () => {
+    const handler = createHandler(['MyProvider', 'messages'], makeRawHandler() as any, undefined);
+    expect(handler.providesFor).toEqual(['MyProvider', 'messages']);
+  });
+
+  it('drops repeated provider names, keeping first-seen order', () => {
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any, {
+      providers: ['Bedrock', 'Anthropic', 'Bedrock'],
+    });
+    expect(handler.providers).toEqual(['Bedrock', 'Anthropic']);
+  });
+
+  it('copies the provider list, so a later change to the caller array has no effect', () => {
+    const providers = ['Bedrock'];
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any, { providers });
+    providers.push('OpenAI');
+    expect(handler.providers).toEqual(['Bedrock']);
+    expect(Object.isFrozen(handler.providers)).toBe(true);
+  });
+
+  it('rejects an empty provider list', () => {
+    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, { providers: [] })).toThrow(/providers/i);
+  });
+
+  it('rejects a blank provider name', () => {
+    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, { providers: ['Bedrock', ''] })).toThrow(
+      /providers/i,
+    );
+  });
+
+  it('rejects a provider name with surrounding whitespace', () => {
+    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, { providers: [' Bedrock'] })).toThrow(
+      /providers/i,
+    );
+  });
+
   it('returns a callable that forwards this and arguments and returns the original result', async () => {
     const fn = makeRawHandler();
     const handler = createHandler(['MyProvider', 'agent'], fn as any);
@@ -263,11 +344,26 @@ describe('createHandler', () => {
   it('keeps properties attached to the wrapped function', () => {
     const fn = Object.assign(makeRawHandler(), { extra: 'kept' });
     const stream = vi.fn();
-    const first = createHandler(['MyProvider', 'agent'], fn as any, stream as any);
+    const first = createHandler(['MyProvider', 'agent'], fn as any, { stream: stream as any });
     const again = createHandler(['Other', 'messages'], first);
     expect((again as unknown as { extra: string }).extra).toBe('kept');
     expect(again.providesFor).toEqual(['Other', 'messages']);
     expect(again.stream).toBe(first.stream);
+  });
+
+  it('keeps the providers list when a handler is wrapped again without one', () => {
+    const first = createHandler(['*', 'messages'], makeRawHandler() as any, { providers: ['Bedrock'] });
+    const again = createHandler(['*', 'agent'], first);
+    expect(again.providers).toEqual(['Bedrock']);
+    expect(Object.isFrozen(again.providers)).toBe(true);
+  });
+
+  it('replaces the providers list when a handler is wrapped again with one, leaving the first unchanged', () => {
+    const first = createHandler(['*', 'messages'], makeRawHandler() as any, { providers: ['Bedrock'] });
+    const again = createHandler(['*', 'messages'], first, { providers: ['Anthropic', 'Anthropic'] });
+    expect(again.providers).toEqual(['Anthropic']);
+    expect(Object.isFrozen(again.providers)).toBe(true);
+    expect(first.providers).toEqual(['Bedrock']);
   });
 
   it('handler is still callable and returns expected output', async () => {
