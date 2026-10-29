@@ -21,7 +21,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 
 | File | Responsibility |
 |---|---|
-| `src/conversation.ts` | `withConversationId`, `ConversationIdSpanProcessor` — stamps `gen_ai.conversation.id` |
+| `src/conversation.ts` | `withConversationId`, `ConversationIdSpanProcessor` — stamps `gen_ai.conversation.id`; `withSpanAttributes` (stamp a caller-supplied attribute set, write-if-absent, on SDK spans) and `countSdkSpans`, which know no feature |
 | `src/sdk-info.ts` | `$ld:ai:sdk:info` package registry and flush |
 | `src/lifecycle.ts` | `initClient` (options or BYOC overloads), `getClient`, `shutdown`, `waitForTelemetry`, `shutdownTelemetry`, `extractVariation` |
 | `src/client.ts` | `config()` |
@@ -40,6 +40,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/evaluations.ts` | Evaluations from Code — `initEvaluations`, `EvaluationsModule.run()` and its argument validation and orchestration, the public option and result types |
 | `src/evaluations-api.ts` | Evaluations from Code — the retrying management API client, its injectable `Transport` seam, `EvaluationsError`, and the strict-JSON check |
 | `src/evaluations-runner.ts` | Evaluations from Code — the management API operations, row rendering, handler config, the generation phase, event payloads and flushing, and summary parsing. `canonicalJson` is RFC 8785 (JCS), the form `eventId` and `contentHash` hash in every SDK; the Python SDK's `evaluations/canonical_json.py` produces the same bytes |
+| `src/evaluations-spans.ts` | Evaluations from Code — the spans `run()` exports per row: the `launchdarkly.dataset_row` root, the row binding (`gen_ai.conversation.id` as the UUIDv5 of `{runId}:{rowIndex}`, `launchdarkly.evaluation_run.*`), the `chat` / `execute_tool` spans written for a plain function, and the `evaluate` spans. Built on the feature-neutral `withSpanAttributes` and `countSdkSpans` in `conversation.ts`, which name none of its attributes |
 | `src/evaluations-tools.ts` | Evaluations from Code — `EvalTool` (inline and library), tool validation, and `tools.get()` |
 | `src/evaluations-criteria.ts` | Evaluations from Code — `Judge`, `Scorer`, `Criterion`, validated where constructed, and the `criteria` entries pinned on the create body |
 | `src/evaluations-scoring.ts` | Evaluations from Code — the evaluation phase: judge resolution and handler selection, judge and scorer invocation, criterion event payloads |
@@ -47,7 +48,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/trajectory.ts` | Tool-call trajectory capture and rendering — `TrajectoryRecorder` (one per online invocation in `tracking.ts`, one per evaluation row offline), `exposedToolKeys`, and `renderTrajectory`, the text a judge reads in `message_history`. `HANDOFF_TOOL_PREFIX` is defined here once and used by `tracking.ts` and `graph.ts` |
 | `src/safe-fs.ts` | Symlink-refusing filesystem primitives. Knows nothing about skills; owns the single interceptable rename and unlink call sites |
 | `src/index.ts` | Public barrel — the package root, and the only surface handler packages import from |
-| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Evaluations from Code is exported here and only here |
+| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. No feature is experimental now, so it exports no name |
 
 The Agent Skills module dependencies run **one way only**:
 
@@ -183,6 +184,22 @@ export {
   setConversationIdIfAbsent,
   withConversationId,
 } from './conversation.js';
+export type {
+  AIConfig,
+  DatasetRow,
+  EvalRunResult,
+  GenerationConfig,
+  GenerationMode,
+  GenerationOverrides,
+  InitEvaluationsOptions,
+  InlineDatasetRow,
+  RunOptions,
+  RunSummary,
+} from './evaluations.js';
+export { EvaluationsError, EvaluationsModule, initEvaluations } from './evaluations.js';
+export type { Criterion } from './evaluations-criteria.js';
+export { Judge, Scorer } from './evaluations-criteria.js';
+export { EvalTool } from './evaluations-tools.js';
 export { graph, graphInternal, resolveGraph } from './graph.js';
 export type { CanonicalTurn, ConfigTurn } from './history.js';
 export {
@@ -215,11 +232,23 @@ export {
   InMemorySkillStore,
   setSkillStore,
   skillRefs,
+  skillRefsInternal,
 } from './skills.js';
-export type { LaunchDarklySkillStoreMode, LaunchDarklySkillStoreOptions, StoreDiagnostics } from './skills-fdv2.js';
-export { LaunchDarklySkillStore, SKILLS_DEFAULT_BASE_URI, SKILLS_DEFAULT_STREAM_URI } from './skills-fdv2.js';
+export type {
+  FDv2Mode,
+  FDv2SkillStoreOptions,
+  LaunchDarklySkillStoreMode,
+  LaunchDarklySkillStoreOptions,
+  StoreDiagnostics,
+} from './skills-fdv2.js';
+export {
+  FDv2SkillStore,
+  LaunchDarklySkillStore,
+  SKILLS_DEFAULT_BASE_URI,
+  SKILLS_DEFAULT_STREAM_URI,
+} from './skills-fdv2.js';
 export type { WriteSkillsOptions } from './skills-fs.js';
-export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills } from './skills-fs.js';
+export { MANIFEST_FILENAME, MANIFEST_VERSION, SKILL_FILENAME, writeSkills, writeSkillsInternal } from './skills-fs.js';
 export { configSkills } from './skills-source.js';
 export type { WatchSkillsOptions } from './skills-watch.js';
 export { SKILLS_DEFAULT_DEBOUNCE_MS, SkillWatcher, watchSkills } from './skills-watch.js';
@@ -308,33 +337,19 @@ export {
 
 Published as `@launchdarkly/ai-server/experimental` (a subpath in `package.json` `exports`, built
 alongside the root by `tsup.config.ts`). Names here may change in a minor release and are **absent
-from the package root**. Agent Skills was promoted to core and is exported from the root only.
+from the package root**. No feature is experimental now. Agent Skills and Evaluations from Code
+were promoted to core and are exported from the root only.
 `@launchdarkly/ai-node/experimental` re-exports this entry point. Generated from
 `src/experimental.ts` the same way as the block above.
 
 ```ts
-export type {
-  AIConfig,
-  DatasetRow,
-  EvalRunResult,
-  GenerationConfig,
-  GenerationMode,
-  GenerationOverrides,
-  InitEvaluationsOptions,
-  InlineDatasetRow,
-  RunOptions,
-  RunSummary,
-} from './evaluations.js';
-export { EvaluationsError, EvaluationsModule, initEvaluations } from './evaluations.js';
-export type { Criterion } from './evaluations-criteria.js';
-export { Judge, Scorer } from './evaluations-criteria.js';
-export { EvalTool } from './evaluations-tools.js';
+export {};
 ```
 
 The stage rules, which every change here must keep:
 
 - **Core never names experimental.** No root export, core type, function signature, or option may
-  mention an experimental name (today, an Evaluations from Code name).
+  mention an experimental name.
 - **An experimental field never fails a core call.** Experimental code may import core freely.
 - **Core reaches feature state only through an internal hook**, and a failure there is caught and
   logged, never thrown into the core call. `lifecycle.ts` never imports a feature module: the module
@@ -346,11 +361,12 @@ The stage rules, which every change here must keep:
   `yarn api:check` for every package. After an intended surface change run
   `yarn workspace @launchdarkly/ai-server api:update` (or `yarn api:update` from this directory) and
   commit both reports.
-- **Promotion to core** (done for Agent Skills, before 1.0) moves the feature's names from
+- **Promotion to core** (done for Agent Skills and Evaluations from Code, before 1.0) moves the feature's names from
   `src/experimental.ts` to `src/index.ts` with the same spelling, and removes them from the
   experimental entry point; this is a breaking change (`!` in the PR title). Also remove the
   feature's rows from `changelog-sections` in `release-please-config.json`, and update both API
-  reports. A test asserts the skills names are in the root report and not in the experimental one.
+  reports. A test asserts the skills and evaluations names are in the root report and not in the
+  experimental one.
 
 Agent Skills still keeps one rule from its experimental stage: `AiConfigRep.skills` is typed
 `unknown` and `parseAiConfig` passes it through unvalidated, so a malformed field never fails a

@@ -21,7 +21,7 @@ For edge runtimes (Vercel, Cloudflare Workers, Deno, etc.) use `@launchdarkly/ai
 | File | Responsibility |
 |---|---|
 | `src/index.ts` | Single `export * from '@launchdarkly/ai-server'` — the entire public barrel |
-| `src/experimental.ts` | Single `export * from '@launchdarkly/ai-server/experimental'` — published as `@launchdarkly/ai-node/experimental`, so Node.js users reach experimental features (Evaluations from Code) without a direct `@launchdarkly/ai-server` dependency |
+| `src/experimental.ts` | Single `export * from '@launchdarkly/ai-server/experimental'` — published as `@launchdarkly/ai-node/experimental`, so Node.js users reach experimental features without a direct `@launchdarkly/ai-server` dependency. No feature is experimental now |
 
 ---
 

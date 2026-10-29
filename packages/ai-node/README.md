@@ -115,17 +115,16 @@ module.exports = {
 
 Experimental features are not exported from the package root. Import them from
 `@launchdarkly/ai-node/experimental`, which re-exports `@launchdarkly/ai-server/experimental`, so
-you need no direct dependency on `@launchdarkly/ai-server`. For example:
-
-```ts
-import { initEvaluations } from '@launchdarkly/ai-node/experimental';
-```
-
-Names there may change in a minor release.
+you need no direct dependency on `@launchdarkly/ai-server`. Names there may change in a minor
+release. No feature is experimental now.
 
 Agent Skills is no longer experimental: import it from the package root, for example
 `import { InMemorySkillStore, setSkillStore } from '@launchdarkly/ai-node';`. See the
 [Agent Skills guide](../client/README.md#agent-skills).
+
+Evaluations from Code is no longer experimental: import it from the package root, for example
+`import { initEvaluations } from '@launchdarkly/ai-node';`. See the
+[Evaluations from Code guide](../client/README.md#evaluations-from-code).
 
 ## Full API reference
 

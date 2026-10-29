@@ -12,8 +12,16 @@ export const GEN_AI_CONVERSATION_ID = 'gen_ai.conversation.id';
 
 const CONVERSATION_ID_KEY = createContextKey('launchdarkly.gen_ai.conversation.id');
 const JUDGE_EVAL_KEY = createContextKey('launchdarkly.judge.evaluation');
+const STAMPED_ATTRIBUTES_KEY = createContextKey('launchdarkly.span.stamped_attributes');
+const SPAN_COUNTER_KEY = createContextKey('launchdarkly.span.counter');
 
-type JudgeEvaluation = {
+/** What {@link withSpanAttributes} writes: strings and integers only, so every value is exportable as is. */
+export type StampedAttributes = Readonly<Record<string, string | number>>;
+
+/** The number of SDK spans started while {@link countSdkSpans} is bound. */
+export type SpanCounter = { count: number };
+
+export type JudgeEvaluation = {
   name: string;
   score: number;
   /** Only ever set when the judge's handler captures content. See `runJudges`. */
@@ -104,7 +112,48 @@ const conversationIdFrom = (ctx: Context): string | undefined => {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 };
 
-const recordEvaluationOnSpan = (span: Span, evaluation: JudgeEvaluation, mirrorAttributes: boolean): void => {
+const stampedAttributesFrom = (ctx: Context): StampedAttributes | undefined =>
+  ctx.getValue(STAMPED_ATTRIBUTES_KEY) as StampedAttributes | undefined;
+
+const isStampable = (value: unknown): value is string | number =>
+  typeof value === 'string' || (typeof value === 'number' && Number.isInteger(value));
+
+/**
+ * Writes `attributes` onto every span this SDK's tracers start while `fn` runs.
+ *
+ * Each key is written only when the span does not already carry it, so a value the span set for
+ * itself wins. Values must be strings or integers; anything else is skipped. A nested binding adds
+ * to the outer set, and its own values win on a shared key. Names no attribute of its own: the
+ * caller owns the keys. Relies on {@link ConversationIdSpanProcessor}, which `initClient()`
+ * registers.
+ *
+ * Not part of the public API.
+ */
+export function withSpanAttributes<T>(attributes: StampedAttributes, fn: () => T): T {
+  const active = context.active();
+  const merged = { ...stampedAttributesFrom(active), ...attributes };
+  return context.with(active.setValue(STAMPED_ATTRIBUTES_KEY, merged), fn);
+}
+
+/**
+ * Counts the spans this SDK's tracers start while `fn` runs, including spans of spans. Only the
+ * innermost binding counts a span. Relies on {@link ConversationIdSpanProcessor}: under a provider
+ * without it, the count stays 0 whatever ran.
+ *
+ * Not part of the public API.
+ */
+export function countSdkSpans<T>(fn: (counter: SpanCounter) => T): T {
+  const counter: SpanCounter = { count: 0 };
+  return context.with(context.active().setValue(SPAN_COUNTER_KEY, counter), () => fn(counter));
+}
+
+/**
+ * Adds `gen_ai.evaluation.result` to `span`, with the name, the score and, when given, the
+ * explanation. With `mirrorAttributes`, the same values are also written as span attributes.
+ *
+ * Not part of the public API — shared by every path that records a judge's score.
+ */
+export const recordEvaluationOnSpan = (span: Span, evaluation: JudgeEvaluation, mirrorAttributes: boolean): void => {
   if (!span.isRecording()) return;
   const attrs: Attributes = {
     'gen_ai.evaluation.name': evaluation.name,
@@ -243,8 +292,9 @@ export async function withJudgeEvaluation<T>(
 }
 
 /**
- * Stamps `gen_ai.conversation.id` write-if-absent on every span, and delays ending a judge
- * `invoke_agent` span so evaluation events can land on it.
+ * Stamps `gen_ai.conversation.id` and any {@link withSpanAttributes} set write-if-absent on every
+ * SDK span, counts SDK spans for {@link countSdkSpans}, and delays ending a judge `invoke_agent`
+ * span so evaluation events can land on it.
  *
  * Duck-typed to the OTel SDK `SpanProcessor` interface so this file depends only on
  * `@opentelemetry/api`. `initClient()` registers it ahead of `BatchSpanProcessor`.
@@ -256,7 +306,19 @@ export class ConversationIdSpanProcessor {
     // or detached context would inherit whatever conversation happens to be active on the stack.
     const ctx = parentContext ?? context.active();
     const id = conversationIdFrom(ctx);
-    if (id && isLaunchDarklySpan(span)) setConversationIdIfAbsent(span, id);
+    const ours = isLaunchDarklySpan(span);
+    if (id && ours) setConversationIdIfAbsent(span, id);
+
+    if (ours) {
+      const counter = ctx.getValue(SPAN_COUNTER_KEY) as SpanCounter | undefined;
+      if (counter) counter.count++;
+      const stamped = stampedAttributesFrom(ctx);
+      if (stamped) {
+        for (const [key, value] of Object.entries(stamped)) {
+          if (isStampable(value) && readAttribute(span, key) === undefined) span.setAttribute(key, value);
+        }
+      }
+    }
 
     // Name check first — this runs for every span in the process and almost none are judge roots.
     if (spanName(span) !== 'invoke_agent') return;

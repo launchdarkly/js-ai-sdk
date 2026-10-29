@@ -98,10 +98,10 @@ Biome organises imports alphabetically within each group. Vitest's `vi.mock` cal
 
 PRs are squash-merged with the PR title as the commit message, and release-please builds each package's changelog from those messages.
 
-- **A change to an experimental feature uses that feature's scope:** `evaluations` (Evaluations from Code). `feat`, `fix` and `perf` commits with that scope are listed under **Experimental** (`changelog-sections` in `release-please-config.json`), for example `feat(evaluations): score with a local judge`. Any other scope, such as `client` or `skills` (Agent Skills, now core), lists the change as a core feature or fix.
-- **Use exactly one scope.** `feat(evaluations,client):` matches no Experimental row, so it lands under Features.
+- **A change to an experimental feature uses that feature's scope.** `feat`, `fix` and `perf` commits with that scope are listed under **Experimental** (`changelog-sections` in `release-please-config.json`). No feature is experimental now. Any other scope, such as `client`, `skills` (Agent Skills) or `evaluations` (Evaluations from Code), lists the change as a core feature or fix.
+- **Use exactly one scope.** `feat(beta,client):` matches no Experimental row, so it lands under Features.
 - **A PR that changes both core and experimental behaviour** should be split. If it can't be, add a `BEGIN_COMMIT_OVERRIDE` block to its description with one conventional-commit line per change. An override also corrects a merged PR's title, as long as the release PR hasn't merged yet.
-- **A breaking experimental change** uses `!` while the package is 0.x: `feat(evaluations)!:` bumps the minor version, which is what an experimental break is allowed. After 1.0, `!` would force a major release. Use `feat(evaluations):` without `!` instead, and say the change is breaking in the title.
+- **A breaking experimental change** uses `!` while the package is 0.x: `feat(beta)!:` bumps the minor version, which is what an experimental break is allowed. After 1.0, `!` would force a major release. Use `feat(beta):` without `!` instead, and say the change is breaking in the title.
 - **When a feature is promoted to core,** remove its rows from `changelog-sections`.
 
 ## Public API Reports
@@ -556,7 +556,7 @@ If `config.tools` is present, the handler must:
 
 If `config.tools` is absent or empty, tool handling should be skipped entirely.
 
-**Native tools:** A `toolHandlers` value may be a `NativeTool` instance rather than a plain function. When encountered, the handler should wire it to the provider SDK's built-in capability (not invoke it as a function), and emit `$ld:ai:tool_call` tracking when the model invokes it. Read the `NATIVE_TOOL_KEY` symbol off the tracking stub to recover the original `NativeTool` instance and its `toolName`.
+**Native tools:** A `toolHandlers` value may be a `NativeTool` instance rather than a plain function. The same `config.tools` allowlist applies: a native tool whose key is not in `config.tools` must not be enabled. When encountered, the handler should wire it to the provider SDK's built-in capability (not invoke it as a function), and emit `$ld:ai:tool_call` tracking when the model invokes it. Read the `NATIVE_TOOL_KEY` symbol off the tracking stub to recover the original `NativeTool` instance and its `toolName`.
 
 ### Telemetry
 
@@ -768,7 +768,7 @@ Current adapters:
 
 ## Claude Provider Built-ins (`@launchdarkly/ai-claude-agents`)
 
-The Claude agents package exports pre-constructed `NativeTool` sentinels for Claude Code built-in capabilities. Place these as values in `toolHandlers` to enable the corresponding native Claude tool without writing a handler function:
+The Claude agents package exports pre-constructed `NativeTool` sentinels for Claude Code built-in capabilities. Place these as values in `toolHandlers` to enable the corresponding native Claude tool without writing a handler function. Like any tool, a native tool is enabled only for a variation whose `config.tools` has its `toolHandlers` key; registering it is not enough:
 
 | Export | Claude SDK tool name |
 |---|---|

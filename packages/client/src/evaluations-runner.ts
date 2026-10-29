@@ -6,6 +6,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import type { Span } from '@opentelemetry/api';
 import type { DatasetRow, RunSummary } from './evaluations.js';
 import {
   EvaluationsError,
@@ -18,6 +19,16 @@ import {
   segment,
 } from './evaluations-api.js';
 import { type Criterion, criterionWire } from './evaluations-criteria.js';
+import {
+  captureFor,
+  finishRowSpan,
+  recordChat,
+  recordToolCalls,
+  startRowSpan,
+  traceHandlerCall,
+  withActiveSpan,
+  withEvaluationRow,
+} from './evaluations-spans.js';
 import { createBodyTools, type EvalTool, handlerConfigTools } from './evaluations-tools.js';
 import { TrajectoryRecorder } from './trajectory.js';
 import type {
@@ -78,6 +89,8 @@ export type RowResult = {
   generatedAt: string;
   latencyMs: number;
   trajectory: TrajectoryRecorder;
+  /** The row's open `launchdarkly.dataset_row` root, when the run traces rows. The run ends it. */
+  span?: Span;
 };
 
 // ---------------------------------------------------------------------------
@@ -531,6 +544,10 @@ export async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (
  * Generate every row once with `handler`. A handler error becomes an `ERROR`
  * row instead of failing the run, and a handler is never retried: a retry
  * could repeat tool side effects.
+ *
+ * With `evaluationRunId`, each row opens its trace root before the handler
+ * runs, and the handler runs under it with the row bound. The caller ends each
+ * row's `span` after the row's criteria.
  */
 export function generateRows(
   rows: readonly DatasetRow[],
@@ -538,12 +555,14 @@ export function generateRows(
   config: AiConfigRep,
   tools: Record<string, ToolHandlerFn | NativeTool>,
   concurrency: number,
+  evaluationRunId?: string,
 ): Promise<RowResult[]> {
   return mapBounded(rows, concurrency, async (row) => {
     // One recorder per row: rows share the tool map, so a shared recorder
     // would splice their calls together.
     const trajectory = new TrajectoryRecorder();
     const rowTools = trajectory.wrap(tools);
+    const span = evaluationRunId === undefined ? undefined : startRowSpan(evaluationRunId, row.rowIndex);
     const startedAt = new Date().toISOString();
     const started = performance.now();
     const finish = () => ({
@@ -551,22 +570,48 @@ export function generateRows(
       generatedAt: new Date().toISOString(),
       latencyMs: Math.round(performance.now() - started),
     });
+    const invoke = () => handler(config, row.input ?? undefined, rowTools, { ...row.variables });
     try {
-      const result: unknown = await handler(config, row.input ?? undefined, rowTools, {
-        ...row.variables,
-      });
+      const result: unknown =
+        evaluationRunId === undefined || span === undefined
+          ? await invoke()
+          : await withEvaluationRow(evaluationRunId, row.rowIndex, () =>
+              withActiveSpan(span, () =>
+                traceHandlerCall(invoke, (outcome) => {
+                  const capture = captureFor(handler);
+                  recordChat(span, {
+                    ...outcome,
+                    config,
+                    userInput: row.input,
+                    variables: row.variables,
+                    toolCalls: trajectory.calls,
+                    capture,
+                  });
+                  recordToolCalls(span, trajectory.calls, capture);
+                }),
+              ),
+            );
       if (!isPlainObject(result)) throw new TypeError('handler result must be an object');
       const done: RowResult = { row, status: 'COMPLETE', output: result.output, ...finish(), trajectory };
       if (isPlainObject(result.usage)) done.usage = { ...result.usage };
+      if (span) {
+        finishRowSpan(span);
+        done.span = span;
+      }
       return done;
     } catch (err) {
-      return {
+      const failed: RowResult = {
         row,
         status: 'ERROR',
         error: { code: HANDLER_ERROR_CODE, message: `handler raised: ${errorMessage(err)}` },
         ...finish(),
         trajectory,
       };
+      if (span) {
+        finishRowSpan(span, err);
+        failed.span = span;
+      }
+      return failed;
     }
   });
 }
