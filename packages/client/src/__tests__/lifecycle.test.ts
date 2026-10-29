@@ -1105,6 +1105,28 @@ describe('lifecycle', () => {
       expect(result.meta?.variationKey).toBe('v1');
     });
 
+    it('does not latch configure, since it makes no AI call', async () => {
+      const mockClient = makeMockClient();
+      mockClient.variation = vi.fn().mockResolvedValue({
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'messages' },
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'You are helpful.',
+      });
+      mockLdInit.mockReturnValue(mockClient);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { inspectConfig } = await import('../lifecycle.js');
+      const { configure, effectiveCaptureContent } = await import('../sdk-options.js');
+      configure({ options: { captureContent: true } });
+      const result = await inspectConfig('my-flag', { kind: 'user' as const, key: 'user-1' });
+
+      expect(result.enabled).toBe(true);
+      expect(mockClient.variation).toHaveBeenCalled();
+      expect(() => configure({ options: { captureContent: false } })).not.toThrow();
+      expect(effectiveCaptureContent(undefined)).toBe(false);
+    });
+
     it('does not fail on a malformed skills field', async () => {
       // A malformed skills field cannot break a config call; `skillRefs`
       // rejects it instead.
