@@ -639,6 +639,29 @@ describe('createOpenAIMessagesHandler', () => {
       configure({ options: { captureContent: false } });
       expect(await run(createOpenAIMessagesHandler({ captureContent: true }))).toContain('question');
     });
+
+    /** The handler `openaiMessages` built for its `config()` call. */
+    const wrapperHandler = async (options: { captureContent?: boolean }): Promise<ProviderHandler> => {
+      const { openaiMessages } = await import('../handler.js');
+      const { configInternal } = await import('@launchdarkly/ai-server');
+      await openaiMessages('flag', 'hello', { kind: 'user', key: 'u' }, options);
+      return vi.mocked(configInternal).mock.calls.at(-1)?.[0].handler as ProviderHandler;
+    };
+
+    it('lets an explicit false on openaiMessages beat a configured true', async () => {
+      configure({ options: { captureContent: true } });
+      const handler = await wrapperHandler({ captureContent: false });
+      expect(handler.captureContent).toBe(false);
+      expect(await run(handler)).not.toContain('question');
+    });
+
+    it('forwards an omitted openaiMessages option as unset, so it follows configure', async () => {
+      const handler = await wrapperHandler({});
+      expect(handler.captureContent).toBe(true);
+      configure({ options: { captureContent: false } });
+      expect(handler.captureContent).toBe(false);
+      expect(await run(handler)).not.toContain('question');
+    });
   });
 
   it('puts prompt and completion on span attributes when capture is enabled', async () => {

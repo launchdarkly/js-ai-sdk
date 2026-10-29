@@ -839,6 +839,29 @@ describe('createClaudeAgentsHandler', () => {
       configure({ options: { captureContent: false } });
       expect(await run(createClaudeAgentsHandler({ captureContent: true }))).toContain('question');
     });
+
+    /** The handler `claudeAgents` built for its `config()` call. */
+    const wrapperHandler = async (options: { captureContent?: boolean }): Promise<ProviderHandler> => {
+      const { claudeAgents } = await import('../handler.js');
+      const { configInternal } = await import('@launchdarkly/ai-server');
+      await claudeAgents('flag', 'hello', { kind: 'user', key: 'u' }, options);
+      return vi.mocked(configInternal).mock.calls.at(-1)?.[0].handler as ProviderHandler;
+    };
+
+    it('lets an explicit false on claudeAgents beat a configured true', async () => {
+      configure({ options: { captureContent: true } });
+      const handler = await wrapperHandler({ captureContent: false });
+      expect(handler.captureContent).toBe(false);
+      expect(await run(handler)).not.toContain('question');
+    });
+
+    it('forwards an omitted claudeAgents option as unset, so it follows configure', async () => {
+      const handler = await wrapperHandler({});
+      expect(handler.captureContent).toBe(true);
+      configure({ options: { captureContent: false } });
+      expect(handler.captureContent).toBe(false);
+      expect(await run(handler)).not.toContain('question');
+    });
   });
 
   it('puts prompt and completion on span attributes when capture is enabled', async () => {
