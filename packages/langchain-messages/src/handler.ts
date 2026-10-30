@@ -12,6 +12,7 @@ import {
   endSpanOnce,
   imageBlockToUrl,
   isContentBlocks,
+  isFunctionTool,
   type LDContext,
   langChainContentText,
   langChainFinishReasons,
@@ -240,7 +241,7 @@ const buildTools = (
   const tools = Object.entries(configTools).flatMap<LangChainToolDef>(([name, toolConfig]) => {
     if (!Object.hasOwn(toolHandlers, name)) return [];
     const handler = toolHandlers[name];
-    if (typeof handler !== 'function') return [];
+    if (!isFunctionTool(name, handler)) return [];
     executableTools.set(name, handler);
     return [
       {

@@ -62,7 +62,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
-import { configure, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
+import { configure, NATIVE_TOOL_KEY, NativeTool, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { createLiteLLMMessagesHandler, litellmMessages } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -368,6 +368,30 @@ describe('createLiteLLMMessagesHandler', () => {
   });
 
   describe('tools, loops, usage, and structured output', () => {
+    it('never sends a NativeTool as a function tool, and warns once per tool key', async () => {
+      const create = vi.fn().mockResolvedValue(completion());
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const native = new NativeTool(Symbol('web'), 'web_search');
+      // The tracking stub core's wrapToolHandlers makes from a NativeTool.
+      const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
+      const config = {
+        ...baseConfig,
+        tools: {
+          search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } },
+          'native-web': { name: 'native-web', type: 'function' as const, parameters: { type: 'object' } },
+        },
+      };
+      const handler = createLiteLLMMessagesHandler({ client: { chat: { completions: { create } } } as never });
+      await handler(config as any, 'q', { search: vi.fn(), 'native-web': stub } as any);
+      await handler(config as any, 'q', { search: vi.fn(), 'native-web': native } as any);
+      expect(create.mock.calls.flatMap(([request]: any[]) => request.tools.map((t: any) => t.function.name))).toEqual([
+        'search',
+        'search',
+      ]);
+      expect(warn.mock.calls.filter(([message]) => String(message).includes('"native-web"'))).toHaveLength(1);
+      warn.mockRestore();
+    });
+
     it('filters tools to callable handlers and forwards OpenAI-compatible schemas', async () => {
       const create = vi.fn().mockResolvedValue(completion());
       const config = {

@@ -12,6 +12,7 @@ import {
   createHandlerInternal,
   createRunUsage,
   endSpanOnce,
+  isFunctionTool,
   type LDContext,
   langChainContentText,
   langChainFinishReasons,
@@ -304,7 +305,7 @@ async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSourc
 
 const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record<string, ToolHandlerFn | NativeTool>) =>
   Object.entries(configTools)
-    .filter(([name]) => typeof toolHandlers[name] === 'function')
+    .filter(([name]) => isFunctionTool(name, toolHandlers[name]))
     .map(([name, toolConfig]) =>
       tool(
         async (args: Record<string, unknown>) => {

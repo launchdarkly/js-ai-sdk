@@ -166,6 +166,7 @@ export {
   createHandlerInternal,
   createRunUsage,
   endSpanOnce,
+  isFunctionTool,
   langChainSpanUsage,
   normalizeModelParameters,
   omitModelStamps,

@@ -7,6 +7,7 @@ import {
   createHandlerInternal,
   endSpanOnce,
   imageBlockToUrl,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -199,7 +200,7 @@ function buildTools(configTools: Record<string, Tool>, handlers: Record<string, 
   const tools = Object.entries(configTools).flatMap(([name, definition]) => {
     if (!Object.hasOwn(handlers, name)) return [];
     const handler = handlers[name];
-    if (typeof handler !== 'function') return [];
+    if (!isFunctionTool(name, handler)) return [];
     executableTools.set(name, handler as unknown as ExecutableTool);
     return [
       {

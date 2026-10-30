@@ -492,6 +492,9 @@ export type InspectConfigResult = {
 export function isContentBlocks(content: MessageContent): content is ContentBlock[];
 
 // @public
+export function isFunctionTool(name: string, handler: unknown): handler is ToolHandlerFn;
+
+// @public
 export class Judge {
     constructor(key: string, options?: {
         threshold?: number;

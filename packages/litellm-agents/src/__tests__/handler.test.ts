@@ -113,7 +113,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
-import { configure, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
+import { configure, NATIVE_TOOL_KEY, NativeTool, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { litellmGraph } from '../graph.js';
 import { createLiteLLMAgentsHandler, litellmAgents } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
@@ -327,6 +327,30 @@ describe('createLiteLLMAgentsHandler', () => {
     );
     expect(mockRun).toHaveBeenCalledWith(expect.anything(), 'q', { maxTurns: value });
     expect(agentArgs[0].modelSettings).toEqual({ temperature: 0.2 });
+  });
+
+  it('never sends a NativeTool as a function tool, and warns once per tool key', async () => {
+    mockRun.mockResolvedValue(result({ answer: 'yes' }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'web_search');
+    // The tracking stub core's wrapToolHandlers makes from a NativeTool.
+    const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
+    const config = {
+      ...baseConfig,
+      tools: {
+        search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } },
+        'native-web': { name: 'native-web', type: 'function' as const, parameters: { type: 'object' } },
+      },
+    };
+    const handler = createLiteLLMAgentsHandler({ client: {} as never });
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': stub } as any);
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': native } as any);
+    expect(agentArgs.slice(-2).flatMap((args: any) => args.tools.map((t: any) => t.name))).toEqual([
+      'search',
+      'search',
+    ]);
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('"native-web"'))).toHaveLength(1);
+    warn.mockRestore();
   });
 
   it('maps instructions, tools, structured history, and output format to the Agents SDK', async () => {

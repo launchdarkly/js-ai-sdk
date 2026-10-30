@@ -5,6 +5,7 @@ import {
   type GraphNode,
   getClient,
   imageBlockToUrl,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -42,7 +43,7 @@ function instructionsFor(node: GraphNode, variables: Record<string, unknown>): s
 function buildTools(node: GraphNode, handlers: Record<string, ToolHandlerFn | NativeTool>) {
   if (!node.config.tools) return [];
   return Object.entries(node.config.tools)
-    .filter(([name]) => typeof handlers[name] === 'function')
+    .filter(([name]) => isFunctionTool(name, handlers[name]))
     .map(([name, definition]) =>
       tool({
         name,
