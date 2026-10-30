@@ -63,7 +63,7 @@ const fire = (call: () => unknown): Promise<void> => {
  */
 const CALLS: Record<string, Call[]> = {
   'openai-messages.openaiMessages': [(fn) => settle(fn('k', 'q', ctx))],
-  'openai-messages.createOpenAIHandler': [(fn) => fire(() => fn())],
+  'openai-messages.createOpenAIMessagesHandler': [(fn) => fire(() => fn())],
 };
 
 const listRows = usageRows('ai-openai-messages.txt', entry);
@@ -114,6 +114,6 @@ describe('openai-messages helper usage', () => {
     await initClient(client);
     const calls = client.track.mock.calls.filter((entry) => entry[0] === '$ld:ai:sdk:usage');
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.[2]).toEqual(expectedPayload('openai-messages.createOpenAIHandler'));
+    expect(calls[0]?.[2]).toEqual(expectedPayload('openai-messages.createOpenAIMessagesHandler'));
   });
 });

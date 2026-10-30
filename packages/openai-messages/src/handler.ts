@@ -485,7 +485,7 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
 }
 
 export function createOpenAIMessagesHandler({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
-  reportUsage('openai-messages.createOpenAIHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  reportUsage('openai-messages.createOpenAIMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createOpenAIMessagesHandlerInternal({ captureContent });
 }
 
