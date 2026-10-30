@@ -6,7 +6,7 @@
 #   - Name    leaving the public surface; may be exported or not
 #   + Name    joining the public surface; may be exported or not
 
-createOpenAIAgentsHandler  usage=openai-agents.createOpenAIAgentHandler
+createOpenAIAgentsHandler  usage=openai-agents.createOpenAIAgentsHandler
 openaiAgents  usage=openai-agents.openaiAgents
 openaiGraph  usage=openai-agents.openaiGraph
 toOpenAIAgents  usage=openai-agents.toOpenAIAgents

@@ -36,6 +36,7 @@ import {
 } from './judge-scoring.js';
 import { extractVariation } from './lifecycle.js';
 import { findHandler } from './registry.js';
+import { noteAiInvocation } from './sdk-options.js';
 import { renderTrajectory } from './trajectory.js';
 import type { AiConfigRep, LDContext, ProviderHandler } from './types.js';
 import { normalizeMode, parseTemplate, parseUsage } from './utils.js';
@@ -227,7 +228,10 @@ async function runJudge(result: RowResult, resolved: ResolvedJudge, span?: Span)
   // The config is passed unrendered: the handler makes the one template
   // pass, so `{{…}}` in generated output or dataset values is never expanded.
   // Judges get no tools.
-  const invoke = () => resolved.handler(resolved.config, judged, {}, variables);
+  const invoke = () => {
+    noteAiInvocation();
+    return resolved.handler(resolved.config, judged, {}, variables);
+  };
   try {
     if (span) {
       setConfigModelIdentity(span, resolved.config);
@@ -282,7 +286,7 @@ function copyOutput(output: unknown): unknown {
   }
 }
 
-async function runScorer(result: RowResult, scorer: Scorer): Promise<CriterionResult> {
+async function runScorer(result: RowResult, scorer: Scorer, warnedScorers: Set<string>): Promise<CriterionResult> {
   const clock = startClock();
   const base = { rowIndex: result.row.rowIndex, criterion: scorer, startedAt: clock.startedAt };
   let score: unknown;
@@ -306,6 +310,12 @@ async function runScorer(result: RowResult, scorer: Scorer): Promise<CriterionRe
       numericScore(score) === undefined
         ? `scorer fn must return a finite number, got ${describeValue(score)}`
         : `scorer fn score must be between 0 and 1, got ${describeValue(score)}`;
+    // Warn once for each scorer in a run.
+    if (!warnedScorers.has(scorer.name)) {
+      warnedScorers.add(scorer.name);
+      // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; an invalid score must be visible
+      console.warn(`[LaunchDarkly] Scorer '${scorer.name}' returned an invalid score: ${message}`);
+    }
     return { ...base, status: 'ERROR', error: { cause: 'invalid_score', message }, ...clock.stop() };
   }
   return { ...base, status: 'COMPLETE', score: valid, ...clock.stop() };
@@ -331,13 +341,14 @@ export function scoreRows(
   const pairs = results
     .filter((result) => result.status === 'COMPLETE')
     .flatMap((result) => criteria.map((criterion) => ({ result, criterion })));
+  const warnedScorers = new Set<string>();
   const score = (result: RowResult, criterion: Criterion, span?: Span): Promise<CriterionResult> => {
     if (criterion instanceof Judge) {
       const resolved = judges.get(criterion.key);
       if (!resolved) throw new EvaluationsError(`judge '${criterion.key}' was not resolved`);
       return runJudge(result, resolved, span);
     }
-    return runScorer(result, criterion);
+    return runScorer(result, criterion, warnedScorers);
   };
   return mapBounded(pairs, concurrency, ({ result, criterion }) => {
     const rowSpan = result.span;

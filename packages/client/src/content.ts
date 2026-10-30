@@ -1,5 +1,4 @@
 import type { Span } from '@opentelemetry/api';
-import type { ProviderHandler } from './types.js';
 
 /**
  * Conversation content on spans, per LaunchDarkly's "Richer LLM spans" proposal.
@@ -11,10 +10,12 @@ import type { ProviderHandler } from './types.js';
  * canonical shape — a `gen_ai.content.prompt` event, which is what these handlers emitted before,
  * is read by nothing on the LaunchDarkly side.
  *
- * **Off by default.** Everything here is conversation content, which is PII. A handler opts in with
- * `captureContent: true`; every function below takes that decision as its `capture` argument and
- * returns without writing when it is false. Passing the flag rather than reading ambient state
- * keeps the gate visible at each call site.
+ * **One gate, decided per run.** Everything here is conversation content, which can be PII. It is
+ * written by default, as the spec and the Python SDK do: a handler resolves its effective
+ * `captureContent` when it runs (its explicit `true` or `false`, otherwise the default from
+ * `configure()`, otherwise `true`), and every function below takes that decision as its `capture`
+ * argument and returns without writing when it is false. Passing the flag rather than reading
+ * ambient state keeps the gate visible at each call site.
  *
  * Handlers also test the same flag themselves before building the argument, so the check appears
  * twice on purpose: the guard here is the safety net that makes a forgotten call site harmless, and
@@ -53,25 +54,14 @@ export interface ContentCaptureOptions {
   /**
    * Put prompts, model output, tool arguments and tool results on the emitted spans.
    *
-   * Defaults to `false`. Conversation content is PII, so a run emits only metadata — models, token
-   * counts, timings, tool names — until a caller asks for more. Turning this on sends the text of
-   * every request and response to whatever OTel endpoint the SDK is configured with.
+   * Omitted means unset: the handler follows the process default from `configure()` when it runs,
+   * and that default is `true`. So by default the text of every request and response goes to
+   * whatever OTel endpoint the SDK is configured with. Pass `false` to keep this handler to
+   * metadata only (models, token counts, timings, tool names), or `true` to capture even when the
+   * process default is `false`.
    */
   captureContent?: boolean;
 }
-
-/** Content capture when nothing states a preference. Conversation content is PII, so it is off. */
-const DEFAULT_CAPTURE_CONTENT = false;
-
-/**
- * Content capture for a call made through `handler`: its own `captureContent` when it states one,
- * otherwise the process-wide default. Pass `undefined` for a span that has no single handler, such
- * as the graph root.
- *
- * Internal: not exported from an entry point.
- */
-export const captureContentFor = (handler: ProviderHandler | undefined): boolean =>
-  typeof handler?.captureContent === 'boolean' ? handler.captureContent : DEFAULT_CAPTURE_CONTENT;
 
 /** A typed piece of one message, mirroring the `parts` union in the GenAI JSON schemas. */
 export type SpanMessagePart =
@@ -103,7 +93,9 @@ function partToText(part: SpanMessagePart): string {
   switch (part.type) {
     case 'text':
     case 'reasoning':
-      return part.content;
+      // Capture is on by default, so a handler that hands over a missing text (a provider result
+      // with no output, say) must not turn into a thrown run. It contributes nothing instead.
+      return typeof part.content === 'string' ? part.content : '';
     case 'tool_call':
       return JSON.stringify({ name: part.name, arguments: part.arguments ?? null });
     default:

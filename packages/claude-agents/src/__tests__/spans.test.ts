@@ -790,7 +790,7 @@ describe('claude-agents span tree against a real tracer', () => {
       yield resultMessage('bye');
     });
 
-    await createClaudeAgentsHandler()(toolConfig as never, 'q');
+    await createClaudeAgentsHandler({ captureContent: false })(toolConfig as never, 'q');
 
     for (const span of [root(), ...named('chat')]) {
       expect(span?.attributes['gen_ai.input.messages']).toBeUndefined();

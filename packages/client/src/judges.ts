@@ -1,6 +1,7 @@
-import { withJudgeEvaluation } from './conversation.js';
+import { withJudgeEvaluation, withSpanAttributes } from './conversation.js';
 import { buildMessageHistory, numericScore, withoutOutputFormat } from './judge-scoring.js';
 import { extractVariation, getClient } from './lifecycle.js';
+import { captureContentFor } from './sdk-options.js';
 import { reportUsage } from './sdk-usage.js';
 import { executeAndTrack } from './tracking.js';
 import type {
@@ -120,6 +121,26 @@ export function typesafeJudgeEntries(raw: unknown): TypesafeJudgeEntry[] | undef
   });
 }
 
+/** The run id of the config a judge graded, on every span of that judge's run. */
+export const LD_JUDGE_TARGET_RUN_ID = 'launchdarkly.judge.target.run.id';
+/** The key of the config a judge graded. */
+export const LD_JUDGE_TARGET_CONFIG_KEY = 'launchdarkly.judge.target.config.key';
+/** The variation key of the config a judge graded. */
+export const LD_JUDGE_TARGET_VARIATION_KEY = 'launchdarkly.judge.target.variation.key';
+
+/**
+ * Points a judge's spans at the run it graded. A judge runs after the graded handler has ended its
+ * span, so its spans start a trace of their own; without these, the only tie back to the graded run
+ * is the judge's metric event.
+ */
+const withJudgeTarget = <T>(target: Partial<TrackData> | undefined, fn: () => T): T => {
+  const attributes: Record<string, string> = {};
+  if (target?.runId) attributes[LD_JUDGE_TARGET_RUN_ID] = target.runId;
+  if (target?.configKey) attributes[LD_JUDGE_TARGET_CONFIG_KEY] = target.configKey;
+  if (target?.variationKey) attributes[LD_JUDGE_TARGET_VARIATION_KEY] = target.variationKey;
+  return withSpanAttributes(attributes, fn);
+};
+
 export const runJudges = async ({
   config,
   userContext,
@@ -205,76 +226,79 @@ export const runJudges = async ({
     // `executeAndTrack` stays outside the `try`, as it was before judge evaluations existed: a
     // provider/auth/network failure must reject out of `runJudges` rather than be swallowed and
     // logged as a parse failure. Only parsing and recording are caught.
-    await withJudgeEvaluation(judge.key, async (recordEvaluation) => {
-      const { usage, response: rawJudgeResponse } = await executeAndTrack({
-        configKey: judge.key,
-        config: effectiveJudgeConfig,
-        meta: judgeMeta,
-        evaluatedValue: judgeValue,
-        userContext,
-        handler: judgeHandler,
-        userInput: llmResponse,
-        toolHandlers: undefined,
-        graphKey,
-        variables: {
-          message_history: messageHistory,
-          response_to_evaluate: llmResponse,
-          ...(userInput ? { input: userInput } : {}),
-        },
-      });
-      const judgeResponse = typeof rawJudgeResponse === 'string' ? rawJudgeResponse : JSON.stringify(rawJudgeResponse);
+    await withJudgeTarget(baseTrackData, () =>
+      withJudgeEvaluation(judge.key, async (recordEvaluation) => {
+        const { usage, response: rawJudgeResponse } = await executeAndTrack({
+          configKey: judge.key,
+          config: effectiveJudgeConfig,
+          meta: judgeMeta,
+          evaluatedValue: judgeValue,
+          userContext,
+          handler: judgeHandler,
+          userInput: llmResponse,
+          toolHandlers: undefined,
+          graphKey,
+          variables: {
+            message_history: messageHistory,
+            response_to_evaluate: llmResponse,
+            ...(userInput ? { input: userInput } : {}),
+          },
+        });
+        const judgeResponse =
+          typeof rawJudgeResponse === 'string' ? rawJudgeResponse : JSON.stringify(rawJudgeResponse);
 
-      try {
-        const typesafe = typesafeJudgeEntries(judgeResponse);
-        if (typesafe) {
-          // One Jev call. Every label is returned with that call's full usage,
-          // and each label is tracked under its own eventKey.
-          typesafe.forEach((entry) => {
-            const resultKey = `${judge.key}.${entry.key}`;
-            judgeResults[resultKey] = {
-              usage,
-              response: entry.reason,
-              score: entry.score,
-              eventKey: entry.eventKey,
-            };
-            recordEvaluation(entry.score, undefined, resultKey);
+        try {
+          const typesafe = typesafeJudgeEntries(judgeResponse);
+          if (typesafe) {
+            // One Jev call. Every label is returned with that call's full usage,
+            // and each label is tracked under its own eventKey.
+            typesafe.forEach((entry) => {
+              const resultKey = `${judge.key}.${entry.key}`;
+              judgeResults[resultKey] = {
+                usage,
+                response: entry.reason,
+                score: entry.score,
+                eventKey: entry.eventKey,
+              };
+              recordEvaluation(entry.score, undefined, resultKey);
+              getClient().track(
+                entry.eventKey,
+                userContext,
+                { ...baseTrackData, judgeConfigKey: resultKey },
+                entry.score,
+              );
+            });
+            return;
+          }
+
+          const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
+          if (!parsed) {
+            throw new Error('Invalid JSON');
+          }
+
+          const { score, reasoning } = parsed as { score: number; reasoning: string };
+          judgeResults[judge.key] = { usage, response: reasoning, score };
+          // The reasoning reaches telemetry only when the judge's own handler captures content.
+          // It is model prose about the user's conversation, so it follows the content gate.
+          const metricScore = numericScore(score);
+          if (metricScore !== undefined) {
+            recordEvaluation(metricScore, captureContentFor(judgeHandler) ? reasoning : undefined);
+          }
+
+          if (judgeConfig.evaluationMetricKey && score !== undefined) {
             getClient().track(
-              entry.eventKey,
+              judgeConfig.evaluationMetricKey,
               userContext,
-              { ...baseTrackData, judgeConfigKey: resultKey },
-              entry.score,
+              { ...baseTrackData, judgeConfigKey: judge.key },
+              score,
             );
-          });
-          return;
+          }
+        } catch (err) {
+          // biome-ignore lint/suspicious/noConsole: intentional error logging for judge parse failures
+          console.error(`Judge '${judge.key}' failed:`, err);
         }
-
-        const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
-        if (!parsed) {
-          throw new Error('Invalid JSON');
-        }
-
-        const { score, reasoning } = parsed as { score: number; reasoning: string };
-        judgeResults[judge.key] = { usage, response: reasoning, score };
-        // The reasoning reaches telemetry only when the judge's own handler captures content.
-        // It is model prose about the user's conversation, so it follows the content gate.
-        const metricScore = numericScore(score);
-        if (metricScore !== undefined) {
-          recordEvaluation(metricScore, judgeHandler.captureContent ? reasoning : undefined);
-        }
-
-        if (judgeConfig.evaluationMetricKey && score !== undefined) {
-          getClient().track(
-            judgeConfig.evaluationMetricKey,
-            userContext,
-            { ...baseTrackData, judgeConfigKey: judge.key },
-            score,
-          );
-        }
-      } catch (err) {
-        // biome-ignore lint/suspicious/noConsole: intentional error logging for judge parse failures
-        console.error(`Judge '${judge.key}' failed:`, err);
-      }
-    });
+      }),
+    );
   }
 
   return judgeResults;
@@ -421,69 +445,71 @@ export const runJudge = async (task: JudgeTask, handlers: ProviderHandler[]): Pr
   // The same history the inline path builds: input, trajectory, output.
   const messageHistory = buildMessageHistory({ userInput, trajectory, output: actualOutput });
 
-  return withJudgeEvaluation(configKey, async (recordEvaluation) => {
-    const { usage, response: rawResponse } = await executeAndTrack({
-      configKey,
-      config: effectiveConfig,
-      meta: judgeMeta,
-      userContext,
-      handler: judgeHandler,
-      userInput: actualOutput,
-      toolHandlers: undefined,
-      variables: {
-        ...variables,
-        message_history: messageHistory,
-        response_to_evaluate: actualOutput,
-        ...(userInput ? { input: userInput } : {}),
-      },
-      evaluatedValue: judgeValue,
-    });
+  return withJudgeTarget(parentTrackData, () =>
+    withJudgeEvaluation(configKey, async (recordEvaluation) => {
+      const { usage, response: rawResponse } = await executeAndTrack({
+        configKey,
+        config: effectiveConfig,
+        meta: judgeMeta,
+        userContext,
+        handler: judgeHandler,
+        userInput: actualOutput,
+        toolHandlers: undefined,
+        variables: {
+          ...variables,
+          message_history: messageHistory,
+          response_to_evaluate: actualOutput,
+          ...(userInput ? { input: userInput } : {}),
+        },
+        evaluatedValue: judgeValue,
+      });
 
-    const judgeResponse = typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse);
-    let typesafe: TypesafeJudgeEntry[] | undefined;
-    try {
-      typesafe = typesafeJudgeEntries(judgeResponse);
-    } catch {
-      return null;
-    }
-    if (typesafe) {
-      const first = typesafe[0];
-      const firstKey = `${configKey}.${first.key}`;
-      const results: NonNullable<ProviderResponse['judgeResults']> = {};
-      const metrics: NonNullable<JudgeRunResult['metrics']> = [];
-      for (const entry of typesafe) {
-        const resultKey = `${configKey}.${entry.key}`;
-        results[resultKey] = { score: entry.score, response: entry.reason, usage, eventKey: entry.eventKey };
-        metrics.push({ eventKey: entry.eventKey, score: entry.score, judgeConfigKey: resultKey });
-        recordEvaluation(entry.score, undefined, resultKey);
+      const judgeResponse = typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse);
+      let typesafe: TypesafeJudgeEntry[] | undefined;
+      try {
+        typesafe = typesafeJudgeEntries(judgeResponse);
+      } catch {
+        return null;
       }
+      if (typesafe) {
+        const first = typesafe[0];
+        const firstKey = `${configKey}.${first.key}`;
+        const results: NonNullable<ProviderResponse['judgeResults']> = {};
+        const metrics: NonNullable<JudgeRunResult['metrics']> = [];
+        for (const entry of typesafe) {
+          const resultKey = `${configKey}.${entry.key}`;
+          results[resultKey] = { score: entry.score, response: entry.reason, usage, eventKey: entry.eventKey };
+          metrics.push({ eventKey: entry.eventKey, score: entry.score, judgeConfigKey: resultKey });
+          recordEvaluation(entry.score, undefined, resultKey);
+        }
+        return {
+          score: first.score,
+          response: first.reason,
+          usage,
+          eventKey: first.eventKey,
+          results,
+          metrics,
+          // The score belongs to the evaluated config. Each metric carries its own judgeConfigKey.
+          trackData: { ...parentTrackData, judgeConfigKey: firstKey },
+        };
+      }
+
+      const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
+      if (!parsed) return null;
+
+      const { score, reasoning } = parsed as { score: number; reasoning: string };
+      const metricScore = numericScore(score);
+      if (metricScore !== undefined) {
+        recordEvaluation(metricScore, captureContentFor(judgeHandler) ? reasoning : undefined);
+      }
+
       return {
-        score: first.score,
-        response: first.reason,
+        score,
+        response: reasoning,
         usage,
-        eventKey: first.eventKey,
-        results,
-        metrics,
-        // The score belongs to the evaluated config. Each metric carries its own judgeConfigKey.
-        trackData: { ...parentTrackData, judgeConfigKey: firstKey },
+        // The score belongs to the evaluated (parent) config, exactly as in the inline path.
+        trackData: { ...parentTrackData, judgeConfigKey: configKey },
       };
-    }
-
-    const parsed = parseJSONWithPossibleFences<{ score: number; reasoning: string }>(judgeResponse);
-    if (!parsed) return null;
-
-    const { score, reasoning } = parsed as { score: number; reasoning: string };
-    const metricScore = numericScore(score);
-    if (metricScore !== undefined) {
-      recordEvaluation(metricScore, judgeHandler.captureContent ? reasoning : undefined);
-    }
-
-    return {
-      score,
-      response: reasoning,
-      usage,
-      // The score belongs to the evaluated (parent) config, exactly as in the inline path.
-      trackData: { ...parentTrackData, judgeConfigKey: configKey },
-    };
-  });
+    }),
+  );
 };

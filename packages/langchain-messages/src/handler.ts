@@ -12,6 +12,7 @@ import {
   endSpanOnce,
   imageBlockToUrl,
   isContentBlocks,
+  isFunctionTool,
   type LDContext,
   langChainContentText,
   langChainFinishReasons,
@@ -240,7 +241,7 @@ const buildTools = (
   const tools = Object.entries(configTools).flatMap<LangChainToolDef>(([name, toolConfig]) => {
     if (!Object.hasOwn(toolHandlers, name)) return [];
     const handler = toolHandlers[name];
-    if (typeof handler !== 'function') return [];
+    if (!isFunctionTool(name, handler)) return [];
     executableTools.set(name, handler);
     return [
       {
@@ -333,17 +334,17 @@ export function createLangChainMessagesHandler(
   llm?: LangChainModelSource,
   options: ContentCaptureOptions & { providers?: readonly string[] } = {},
 ): ProviderHandler {
-  reportUsage('langchain-messages.createLangChainHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  reportUsage('langchain-messages.createLangChainMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createLangChainMessagesHandlerInternal(llm, options);
 }
 
 function createLangChainMessagesHandlerInternal(
   llm?: LangChainModelSource,
-  { captureContent = false, providers }: ContentCaptureOptions & { providers?: readonly string[] } = {},
+  { captureContent, providers }: ContentCaptureOptions & { providers?: readonly string[] } = {},
 ): ProviderHandler {
   const MAX_STEPS = 10;
 
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['*', 'messages'],
     async (
       config: AiConfigRep,
@@ -352,6 +353,8 @@ function createLangChainMessagesHandlerInternal(
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      // Resolved per run, not per factory call, so a `configure()` after construction applies.
+      const captureContent = handler.captureContent === true;
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, servingProvider(config), config.model.name, 'langchain');
@@ -530,6 +533,7 @@ function createLangChainMessagesHandlerInternal(
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, servingProvider(config), config.model.name, 'langchain');
@@ -739,6 +743,7 @@ function createLangChainMessagesHandlerInternal(
     captureContent,
     providers,
   );
+  return handler;
 }
 
 export const langchainMessages = (

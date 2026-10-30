@@ -1,6 +1,6 @@
 import { AIMessage, HumanMessage } from '@langchain/core/messages';
 import { SpanStatusCode } from '@opentelemetry/api';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -83,6 +83,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
+import { configure, NATIVE_TOOL_KEY, NativeTool, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { createLangChainAgentsHandler } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -298,6 +299,30 @@ describe('createLangChainAgentsHandler', () => {
     expect(agentArgs.tools).toHaveLength(0);
   });
 
+  it('never sends a NativeTool as a function tool, and warns once per tool key', async () => {
+    mockCreateAgent.mockReturnValue(makeMockAgent());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'web_search');
+    // The tracking stub core's wrapToolHandlers makes from a NativeTool.
+    const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
+    const config = {
+      ...baseConfig,
+      tools: {
+        search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } },
+        'native-web': { name: 'native-web', type: 'function' as const, parameters: { type: 'object' } },
+      },
+    };
+    const handler = createLangChainAgentsHandler({} as any);
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': stub } as any);
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': native } as any);
+    expect((mockLangchainTool as ReturnType<typeof vi.fn>).mock.calls.map((c: any[]) => c[1]?.name)).toEqual([
+      'search',
+      'search',
+    ]);
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('"native-web"'))).toHaveLength(1);
+    warn.mockRestore();
+  });
+
   it('only exposes tools that have a registered handler', async () => {
     const agent = makeMockAgent();
     mockCreateAgent.mockReturnValue(agent);
@@ -391,15 +416,41 @@ describe('createLangChainAgentsHandler', () => {
     expect(childEvents).not.toContain('feature_flag');
   });
 
-  it('emits no content at all by default', async () => {
-    mockCreateAgent.mockReturnValue(makeMockAgent('answer'));
-    await createLangChainAgentsHandler({} as any)(baseConfig as any, 'question');
+  describe('content capture resolves at run time', () => {
+    const make = (options?: { captureContent?: boolean }) => createLangChainAgentsHandler({} as any, options);
 
-    // Conversation content is PII, so a caller has to ask for it. Asserting on the recorded
-    // arguments rather than on specific keys catches a new content attribute added without a gate.
-    const written = JSON.stringify(mockSpan.setAttribute.mock.calls);
-    expect(written).not.toContain('question');
-    expect(mockSpan.addEvent).not.toHaveBeenCalledWith('gen_ai.content.prompt', expect.anything());
+    // `configure` is process-wide; shutdown() restores the built-in default and clears its lock.
+    afterEach(() => shutdown());
+
+    const run = async (handler: ProviderHandler = make()) => {
+      mockCreateAgent.mockReturnValue(makeMockAgent('answer'));
+      await handler(baseConfig as any, 'question');
+      return JSON.stringify(mockSpan.setAttribute.mock.calls);
+    };
+
+    it('captures content when nothing sets it', async () => {
+      expect(await run()).toContain('question');
+    });
+
+    it('captures nothing with an explicit false', async () => {
+      expect(await run(make({ captureContent: false }))).not.toContain('question');
+    });
+
+    it('captures nothing when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run()).not.toContain('question');
+    });
+
+    it('reads configure when the handler runs, not when it is built', async () => {
+      const handler = make();
+      configure({ options: { captureContent: false } });
+      expect(await run(handler)).not.toContain('question');
+    });
+
+    it('captures content with an explicit true when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run(make({ captureContent: true }))).toContain('question');
+    });
   });
 
   it('puts prompt and completion on span attributes when capture is enabled', async () => {

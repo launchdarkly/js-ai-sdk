@@ -1,10 +1,12 @@
 import {
   type AiConfigRep,
   type ContentCaptureOptions,
+  effectiveCaptureContent,
   getClient,
   inspectConfigInternal,
   type LDContext,
   makeRunTrackData,
+  noteAiInvocation,
   reportUsage,
   setInputContentAttributes,
   setLdSpanAttributes,
@@ -102,7 +104,9 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
   reportUsage('vercel-messages.vercelEvaluate', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   assertQuestions(options.questions);
   const { config, meta } = await resolveConfig(configKey, context);
-  const captureContent = options.captureContent ?? false;
+  // Not a provider handler call, so it applies the handler rules itself: an explicit
+  // `captureContent`, otherwise the process default from `configure()`.
+  const captureContent = effectiveCaptureContent(options.captureContent);
   const trackData = makeRunTrackData({ configKey, config, meta });
   const model = await resolveModel(config, options);
   const startTime = Date.now();
@@ -117,6 +121,8 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
     });
 
     try {
+      // Latches `configure()` as the AI call starts, the same as a provider handler call.
+      noteAiInvocation();
       const result = await experimental_evaluate({
         model,
         state,

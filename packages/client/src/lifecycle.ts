@@ -8,6 +8,7 @@ import {
   warnEsmExternalizationOnce,
 } from './import-diagnostics.js';
 import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
+import { resetSdkOptions } from './sdk-options.js';
 import { flushSdkUsage, reportUsage, resetSdkUsage } from './sdk-usage.js';
 import { runShutdownHooks } from './shutdown-hooks.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
@@ -529,6 +530,10 @@ export function getClient(): LDClientInterface {
   return client;
 }
 
+/**
+ * Flushes and closes the LaunchDarkly client and telemetry, clears the configured skill store, and
+ * restores the process-wide defaults set by `configure()`.
+ */
 export async function shutdown(): Promise<void> {
   const singleton = getSingleton();
   // Feature state (e.g. an Agent Skills store) can exist without a client,
@@ -537,6 +542,9 @@ export async function shutdown(): Promise<void> {
   // that attempt: it closes its own client when it finishes (see `startInit`).
   runShutdownHooks();
   singleton.initPromise = null;
+  // With or without a client: `configure` does not need one, so its defaults and the invocation
+  // lock are reset here, before any await, on the same path as the rest of the singleton state.
+  resetSdkOptions();
   // Null the singleton before teardown so that any failure mid-flight still
   // leaves the process in a state where a second shutdown() call is a no-op.
   const client = singleton.client;

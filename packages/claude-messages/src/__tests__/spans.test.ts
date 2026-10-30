@@ -1,7 +1,7 @@
 import { context, DiagLogLevel, diag, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Unlike `handler.test.ts`, this file does not mock `@opentelemetry/api`.
@@ -31,6 +31,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
   },
 }));
 
+import { configure, shutdown } from '@launchdarkly/ai-server';
 import { createClaudeMessagesHandler } from '../handler.js';
 
 const exporter = new InMemorySpanExporter();
@@ -93,6 +94,9 @@ describe('claude-messages span tree against a real tracer', () => {
     vi.clearAllMocks();
     exporter.reset();
   });
+
+  // `configure` is process-wide; shutdown() restores the built-in default and clears its lock.
+  afterEach(() => shutdown());
 
   it('nests the chat span under the invoke_agent root', async () => {
     mockMessagesCreate.mockResolvedValue(finalResponse());
@@ -247,18 +251,50 @@ describe('claude-messages span tree against a real tracer', () => {
     expect(tool.attributes['gen_ai.tool.call.result']).toBe('r');
   });
 
-  it('exports no content anywhere by default', async () => {
-    mockMessagesCreate.mockResolvedValueOnce(toolUseResponse()).mockResolvedValueOnce(finalResponse('Final'));
+  describe('content capture', () => {
+    const run = async (handler = createClaudeMessagesHandler()) => {
+      mockMessagesCreate.mockResolvedValueOnce(toolUseResponse()).mockResolvedValueOnce(finalResponse('Final'));
+      await handler(toolConfig as never, 'secret question', {
+        myTool: vi.fn().mockReturnValue('secret result'),
+      });
+      return JSON.stringify(spans().map((s) => [s.attributes, s.events]));
+    };
 
-    await createClaudeMessagesHandler()(toolConfig as never, 'secret question', {
-      myTool: vi.fn().mockReturnValue('secret result'),
+    // Every span, every attribute, every event: nothing the user or the model said may appear.
+    const expectNoContent = (everything: string) => {
+      expect(everything).not.toContain('secret');
+      expect(everything).not.toContain('gen_ai.input.messages');
+      expect(everything).not.toContain('gen_ai.content.prompt');
+    };
+    const expectContent = (everything: string) => {
+      expect(everything).toContain('secret question');
+      expect(everything).toContain('secret result');
+      expect(everything).toContain('gen_ai.input.messages');
+    };
+
+    it('exports content by default', async () => {
+      expectContent(await run());
     });
 
-    // Every span, every attribute, every event — nothing the user or the model said may appear.
-    const everything = JSON.stringify(spans().map((s) => [s.attributes, s.events]));
-    expect(everything).not.toContain('secret');
-    expect(everything).not.toContain('gen_ai.input.messages');
-    expect(everything).not.toContain('gen_ai.content.prompt');
+    it('exports no content anywhere with an explicit false', async () => {
+      expectNoContent(await run(createClaudeMessagesHandler({ captureContent: false })));
+    });
+
+    it('exports no content when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expectNoContent(await run());
+    });
+
+    it('reads configure at run time for a handler built before it', async () => {
+      const handler = createClaudeMessagesHandler();
+      configure({ options: { captureContent: false } });
+      expectNoContent(await run(handler));
+    });
+
+    it('exports content with an explicit true when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expectContent(await run(createClaudeMessagesHandler({ captureContent: true })));
+    });
   });
 
   it('ends and parents both spans when the provider call throws', async () => {

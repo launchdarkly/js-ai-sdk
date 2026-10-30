@@ -85,10 +85,37 @@ await shutdown();
 | `initClient(options?)` | Auto-discover and initialize `@launchdarkly/node-server-sdk`. Optional — the first AI API call triggers lazy init when `LD_SDK_KEY` is set. Returns `Promise<LDClientInterface>`. |
 | `initClient(client, options?)` | **BYOC overload** — accept a pre-initialized `LDClientInterface` (e.g. from `@launchdarkly/vercel-server-sdk` or any edge runtime). Skips SDK auto-discovery. |
 | `getClient()` | Return the initialized `LDClientInterface`. Throws if `initClient` has not completed. |
-| `shutdown()` | Flush all events and telemetry, then close the client. Call before process exit. |
+| `shutdown()` | Flush all events and telemetry, then close the client. Also restores the `configure()` defaults. Call before process exit. |
+| `configure({ options })` | Set process-wide behavior defaults (`SDKOptions`). See [Conversation content on spans](#conversation-content-on-spans-configure). |
 | `waitForTelemetry()` | Wait for the OTel provider to be ready. Useful to avoid dropping early spans. |
 | `shutdownTelemetry()` | Flush and stop the OTel exporter independently of the LD client, and release the OTel globals the SDK registered. |
 | `inspectConfig(key, context)` | Read an AI Config variation without invoking the model. Never throws. Returns `{ enabled, config, meta }`. |
+
+### Conversation content on spans: `configure`
+
+Handler spans carry the conversation by default: prompts and system instructions, model output, tool definitions, tool arguments and results, and judge explanations. The AI Config variation itself also goes out, as `feature_flag.result.value` on each span's `feature_flag` event; with capture off, that attribute carries only the variation key, and is left out when there is no key. Model names, token counts, timings and tool names are written either way.
+
+Turn the default off for the whole process with `configure`, once at startup, before the first AI call:
+
+```ts
+import { configure } from '@launchdarkly/ai-server';
+
+configure({ options: { captureContent: false } });
+```
+
+`captureContent` is a default, not a ceiling. The first of these that is set wins for a run:
+
+1. `captureContent` on a convenience wrapper (`openaiMessages`, `claudeAgents`, and the others).
+2. `captureContent` on a handler factory (`createOpenAIMessagesHandler({ captureContent: false })`) or the `captureContent` option of `createHandler` (`createHandler(providesFor, fn, { captureContent: false })`).
+3. The options from the latest accepted `configure`.
+4. The built-in `true`.
+
+Leaving the option out means unset, not `false`. A handler reads the default when it runs, so a handler built before `configure` still follows it, and `handler.captureContent` returns the value a run starting now would use. `configure` can replace its options until the first AI invocation (a handler call, or the start of a handler's stream). After that, identical options are accepted and different ones throw. `shutdown()` restores the built-in defaults. `initClient` does not take this option.
+
+Migrating from an earlier version:
+
+- The default used to be off. To keep content off spans, call `configure({ options: { captureContent: false } })` at startup.
+- `createHandler` now returns a new function instead of adding `providesFor` to the one you pass in, so the function you passed no longer carries `providesFor`. Use the handler `createHandler` returns.
 
 ### `config(args)`
 
@@ -241,6 +268,8 @@ if (!result.enabled) {
 ---
 
 ### Agent Skills
+
+> **Requires `@launchdarkly/ai-server` 1.0.0 or later** (or `@launchdarkly/ai-node` 1.0.0 or later). Earlier versions do not include Agent Skills in core.
 
 Import every name in this section from `@launchdarkly/ai-server` (or `@launchdarkly/ai-node` if you install `@launchdarkly/ai-node`).
 
@@ -651,6 +680,8 @@ Ancestors matter for the same reason. An identity that can rename a directory ab
 
 ### Evaluations from Code
 
+> **Requires `@launchdarkly/ai-server` 1.0.0 or later** (or `@launchdarkly/ai-node` 1.0.0 or later). Earlier versions do not include Evaluations from Code in core.
+
 Import every name in this section from `@launchdarkly/ai-server` (or `@launchdarkly/ai-node` if you install `@launchdarkly/ai-node`).
 
 An evaluation from code runs a dataset through your own code and reports the results to LaunchDarkly. One `run()` call:
@@ -662,7 +693,7 @@ An evaluation from code runs a dataset through your own code and reports the res
 
 Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row and on the run; the SDK reports scores and never computes a verdict itself.
 
-Each row is also exported as one trace on the tracer provider `initClient()` registered: a `launchdarkly.dataset_row` root with the generation, its tool calls and each criterion's `evaluate` span beneath it, all sharing the row's `gen_ai.conversation.id`. A provider handler traces its own call; for a plain function the runner writes the `chat` and `execute_tool` spans. **By default the transcript is not sent:** prompts, the row input, model output, tool arguments and results, judge prompts and completions, and judge explanations are left off every span, the evaluation spans included. Setting `captureContent: true` on a handler sends them for that handler's calls, on the evaluation spans too. The result events never carry the transcript.
+Each row is also exported as one trace on the tracer provider `initClient()` registered: a `launchdarkly.dataset_row` root with the generation, its tool calls and each criterion's `evaluate` span beneath it, all sharing the row's `gen_ai.conversation.id`. A provider handler traces its own call; for a plain function the runner writes the `chat` and `execute_tool` spans. By default the transcript is sent: prompts, the row input, model output, tool arguments and results, judge prompts and completions, and judge explanations are written on the spans, the evaluation spans included. Setting `captureContent: false` on a handler removes them for that handler's calls, on the evaluation spans too, and `configure({ options: { captureContent: false } })` removes them for every handler that does not say otherwise. A plain function has no handler flag, so its runner-written spans follow the `configure()` default. The result events never carry the transcript.
 
 ```ts
 import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';

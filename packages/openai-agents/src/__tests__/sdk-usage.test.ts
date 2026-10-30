@@ -73,7 +73,7 @@ const fire = (call: () => unknown): Promise<void> => {
  */
 const CALLS: Record<string, Call[]> = {
   'openai-agents.openaiAgents': [(fn) => settle(fn('k', 'q', ctx))],
-  'openai-agents.createOpenAIAgentHandler': [(fn) => fire(() => fn())],
+  'openai-agents.createOpenAIAgentsHandler': [(fn) => fire(() => fn())],
   'openai-agents.openaiGraph': [
     (fn) => fire(() => fn('k', {})),
     // The returned caller's methods run later; they must not add client.graph.* events.
@@ -134,6 +134,6 @@ describe('openai-agents helper usage', () => {
     await initClient(client);
     const calls = client.track.mock.calls.filter((entry) => entry[0] === '$ld:ai:sdk:usage');
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.[2]).toEqual(expectedPayload('openai-agents.createOpenAIAgentHandler'));
+    expect(calls[0]?.[2]).toEqual(expectedPayload('openai-agents.createOpenAIAgentsHandler'));
   });
 });

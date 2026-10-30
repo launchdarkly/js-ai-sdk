@@ -7,6 +7,7 @@ import {
   type config,
   configInternal,
   createHandlerInternal,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -199,7 +200,7 @@ function buildTools(
   parentSpan: Span,
   captureContent: boolean,
 ): { tools: ToolSet; definitions: ToolDefinitionInput[] } {
-  const available = Object.entries(configTools ?? {}).filter(([name]) => typeof handlers[name] === 'function');
+  const available = Object.entries(configTools ?? {}).filter(([name]) => isFunctionTool(name, handlers[name]));
   return {
     tools: Object.fromEntries(
       available.map(([name, definition]) => [
@@ -243,10 +244,11 @@ async function buildAgent(
   toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
   parentSpan: Span,
   options: VercelAgentsOptions,
+  captureContent: boolean,
   structuredOutput = true,
 ) {
   const system = instructions(config, variables);
-  const { tools, definitions } = buildTools(config.tools, toolHandlers, parentSpan, options.captureContent ?? false);
+  const { tools, definitions } = buildTools(config.tools, toolHandlers, parentSpan, captureContent);
   const output =
     structuredOutput && config.outputFormat
       ? Output.object({ schema: jsonSchema(normalizeOutputSchema(config.outputFormat)) })
@@ -269,11 +271,12 @@ export function createVercelAgentsHandler(options: VercelAgentsOptions = {}): Pr
 
 /** `createVercelAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createVercelAgentsHandlerInternal(options: VercelAgentsOptions = {}): ProviderHandler {
-  const { captureContent = false } = options;
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['*', 'agent'],
     async (configRep, userInput = '', toolHandlers = {}, variables = {}, history) =>
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (rootSpan) => {
+        // Resolved per run, not per factory call, so a `configure()` after construction applies.
+        const captureContent = handler.captureContent === true;
         rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
         setLdSpanAttributes(rootSpan, variables);
@@ -286,6 +289,7 @@ export function createVercelAgentsHandlerInternal(options: VercelAgentsOptions =
             toolHandlers,
             rootSpan,
             options,
+            captureContent,
           );
           setInputContentAttributes(rootSpan, captureContent, {
             systemInstructions: system,
@@ -315,6 +319,7 @@ export function createVercelAgentsHandlerInternal(options: VercelAgentsOptions =
         }
       }),
     async function* streamHandler(configRep, userInput = '', toolHandlers = {}, variables = {}, history) {
+      const captureContent = handler.captureContent === true;
       const rootSpan = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
@@ -333,6 +338,7 @@ export function createVercelAgentsHandlerInternal(options: VercelAgentsOptions =
           toolHandlers,
           rootSpan,
           options,
+          captureContent,
           false,
         );
         setInputContentAttributes(rootSpan, captureContent, {
@@ -378,8 +384,9 @@ export function createVercelAgentsHandlerInternal(options: VercelAgentsOptions =
         if (!rootEnded) rootSpan.end();
       }
     },
-    captureContent,
+    options.captureContent,
   );
+  return handler;
 }
 
 export const vercelAgents = (

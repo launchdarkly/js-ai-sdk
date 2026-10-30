@@ -327,7 +327,7 @@ The handler package wires it to the provider SDK's built-in implementation and e
 
 #### `ProviderHandler`
 
-The callable data type that handler packages produce. Use `createHandler(providesFor, fn)` to construct one — it attaches `providesFor` and returns the function as a typed `ProviderHandler`. See [Handler Package Contract](#handler-package-contract) for full details.
+The callable data type that handler packages produce. Use `createHandler(providesFor, fn)` to construct one — it returns a new function, a typed `ProviderHandler` that carries `providesFor` and calls yours. See [Handler Package Contract](#handler-package-contract) for full details.
 
 ---
 
@@ -473,7 +473,7 @@ const combined = compose(globalRegistry, localRegistry);
 
 | Export | Description |
 |---|---|
-| `createHandler(providesFor, handler, options?)` | Attaches `providesFor` metadata to a handler function and returns it as a `ProviderHandler`. `options` is `{ stream?, captureContent?, providers? }`; a third argument that is not an object, or a fourth argument, throws a `TypeError`. This is the canonical way to build any handler — both package-internal factories and user-supplied custom handlers. See [Factory Function](#factory-function). |
+| `createHandler(providesFor, handler, options?)` | Returns a new `ProviderHandler` that carries `providesFor` and calls `handler`; `handler` itself is not changed. `options` is `{ stream?, captureContent?, providers? }`; a third argument that is not an object, or a fourth argument, throws a `TypeError`. This is the canonical way to build any handler — both package-internal factories and user-supplied custom handlers. See [Factory Function](#factory-function). |
 | `makeNodeTrackData(node, graphKey, runId)` | Builds the standard `TrackData` for a graph node event (including the `_ldMeta` model stamps). Native graph adapter packages must use this instead of building their own payload. |
 | `parseTemplate(template, variables)` | Replaces `{{variable}}` placeholders in a string. Supports dot-notation for nested values (e.g. `{{user.name}}`). Unrecognized placeholders are left as-is. |
 | `parseJSONWithPossibleFences(text)` | Parses a JSON string that may be wrapped in markdown code fences (` ```json ` or ` ``` `). Returns `null` if the text is not valid JSON. |
@@ -518,7 +518,7 @@ Each handler package must export a **factory function** that:
 
 The naming convention is `create<Provider>Handler()`. For example: `createClaudeAgentsHandler()`, `createOpenAIAgentsHandler()`.
 
-**Always use `createHandler` to build and return the handler.** It attaches `providesFor` in place and returns the same function reference as a properly typed `ProviderHandler`. Do not manually assign `handler.providesFor` — `createHandler` is the single canonical path.
+**Always use `createHandler` to build and return the handler.** It returns a new function, a properly typed `ProviderHandler` that carries `providesFor` and calls yours. The function you pass in is not changed, so always use the returned handler. Passing a returned handler through `createHandler` again keeps its `stream`, explicit `captureContent` and `providers` unless the new options replace them. Do not manually assign `handler.providesFor` — `createHandler` is the single canonical path.
 
 ```ts
 import { createHandler, parseTemplate } from '@launchdarkly/ai-server';
@@ -612,9 +612,13 @@ two names for one concept. Don't reintroduce it: a reader filtering on
 `launchdarkly.` should see everything this SDK owns and nothing should hide
 elsewhere.
 
-**Content attributes** — only when the caller passes `captureContent: true`.
-Conversation content is PII, so it is off by default and every write goes
-through `client/src/content.ts`, which takes the flag as an argument:
+**Content attributes** — written unless capture is off for the run. Each handler
+resolves its effective `captureContent` when it runs: an explicit `true` or
+`false` from the factory (or convenience wrapper), otherwise the process default
+from `configure({ options })`, otherwise `true`. Factories leave the option unset
+by default and read `handler.captureContent` at the start of each run, so a
+`configure()` after construction applies. Every write goes through
+`client/src/content.ts`, which takes the resolved flag as an argument:
 - `gen_ai.system_instructions` — the system prompt, as a JSON part array
 - `gen_ai.input.messages` / `gen_ai.output.messages` — the canonical
   `[{ role, parts }]` JSON from the OTel GenAI semconv
@@ -658,12 +662,24 @@ a number, no conversation content — and the same two keys are mirrored as span
 attributes. It is defined by the GenAI semantic conventions and read by the
 conversation view's turn badges, so do not "fix" it by deleting it.
 
-The judge's reasoning is deliberately **not** on the span or the event.
-`gen_ai.evaluation.explanation` is model-generated prose about the user's
-conversation, which makes it a content attribute under the rule above, and
-`captureContent` is a handler-factory option the client core never receives.
-The reasoning still reaches the caller in `judgeResults`; only the telemetry
-copy is withheld. Adding it back needs its own opt-in, not a quiet write.
+The judge's reasoning, `gen_ai.evaluation.explanation`, is model-generated
+prose about the user's conversation, which makes it a content attribute under
+the rule above. It is written on the span and the event only when the judge
+handler's effective capture flag is true (`handler.captureContent`, or the
+process default for a plain function). The reasoning always reaches the caller
+in `judgeResults`.
+
+A judge runs after the graded handler has ended its span, so its spans start a
+trace of their own, with their own `launchdarkly.run.id`. To tie them back,
+`runJudges` (inline) and `runJudge` (deferred) wrap each judge's run in
+`withSpanAttributes`, so every span of that run carries the graded run's
+identity: `launchdarkly.judge.target.run.id`,
+`launchdarkly.judge.target.config.key` and
+`launchdarkly.judge.target.variation.key` (constants `LD_JUDGE_TARGET_*` in
+`client/src/judges.ts`). Each is written only when the graded run's `TrackData`
+has the value. They are identifiers, not content, so capture settings do not
+gate them. The judge's metric event already carries the graded `runId` in its
+`TrackData`; these attributes put the same link on the trace.
 
 **Span status:**
 - Set to OK on success.

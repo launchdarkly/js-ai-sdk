@@ -30,6 +30,7 @@ import {
   withEvaluationRow,
 } from './evaluations-spans.js';
 import { createBodyTools, type EvalTool, handlerConfigTools } from './evaluations-tools.js';
+import { noteAiInvocation } from './sdk-options.js';
 import { TrajectoryRecorder } from './trajectory.js';
 import type {
   AiConfigRep,
@@ -570,7 +571,10 @@ export function generateRows(
       generatedAt: new Date().toISOString(),
       latencyMs: Math.round(performance.now() - started),
     });
-    const invoke = () => handler(config, row.input ?? undefined, rowTools, { ...row.variables });
+    const invoke = () => {
+      noteAiInvocation();
+      return handler(config, row.input ?? undefined, rowTools, { ...row.variables });
+    };
     try {
       const result: unknown =
         evaluationRunId === undefined || span === undefined

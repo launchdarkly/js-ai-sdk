@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NATIVE_TOOL_KEY, NativeTool } from '../types.js';
 
 // Mock lifecycle so getClient() returns our stub without touching LD
@@ -12,6 +12,7 @@ vi.mock('../lifecycle.js', () => ({
 }));
 
 import { getClient } from '../lifecycle.js';
+import { configure, resetSdkOptions } from '../sdk-options.js';
 import {
   executeAndStream,
   executeAndTrack,
@@ -171,9 +172,12 @@ describe('executeAndTrack', () => {
   let mockTrack: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    resetSdkOptions();
     mockTrack = vi.fn();
     (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack });
   });
+
+  afterEach(() => resetSdkOptions());
 
   it('returns response text from handler output', async () => {
     const handler = makeHandler('Hello!');
@@ -204,12 +208,9 @@ describe('executeAndTrack', () => {
     for (const call of mockTrack.mock.calls) expect(JSON.stringify(call[2])).not.toContain('You are helpful.');
   });
 
-  it.each([
-    ['capture off', false],
-    ['capture unset', undefined],
-  ])('does not pass __ldValue to a handler with %s', async (_label, capture) => {
+  it('does not pass __ldValue to a handler with capture off', async () => {
     const handler = makeHandler('ok');
-    if (capture !== undefined) handler.captureContent = capture;
+    handler.captureContent = false;
     await executeAndTrack({
       configKey: 'my-flag',
       config: execConfig as any,
@@ -219,6 +220,26 @@ describe('executeAndTrack', () => {
       evaluatedValue: { ...execConfig },
     });
     expect(handler.mock.calls[0][3]).not.toHaveProperty('__ldValue');
+  });
+
+  it.each([
+    ['the built-in default', undefined, true],
+    ['configure capture on', true, true],
+    ['configure capture off', false, false],
+  ])('passes __ldValue to a plain function handler only when the process default captures (%s)', async (_label, configured, expected) => {
+    if (configured !== undefined) configure({ options: { captureContent: configured } });
+    const handler = makeHandler('ok');
+    const raw = { ...execConfig, _ldMeta: { enabled: true, variationKey: 'v1' } };
+    await executeAndTrack({
+      configKey: 'my-flag',
+      config: execConfig as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+      evaluatedValue: raw,
+    });
+    if (expected) expect(handler.mock.calls[0][3].__ldValue).toBe(raw);
+    else expect(handler.mock.calls[0][3]).not.toHaveProperty('__ldValue');
   });
 
   it.each([

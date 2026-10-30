@@ -38,6 +38,7 @@ createHandler  usage=client.createHandler
 + createSkillSource
 + Criterion
 + DatasetRow
+- effectiveCaptureContent  # internal: plumbing for the handler packages; moves to the internal entry point
 - endSpanOnce
 + EvalRunResult
 + EvalTool
@@ -82,6 +83,7 @@ inspectConfig  usage=client.inspectConfig
 - inspectConfigInternal  # internal: plumbing for the handler packages; moves to the internal entry point
 InspectConfigResult
 - isContentBlocks
+- isFunctionTool
 + Judge
 - JudgeCallResult  # renamed to JudgeResult
 + JudgeResult  # rename of JudgeCallResult
@@ -110,6 +112,7 @@ MessageContent
 - NATIVE_TOOL_KEY
 NativeTool
 - normalizeModelParameters
+- noteAiInvocation  # internal: plumbing for the handler packages; moves to the internal entry point
 - omitModelStamps
 + OnUnavailable
 - parseJSONWithPossibleFences

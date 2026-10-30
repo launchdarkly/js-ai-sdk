@@ -9,10 +9,11 @@
  *      the same id: root, `chat`, `execute_tool`, and the judge's own `invoke_agent`.
  *   2. Each turn shows a score badge, sourced from the `gen_ai.evaluation.result` span event on
  *      the judge span.
- *   3. No judge reasoning anywhere in the telemetry. The score and the judge's config key are
- *      exported; the explanation is not, because it is model prose about the user's conversation
- *      and content attributes require `captureContent`. The reasoning IS printed below, straight
- *      from `judgeResults` — that is the caller's copy, and it is unaffected.
+ *   3. The judge's reasoning follows the content gate. The score and the judge's config key are
+ *      always exported; the explanation (`gen_ai.evaluation.explanation`) is model prose about the
+ *      user's conversation, so it is exported only while content capture is on, which is the
+ *      default. The reasoning IS printed below, straight from `judgeResults`: that is the caller's
+ *      copy, and capture does not affect it.
  *
  * The flag key must point at an AI Config with a `judgeConfiguration`, otherwise there are no
  * judge turns to look at.

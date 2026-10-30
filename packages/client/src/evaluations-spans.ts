@@ -15,7 +15,9 @@
  *
  * These spans go to the tracer provider `initClient()` registered. They follow
  * the same content gate as every other span: the handler's explicit
- * `captureContent` when it has one, otherwise off. The
+ * `captureContent` when it has one, otherwise the default from `configure()`,
+ * otherwise on. A plain function has no handler flag, so it follows the
+ * process default. The
  * `$ld:ai:offline-evals:*` events never carry the transcript.
  *
  * Internal: nothing here is exported from an entry point.
@@ -42,6 +44,7 @@ import {
 } from './conversation.js';
 import { errorMessage, isPlainObject } from './evaluations-api.js';
 import { sdkSpanProcessorIsActive } from './lifecycle.js';
+import { captureContentFor } from './sdk-options.js';
 import { renderValue, type TrajectoryCall } from './trajectory.js';
 import type { AiConfigRep, ProviderHandler } from './types.js';
 import {
@@ -63,9 +66,6 @@ export const LD_EVALUATION_RUN_ROW_INDEX = 'launchdarkly.evaluation_run.row_inde
  * under. Changing it re-keys every offline evaluation conversation.
  */
 const EVALUATION_CONVERSATION_NAMESPACE = '6f0c2a4e-3b6d-4d0e-9c1a-2e6b7f8a9d01';
-
-/** Content capture when a handler states no preference. Conversation content is PII, so it is off. */
-const DEFAULT_CAPTURE_CONTENT = false;
 
 /** RFC 9562 UUIDv5: SHA-1 of the namespace bytes and the name, with the version and variant bits set. */
 function uuid5(namespace: string, name: string): string {
@@ -151,9 +151,11 @@ export function finishRowSpan(span: Span, err?: unknown): void {
   span.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage(err) });
 }
 
-/** Content capture for one call: the handler's own setting, otherwise off. */
-export const captureFor = (handler: ProviderHandler | undefined): boolean =>
-  typeof handler?.captureContent === 'boolean' ? handler.captureContent : DEFAULT_CAPTURE_CONTENT;
+/**
+ * Content capture for one call: the handler's explicit setting, otherwise the
+ * configured default, otherwise on. The same gate every handler span uses.
+ */
+export const captureFor = (handler: ProviderHandler | undefined): boolean => captureContentFor(handler);
 
 /** How a handler call ended, timed from just before it was entered to just after it settled. */
 export type CallOutcome = { startedAt: number; endedAt: number; result?: unknown; error?: unknown };
