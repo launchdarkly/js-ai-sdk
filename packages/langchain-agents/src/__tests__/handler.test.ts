@@ -1,6 +1,6 @@
 import { AIMessage, HumanMessage } from '@langchain/core/messages';
 import { SpanStatusCode } from '@opentelemetry/api';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -83,6 +83,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
+import { configure, NATIVE_TOOL_KEY, NativeTool, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { createLangChainAgentsHandler } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -179,6 +180,20 @@ describe('createLangChainAgentsHandler', () => {
 
   it('attaches providesFor = ["*", "agent"]', () => {
     expect(createLangChainAgentsHandler({} as any).providesFor).toEqual(['*', 'agent']);
+  });
+
+  it('leaves providers unset by default', () => {
+    expect(createLangChainAgentsHandler({} as any).providers).toBeUndefined();
+  });
+
+  it('scopes the wildcard to the given providers', () => {
+    const handler = createLangChainAgentsHandler({} as any, { providers: ['Bedrock'] });
+    expect(handler.providesFor).toEqual(['*', 'agent']);
+    expect(handler.providers).toEqual(['Bedrock']);
+  });
+
+  it('rejects an empty provider list', () => {
+    expect(() => createLangChainAgentsHandler({} as any, { providers: [] })).toThrow(/providers/i);
   });
 
   it('returns independent instances on multiple calls', () => {
@@ -284,6 +299,30 @@ describe('createLangChainAgentsHandler', () => {
     expect(agentArgs.tools).toHaveLength(0);
   });
 
+  it('never sends a NativeTool as a function tool, and warns once per tool key', async () => {
+    mockCreateAgent.mockReturnValue(makeMockAgent());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'web_search');
+    // The tracking stub core's wrapToolHandlers makes from a NativeTool.
+    const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
+    const config = {
+      ...baseConfig,
+      tools: {
+        search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } },
+        'native-web': { name: 'native-web', type: 'function' as const, parameters: { type: 'object' } },
+      },
+    };
+    const handler = createLangChainAgentsHandler({} as any);
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': stub } as any);
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': native } as any);
+    expect((mockLangchainTool as ReturnType<typeof vi.fn>).mock.calls.map((c: any[]) => c[1]?.name)).toEqual([
+      'search',
+      'search',
+    ]);
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('"native-web"'))).toHaveLength(1);
+    warn.mockRestore();
+  });
+
   it('only exposes tools that have a registered handler', async () => {
     const agent = makeMockAgent();
     mockCreateAgent.mockReturnValue(agent);
@@ -360,6 +399,8 @@ describe('createLangChainAgentsHandler', () => {
       'feature_flag.key': 'test-config',
       'feature_flag.provider.name': 'LaunchDarkly',
       'feature_flag.set.id': 'env-abc',
+      'feature_flag.result.variant': 'variation-a',
+      'feature_flag.result.value': JSON.stringify('variation-a'),
     });
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.operation.type', 'gen_ai');
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.config.key', 'test-config');
@@ -375,15 +416,41 @@ describe('createLangChainAgentsHandler', () => {
     expect(childEvents).not.toContain('feature_flag');
   });
 
-  it('emits no content at all by default', async () => {
-    mockCreateAgent.mockReturnValue(makeMockAgent('answer'));
-    await createLangChainAgentsHandler({} as any)(baseConfig as any, 'question');
+  describe('content capture resolves at run time', () => {
+    const make = (options?: { captureContent?: boolean }) => createLangChainAgentsHandler({} as any, options);
 
-    // Conversation content is PII, so a caller has to ask for it. Asserting on the recorded
-    // arguments rather than on specific keys catches a new content attribute added without a gate.
-    const written = JSON.stringify(mockSpan.setAttribute.mock.calls);
-    expect(written).not.toContain('question');
-    expect(mockSpan.addEvent).not.toHaveBeenCalledWith('gen_ai.content.prompt', expect.anything());
+    // `configure` is process-wide; shutdown() restores the built-in default and clears its lock.
+    afterEach(() => shutdown());
+
+    const run = async (handler: ProviderHandler = make()) => {
+      mockCreateAgent.mockReturnValue(makeMockAgent('answer'));
+      await handler(baseConfig as any, 'question');
+      return JSON.stringify(mockSpan.setAttribute.mock.calls);
+    };
+
+    it('captures content when nothing sets it', async () => {
+      expect(await run()).toContain('question');
+    });
+
+    it('captures nothing with an explicit false', async () => {
+      expect(await run(make({ captureContent: false }))).not.toContain('question');
+    });
+
+    it('captures nothing when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run()).not.toContain('question');
+    });
+
+    it('reads configure when the handler runs, not when it is built', async () => {
+      const handler = make();
+      configure({ options: { captureContent: false } });
+      expect(await run(handler)).not.toContain('question');
+    });
+
+    it('captures content with an explicit true when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run(make({ captureContent: true }))).toContain('question');
+    });
   });
 
   it('puts prompt and completion on span attributes when capture is enabled', async () => {
@@ -520,6 +587,19 @@ describe('createLangChainAgentsHandler', () => {
         handler: expect.objectContaining({ providesFor: ['*', 'agent'] }),
       }),
     );
+  });
+
+  it('forwards providers onto the handler and not to config()', async () => {
+    const { langchainAgents } = await import('../handler.js');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
+    const ctx = { kind: 'user' as const, key: 'u' };
+    await langchainAgents('flag', 'hello', ctx, { providers: ['Bedrock'] } as any);
+    expect(config).toHaveBeenCalledWith(
+      expect.objectContaining({
+        handler: expect.objectContaining({ providesFor: ['*', 'agent'], providers: ['Bedrock'] }),
+      }),
+    );
+    expect((config as ReturnType<typeof vi.fn>).mock.calls[0][0].providers).toBeUndefined();
   });
 
   // ── 1.8 Streaming ────────────────────────────────────────────────────────────
@@ -926,20 +1006,40 @@ describe('langchainAgents — invoke() argument passthrough', () => {
 // ─── langchainGraph ───────────────────────────────────────────────────────────
 
 describe('langchainGraph', () => {
-  it('pre-binds the LangChain agent handler into graph()', async () => {
+  it('pre-binds the LangChain agent handler into graph() when options are omitted', async () => {
     const graphMock = vi.fn().mockReturnValue({ call: vi.fn() });
     vi.doMock('@launchdarkly/ai-server', async (importOriginal) => {
       const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
       return { ...actual, graphInternal: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
     });
     const { langchainGraph } = await import('../graph.js');
-    langchainGraph('graph-flag', {});
+    langchainGraph('graph-flag');
     expect(graphMock).toHaveBeenCalledWith(
       'graph-flag',
       expect.objectContaining({
         handlers: expect.arrayContaining([expect.objectContaining({ providesFor: ['*', 'agent'] })]),
       }),
     );
+  });
+
+  it('forwards providers onto the handler and not to graph()', async () => {
+    vi.resetModules();
+    const graphMock = vi.fn().mockReturnValue({ call: vi.fn() });
+    vi.doMock('@launchdarkly/ai-server', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
+      return { ...actual, graphInternal: graphMock, config: vi.fn().mockReturnValue({ invoke: vi.fn() }) };
+    });
+    const { langchainGraph } = await import('../graph.js');
+    langchainGraph('graph-flag', { providers: ['Bedrock'] } as any);
+    expect(graphMock).toHaveBeenCalledWith(
+      'graph-flag',
+      expect.objectContaining({
+        handlers: expect.arrayContaining([
+          expect.objectContaining({ providesFor: ['*', 'agent'], providers: ['Bedrock'] }),
+        ]),
+      }),
+    );
+    expect(graphMock.mock.calls[0][1].providers).toBeUndefined();
   });
 
   it('forwards extra options (e.g. toolHandlers) to graph()', async () => {

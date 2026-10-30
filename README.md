@@ -209,7 +209,7 @@ console.log(result.response);
 
 `config()` accepts either a single handler or an array of handlers and routes to the correct one at invoke-time based on the flag variation's provider and mode. The handler can be one of the pre-built `create*Handler()` factories, an array of them, or any function you write — useful for internal endpoints or providers without a pre-built package.
 
-Use `createHandler(providesFor, fn)` to build a custom handler. It attaches routing metadata (`providesFor`) so the handler works with `config()` routing and registries.
+Use `createHandler(providesFor, fn)` to build a custom handler. It returns a new handler that carries routing metadata (`providesFor`), so it works with `config()` routing and registries. Use the returned handler, not the function you passed in.
 
 
 | Argument            | Type                                    | Required | Description                                            |

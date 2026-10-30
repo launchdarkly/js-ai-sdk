@@ -8,6 +8,7 @@ import {
   warnEsmExternalizationOnce,
 } from './import-diagnostics.js';
 import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
+import { resetSdkOptions } from './sdk-options.js';
 import { flushSdkUsage, reportUsage, resetSdkUsage } from './sdk-usage.js';
 import { runShutdownHooks } from './shutdown-hooks.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
@@ -529,6 +530,10 @@ export function getClient(): LDClientInterface {
   return client;
 }
 
+/**
+ * Flushes and closes the LaunchDarkly client and telemetry, clears the configured skill store, and
+ * restores the process-wide defaults set by `configure()`.
+ */
 export async function shutdown(): Promise<void> {
   const singleton = getSingleton();
   // Feature state (e.g. an Agent Skills store) can exist without a client,
@@ -537,6 +542,9 @@ export async function shutdown(): Promise<void> {
   // that attempt: it closes its own client when it finishes (see `startInit`).
   runShutdownHooks();
   singleton.initPromise = null;
+  // With or without a client: `configure` does not need one, so its defaults and the invocation
+  // lock are reset here, before any await, on the same path as the rest of the singleton state.
+  resetSdkOptions();
   // Null the singleton before teardown so that any failure mid-flight still
   // leaves the process in a state where a second shutdown() call is a no-op.
   const client = singleton.client;
@@ -620,7 +628,7 @@ export async function inspectConfigInternal(key: string, context: LDContext): Pr
 export const extractVariation = async (
   key: string,
   userContext: LDContext,
-): Promise<{ config: AiConfigRep; meta: VariationMeta }> => {
+): Promise<{ config: AiConfigRep; meta: VariationMeta; value: unknown }> => {
   await initClient();
   const variation = await getClient().variation(key, userContext, { enabled: false });
   // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
@@ -632,6 +640,8 @@ export const extractVariation = async (
     throw new Error(`Invalid AI config for "${key}": ${parsed.error.message}`);
   }
 
+  // `value` is the variation exactly as the SDK returned it, before parsing. It is written to the
+  // `feature_flag` span event as `feature_flag.result.value`.
   // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
-  return { config: parsed.data, meta: (variation as any)._ldMeta as VariationMeta };
+  return { config: parsed.data, meta: (variation as any)._ldMeta as VariationMeta, value: variation };
 };

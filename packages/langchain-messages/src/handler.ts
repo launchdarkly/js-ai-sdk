@@ -12,6 +12,7 @@ import {
   endSpanOnce,
   imageBlockToUrl,
   isContentBlocks,
+  isFunctionTool,
   type LDContext,
   langChainContentText,
   langChainFinishReasons,
@@ -240,7 +241,7 @@ const buildTools = (
   const tools = Object.entries(configTools).flatMap<LangChainToolDef>(([name, toolConfig]) => {
     if (!Object.hasOwn(toolHandlers, name)) return [];
     const handler = toolHandlers[name];
-    if (typeof handler !== 'function') return [];
+    if (!isFunctionTool(name, handler)) return [];
     executableTools.set(name, handler);
     return [
       {
@@ -331,19 +332,19 @@ const assistantOutput = (content: unknown, toolCalls: ReadonlyArray<unknown> | u
 /** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
 export function createLangChainMessagesHandler(
   llm?: LangChainModelSource,
-  options: ContentCaptureOptions = {},
+  options: ContentCaptureOptions & { providers?: readonly string[] } = {},
 ): ProviderHandler {
-  reportUsage('langchain-messages.createLangChainHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  reportUsage('langchain-messages.createLangChainMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createLangChainMessagesHandlerInternal(llm, options);
 }
 
 function createLangChainMessagesHandlerInternal(
   llm?: LangChainModelSource,
-  { captureContent = false }: ContentCaptureOptions = {},
+  { captureContent, providers }: ContentCaptureOptions & { providers?: readonly string[] } = {},
 ): ProviderHandler {
   const MAX_STEPS = 10;
 
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['*', 'messages'],
     async (
       config: AiConfigRep,
@@ -352,6 +353,8 @@ function createLangChainMessagesHandlerInternal(
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      // Resolved per run, not per factory call, so a `configure()` after construction applies.
+      const captureContent = handler.captureContent === true;
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, servingProvider(config), config.model.name, 'langchain');
@@ -530,6 +533,7 @@ function createLangChainMessagesHandlerInternal(
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, servingProvider(config), config.model.name, 'langchain');
@@ -737,23 +741,28 @@ function createLangChainMessagesHandlerInternal(
       }
     },
     captureContent,
+    providers,
   );
+  return handler;
 }
 
 export const langchainMessages = (
   configKey: string,
   userInput: string,
   context: LDContext,
-  // Both `captureContent` and `variables` are lifted out of `options`: the first configures the
-  // handler, the second belongs to the invocation. Passing either through to `config()` drops it —
-  // which is how a `{{user_input}}` placeholder used to reach the model unsubstituted whenever a
-  // caller used one of these wrappers instead of `config().invoke()`.
+  // `captureContent` and `providers` configure the handler; `variables` belongs to the invocation.
+  // Passing any of them through to `config()` drops it — which is how a `{{user_input}}` placeholder
+  // used to reach the model unsubstituted whenever a caller used one of these wrappers instead of
+  // `config().invoke()`.
   {
     captureContent,
+    providers,
     variables,
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     ContentCaptureOptions & {
+      /** Provider names this wildcard accepts. Forwarded to the handler, not to `config`. */
+      providers?: readonly string[];
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
@@ -762,6 +771,6 @@ export const langchainMessages = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createLangChainMessagesHandlerInternal(undefined, { captureContent }),
+    handler: createLangChainMessagesHandlerInternal(undefined, { captureContent, providers }),
   }).invoke(userInput, context, variables);
 };

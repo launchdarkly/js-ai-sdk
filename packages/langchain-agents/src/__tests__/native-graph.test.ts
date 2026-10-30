@@ -588,25 +588,44 @@ describe('toLangGraph', () => {
     expect(ToolNode).toHaveBeenCalled();
   });
 
-  // ── NativeTool returns empty string ─────────────────────────────────────────
-
-  it('NativeTool in toolHandlers causes the tool to return an empty string', async () => {
-    const { NativeTool } = await import('@launchdarkly/ai-server');
+  it('never registers a node tool that has no handler', async () => {
     const { tool } = await import('@langchain/core/tools');
-    const nativeSentinel = new NativeTool(Symbol('test'), 'TestTool');
     const root = makeNode('root', 'instr', [], {
+      search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } },
+      missing: { name: 'missing', type: 'function' as const, parameters: { type: 'object' } },
+      constructor: { name: 'constructor', type: 'function' as const, parameters: { type: 'object' } },
+    });
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { toolHandlers: { search: vi.fn() } }).invoke('hi');
+    const names = (tool as ReturnType<typeof vi.fn>).mock.calls.map((c: any[]) => c[1]?.name);
+    expect(names).toContain('search');
+    expect(names).not.toContain('missing');
+    expect(names).not.toContain('constructor');
+  });
+
+  // ── NativeTool is skipped ───────────────────────────────────────────────────
+
+  it('NativeTool in toolHandlers is never registered as a tool, and warns once per tool key', async () => {
+    const { NATIVE_TOOL_KEY, NativeTool } = await import('@launchdarkly/ai-server');
+    const { tool } = await import('@langchain/core/tools');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const nativeSentinel = new NativeTool(Symbol('test'), 'TestTool');
+    const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: nativeSentinel });
+    const root = makeNode('root', 'instr', [], {
+      search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } },
       myNativeTool: { name: 'myNativeTool', type: 'function' as const, parameters: { type: 'object' } },
     });
     const def = makeGraphDef([root], {}, 'root');
-    await toLangGraph(Promise.resolve(def), { toolHandlers: { myNativeTool: nativeSentinel } }).invoke('hi');
+    await toLangGraph(Promise.resolve(def), { toolHandlers: { search: vi.fn(), myNativeTool: stub } }).invoke('hi');
+    await toLangGraph(Promise.resolve(def), {
+      toolHandlers: { search: vi.fn(), myNativeTool: nativeSentinel },
+    }).invoke('hi');
 
-    // Find the tool registered for myNativeTool and invoke it
-    const toolCalls = (tool as ReturnType<typeof vi.fn>).mock.calls;
-    const nativeToolCall = toolCalls.find((c: any[]) => c[1]?.name === 'myNativeTool');
-    expect(nativeToolCall).toBeDefined();
-    const toolFn = nativeToolCall?.[0];
-    const result = await toolFn({});
-    expect(result).toBe('');
+    const names = (tool as ReturnType<typeof vi.fn>).mock.calls.map((c: any[]) => c[1]?.name);
+    expect(names).toContain('search');
+    expect(names).not.toContain('myNativeTool');
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('"myNativeTool"'))).toHaveLength(1);
+    warn.mockRestore();
   });
 
   // ── Per-node trackNode events ────────────────────────────────────────────────
@@ -682,8 +701,15 @@ describe('toLangGraph', () => {
     const handoffCall = toolCalls.find((c: any[]) => c[1]?.name === 'transfer_to_leaf');
     expect(handoffCall).toBeDefined();
     const handoffFn = handoffCall?.[0];
-    const result = await handoffFn();
-    expect(Command).toHaveBeenCalledWith(expect.objectContaining({ goto: 'leaf' }));
+    // The node function never ran here (compile is mocked), so no first hand-off id is
+    // recorded; a call with no id matches it and routes.
+    const result = await handoffFn({}, {});
+    expect(Command).toHaveBeenCalledWith(
+      expect.objectContaining({
+        goto: 'leaf',
+        update: { messages: [expect.objectContaining({ name: 'transfer_to_leaf' })] },
+      }),
+    );
     expect((result as any).goto).toBe('leaf');
   });
 

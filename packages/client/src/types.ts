@@ -657,6 +657,11 @@ export type JudgeTask = {
   judgeConfig: AiConfigRep;
   /** Variation metadata for the judge config. */
   judgeMeta: VariationMeta;
+  /**
+   * The judge variation exactly as the LaunchDarkly SDK returned it. Written as
+   * `feature_flag.result.value` on the judge span when the judge's handler captures content.
+   */
+  judgeValue?: unknown;
   /** The LLM response to evaluate. */
   actualOutput: string;
   /**
@@ -780,9 +785,20 @@ export type ProviderHandler = ((
 }>) & {
   providesFor?: [provider: string, type: 'agent' | 'messages'];
   /**
-   * Whether this handler was built with content capture on. Declared here so the client core can
-   * apply the same gate to content it writes on the handler's behalf — notably the judge's
-   * reasoning — without reaching into the handler's closure.
+   * Allowlist consulted only when `providesFor` starts with `'*'`. Names must match
+   * `config.provider.name` exactly. Omitted means the wildcard accepts every provider.
+   */
+  providers?: readonly string[];
+  /**
+   * Whether this handler writes conversation content on its spans. Declared here so the client
+   * core can apply the same gate to content it writes on the handler's behalf (notably the judge's
+   * reasoning) without reaching into the handler's closure.
+   *
+   * On a handler built with {@link createHandler} or a handler factory, reading it returns the
+   * effective value for a run starting now: the handler's explicit `true` or `false` when it has
+   * one, otherwise the default from {@link configure}, otherwise `true`. Assigning `true` or
+   * `false` sets this handler's override and does not change the process default. A plain function
+   * that never went through `createHandler` has no value here and follows the process default.
    */
   captureContent?: boolean;
   /**
@@ -970,6 +986,21 @@ export type ProviderGraphResponse = {
   usage: TokenUsage;
   judgeResults?: ProviderResponse['judgeResults'];
 };
+
+/**
+ * Process-wide behavior defaults, applied by {@link configure}.
+ *
+ * `captureContent` is the default for writing prompts, model output, tool arguments, tool results
+ * and judge explanations on spans. The built-in value is `true`: a process that never calls
+ * `configure` sends that text. It is a default, not a ceiling: an explicit `true` or `false` on a
+ * handler factory or a convenience wrapper overrides it, and an explicit `false` removes the text
+ * everywhere, including on offline evaluation spans. Further process-wide defaults are added as
+ * fields on this type.
+ */
+export interface SDKOptions {
+  /** Default for conversation content on spans. Omitted means the built-in `true`. */
+  readonly captureContent?: boolean;
+}
 
 export type InitBaseClientOptions = {
   sdkKey?: string;

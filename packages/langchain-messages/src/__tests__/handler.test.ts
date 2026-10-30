@@ -1,6 +1,6 @@
 import { AIMessage } from '@langchain/core/messages';
 import { SpanStatusCode } from '@opentelemetry/api';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -73,6 +73,7 @@ vi.mock('@langchain/aws', () => ({
 import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatBedrockConverse } from '@langchain/aws';
 import { ChatOpenAI } from '@langchain/openai';
+import { configure, NATIVE_TOOL_KEY, NativeTool, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { createLangChainMessagesHandler } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -122,6 +123,20 @@ describe('createLangChainMessagesHandler', () => {
 
   it('attaches providesFor = ["*", "messages"]', () => {
     expect(createLangChainMessagesHandler(makeMockLLM() as any).providesFor).toEqual(['*', 'messages']);
+  });
+
+  it('leaves providers unset by default', () => {
+    expect(createLangChainMessagesHandler(makeMockLLM() as any).providers).toBeUndefined();
+  });
+
+  it('scopes the wildcard to the given providers', () => {
+    const handler = createLangChainMessagesHandler(makeMockLLM() as any, { providers: ['Bedrock', 'Anthropic'] });
+    expect(handler.providesFor).toEqual(['*', 'messages']);
+    expect(handler.providers).toEqual(['Bedrock', 'Anthropic']);
+  });
+
+  it('rejects an empty provider list', () => {
+    expect(() => createLangChainMessagesHandler(makeMockLLM() as any, { providers: [] })).toThrow(/providers/i);
   });
 
   it('returns independent instances on multiple calls', () => {
@@ -286,6 +301,30 @@ describe('createLangChainMessagesHandler', () => {
     expect(llm.bindTools).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ function: expect.objectContaining({ name: 'search' }) })]),
     );
+  });
+
+  it('never sends a NativeTool as a function tool, and warns once per tool key', async () => {
+    const llm = makeMockLLM();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'web_search');
+    // The tracking stub core's wrapToolHandlers makes from a NativeTool.
+    const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
+    const config = {
+      ...baseConfig,
+      tools: {
+        search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } },
+        'native-web': { name: 'native-web', type: 'function' as const, parameters: { type: 'object' } },
+      },
+    };
+    const handler = createLangChainMessagesHandler(llm as any);
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': stub } as any);
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': native } as any);
+    expect(llm.bindTools.mock.calls.flatMap(([tools]: any[]) => tools.map((t: any) => t.function.name))).toEqual([
+      'search',
+      'search',
+    ]);
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('"native-web"'))).toHaveLength(1);
+    warn.mockRestore();
   });
 
   it('does not call bindTools when config.tools is absent', async () => {
@@ -543,15 +582,41 @@ describe('createLangChainMessagesHandler', () => {
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.system', 'langchain');
   });
 
-  it('emits no content at all by default', async () => {
-    const llm = makeMockLLM('answer');
-    await createLangChainMessagesHandler(llm as any)(baseConfig as any, 'question');
+  describe('content capture resolves at run time', () => {
+    const make = (options?: { captureContent?: boolean }) =>
+      createLangChainMessagesHandler(makeMockLLM('answer') as any, options);
 
-    // Conversation content is PII, so a caller has to ask for it. Asserting on the recorded
-    // arguments rather than on specific keys catches a new content attribute added without a gate.
-    const written = JSON.stringify(mockSpan.setAttribute.mock.calls);
-    expect(written).not.toContain('question');
-    expect(mockSpan.addEvent).not.toHaveBeenCalledWith('gen_ai.content.prompt', expect.anything());
+    // `configure` is process-wide; shutdown() restores the built-in default and clears its lock.
+    afterEach(() => shutdown());
+
+    const run = async (handler: ProviderHandler = make()) => {
+      await handler(baseConfig as any, 'question');
+      return JSON.stringify(mockSpan.setAttribute.mock.calls);
+    };
+
+    it('captures content when nothing sets it', async () => {
+      expect(await run()).toContain('question');
+    });
+
+    it('captures nothing with an explicit false', async () => {
+      expect(await run(make({ captureContent: false }))).not.toContain('question');
+    });
+
+    it('captures nothing when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run()).not.toContain('question');
+    });
+
+    it('reads configure when the handler runs, not when it is built', async () => {
+      const handler = make();
+      configure({ options: { captureContent: false } });
+      expect(await run(handler)).not.toContain('question');
+    });
+
+    it('captures content with an explicit true when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run(make({ captureContent: true }))).toContain('question');
+    });
   });
 
   it('puts prompt and completion on span attributes when capture is enabled', async () => {
@@ -591,6 +656,8 @@ describe('createLangChainMessagesHandler', () => {
       'feature_flag.key': 'test-config',
       'feature_flag.provider.name': 'LaunchDarkly',
       'feature_flag.set.id': 'env-abc',
+      'feature_flag.result.variant': 'variation-a',
+      'feature_flag.result.value': JSON.stringify('variation-a'),
     });
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.operation.type', 'gen_ai');
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('launchdarkly.config.key', 'test-config');
@@ -746,6 +813,20 @@ describe('createLangChainMessagesHandler', () => {
       }),
     );
     expect(mockInvoke).toHaveBeenCalledWith('hello', ctx, undefined);
+  });
+
+  it('forwards providers onto the handler and not to config()', async () => {
+    const { langchainMessages } = await import('../handler.js');
+    const { configInternal: config } = await import('@launchdarkly/ai-server');
+    const ctx = { kind: 'user' as const, key: 'u' };
+    (config as any).mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) });
+    await langchainMessages('flag', 'hello', ctx, { providers: ['Bedrock'] } as any);
+    expect(config).toHaveBeenCalledWith(
+      expect.objectContaining({
+        handler: expect.objectContaining({ providesFor: ['*', 'messages'], providers: ['Bedrock'] }),
+      }),
+    );
+    expect((config as any).mock.calls[0][0].providers).toBeUndefined();
   });
 
   // ── 1.8 Streaming ────────────────────────────────────────────────────────────

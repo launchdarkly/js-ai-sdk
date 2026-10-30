@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const aiMocks = vi.hoisted(() => ({
   generateText: vi.fn(),
@@ -65,6 +65,7 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
   };
 });
 
+import { configure, NATIVE_TOOL_KEY, NativeTool, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { createVercelMessagesHandler, vercelMessages } from '../handler.js';
 
 const baseConfig = {
@@ -96,6 +97,40 @@ describe('createVercelMessagesHandler', () => {
     spanMocks.children.length = 0;
     aiMocks.generateText.mockResolvedValue(generation());
     serverMocks.config.mockReturnValue({ invoke: vi.fn().mockResolvedValue({ response: 'ok', usage: {} }) });
+  });
+
+  describe('content capture resolves at run time', () => {
+    // `configure` is process-wide; shutdown() restores the built-in default and clears its lock.
+    afterEach(() => shutdown());
+
+    const run = async (handler: ProviderHandler = createVercelMessagesHandler()) => {
+      await handler(baseConfig as any, 'question');
+      return JSON.stringify(spanMocks.root.setAttribute.mock.calls);
+    };
+
+    it('captures content when nothing sets it', async () => {
+      expect(await run()).toContain('question');
+    });
+
+    it('captures nothing with an explicit false', async () => {
+      expect(await run(createVercelMessagesHandler({ captureContent: false }))).not.toContain('question');
+    });
+
+    it('captures nothing when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run()).not.toContain('question');
+    });
+
+    it('reads configure when the handler runs, not when it is built', async () => {
+      const handler = createVercelMessagesHandler();
+      configure({ options: { captureContent: false } });
+      expect(await run(handler)).not.toContain('question');
+    });
+
+    it('captures content with an explicit true when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run(createVercelMessagesHandler({ captureContent: true }))).toContain('question');
+    });
   });
 
   it('advertises wildcard messages metadata', () => {
@@ -346,6 +381,29 @@ describe('createVercelMessagesHandler', () => {
     expect(content[1]).toMatchObject({ type: 'file', mediaType: 'image/png' });
     expect(content[1].data).toBeInstanceOf(Uint8Array);
     expect(content[2]).toEqual({ type: 'file', data: new URL('https://example.com/image.png'), mediaType: 'image' });
+  });
+
+  it('never sends a NativeTool as a function tool, and warns once per tool key', async () => {
+    aiMocks.generateText.mockResolvedValue(generation('ok'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'web_search');
+    // The tracking stub core's wrapToolHandlers makes from a NativeTool.
+    const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
+    const config = {
+      ...baseConfig,
+      tools: {
+        search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } },
+        'native-web': { name: 'native-web', type: 'function' as const, parameters: { type: 'object' } },
+      },
+    };
+    const handler = createVercelMessagesHandler();
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': stub } as any);
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': native } as any);
+    expect(aiMocks.generateText.mock.calls.slice(-2).flatMap(([request]: any[]) => Object.keys(request.tools))).toEqual(
+      ['search', 'search'],
+    );
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('"native-web"'))).toHaveLength(1);
+    warn.mockRestore();
   });
 
   it('offers only tools with callable handlers and preserves JSON Schema', async () => {

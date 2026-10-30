@@ -66,6 +66,7 @@ export {
 } from './lifecycle.js';
 export { compose, globalRegistry, Registry } from './registry.js';
 export { registerAiSdkPackage } from './sdk-info.js';
+export { configure, effectiveCaptureContent, noteAiInvocation } from './sdk-options.js';
 export { reportUsage } from './sdk-usage.js';
 export {
   allSkills,
@@ -131,6 +132,7 @@ export type {
   RegistryInput,
   RouteResult,
   RunNodeOptions,
+  SDKOptions,
   Skill,
   SkillOutcome,
   SkillOutcomeReason,
@@ -164,6 +166,7 @@ export {
   createHandlerInternal,
   createRunUsage,
   endSpanOnce,
+  isFunctionTool,
   langChainSpanUsage,
   normalizeModelParameters,
   omitModelStamps,

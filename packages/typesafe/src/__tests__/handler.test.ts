@@ -1,10 +1,23 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { configure, shutdown } from '@launchdarkly/ai-server';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FORMATTING_INSTRUCTIONS } from '../questions.js';
 
-const { clientArgs, mockSystemOne } = vi.hoisted(() => ({
+const { clientArgs, mockSystemOne, setInput } = vi.hoisted(() => ({
   clientArgs: [] as unknown[][],
   mockSystemOne: vi.fn(),
+  setInput: vi.fn(),
 }));
+
+vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
+  return {
+    ...actual,
+    setInputContentAttributes: (...args: Parameters<typeof actual.setInputContentAttributes>) => {
+      setInput(...args);
+      return actual.setInputContentAttributes(...args);
+    },
+  };
+});
 
 vi.mock('@typesafe-ai/sdk', () => ({
   TypeSafeClient: class {
@@ -58,7 +71,40 @@ describe('createTypesafeHandler', () => {
   it('registers as the TypeSafe messages handler', () => {
     const handler = createTypesafeHandler();
     expect(handler.providesFor).toEqual(['TypeSafe', 'messages']);
-    expect(handler.captureContent).toBe(false);
+    // Unset follows the process default, which is on.
+    expect(handler.captureContent).toBe(true);
+    expect(createTypesafeHandler({ captureContent: false }).captureContent).toBe(false);
+  });
+
+  describe('content capture resolves at run time', () => {
+    afterEach(() => shutdown());
+
+    const config = { model: { name: 'jev' }, provider: { name: 'TypeSafe' }, messages: [], classifiers };
+    const captured = async (handler = createTypesafeHandler()) => {
+      setInput.mockClear();
+      await handler(config, 'assistant output');
+      return setInput.mock.calls.length > 0;
+    };
+
+    it('writes the judged state when nothing sets it', async () => {
+      expect(await captured()).toBe(true);
+    });
+
+    it('writes nothing with an explicit false', async () => {
+      expect(await captured(createTypesafeHandler({ captureContent: false }))).toBe(false);
+    });
+
+    it('reads configure when the handler runs, not when it is built', async () => {
+      const handler = createTypesafeHandler();
+      configure({ options: { captureContent: false } });
+      expect(handler.captureContent).toBe(false);
+      expect(await captured(handler)).toBe(false);
+    });
+
+    it('writes the judged state with an explicit true when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await captured(createTypesafeHandler({ captureContent: true }))).toBe(true);
+    });
   });
 
   it('sends the classifier labels as Jev questions and returns one score per label', async () => {

@@ -1,5 +1,5 @@
 import { SpanStatusCode } from '@opentelemetry/api';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -56,6 +56,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
+import { configure, NATIVE_TOOL_KEY, NativeTool, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { createOpenAIMessagesHandler } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -293,6 +294,29 @@ describe('createOpenAIMessagesHandler', () => {
     const { tools } = mockResponsesCreate.mock.calls[0][0];
     expect(tools).toHaveLength(3);
     expect(tools.map((t: any) => t.name)).toEqual(expect.arrayContaining(['toolA', 'toolB', 'toolC']));
+  });
+
+  it('never sends a NativeTool as a function tool, and warns once per tool key', async () => {
+    mockResponsesCreate.mockResolvedValue(mockFinalResponse());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'web_search');
+    // The tracking stub core's wrapToolHandlers makes from a NativeTool.
+    const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
+    const config = {
+      ...baseConfig,
+      tools: {
+        search: { name: 'search', type: 'function' as const, parameters: {} },
+        'native-web': { name: 'native-web', type: 'function' as const, parameters: {} },
+      },
+    };
+    const handler = createOpenAIMessagesHandler();
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': stub });
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': native });
+    for (const [request] of mockResponsesCreate.mock.calls) {
+      expect(request.tools.map((t: any) => t.name)).toEqual(['search']);
+    }
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('"native-web"'))).toHaveLength(1);
+    warn.mockRestore();
   });
 
   it('sends no tools when config.tools is absent', async () => {
@@ -605,15 +629,62 @@ describe('createOpenAIMessagesHandler', () => {
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.usage.cache_creation.input_tokens', 0);
   });
 
-  it('emits no content at all by default', async () => {
-    mockResponsesCreate.mockResolvedValue(mockFinalResponse('answer'));
-    await createOpenAIMessagesHandler()(baseConfig as any, 'question');
+  describe('content capture resolves at run time', () => {
+    // `configure` is process-wide; shutdown() restores the built-in default and clears its lock.
+    afterEach(() => shutdown());
 
-    // Conversation content is PII, so a caller has to ask for it. Asserting on the recorded
-    // arguments rather than on specific keys catches a new content attribute added without a gate.
-    const written = JSON.stringify(mockSpan.setAttribute.mock.calls);
-    expect(written).not.toContain('question');
-    expect(mockSpan.addEvent).not.toHaveBeenCalledWith('gen_ai.content.prompt', expect.anything());
+    const run = async (handler: ProviderHandler = createOpenAIMessagesHandler()) => {
+      mockResponsesCreate.mockResolvedValue(mockFinalResponse('answer'));
+      await handler(baseConfig as any, 'question');
+      return JSON.stringify(mockSpan.setAttribute.mock.calls);
+    };
+
+    it('captures content when nothing sets it', async () => {
+      expect(await run()).toContain('question');
+    });
+
+    it('captures nothing with an explicit false', async () => {
+      expect(await run(createOpenAIMessagesHandler({ captureContent: false }))).not.toContain('question');
+    });
+
+    it('captures nothing when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run()).not.toContain('question');
+    });
+
+    it('reads configure when the handler runs, not when it is built', async () => {
+      const handler = createOpenAIMessagesHandler();
+      configure({ options: { captureContent: false } });
+      expect(await run(handler)).not.toContain('question');
+    });
+
+    it('captures content with an explicit true when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      expect(await run(createOpenAIMessagesHandler({ captureContent: true }))).toContain('question');
+    });
+
+    /** The handler `openaiMessages` built for its `config()` call. */
+    const wrapperHandler = async (options: { captureContent?: boolean }): Promise<ProviderHandler> => {
+      const { openaiMessages } = await import('../handler.js');
+      const { configInternal } = await import('@launchdarkly/ai-server');
+      await openaiMessages('flag', 'hello', { kind: 'user', key: 'u' }, options);
+      return vi.mocked(configInternal).mock.calls.at(-1)?.[0].handler as ProviderHandler;
+    };
+
+    it('lets an explicit false on openaiMessages beat a configured true', async () => {
+      configure({ options: { captureContent: true } });
+      const handler = await wrapperHandler({ captureContent: false });
+      expect(handler.captureContent).toBe(false);
+      expect(await run(handler)).not.toContain('question');
+    });
+
+    it('forwards an omitted openaiMessages option as unset, so it follows configure', async () => {
+      const handler = await wrapperHandler({});
+      expect(handler.captureContent).toBe(true);
+      configure({ options: { captureContent: false } });
+      expect(handler.captureContent).toBe(false);
+      expect(await run(handler)).not.toContain('question');
+    });
   });
 
   it('puts prompt and completion on span attributes when capture is enabled', async () => {

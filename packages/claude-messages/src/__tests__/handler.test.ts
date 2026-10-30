@@ -57,6 +57,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
+import { NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
 import { createClaudeMessagesHandler } from '../handler.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -283,6 +284,29 @@ describe('createClaudeMessagesHandler', () => {
     expect(call.tools[0].description).toBe('Search');
   });
 
+  it('never sends a NativeTool as a function tool, and warns once per tool key', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'web_search');
+    // The tracking stub core's wrapToolHandlers makes from a NativeTool.
+    const stub = Object.assign(() => undefined, { [NATIVE_TOOL_KEY]: native });
+    const config = {
+      ...baseConfig,
+      tools: {
+        search: { name: 'search', type: 'function' as const, parameters: { type: 'object' } },
+        'native-web': { name: 'native-web', type: 'function' as const, parameters: { type: 'object' } },
+      },
+    };
+    const handler = createClaudeMessagesHandler();
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': stub } as any);
+    await handler(config as any, 'q', { search: vi.fn(), 'native-web': native } as any);
+    expect(
+      mockMessagesCreate.mock.calls.slice(-2).flatMap(([request]: any[]) => request.tools.map((t: any) => t.name)),
+    ).toEqual(['search', 'search']);
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('"native-web"'))).toHaveLength(1);
+    warn.mockRestore();
+  });
+
   it('sends no tools when config.tools is absent', async () => {
     mockMessagesCreate.mockResolvedValue(mockFinalResponse());
     const handler = createClaudeMessagesHandler();
@@ -458,11 +482,19 @@ describe('createClaudeMessagesHandler', () => {
     expect(modelSpan?.setAttribute).toHaveBeenCalledWith('gen_ai.usage.total_tokens', 15);
   });
 
-  it('emits no content at all by default', async () => {
+  it('emits content by default', async () => {
     mockMessagesCreate.mockResolvedValue(mockFinalResponse('answer'));
     await createClaudeMessagesHandler()(baseConfig as any, 'question');
 
-    // Conversation content is PII, so a caller has to ask for it. Asserting on the recorded
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.prompt.1.content', 'question');
+    expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.completion.0.content', 'answer');
+  });
+
+  it('emits no content at all with captureContent: false', async () => {
+    mockMessagesCreate.mockResolvedValue(mockFinalResponse('answer'));
+    await createClaudeMessagesHandler({ captureContent: false })(baseConfig as any, 'question');
+
+    // An explicit false keeps the run to metadata. Asserting on the recorded
     // arguments rather than on specific keys catches a new content attribute added without a gate.
     const written = JSON.stringify(mockSpan.setAttribute.mock.calls);
     expect(written).not.toContain('question');

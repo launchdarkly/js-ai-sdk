@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { configure, shutdown } from '../index.js';
+import { wrapToolHandlers } from '../tracking.js';
+import { NativeTool } from '../types.js';
 import {
   camelizeModelParameters,
   createHandler,
+  isFunctionTool,
   normalizeMode,
   normalizeModelParameters,
   numberOrZero,
@@ -12,6 +16,30 @@ import {
   setLdSpanAttributes,
   setUsageSpanAttributes,
 } from '../utils.js';
+
+// ─── isFunctionTool ───────────────────────────────────────────────────────────
+
+describe('isFunctionTool', () => {
+  it('accepts a plain function and rejects a missing handler', () => {
+    expect(isFunctionTool('fn', () => 1)).toBe(true);
+    expect(isFunctionTool('missing', undefined)).toBe(false);
+  });
+
+  it('rejects a NativeTool and its tracking stub, warning once per tool key', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const native = new NativeTool(Symbol('web'), 'WebSearch');
+    const { web: stub } = wrapToolHandlers({ web: native }, { kind: 'user', key: 'u' }, {} as never);
+    expect(typeof stub).toBe('function');
+    expect(isFunctionTool('web', stub)).toBe(false);
+    expect(isFunctionTool('web', native)).toBe(false);
+    expect(isFunctionTool('other', native)).toBe(false);
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      '[LaunchDarkly] Skipping native tool "web": this handler has no built-in tool for it.',
+      '[LaunchDarkly] Skipping native tool "other": this handler has no built-in tool for it.',
+    ]);
+    warn.mockRestore();
+  });
+});
 
 // ─── parseTemplate ────────────────────────────────────────────────────────────
 
@@ -234,10 +262,135 @@ describe('createHandler', () => {
     expect(handler.providesFor).toEqual(['MyProvider', 'agent']);
   });
 
-  it('returns the same function reference', () => {
+  it('leaves providers unset when omitted', () => {
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any);
+    expect(handler.providers).toBeUndefined();
+  });
+
+  it('attaches a provider list', () => {
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any, { providers: ['Bedrock', 'Anthropic'] });
+    expect(handler.providesFor).toEqual(['*', 'messages']);
+    expect(handler.providers).toEqual(['Bedrock', 'Anthropic']);
+  });
+
+  it('takes stream and captureContent as options', () => {
+    const stream = vi.fn();
+    const handler = createHandler(['MyProvider', 'messages'], makeRawHandler() as any, {
+      stream: stream as any,
+      captureContent: true,
+    });
+    handler.stream?.({ model: { name: 'gpt-4' } } as any, 'input');
+    expect(stream).toHaveBeenCalledWith({ model: { name: 'gpt-4' } }, 'input');
+    expect(handler.captureContent).toBe(true);
+  });
+
+  it('rejects a stream function passed positionally', () => {
+    const create = createHandler as (...args: unknown[]) => unknown;
+    expect(() => create(['MyProvider', 'messages'], makeRawHandler(), vi.fn())).toThrow(
+      new TypeError(
+        'createHandler takes { stream, captureContent, providers } as its third argument: ' +
+          'createHandler(providesFor, fn, streamFn, captureContent) is now ' +
+          'createHandler(providesFor, fn, { stream: streamFn, captureContent }).',
+      ),
+    );
+  });
+
+  it('rejects captureContent passed as a fourth argument', () => {
+    const create = createHandler as (...args: unknown[]) => unknown;
+    expect(() => create(['MyProvider', 'messages'], makeRawHandler(), undefined, true)).toThrow(TypeError);
+  });
+
+  it('rejects a third argument that is not an options object', () => {
+    const create = createHandler as (...args: unknown[]) => unknown;
+    for (const bad of [null, true, 'stream', []]) {
+      expect(() => create(['MyProvider', 'messages'], makeRawHandler(), bad)).toThrow(TypeError);
+    }
+  });
+
+  it('accepts an explicit undefined third argument', () => {
+    const handler = createHandler(['MyProvider', 'messages'], makeRawHandler() as any, undefined);
+    expect(handler.providesFor).toEqual(['MyProvider', 'messages']);
+  });
+
+  it('drops repeated provider names, keeping first-seen order', () => {
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any, {
+      providers: ['Bedrock', 'Anthropic', 'Bedrock'],
+    });
+    expect(handler.providers).toEqual(['Bedrock', 'Anthropic']);
+  });
+
+  it('copies the provider list, so a later change to the caller array has no effect', () => {
+    const providers = ['Bedrock'];
+    const handler = createHandler(['*', 'messages'], makeRawHandler() as any, { providers });
+    providers.push('OpenAI');
+    expect(handler.providers).toEqual(['Bedrock']);
+    expect(Object.isFrozen(handler.providers)).toBe(true);
+  });
+
+  it('rejects an empty provider list', () => {
+    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, { providers: [] })).toThrow(/providers/i);
+  });
+
+  it('rejects a blank provider name', () => {
+    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, { providers: ['Bedrock', ''] })).toThrow(
+      /providers/i,
+    );
+  });
+
+  it('rejects a provider name with surrounding whitespace', () => {
+    expect(() => createHandler(['*', 'messages'], makeRawHandler() as any, { providers: [' Bedrock'] })).toThrow(
+      /providers/i,
+    );
+  });
+
+  it('returns a callable that forwards this and arguments and returns the original result', async () => {
     const fn = makeRawHandler();
     const handler = createHandler(['MyProvider', 'agent'], fn as any);
-    expect(handler).toBe(fn);
+    expect(typeof handler).toBe('function');
+    const self = { marker: 1 };
+    const config = { model: { name: 'gpt-4' }, provider: { name: 'MyProvider' } };
+    const tools = { t: vi.fn() };
+    const result = await handler.call(self, config as any, 'input', tools, { v: 1 }, []);
+    expect(result).toEqual({ output: 'hello', usage: { input_tokens: 1, output_tokens: 2 } });
+    expect(fn).toHaveBeenCalledWith(config, 'input', tools, { v: 1 }, []);
+    expect(fn.mock.contexts[0]).toBe(self);
+  });
+
+  it('latches configure when called directly', async () => {
+    await shutdown();
+    try {
+      const handler = createHandler(['MyProvider', 'agent'], makeRawHandler() as any);
+      configure({ options: { captureContent: true } });
+      await handler({ model: { name: 'gpt-4' } } as any);
+      expect(() => configure({ options: { captureContent: false } })).toThrow(/cannot change/);
+    } finally {
+      await shutdown();
+    }
+  });
+
+  it('keeps properties attached to the wrapped function', () => {
+    const fn = Object.assign(makeRawHandler(), { extra: 'kept' });
+    const stream = vi.fn();
+    const first = createHandler(['MyProvider', 'agent'], fn as any, { stream: stream as any });
+    const again = createHandler(['Other', 'messages'], first);
+    expect((again as unknown as { extra: string }).extra).toBe('kept');
+    expect(again.providesFor).toEqual(['Other', 'messages']);
+    expect(again.stream).toBe(first.stream);
+  });
+
+  it('keeps the providers list when a handler is wrapped again without one', () => {
+    const first = createHandler(['*', 'messages'], makeRawHandler() as any, { providers: ['Bedrock'] });
+    const again = createHandler(['*', 'agent'], first);
+    expect(again.providers).toEqual(['Bedrock']);
+    expect(Object.isFrozen(again.providers)).toBe(true);
+  });
+
+  it('replaces the providers list when a handler is wrapped again with one, leaving the first unchanged', () => {
+    const first = createHandler(['*', 'messages'], makeRawHandler() as any, { providers: ['Bedrock'] });
+    const again = createHandler(['*', 'messages'], first, { providers: ['Anthropic', 'Anthropic'] });
+    expect(again.providers).toEqual(['Anthropic']);
+    expect(Object.isFrozen(again.providers)).toBe(true);
+    expect(first.providers).toEqual(['Bedrock']);
   });
 
   it('handler is still callable and returns expected output', async () => {
@@ -379,6 +532,48 @@ describe('setLdSpanAttributes', () => {
     setLdSpanAttributes(span as any, { __ld: ldFixture });
     const eventCall = span.addEvent.mock.calls.find((c: any[]) => c[0] === 'feature_flag');
     expect(eventCall?.[1]).not.toHaveProperty('feature_flag.set.id');
+  });
+
+  it('includes feature_flag.result.variant in the event from variationKey', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: 'var-a' } });
+    expect(span.addEvent).toHaveBeenCalledWith(
+      'feature_flag',
+      expect.objectContaining({ 'feature_flag.result.variant': 'var-a' }),
+    );
+  });
+
+  it('omits feature_flag.result.variant when variationKey is empty', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: '', graphKey: 'my-graph' } });
+    const eventCall = span.addEvent.mock.calls.find((c: any[]) => c[0] === 'feature_flag');
+    expect(eventCall?.[1]).not.toHaveProperty('feature_flag.result.variant');
+  });
+
+  const rawVariation = {
+    model: { name: 'gpt-x', parameters: { temperature: 0.2 } },
+    provider: { name: 'openai' },
+    messages: [{ role: 'system', content: 'Be brief.' }],
+    _ldMeta: { enabled: true, variationKey: 'var-a', version: 3 },
+  };
+
+  it('writes the raw variation JSON as feature_flag.result.value when __ldValue is present', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: 'var-a' }, __ldValue: rawVariation });
+    // Same serialization as the LaunchDarkly OTel TracingHook with includeValue: JSON.stringify(detail.value).
+    expect(featureFlagAttrs(span)['feature_flag.result.value']).toBe(JSON.stringify(rawVariation));
+  });
+
+  it('writes the variation key JSON as feature_flag.result.value when there is no raw variation', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: 'opus' } });
+    expect(featureFlagAttrs(span)['feature_flag.result.value']).toBe('"opus"');
+  });
+
+  it('omits feature_flag.result.value when there is no variation key and no raw variation (graph spans)', () => {
+    const span = makeMockSpan();
+    setLdSpanAttributes(span as any, { __ld: { ...ldFixture, variationKey: '', graphKey: 'my-graph' } });
+    expect(featureFlagAttrs(span)).not.toHaveProperty('feature_flag.result.value');
   });
 });
 

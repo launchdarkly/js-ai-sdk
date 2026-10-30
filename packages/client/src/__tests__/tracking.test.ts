@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NATIVE_TOOL_KEY, NativeTool } from '../types.js';
 
 // Mock lifecycle so getClient() returns our stub without touching LD
@@ -12,6 +12,7 @@ vi.mock('../lifecycle.js', () => ({
 }));
 
 import { getClient } from '../lifecycle.js';
+import { configure, resetSdkOptions } from '../sdk-options.js';
 import {
   executeAndStream,
   executeAndTrack,
@@ -171,9 +172,12 @@ describe('executeAndTrack', () => {
   let mockTrack: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    resetSdkOptions();
     mockTrack = vi.fn();
     (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack });
   });
+
+  afterEach(() => resetSdkOptions());
 
   it('returns response text from handler output', async () => {
     const handler = makeHandler('Hello!');
@@ -185,6 +189,88 @@ describe('executeAndTrack', () => {
       handler,
     });
     expect(result.response).toBe('Hello!');
+  });
+
+  it('passes evaluatedValue as __ldValue to a capture-on handler and keeps it out of trackData and events', async () => {
+    const handler = makeHandler('ok');
+    handler.captureContent = true;
+    const raw = { ...execConfig, _ldMeta: { enabled: true, variationKey: 'v1' } };
+    const result = await executeAndTrack({
+      configKey: 'my-flag',
+      config: execConfig as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+      evaluatedValue: raw,
+    });
+    expect(handler.mock.calls[0][3].__ldValue).toBe(raw);
+    expect(result.trackData).not.toHaveProperty('__ldValue');
+    for (const call of mockTrack.mock.calls) expect(JSON.stringify(call[2])).not.toContain('You are helpful.');
+  });
+
+  it('does not pass __ldValue to a handler with capture off', async () => {
+    const handler = makeHandler('ok');
+    handler.captureContent = false;
+    await executeAndTrack({
+      configKey: 'my-flag',
+      config: execConfig as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+      evaluatedValue: { ...execConfig },
+    });
+    expect(handler.mock.calls[0][3]).not.toHaveProperty('__ldValue');
+  });
+
+  it.each([
+    ['the built-in default', undefined, true],
+    ['configure capture on', true, true],
+    ['configure capture off', false, false],
+  ])('passes __ldValue to a plain function handler only when the process default captures (%s)', async (_label, configured, expected) => {
+    if (configured !== undefined) configure({ options: { captureContent: configured } });
+    const handler = makeHandler('ok');
+    const raw = { ...execConfig, _ldMeta: { enabled: true, variationKey: 'v1' } };
+    await executeAndTrack({
+      configKey: 'my-flag',
+      config: execConfig as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+      evaluatedValue: raw,
+    });
+    if (expected) expect(handler.mock.calls[0][3].__ldValue).toBe(raw);
+    else expect(handler.mock.calls[0][3]).not.toHaveProperty('__ldValue');
+  });
+
+  it.each([
+    ['capture off', false, undefined],
+    ['capture on', true, 'evaluated'],
+  ])('never passes a caller-supplied __ldValue to a handler with %s', async (_label, capture, expected) => {
+    const handler = makeHandler('ok');
+    handler.captureContent = capture;
+    await executeAndTrack({
+      configKey: 'my-flag',
+      config: execConfig as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+      variables: { __ldValue: 'from-caller' },
+      evaluatedValue: 'evaluated',
+    });
+    expect(handler.mock.calls[0][3].__ldValue).toBe(expected);
+  });
+
+  it('does not set __ldValue when evaluatedValue is absent', async () => {
+    const handler = makeHandler('ok');
+    handler.captureContent = true;
+    await executeAndTrack({
+      configKey: 'my-flag',
+      config: execConfig as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+    });
+    expect(handler.mock.calls[0][3]).not.toHaveProperty('__ldValue');
   });
 
   it('returns parsed usage with correct totals', async () => {
@@ -375,6 +461,31 @@ describe('executeAndStream', () => {
     fn.stream = streamFn;
     return fn;
   }
+
+  it.each([
+    [true, true],
+    [false, false],
+  ])('passes __ldValue to the stream only when captureContent is %s', async (capture, expected) => {
+    const handler = makeStreamingHandler(['Hi']);
+    const seen: Record<string, unknown>[] = [];
+    const inner = handler.stream;
+    handler.stream = (c: unknown, u: unknown, t: unknown, v: Record<string, unknown>, h: unknown) => {
+      seen.push(v);
+      return inner(c, u, t, v, h);
+    };
+    handler.captureContent = capture;
+    await collectExecStream(
+      executeAndStream({
+        configKey: 'my-flag',
+        config: execConfig as any,
+        meta: execMeta,
+        userContext: execContext,
+        handler,
+        evaluatedValue: { ...execConfig },
+      }),
+    );
+    expect('__ldValue' in seen[0]).toBe(expected);
+  });
 
   it('copies modelKey and modelVersion from meta onto every streamed event payload', async () => {
     const handler = makeStreamingHandler(['Hi']);

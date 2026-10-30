@@ -1,14 +1,16 @@
 import type { Span } from '@opentelemetry/api';
+import { effectiveCaptureContent, noteAiInvocation } from './sdk-options.js';
 import { reportUsage } from './sdk-usage.js';
-import type {
-  AiConfigRep,
-  HandlerStreamEvent,
-  Message,
+import {
+  type AiConfigRep,
+  type HandlerStreamEvent,
+  type Message,
+  NATIVE_TOOL_KEY,
   NativeTool,
-  ProviderHandler,
-  TokenUsage,
-  ToolHandlerFn,
-  TrackData,
+  type ProviderHandler,
+  type TokenUsage,
+  type ToolHandlerFn,
+  type TrackData,
 } from './types.js';
 
 /**
@@ -32,27 +34,61 @@ type StreamHandlerInput = (
 ) => AsyncGenerator<HandlerStreamEvent>;
 
 /**
- * Attaches `providesFor` metadata to a handler function and returns it as a
- * typed `ProviderHandler`. This is the canonical way to build a handler —
+ * Wraps a handler function in a new, typed `ProviderHandler` that carries
+ * `providesFor` metadata. This is the canonical way to build a handler —
  * both package-internal factories and user-supplied custom handlers should use
  * this helper instead of manually assigning `handler.providesFor`.
  *
- * The returned value is the same function reference; `createHandler` mutates
- * in place rather than wrapping.
+ * The returned value is a new function that latches `configure()` and then
+ * calls `handler` with the same `this` and arguments, returning its result. It
+ * carries `handler`'s own properties, so passing an existing handler through
+ * again keeps them, and an omitted `captureContent` keeps that handler's
+ * explicit override. Calling the original function directly does not latch,
+ * and the original carries no `providesFor`: use the returned handler.
  *
- * Pass an optional `streamHandler` as the third argument to attach a streaming
- * implementation. When present, `model().stream()` will call it instead of
- * the blocking handler, yielding text chunks in real time. When absent,
- * `model().stream()` falls back to the blocking handler.
+ * Options:
+ * - `stream` attaches a streaming implementation. When present, `model().stream()`
+ *   calls it instead of the blocking handler, yielding text chunks in real time.
+ *   When absent, `model().stream()` falls back to the blocking handler.
+ * - `captureContent` sets the handler's content-capture default.
+ * - `providers` is consulted only when `providesFor` starts with `'*'`. It limits
+ *   which `config.provider.name` values that wildcard accepts. Names match exactly,
+ *   repeats are dropped, and the list is copied. Omit it to leave the property
+ *   unset, which means the wildcard accepts every provider.
+ *
+ * Throws a `TypeError` when the third argument is not an options object, or
+ * when more than three arguments are passed, so a caller still on the old
+ * positional `(providesFor, fn, stream?, captureContent?)` form fails loudly.
+ *
+ * Passing a handler that `createHandler` returned through it again applies
+ * the options passed this time and keeps any earlier `stream`, `captureContent`
+ * or `providers` that are not passed.
  */
 export function createHandler(
   providesFor: [string, 'agent' | 'messages'],
   handler: HandlerInput,
-  streamHandler?: StreamHandlerInput,
-  captureContent?: boolean,
+  options: { stream?: StreamHandlerInput; captureContent?: boolean; providers?: readonly string[] } = {},
 ): ProviderHandler {
+  // A plain JavaScript caller still on the old positional form,
+  // `createHandler(pf, fn, streamFn, captureContent)`, would otherwise lose its
+  // stream and `captureContent` without an error.
+  // biome-ignore lint/complexity/noArguments: counts extra positional arguments without widening the signature
+  if (typeof options !== 'object' || options === null || Array.isArray(options) || arguments.length > 3) {
+    throw new TypeError(
+      'createHandler takes { stream, captureContent, providers } as its third argument: ' +
+        'createHandler(providesFor, fn, streamFn, captureContent) is now ' +
+        'createHandler(providesFor, fn, { stream: streamFn, captureContent }).',
+    );
+  }
   reportUsage('client.createHandler');
-  return createHandlerInternal(providesFor, handler, streamHandler, captureContent);
+  return createHandlerInternal(providesFor, handler, options.stream, options.captureContent, options.providers);
+}
+
+function normalizeProviders(providers: readonly string[]): readonly string[] {
+  if (providers.length === 0 || providers.some((name) => name === '' || name !== name.trim())) {
+    throw new Error('providers must be a non-empty list of provider names without surrounding whitespace');
+  }
+  return Object.freeze([...new Set(providers)]);
 }
 
 /**
@@ -67,12 +103,127 @@ export function createHandlerInternal(
   handler: HandlerInput,
   streamHandler?: StreamHandlerInput,
   captureContent?: boolean,
+  providers?: readonly string[],
 ): ProviderHandler {
-  const ph = handler as ProviderHandler;
+  const allow = providers === undefined ? undefined : normalizeProviders(providers);
+  // A plain function rather than an async one, so every call, including a direct
+  // `await handler(...)`, latches `configure` when it is made rather than after a microtask.
+  const ph = function (this: unknown, ...args: Parameters<HandlerInput>) {
+    noteAiInvocation();
+    return handler.apply(this, args);
+  } as ProviderHandler;
+  copyOwnProperties(ph, handler);
+  // An omitted `providers` keeps the list copied from `handler` above.
+  if (allow !== undefined) ph.providers = allow;
   ph.providesFor = providesFor;
-  if (streamHandler) ph.stream = streamHandler;
-  if (captureContent !== undefined) ph.captureContent = captureContent;
+  if (streamHandler) {
+    // A plain function rather than a generator, so starting the stream latches `configure` at call
+    // time, even if the caller never iterates it.
+    ph.stream = function (this: unknown, ...args: Parameters<StreamHandlerInput>) {
+      noteAiInvocation();
+      return streamHandler.apply(this, args);
+    };
+  }
+  defineCaptureContent(ph, captureContent ?? explicitCaptureContent.get(handler)?.());
   return ph;
+}
+
+/** Whether a `'*'` handler accepts `provider`. An allowlist is a filter; an absent one accepts every name. */
+export function wildcardCovers(handler: ProviderHandler, provider: string | undefined): boolean {
+  if (handler.providesFor?.[0] !== '*') return false;
+  const allow = handler.providers;
+  if (allow === undefined) return true;
+  return provider !== undefined && allow.includes(provider);
+}
+
+/**
+ * The `'*'` handler of `mode` that accepts `provider`.
+ *
+ * A scoped list beats an unscoped wildcard. Among scoped lists that contain
+ * the name, the shorter list wins, and equal lengths keep the earlier registration.
+ */
+export function bestWildcard(
+  handlers: readonly ProviderHandler[],
+  provider: string | undefined,
+  mode: 'agent' | 'messages',
+): ProviderHandler | undefined {
+  let bestScoped: { length: number; handler: ProviderHandler } | undefined;
+  let unscoped: ProviderHandler | undefined;
+  for (const handler of handlers) {
+    if (handler.providesFor?.[1] !== mode || !wildcardCovers(handler, provider)) continue;
+    const allow = handler.providers;
+    if (allow === undefined) {
+      if (!unscoped) unscoped = handler;
+      continue;
+    }
+    if (!bestScoped || allow.length < bestScoped.length) {
+      bestScoped = { length: allow.length, handler };
+    }
+  }
+  return bestScoped?.handler ?? unscoped;
+}
+
+/** Exact `(provider, mode)` first, then the best wildcard of that mode. */
+export function selectModeHandler(
+  handlers: readonly ProviderHandler[],
+  provider: string | undefined,
+  mode: 'agent' | 'messages',
+): ProviderHandler | undefined {
+  if (provider) {
+    const exact = handlers.find(
+      (handler) => handler.providesFor?.[0] === provider && handler.providesFor?.[1] === mode,
+    );
+    if (exact) return exact;
+  }
+  return bestWildcard(handlers, provider, mode);
+}
+
+/** True when the handler names `provider` or its wildcard allowlist contains it, in any mode. */
+export function coversProviderName(handler: ProviderHandler, provider: string): boolean {
+  return handler.providesFor?.[0] === provider || wildcardCovers(handler, provider);
+}
+
+/**
+ * Reads each handler's explicit `captureContent` override, or `undefined` when it is unset. Keyed by
+ * the wrapper, so re-wrapping a handler without a `captureContent` argument inherits the inner
+ * handler's override rather than its effective value: an unset inner handler stays unset and keeps
+ * following `configure`.
+ */
+const explicitCaptureContent = new WeakMap<object, () => boolean | undefined>();
+
+/** Function properties every function owns; the wrapper keeps its own. */
+const FUNCTION_OWN_KEYS = new Set<PropertyKey>(['length', 'name', 'prototype', 'arguments', 'caller']);
+
+/**
+ * Copies `source`'s own properties (accessors included) onto `target`, so a wrapper keeps what a
+ * caller attached to the function it wraps, such as a test spy's state or an earlier handler's
+ * `stream`. `captureContent` is skipped: the wrapper gets its own from {@link defineCaptureContent}.
+ */
+function copyOwnProperties(target: object, source: object): void {
+  for (const key of Reflect.ownKeys(source)) {
+    if (FUNCTION_OWN_KEYS.has(key) || key === 'captureContent') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (descriptor) Object.defineProperty(target, key, descriptor);
+  }
+}
+
+/**
+ * Makes `handler.captureContent` read the effective value at use time rather than a value fixed at
+ * construction. `override` is the factory's explicit `true` or `false`; `undefined` leaves it unset,
+ * so each read follows the default from `configure` (otherwise `true`). Assigning `true` or `false`
+ * sets the override; it never changes the process default.
+ */
+function defineCaptureContent(handler: ProviderHandler, override: boolean | undefined): void {
+  let explicit = typeof override === 'boolean' ? override : undefined;
+  Object.defineProperty(handler, 'captureContent', {
+    configurable: true,
+    enumerable: true,
+    get: () => effectiveCaptureContent(explicit),
+    set: (value: boolean | undefined) => {
+      explicit = typeof value === 'boolean' ? value : undefined;
+    },
+  });
+  explicitCaptureContent.set(handler, () => explicit);
 }
 
 /**
@@ -480,7 +631,17 @@ function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | und
  * Span event (required for AI Config Monitoring tab trace correlation):
  *   name: 'feature_flag'
  *   attributes: feature_flag.key, feature_flag.provider.name, feature_flag.set.id,
- *               feature_flag.context.id, feature_flag.contextKeys
+ *               feature_flag.result.variant, feature_flag.result.value,
+ *               feature_flag.context.id,
+ *               feature_flag.contextKeys
+ *   feature_flag.result.variant is the served variationKey, omitted when empty
+ *   (graph spans can carry an empty variationKey).
+ *   feature_flag.result.value is `JSON.stringify` of `variables.__ldValue`, the
+ *   raw variation (as the OTel TracingHook writes it with `includeValue: true`),
+ *   when present. The core sets `__ldValue` only for handlers with
+ *   `captureContent` on, and on the graph root only when the process-wide
+ *   default captures content. Otherwise it is `JSON.stringify(variationKey)` when the
+ *   key is non-empty, and omitted when there is neither.
  *   The observability backend projects these event attrs to span-level attrs,
  *   satisfying the query: events.name=feature_flag AND
  *   events.attributes.feature_flag.key=<configKey> AND
@@ -501,6 +662,20 @@ export function setLdSpanAttributes(span: Span, variables: Record<string, unknow
   };
   if (ld.environmentId) {
     featureFlagAttrs['feature_flag.set.id'] = ld.environmentId;
+  }
+  if (typeof ld.variationKey === 'string' && ld.variationKey !== '') {
+    featureFlagAttrs['feature_flag.result.variant'] = ld.variationKey;
+  }
+  // Same serialization as the LaunchDarkly OTel TracingHook with `includeValue: true`:
+  // `JSON.stringify(detail.value)`. The raw variation holds the prompt, so the core passes it only
+  // to handlers with content capture on; otherwise the variation key stands in, JSON-encoded like
+  // any flag value.
+  const raw = variables?.__ldValue;
+  const serializedRaw = raw !== undefined ? JSON.stringify(raw) : undefined;
+  if (typeof serializedRaw === 'string') {
+    featureFlagAttrs['feature_flag.result.value'] = serializedRaw;
+  } else if (typeof ld.variationKey === 'string' && ld.variationKey !== '') {
+    featureFlagAttrs['feature_flag.result.value'] = JSON.stringify(ld.variationKey);
   }
 
   const identity = contextIdentityFromLdContext(variables?.ldContext);
@@ -671,3 +846,22 @@ export const omitModelStamps = <T extends { modelKey?: string; modelVersion?: nu
   const { modelKey: _modelKey, modelVersion: _modelVersion, ...rest } = trackData;
   return rest;
 };
+
+const warnedNativeTools = new Set<string>();
+
+/**
+ * Whether a handler may send `handler` to the model as a function tool. A `NativeTool`,
+ * or the tracking stub `wrapToolHandlers` makes from one, is a provider built-in, never a
+ * function tool: a handler with no built-in for it skips it, warning once per tool key.
+ */
+export function isFunctionTool(name: string, handler: unknown): handler is ToolHandlerFn {
+  if (handler instanceof NativeTool || (typeof handler === 'function' && NATIVE_TOOL_KEY in handler)) {
+    if (!warnedNativeTools.has(name)) {
+      warnedNativeTools.add(name);
+      // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a skipped tool must be visible
+      console.warn(`[LaunchDarkly] Skipping native tool "${name}": this handler has no built-in tool for it.`);
+    }
+    return false;
+  }
+  return typeof handler === 'function';
+}

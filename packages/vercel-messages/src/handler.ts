@@ -7,6 +7,7 @@ import {
   type config,
   configInternal,
   createHandlerInternal,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -170,7 +171,7 @@ function finishChatSpan(span: Span, usage: Usage): void {
 
 function toolDefinitions(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn | NativeTool>) {
   return Object.entries(configTools)
-    .filter(([name]) => typeof handlers[name] === 'function')
+    .filter(([name]) => isFunctionTool(name, handlers[name]))
     .map(([name, definition]) => ({ name, definition }));
 }
 
@@ -259,11 +260,12 @@ export function createVercelMessagesHandler(options: VercelMessagesOptions = {})
 }
 
 function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}): ProviderHandler {
-  const { captureContent = false } = options;
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['*', 'messages'],
     async (configRep, userInput = '', toolHandlers = {}, variables = {}, history) =>
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (rootSpan) => {
+        // Resolved per run, not per factory call, so a `configure()` after construction applies.
+        const captureContent = handler.captureContent === true;
         rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
         setLdSpanAttributes(rootSpan, variables);
@@ -313,6 +315,7 @@ function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}
         }
       }),
     async function* streamHandler(configRep, userInput = '', toolHandlers = {}, variables = {}, history) {
+      const captureContent = handler.captureContent === true;
       const rootSpan = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       rootSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(rootSpan, servingProvider(configRep), configRep.model.name);
@@ -376,8 +379,9 @@ function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}
         if (!rootEnded) rootSpan.end();
       }
     },
-    captureContent,
+    options.captureContent,
   );
+  return handler;
 }
 
 export const vercelMessages = (

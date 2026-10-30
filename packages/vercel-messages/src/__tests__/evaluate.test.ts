@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const aiMocks = vi.hoisted(() => ({
   experimental_evaluate: vi.fn(),
@@ -56,6 +56,7 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
   };
 });
 
+import { configure, shutdown } from '@launchdarkly/ai-server';
 import { vercelEvaluate } from '../evaluate.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -233,6 +234,62 @@ describe('vercelEvaluate', () => {
       'gen_ai.output.messages',
       expect.stringContaining('refunded'),
     );
+  });
+
+  describe('content capture resolves at call time', () => {
+    afterEach(() => shutdown());
+
+    const written = () => JSON.stringify(spanMocks.root.setAttribute.mock.calls);
+
+    it('records state by default', async () => {
+      await vercelEvaluate('flag', 'issued a refund', context, { questions });
+      expect(written()).toContain('issued a refund');
+    });
+
+    it('records nothing with an explicit false', async () => {
+      await vercelEvaluate('flag', 'issued a refund', context, { questions, captureContent: false });
+      expect(written()).not.toContain('issued a refund');
+    });
+
+    it('records nothing when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      await vercelEvaluate('flag', 'issued a refund', context, { questions });
+      expect(written()).not.toContain('issued a refund');
+    });
+
+    it('records state with an explicit true when configure turns the default off', async () => {
+      configure({ options: { captureContent: false } });
+      await vercelEvaluate('flag', 'issued a refund', context, { questions, captureContent: true });
+      expect(written()).toContain('issued a refund');
+    });
+  });
+
+  describe('configure() lock', () => {
+    afterEach(() => shutdown());
+
+    it('latches configure(), so a different captureContent afterwards throws', async () => {
+      configure({ options: { captureContent: true } });
+      await vercelEvaluate('flag', 'state', context, { questions });
+      expect(() => configure({ options: { captureContent: false } })).toThrow(/cannot change/);
+    });
+
+    it('still accepts identical options after an evaluation', async () => {
+      configure({ options: { captureContent: true } });
+      await vercelEvaluate('flag', 'state', context, { questions });
+      expect(() => configure({ options: { captureContent: true } })).not.toThrow();
+    });
+
+    it('latches before the evaluation call, even when it fails', async () => {
+      aiMocks.experimental_evaluate.mockRejectedValueOnce(new Error('gateway down'));
+      await expect(vercelEvaluate('flag', 'state', context, { questions })).rejects.toThrow('gateway down');
+      expect(() => configure({ options: { captureContent: false } })).toThrow(/cannot change/);
+    });
+
+    it('does not latch when the config is not enabled', async () => {
+      serverMocks.inspectConfig.mockResolvedValueOnce({ enabled: false, config: null, meta: null });
+      await expect(vercelEvaluate('missing', 'state', context, { questions })).rejects.toThrow(/not enabled/i);
+      expect(() => configure({ options: { captureContent: false } })).not.toThrow();
+    });
   });
 
   it('tracks success, duration, and token events', async () => {
