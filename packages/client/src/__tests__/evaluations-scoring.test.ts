@@ -566,6 +566,34 @@ describe('scorers', () => {
     expect('score' in data).toBe(false);
   });
 
+  it('warns once for each scorer that returns an invalid score in a run', async () => {
+    const api = routeHostedRun(new FakeApi(), [datasetRow(0), datasetRow(1), datasetRow(2)]);
+    await makeModule(api).run(
+      run({
+        criteria: [new Scorer('quality', (() => 'high') as never), new Scorer('flag', (() => true) as never)],
+      }),
+    );
+    const scorerWarnings = warn.mock.calls.map((call) => String(call[0])).filter((m) => m.includes('invalid score'));
+    expect(scorerWarnings).toEqual([
+      expect.stringMatching(/^\[LaunchDarkly\] Scorer 'quality' returned an invalid score: .*got "high"$/),
+      expect.stringMatching(/^\[LaunchDarkly\] Scorer 'flag' returned an invalid score: .*got true$/),
+    ]);
+  });
+
+  it('warns again for an invalid score in a later run', async () => {
+    const module = makeModule(routeHostedRun(new FakeApi()));
+    for (let i = 0; i < 2; i += 1) {
+      await module.run(run({ criteria: [new Scorer('quality', (() => 'high') as never)] }));
+    }
+    const scorerWarnings = warn.mock.calls.filter((call) => String(call[0]).includes('invalid score'));
+    expect(scorerWarnings).toHaveLength(2);
+  });
+
+  it('does not warn for a valid score', async () => {
+    await makeModule(routeHostedRun(new FakeApi())).run(run({ criteria: [new Scorer('exact', () => 1)] }));
+    expect(warn.mock.calls.filter((call) => String(call[0]).includes('invalid score'))).toHaveLength(0);
+  });
+
   it.each([
     [
       'throws',
