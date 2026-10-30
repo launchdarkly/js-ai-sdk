@@ -1,5 +1,5 @@
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { type AIMessage, type BaseMessage, HumanMessage, SystemMessage } from '@langchain/core/messages';
+import { AIMessage, type BaseMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import { tool } from '@langchain/core/tools';
 import { Annotation, addMessages, Command, END, START, StateGraph } from '@langchain/langgraph';
 import { ToolNode, toolsCondition } from '@langchain/langgraph/prebuilt';
@@ -30,6 +30,63 @@ import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 const sanitizeName = (key: string) => key.replace(/[^a-z0-9_-]/gi, '_');
+
+const HANDOFF_IGNORED = 'Ignored: only the first transfer in a turn routes.';
+
+/** The text parts of a message's content, joined with no separator. */
+const contentText = (content: unknown): string =>
+  typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content
+          .filter((c) => c?.type === 'text')
+          .map((c) => c.text ?? '')
+          .join('')
+      : '';
+
+/**
+ * Rewrites the history a node finds when it is entered as provider-neutral text, so a
+ * target on another provider never sees the previous node's tool or reasoning blocks
+ * (spec §2.x.3). Human and system messages pass through. Exported for tests only; the
+ * package index does not re-export it.
+ */
+export const toNeutralHistory = (messages: BaseMessage[]): BaseMessage[] => {
+  const out: BaseMessage[] = [];
+  let calls: { name: string; id?: string }[] = [];
+  let results: ToolMessage[] = [];
+  const flush = () => {
+    if (results.length === 0) return;
+    const order = (r: ToolMessage) => {
+      const i = calls.findIndex((c) => c.id === r.tool_call_id);
+      return i === -1 ? calls.length : i;
+    };
+    const lines = [...results]
+      .sort((a, b) => order(a) - order(b))
+      .map((r) => `[Tool result] ${calls[order(r)]?.name ?? r.name ?? ''}: ${contentText(r.content)}`);
+    out.push(new HumanMessage(lines.join('\n')));
+    results = [];
+  };
+  for (const m of messages) {
+    if (ToolMessage.isInstance(m)) {
+      results.push(m);
+      continue;
+    }
+    flush();
+    if (!AIMessage.isInstance(m)) {
+      out.push(m);
+      continue;
+    }
+    calls = m.tool_calls ?? [];
+    const text = contentText(m.content);
+    const lines = [
+      ...(text ? [text] : []),
+      ...calls.map((c) => `[Tool call] ${c.name} ${JSON.stringify((c as { args?: unknown }).args ?? {})}`),
+    ];
+    if (lines.length > 0) out.push(new AIMessage(lines.join('\n')));
+  }
+  flush();
+  return out;
+};
 
 const StateAnnotation = Annotation.Root({
   messages: Annotation<BaseMessage[]>({
@@ -131,7 +188,6 @@ export const toLangGraph = (
   invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;
 } => {
   reportUsage('langchain-agents.toLangGraph', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  type ContentBlock = { type: string; text?: string };
 
   const invoke = async (
     input = '',
@@ -179,16 +235,44 @@ export const toLangGraph = (
           const chatModel = modelFactory(node);
           const regularTools = buildNodeTools(node, toolHandlers);
 
+          // The node's last model call sets `first` (its first hand-off call id);
+          // the tools step sets `handedOff` when that call routes.
+          // `callIds` holds its last model call's tool call ids; `start` is where the
+          // node's current visit began.
+          const routing: { first?: string; handedOff: boolean; callIds: Set<string | undefined>; start: number } = {
+            handedOff: false,
+            callIds: new Set(),
+            start: 0,
+          };
+
           // Handoff tools for each child edge — returning Command routes the graph
           const handoffTools = outgoing.map((edge) =>
             tool(
-              async (): Promise<Command> => {
+              async (_input, config): Promise<Command | string> => {
+                const toolCallId = config.toolCall?.id;
+                // Only the first hand-off in a model message routes, as in graph().
+                // The handedOff check also keeps first-wins when the calls carry no id.
+                if (routing.handedOff || toolCallId !== routing.first) return HANDOFF_IGNORED;
+                routing.handedOff = true;
                 const targetKey = sanitizeName(edge.targetKey);
                 if (ldContext) {
                   const trackData = makeNodeTrackData(node, def.key, runId);
                   getClient().track('$ld:ai:graph:handoff_success', ldContext, trackData, 1);
                 }
-                return new Command({ goto: targetKey });
+                // The ToolMessage answers the call, so the next model call never sees
+                // an unanswered tool call.
+                return new Command({
+                  goto: targetKey,
+                  update: {
+                    messages: [
+                      new ToolMessage({
+                        content: `Handed off to ${edge.targetKey}.`,
+                        tool_call_id: toolCallId ?? '',
+                        name: `transfer_to_${targetKey}`,
+                      }),
+                    ],
+                  },
+                });
               },
               {
                 name: `transfer_to_${sanitizeName(edge.targetKey)}`,
@@ -213,35 +297,37 @@ export const toLangGraph = (
             const nodeStartTime = Date.now();
 
             const systemPrompt = buildSystemPrompt(node, variables);
-            const conversationMessages = state.messages;
+            const last = state.messages.at(-1);
+            // A tool result for this node's own last call continues its tool loop;
+            // anything else means the node was just entered.
+            if (!(last && ToolMessage.isInstance(last) && routing.callIds.has(last.tool_call_id))) {
+              routing.start = state.messages.length;
+            }
+            const conversationMessages = [
+              ...toNeutralHistory(state.messages.slice(0, routing.start)),
+              ...state.messages.slice(routing.start),
+            ];
             const fullMessages: BaseMessage[] = [
               ...(systemPrompt ? [new SystemMessage(systemPrompt)] : []),
               ...conversationMessages,
             ];
 
+            // No parallel_tool_calls: Bedrock Converse rejects it. The hand-off tools
+            // keep only the first hand-off instead.
             const boundModel =
               allTools.length > 0
                 ? // biome-ignore lint/suspicious/noExplicitAny: LangChain BaseChatModel.bindTools is not typed in the base class
-                  (chatModel as any).bindTools(allTools, {
-                    ...(isMultiChild ? { parallel_tool_calls: false } : {}),
-                  })
+                  (chatModel as any).bindTools(allTools)
                 : chatModel;
 
             const result = (await boundModel.invoke(fullMessages)) as AIMessage;
+            routing.first = result.tool_calls?.find((tc) => tc.name.startsWith('transfer_to_'))?.id;
+            routing.handedOff = false;
+            routing.callIds = new Set(result.tool_calls?.map((tc) => tc.id));
             const usage = extractUsage(result);
             totalUsage.input += usage.input;
             totalUsage.output += usage.output;
             totalUsage.total += usage.total;
-
-            const _text =
-              typeof result.content === 'string'
-                ? result.content
-                : Array.isArray(result.content)
-                  ? result.content
-                      .filter((c: ContentBlock) => c.type === 'text')
-                      .map((c: ContentBlock) => c.text)
-                      .join('')
-                  : '';
 
             trackNode(node, nodeStartTime, usage, ldContext, def, runId);
 
@@ -251,7 +337,10 @@ export const toLangGraph = (
           builder.addNode(nodeKey, nodeFunction);
 
           if (allTools.length > 0) {
-            builder.addNode(`${nodeKey}_tools`, new ToolNode(allTools));
+            // `ends` declares where a hand-off Command may go; LangGraph rejects other targets.
+            builder.addNode(`${nodeKey}_tools`, new ToolNode(allTools), {
+              ends: outgoing.map((edge) => sanitizeName(edge.targetKey)),
+            });
           }
 
           // Edge wiring
@@ -269,23 +358,14 @@ export const toLangGraph = (
             } else {
               b.addEdge(nodeKey, END);
             }
-          } else if (isMultiChild) {
-            // Handoff tools in allTools return Command; ToolNode propagates it
-            if (allTools.length > 0) {
-              b.addConditionalEdges(nodeKey, toolsCondition, { tools: `${nodeKey}_tools`, __end__: END });
-              b.addEdge(`${nodeKey}_tools`, nodeKey);
-            } else {
-              b.addEdge(nodeKey, END);
-            }
           } else {
-            // Single child: tool loop, then go to child
-            const childKey = sanitizeName(outgoing[0].targetKey);
-            if (allTools.length > 0) {
-              b.addConditionalEdges(nodeKey, toolsCondition, { tools: `${nodeKey}_tools`, __end__: childKey });
-              b.addEdge(`${nodeKey}_tools`, nodeKey);
-            } else {
-              b.addEdge(nodeKey, childKey);
-            }
+            // A non-terminal node always has hand-off tools. Ending the turn without one
+            // ends the run (multi-child) or moves to the child.
+            const endTarget = isMultiChild ? END : sanitizeName(outgoing[0].targetKey);
+            b.addConditionalEdges(nodeKey, toolsCondition, { tools: `${nodeKey}_tools`, __end__: endTarget });
+            // No static edge back to the node: after a hand-off the Command routes to the
+            // target and the node must not run again.
+            b.addConditionalEdges(`${nodeKey}_tools`, () => (routing.handedOff ? END : nodeKey), [nodeKey, END]);
           }
         });
 
@@ -305,16 +385,7 @@ export const toLangGraph = (
 
         // Extract final output from last AI message
         const lastMsg: BaseMessage | undefined = result.messages?.[result.messages.length - 1];
-        const finalOutput = lastMsg
-          ? typeof lastMsg.content === 'string'
-            ? lastMsg.content
-            : Array.isArray(lastMsg.content)
-              ? lastMsg.content
-                  .filter((c: ContentBlock) => c.type === 'text')
-                  .map((c: ContentBlock) => c.text)
-                  .join('')
-              : ''
-          : '';
+        const finalOutput = contentText(lastMsg?.content);
 
         span.setAttribute('launchdarkly.graph.path', path.join('->'));
         span.setAttribute('gen_ai.usage.input_tokens', totalUsage.input);
