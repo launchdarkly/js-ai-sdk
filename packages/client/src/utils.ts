@@ -570,7 +570,7 @@ function compactContextKeysJson(keys: Record<string, string>): string {
  * Canonical key plus per-kind map from `variables.ldContext`.
  * Never throws. Returns undefined when there is no usable identity.
  */
-function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | undefined {
+export function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | undefined {
   try {
     if (ldContext === null || typeof ldContext !== 'object') return undefined;
     const ctx = ldContext as Record<string, unknown>;
@@ -612,6 +612,12 @@ function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | und
   }
 }
 
+/** Extra root-span attributes in a handler's variables. A symbol, so template variables cannot set them. */
+export const SPAN_ATTRIBUTES_KEY = Symbol.for('@launchdarkly/ai-server:span-attributes');
+
+/** Set in a handler's variables to keep the `feature_flag` event off its root span. A symbol, so template variables cannot set it. */
+export const NO_FEATURE_FLAG_EVENT_KEY = Symbol.for('@launchdarkly/ai-server:no-feature-flag-event');
+
 /**
  * Sets LaunchDarkly config-identifying attributes on an OTel span and emits
  * the `feature_flag` span event required by the AI Config Monitoring Traces tab.
@@ -626,6 +632,7 @@ function contextIdentityFromLdContext(ldContext: unknown): ContextIdentity | und
  *   launchdarkly.variation.key   = variationKey
  *   launchdarkly.run.id          = runId
  *   launchdarkly.graph.key       = graphKey    (only when present)
+ *   variables[SPAN_ATTRIBUTES_KEY] entries     (only when present)
  *   context.contextKeys.<kind>   = raw per-kind key (when ldContext has identity)
  *
  * Span event (required for AI Config Monitoring tab trace correlation):
@@ -655,6 +662,8 @@ export function setLdSpanAttributes(span: Span, variables: Record<string, unknow
   span.setAttribute('launchdarkly.variation.key', ld.variationKey);
   span.setAttribute('launchdarkly.run.id', ld.runId);
   if (ld.graphKey) span.setAttribute('launchdarkly.graph.key', ld.graphKey);
+  const extra = (variables as Record<symbol, Record<string, string | boolean> | undefined>)[SPAN_ATTRIBUTES_KEY];
+  for (const [name, value] of Object.entries(extra ?? {})) span.setAttribute(name, value);
 
   const featureFlagAttrs: Record<string, string> = {
     'feature_flag.key': ld.configKey,
@@ -687,7 +696,9 @@ export function setLdSpanAttributes(span: Span, variables: Record<string, unknow
     }
   }
 
-  span.addEvent('feature_flag', featureFlagAttrs);
+  if (!(variables as Record<symbol, unknown> | undefined)?.[NO_FEATURE_FLAG_EVENT_KEY]) {
+    span.addEvent('feature_flag', featureFlagAttrs);
+  }
 }
 
 /**

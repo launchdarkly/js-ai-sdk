@@ -629,8 +629,40 @@ export const extractVariation = async (
   key: string,
   userContext: LDContext,
 ): Promise<{ config: AiConfigRep; meta: VariationMeta; value: unknown }> => {
+  const { value } = await fetchVariation(key, userContext);
+  return parseVariation(key, value);
+};
+
+type DetailClient = LDClientInterface & {
+  variationDetail?: (
+    key: string,
+    context: LDContext,
+    defaultValue: unknown,
+  ) => Promise<{ value: unknown; reason?: unknown }>;
+};
+
+/**
+ * @internal The raw variation value, and its evaluation reason when `withReason` is set and the
+ * client has `variationDetail`.
+ */
+export async function fetchVariation(
+  key: string,
+  userContext: LDContext,
+  { withReason = false }: { withReason?: boolean } = {},
+): Promise<{ value: unknown; reason?: unknown }> {
   await initClient();
-  const variation = await getClient().variation(key, userContext, { enabled: false });
+  const client = getClient() as DetailClient;
+  if (withReason && client.variationDetail) {
+    return client.variationDetail(key, userContext, { enabled: false });
+  }
+  return { value: await client.variation(key, userContext, { enabled: false }) };
+}
+
+/** @internal Parses a raw variation value into its config and meta, and keeps the value. */
+export function parseVariation(
+  key: string,
+  variation: unknown,
+): { config: AiConfigRep; meta: VariationMeta; value: unknown } {
   // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
   if (!(variation as any)?._ldMeta?.enabled) {
     throw new Error(`Variation ${key} is not enabled`);
@@ -644,4 +676,4 @@ export const extractVariation = async (
   // `feature_flag` span event as `feature_flag.result.value`.
   // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
   return { config: parsed.data, meta: (variation as any)._ldMeta as VariationMeta, value: variation };
-};
+}

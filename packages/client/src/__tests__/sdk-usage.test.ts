@@ -29,6 +29,7 @@ vi.mock('@opentelemetry/exporter-trace-otlp-http', () => ({
 
 import { usageRows } from '../../../../scripts/api-surface.mjs';
 import { config } from '../client.js';
+import type { ShadowTask } from '../experimental.js';
 import * as experimentalEntry from '../experimental.js';
 import { graph } from '../graph.js';
 import * as rootEntry from '../index.js';
@@ -205,6 +206,29 @@ const fire = (call: () => unknown): Promise<void> => {
  * entry point exports under the name the list gives, so a row proves that
  * name reports that ID.
  */
+function shadowTask(): ShadowTask {
+  return {
+    configKey: 'k',
+    shadowRequestId: 's',
+    config: { model: { name: 'm' }, provider: { name: 'p' }, instructions: 'i' },
+    meta: { enabled: true, variationKey: 'b', version: 1 },
+    userInput: 'q',
+    history: undefined,
+    variables: undefined,
+    context: ctx,
+    timeoutMs: 1000,
+    trackData: {
+      runId: 'r',
+      isShadow: true,
+      primaryVariationKey: 'a',
+      shadowRequestId: 's',
+      ownerKind: '',
+      ownerId: '',
+    },
+    spanAttributes: {},
+  };
+}
+
 const CALLS: Record<string, Call> = {
   'client.config.invoke': (config) => settle(config({ key: 'k' }).invoke('q', ctx)),
   'client.config.stream': (config) => fire(() => config({ key: 'k' }).stream('q', ctx)),
@@ -214,6 +238,8 @@ const CALLS: Record<string, Call> = {
   'client.inspectConfig': (inspectConfig) => settle(inspectConfig('k', ctx)),
   'client.runJudge': (runJudge) => settle(runJudge({} as JudgeTask, [])),
   'client.buildJudgeTasks': (buildJudgeTasks) => settle(buildJudgeTasks(judgeArgs())),
+  'experimental.shadowConfig': (shadowConfig) => fire(() => shadowConfig({ key: 'k' })),
+  'experimental.runShadow': (runShadow) => settle(runShadow(shadowTask(), [])),
   'client.createHandler': (createHandler) =>
     fire(() => createHandler(['OpenAI', 'messages'], async () => ({ output: '' }))),
   // Throws on missing credentials; the report is the first statement, so it still lands.
