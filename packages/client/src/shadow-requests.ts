@@ -7,7 +7,10 @@
  */
 import { createHash } from 'node:crypto';
 
+import { context as otelContext } from '@opentelemetry/api';
+
 import { configFromVariation } from './client.js';
+import { currentConversationId, withExactConversationId } from './conversation.js';
 import { fetchVariation, parseVariation as parseServedVariation } from './lifecycle.js';
 import { findHandler, resolveHandlers } from './registry.js';
 import { reportUsage } from './sdk-usage.js';
@@ -56,6 +59,8 @@ export type ShadowTask = {
     ownerId: string;
   };
   spanAttributes: Record<string, string | boolean>;
+  /** The caller's conversation id when the shadow was sampled. {@link runShadow} runs under exactly this id. */
+  conversationId?: string;
 };
 
 /** The outcome of one shadow run. The answer is discarded, so there is none. */
@@ -169,11 +174,12 @@ export function shadowConfig({ shadowTimeoutMs = DEFAULT_TIMEOUT_MS, onTask, ...
     history?: Message[],
   ): AsyncGenerator<StreamEvent> {
     const { run, startShadows } = primary();
+    const callerContext = otelContext.active();
     const events = run.stream(userInput, context, variables, history);
     return (async function* () {
       for await (const event of events) {
         if (event.type === 'done') {
-          startShadows({ userInput, context, variables, history });
+          otelContext.with(callerContext, () => startShadows({ userInput, context, variables, history }));
         }
         yield event;
       }
@@ -228,6 +234,7 @@ function buildTasks(
   }
 
   const primaryVariationKey = evaluation.meta.variationKey ?? '';
+  const conversationId = currentConversationId();
   const tasks: ShadowTask[] = [];
   for (const entry of entries) {
     if (!isEntry(entry) || entry.endsAt <= Date.now() || !inSample(entry.id, request.context, entry.samplingRate)) {
@@ -265,6 +272,7 @@ function buildTasks(
         'launchdarkly.shadow.request.id': entry.id,
         'launchdarkly.shadow.primary.variation.key': primaryVariationKey,
       },
+      ...(conversationId && { conversationId }),
     });
   }
   return tasks;
@@ -281,19 +289,22 @@ async function execute(task: ShadowTask, handlers: ProviderHandler[]): Promise<S
     return { usage: NO_USAGE, trackData, error: `No handler for provider ${task.config.provider?.name}` };
   }
   try {
-    const result = await executeAndTrack({
-      configKey: task.configKey,
-      config: task.config,
-      meta: task.meta,
-      userContext: task.context,
-      handler: withDeadline(handler, task.timeoutMs),
-      userInput: task.userInput,
-      variables: task.variables,
-      history: task.history ? [...task.history] : undefined,
-      runId,
-      extraTrackData,
-      spanAttributes: task.spanAttributes,
-    });
+    const result = await withExactConversationId(task.conversationId, () =>
+      executeAndTrack({
+        configKey: task.configKey,
+        config: task.config,
+        meta: task.meta,
+        userContext: task.context,
+        handler: withDeadline(handler, task.timeoutMs),
+        userInput: task.userInput,
+        variables: task.variables,
+        history: task.history ? [...task.history] : undefined,
+        runId,
+        extraTrackData,
+        spanAttributes: task.spanAttributes,
+        featureFlagEvent: false,
+      }),
+    );
     return { usage: result.usage, trackData: { ...result.trackData, ...task.trackData } };
   } catch (err) {
     return { usage: NO_USAGE, trackData, error: err instanceof Error ? err.message : String(err) };

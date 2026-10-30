@@ -615,6 +615,9 @@ export function contextIdentityFromLdContext(ldContext: unknown): ContextIdentit
 /** Extra root-span attributes in a handler's variables. A symbol, so template variables cannot set them. */
 export const SPAN_ATTRIBUTES_KEY = Symbol.for('@launchdarkly/ai-server:span-attributes');
 
+/** Set in a handler's variables to keep the `feature_flag` event off its root span. A symbol, so template variables cannot set it. */
+export const NO_FEATURE_FLAG_EVENT_KEY = Symbol.for('@launchdarkly/ai-server:no-feature-flag-event');
+
 /**
  * Sets LaunchDarkly config-identifying attributes on an OTel span and emits
  * the `feature_flag` span event required by the AI Config Monitoring Traces tab.
@@ -693,7 +696,9 @@ export function setLdSpanAttributes(span: Span, variables: Record<string, unknow
     }
   }
 
-  span.addEvent('feature_flag', featureFlagAttrs);
+  if (!(variables as Record<symbol, unknown> | undefined)?.[NO_FEATURE_FLAG_EVENT_KEY]) {
+    span.addEvent('feature_flag', featureFlagAttrs);
+  }
 }
 
 /**

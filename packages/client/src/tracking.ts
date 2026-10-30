@@ -13,7 +13,7 @@ import type {
   VariationMeta,
 } from './types.js';
 import { NATIVE_TOOL_KEY, NativeTool } from './types.js';
-import { parseUsage, SPAN_ATTRIBUTES_KEY } from './utils.js';
+import { NO_FEATURE_FLAG_EVENT_KEY, parseUsage, SPAN_ATTRIBUTES_KEY } from './utils.js';
 
 /**
  * Internal done event yielded by `executeAndStream`. Carries `trackData` so
@@ -273,6 +273,7 @@ export const executeAndTrack = async ({
   runId,
   extraTrackData,
   spanAttributes,
+  featureFlagEvent = true,
 }: {
   configKey: string;
   config: AiConfigRep;
@@ -294,6 +295,8 @@ export const executeAndTrack = async ({
   runId?: string;
   extraTrackData?: Record<string, unknown>;
   spanAttributes?: Record<string, string | boolean>;
+  /** `false` keeps the `feature_flag` event off the handler's root span. */
+  featureFlagEvent?: boolean;
 }): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData; trajectory: string }> => {
   const trackData = {
     ...makeRunTrackData({ configKey, config, meta, graphKey }),
@@ -305,6 +308,7 @@ export const executeAndTrack = async ({
   const mergedVariables = {
     ...handlerVariables(variables, userContext, trackData, handler, evaluatedValue),
     ...(spanAttributes && { [SPAN_ATTRIBUTES_KEY]: spanAttributes }),
+    ...(!featureFlagEvent && { [NO_FEATURE_FLAG_EVENT_KEY]: true }),
   };
 
   const startTime = Date.now();

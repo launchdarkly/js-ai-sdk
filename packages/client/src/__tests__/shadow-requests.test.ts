@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { context as otelContext } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { mockLdInit } = vi.hoisted(() => ({ mockLdInit: vi.fn() }));
 vi.mock('@launchdarkly/node-server-sdk', () => ({
@@ -6,11 +8,12 @@ vi.mock('@launchdarkly/node-server-sdk', () => ({
 }));
 
 import { config } from '../client.js';
+import { currentConversationId, withConversationId } from '../conversation.js';
 import { runShadow, type ShadowTask, shadowConfig } from '../experimental.js';
 import { fetchVariation, initClient, shutdown } from '../lifecycle.js';
 import { inSample, waitForShadowsForTesting } from '../shadow-requests.js';
 import type { LDClientInterface, LDContext, Message, ProviderHandler, StreamEvent } from '../types.js';
-import { SPAN_ATTRIBUTES_KEY, setLdSpanAttributes } from '../utils.js';
+import { NO_FEATURE_FLAG_EVENT_KEY, SPAN_ATTRIBUTES_KEY, setLdSpanAttributes } from '../utils.js';
 
 const CONTEXT: LDContext = { kind: 'user', key: 'u1' };
 const FUTURE = Date.now() + 3_600_000;
@@ -77,12 +80,20 @@ type Call = {
   tools: unknown;
   variables: Record<string | symbol, unknown>;
   history: Message[] | undefined;
+  conversationId: string | undefined;
 };
 
 function recorder(provider: string, output = 'ok', opts: { rejects?: boolean; sleepMs?: number; error?: Error } = {}) {
   const calls: Call[] = [];
   const handler = (async (cfg, input, tools, variables, history) => {
-    calls.push({ config: cfg as Record<string, unknown>, input, tools, variables: variables ?? {}, history });
+    calls.push({
+      config: cfg as Record<string, unknown>,
+      input,
+      tools,
+      variables: variables ?? {},
+      history,
+      conversationId: currentConversationId(),
+    });
     if (opts.sleepMs) {
       await new Promise((r) => setTimeout(r, opts.sleepMs));
     }
@@ -154,6 +165,17 @@ async function deferredTask(client: FakeClient, shadowTimeoutMs?: number): Promi
   expect(tasks).toHaveLength(1);
   return tasks[0];
 }
+
+const contextManager = new AsyncLocalStorageContextManager();
+
+beforeAll(() => {
+  contextManager.enable();
+  otelContext.setGlobalContextManager(contextManager);
+});
+
+afterAll(() => {
+  otelContext.disable();
+});
 
 beforeEach(async () => {
   await shutdown();
@@ -326,6 +348,36 @@ describe('stream', () => {
     expect(streamed).not.toHaveBeenCalled();
     const primaryRunId = primaryEvents(client)[0][1].runId;
     expect(shadowEvents(client)[0][1].runId).toBe(primaryRunId);
+  });
+
+  it('keeps the conversation id when only the stream() call is bound', async () => {
+    await use(makeClient(variationA()));
+    const a = recorder('TestProvider', 'primary answer');
+    const b = recorder('ShadowProvider', 'shadow answer');
+    const stream = withConversationId('conv-1', () =>
+      shadowConfig({ key: 'flag', handler: [a.handler, b.handler] }).stream('hi', CONTEXT),
+    );
+    await collect(stream);
+    await waitForShadowsForTesting();
+    expect(a.calls[0].conversationId).toBe('conv-1');
+    expect(b.calls[0].conversationId).toBe('conv-1');
+  });
+
+  it('starts stream shadows after the judges, on the public done', async () => {
+    await use(makeClient(variationA()));
+    const tasks: ShadowTask[] = [];
+    const stream = shadowConfig({
+      key: 'flag',
+      handler: [recorder('TestProvider', 'primary answer').handler, recorder('ShadowProvider').handler],
+      onTask: (task) => tasks.push(task),
+    }).stream('hi', CONTEXT);
+    let tasksBeforeDone = -1;
+    for await (const event of stream) {
+      if (event.type === 'done') {
+        tasksBeforeDone = tasks.length;
+      }
+    }
+    expect(tasksBeforeDone).toBe(1);
   });
 
   it('runs no shadow before the stream reaches done', async () => {
@@ -538,6 +590,17 @@ describe('onTask', () => {
     expect(failed.error).toBe('boom');
     const unhandled = await runShadow(task, []);
     expect(unhandled.error).toBeTruthy();
+    for (const result of [failed, unhandled]) {
+      expect(result.trackData).toMatchObject({
+        configKey: 'flag',
+        variationKey: 'b',
+        providerName: 'ShadowProvider',
+        runId: task.trackData.runId,
+      });
+      for (const field of SHADOW_FIELDS) {
+        expect(result.trackData).toHaveProperty(field);
+      }
+    }
   });
 
   it('runShadow returns a timeout error', async () => {
@@ -546,7 +609,25 @@ describe('onTask', () => {
     const result = await runShadow(task, [recorder('ShadowProvider', 'late', { sleepMs: 100 }).handler]);
     await new Promise((r) => setTimeout(r, 150));
     expect(result.error).toBe('timeout');
+    expect(result.trackData).toMatchObject({ configKey: 'flag', variationKey: 'b' });
     expect(shadowEvents(client).map((e) => e[0])).toEqual(['$ld:ai:duration:total', '$ld:ai:generation:error']);
+  });
+
+  it('carries the conversation id on the task and runs under it', async () => {
+    const task = await withConversationId('conv-1', () => deferredTask(makeClient(variationA())));
+    expect(task.conversationId).toBe('conv-1');
+    expect(structuredClone(task).conversationId).toBe('conv-1');
+    const b = recorder('ShadowProvider');
+    await withConversationId('worker-conversation', () => runShadow(task, [b.handler]));
+    expect(b.calls[0].conversationId).toBe('conv-1');
+  });
+
+  it('runs a task without a conversation id under none, not the worker one', async () => {
+    const task = await deferredTask(makeClient(variationA()));
+    expect(task.conversationId).toBeUndefined();
+    const b = recorder('ShadowProvider');
+    await withConversationId('worker-conversation', () => runShadow(task, [b.handler]));
+    expect(b.calls[0].conversationId).toBeUndefined();
   });
 
   it('runShadow reports experimental.runShadow', async () => {
@@ -614,6 +695,27 @@ describe('shadow events and spans', () => {
     });
     expect(a.calls[0].variables).not.toHaveProperty([SPAN_ATTRIBUTES_KEY]);
     expect(Object.getOwnPropertySymbols(a.calls[0].variables)).toEqual([]);
+  });
+
+  it('writes no feature_flag event on the shadow root span', async () => {
+    const { a, b } = await invoke(makeClient(variationA()));
+    const primarySpan = { setAttribute: vi.fn(), addEvent: vi.fn() };
+    const shadowSpan = { setAttribute: vi.fn(), addEvent: vi.fn() };
+    setLdSpanAttributes(primarySpan as never, a.calls[0].variables as Record<string, unknown>);
+    setLdSpanAttributes(shadowSpan as never, b.calls[0].variables as Record<string, unknown>);
+    expect(primarySpan.addEvent).toHaveBeenCalledWith('feature_flag', expect.any(Object));
+    expect(shadowSpan.addEvent).not.toHaveBeenCalled();
+    expect(b.calls[0].variables[NO_FEATURE_FLAG_EVENT_KEY]).toBe(true);
+  });
+
+  it('never skips the feature_flag event from template variables', () => {
+    const span = { setAttribute: vi.fn(), addEvent: vi.fn() };
+    setLdSpanAttributes(span as never, {
+      __ld: { configKey: 'flag', variationKey: 'a', runId: 'r' },
+      [String(NO_FEATURE_FLAG_EVENT_KEY)]: true,
+      __ld_no_feature_flag_event: true,
+    });
+    expect(span.addEvent).toHaveBeenCalledWith('feature_flag', expect.any(Object));
   });
 
   it('sets the extra attributes on the root span', () => {
