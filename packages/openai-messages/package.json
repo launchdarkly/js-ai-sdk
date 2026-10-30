@@ -1,6 +1,6 @@
 {
   "name": "@launchdarkly/ai-openai-messages",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "license": "Apache-2.0",
   "author": "LaunchDarkly <team@launchdarkly.com>",
   "description": "OpenAI Responses API provider for @launchdarkly/ai-server",
@@ -51,7 +51,7 @@
     "api:update": "tsc --emitDeclarationOnly --declarationMap false --outDir temp/dts && api-extractor run --local"
   },
   "dependencies": {
-    "@launchdarkly/ai-server": "^0.5.0",
+    "@launchdarkly/ai-server": "^1.0.0",
     "@opentelemetry/api": "^1.9.1",
     "openai": "^6.42.0"
   },

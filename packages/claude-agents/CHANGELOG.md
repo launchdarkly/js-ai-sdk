@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-agents-0.5.0...@launchdarkly/ai-claude-agents-1.0.0) (2026-10-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** conversation content is now captured on spans by default. To keep it off, call configure({ options: { captureContent: false } }) once at startup.
+* **client:** createHandler returns a new wrapper function rather than adding providesFor to the function you pass and returning that same function. Use the handler createHandler returns; the function you passed in no longer carries providesFor.
+* **client:** add result variant and value to the feature_flag span event ([#186](https://github.com/launchdarkly/js-ai-sdk/issues/186))
+* **SEC-9507:** enable Claude native tools only when the active variation attaches them
+* **claude-agents:** honour the config's max_tokens and disable thinking unless the config asks ([#183](https://github.com/launchdarkly/js-ai-sdk/issues/183))
+* **skills:** rename FDv2SkillStore to LaunchDarklySkillStore ([#172](https://github.com/launchdarkly/js-ai-sdk/issues/172))
+* **AIC-3598:** type toolHandlers on the handler contract; declare @langchain/anthropic ([#170](https://github.com/launchdarkly/js-ai-sdk/issues/170))
+
+### Features
+
+* **client:** add result variant and value to the feature_flag span event ([#186](https://github.com/launchdarkly/js-ai-sdk/issues/186)) ([8dbe2ec](https://github.com/launchdarkly/js-ai-sdk/commit/8dbe2ec266d635464a41facfde924b0707f747aa))
+* **client:** capture conversation content on spans by default and add configure() ([d9c7fc3](https://github.com/launchdarkly/js-ai-sdk/commit/d9c7fc3cb76d16b0973724725f4e9b6d06d6a052))
+* **skills:** give Claude Agents runs the skills attached to their variation ([#136](https://github.com/launchdarkly/js-ai-sdk/issues/136)) ([df16ba0](https://github.com/launchdarkly/js-ai-sdk/commit/df16ba0823d093231e523a95c1c7180cc5de805f))
+* **skills:** rename FDv2SkillStore to LaunchDarklySkillStore ([#172](https://github.com/launchdarkly/js-ai-sdk/issues/172)) ([d3e7c5f](https://github.com/launchdarkly/js-ai-sdk/commit/d3e7c5f88ae000da3a40be7eb97bac1f98169db2))
+
+
+### Bug Fixes
+
+* **AIC-3598:** type toolHandlers on the handler contract; declare @langchain/anthropic ([#170](https://github.com/launchdarkly/js-ai-sdk/issues/170)) ([c6c00fc](https://github.com/launchdarkly/js-ai-sdk/commit/c6c00fcbc31c62aad7aeefcadaaf1a1274d14207))
+* **claude-agents:** honour the config's max_tokens and disable thinking unless the config asks ([#183](https://github.com/launchdarkly/js-ai-sdk/issues/183)) ([f58ce21](https://github.com/launchdarkly/js-ai-sdk/commit/f58ce2173daef438c34e436a56b0e9521fa39db1))
+* **client:** return a new handler from createHandler instead of changing the function passed in ([d9c7fc3](https://github.com/launchdarkly/js-ai-sdk/commit/d9c7fc3cb76d16b0973724725f4e9b6d06d6a052))
+* **SEC-9507:** dispatch litellm-messages tool calls only to tools offered for the request ([6926e8a](https://github.com/launchdarkly/js-ai-sdk/commit/6926e8a67f684bc4c40796392bb0d088e71e728e))
+* **SEC-9507:** enable Claude native tools only when the active variation attaches them ([6926e8a](https://github.com/launchdarkly/js-ai-sdk/commit/6926e8a67f684bc4c40796392bb0d088e71e728e))
+* **SEC-9507:** pass handlers only the tools attached to the active variation ([6926e8a](https://github.com/launchdarkly/js-ai-sdk/commit/6926e8a67f684bc4c40796392bb0d088e71e728e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.5.0 to ^1.0.0
+
 ## [0.5.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-agents-0.4.0...@launchdarkly/ai-claude-agents-0.5.0) (2026-10-26)
 
 
