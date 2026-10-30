@@ -669,6 +669,18 @@ handler's effective capture flag is true (`handler.captureContent`, or the
 process default for a plain function). The reasoning always reaches the caller
 in `judgeResults`.
 
+A judge runs after the graded handler has ended its span, so its spans start a
+trace of their own, with their own `launchdarkly.run.id`. To tie them back,
+`runJudges` (inline) and `runJudge` (deferred) wrap each judge's run in
+`withSpanAttributes`, so every span of that run carries the graded run's
+identity: `launchdarkly.judge.target.run.id`,
+`launchdarkly.judge.target.config.key` and
+`launchdarkly.judge.target.variation.key` (constants `LD_JUDGE_TARGET_*` in
+`client/src/judges.ts`). Each is written only when the graded run's `TrackData`
+has the value. They are identifiers, not content, so capture settings do not
+gate them. The judge's metric event already carries the graded `runId` in its
+`TrackData`; these attributes put the same link on the trace.
+
 **Span status:**
 - Set to OK on success.
 - Set to ERROR and record the exception on failure. Re-throw the error after recording.
