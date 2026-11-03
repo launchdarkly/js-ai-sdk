@@ -1,8 +1,17 @@
-import { context as otelContext } from '@opentelemetry/api';
+import { context as otelContext, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockLdInit } = vi.hoisted(() => ({ mockLdInit: vi.fn() }));
+const { mockLdInit, forcedDigest } = vi.hoisted(() => ({ mockLdInit: vi.fn(), forcedDigest: { value: '' } }));
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:crypto')>();
+  return {
+    ...actual,
+    createHash: (algorithm: string) =>
+      forcedDigest.value ? { update: () => ({ digest: () => forcedDigest.value }) } : actual.createHash(algorithm),
+  };
+});
 vi.mock('@launchdarkly/node-server-sdk', () => ({
   init: (...args: unknown[]) => mockLdInit(...args),
 }));
@@ -738,5 +747,71 @@ describe('shadow events and spans', () => {
       __ld_span: { 'launchdarkly.is_shadow': true },
     });
     expect(span.setAttribute).not.toHaveBeenCalledWith('launchdarkly.is_shadow', true);
+  });
+});
+
+describe('failure edges', () => {
+  afterEach(() => {
+    forcedDigest.value = '';
+  });
+
+  it('treats a sampling rate of 1 or more as always sampled', () => {
+    forcedDigest.value = 'f'.repeat(40);
+    expect(inSample('shadow-1', CONTEXT, 1)).toBe(true);
+    expect(inSample('shadow-1', CONTEXT, 1.5)).toBe(true);
+    expect(inSample('shadow-1', CONTEXT, 0.999)).toBe(false);
+  });
+
+  it('runShadow resolves with an error for a malformed task', async () => {
+    const task = await deferredTask(makeClient(variationA()));
+    const broken = { ...task, config: { ...task.config, model: undefined } } as unknown as ShadowTask;
+    const result = await runShadow(broken, [recorder('ShadowProvider').handler]);
+    expect(result.error).toBeTruthy();
+  });
+
+  it('uses the error name when the error has no message', async () => {
+    const task = await deferredTask(makeClient(variationA()));
+    const result = await runShadow(task, [recorder('ShadowProvider', 'x', { error: new Error() }).handler]);
+    expect(result.error).toBe('Error');
+  });
+
+  it("tracks a handler's own timeout error as an ordinary failure", async () => {
+    const client = makeClient(variationA());
+    const task = await deferredTask(client);
+    const result = await runShadow(task, [
+      recorder('ShadowProvider', 'x', { error: new Error('provider timeout') }).handler,
+    ]);
+    expect(result.error).toBe('provider timeout');
+    expect(
+      count(
+        shadowEvents(client).map((e) => e[0]),
+        '$ld:ai:generation:error',
+      ),
+    ).toBe(1);
+  });
+
+  it("parents a background shadow to the caller's trace", async () => {
+    await use(makeClient(variationA()));
+    const traceIds: (string | undefined)[] = [];
+    const tracing = (provider: string) => {
+      const r = recorder(provider);
+      const inner = r.handler;
+      const handler = (async (...args: Parameters<ProviderHandler>) => {
+        traceIds.push(trace.getSpan(otelContext.active())?.spanContext().traceId);
+        return inner(...args);
+      }) as ProviderHandler;
+      handler.providesFor = inner.providesFor;
+      return handler;
+    };
+    const caller = new BasicTracerProvider().getTracer('test').startSpan('caller');
+    await otelContext.with(trace.setSpan(otelContext.active(), caller), () =>
+      shadowConfig({ key: 'flag', handler: [tracing('TestProvider'), tracing('ShadowProvider')] }).invoke(
+        'hi',
+        CONTEXT,
+      ),
+    );
+    await waitForShadowsForTesting();
+    caller.end();
+    expect(traceIds).toEqual([caller.spanContext().traceId, caller.spanContext().traceId]);
   });
 });

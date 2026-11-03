@@ -208,6 +208,9 @@ export function inSample(shadowId: string, context: LDContext, samplingRate: num
   if (!identity) {
     return false;
   }
+  if (samplingRate >= 1) {
+    return true;
+  }
   const digest = createHash('sha1').update(`${shadowId}.${identity.canonical}`).digest('hex');
   return Number.parseInt(digest.slice(0, 15), 16) / 2 ** 60 < samplingRate;
 }
@@ -279,16 +282,17 @@ function buildTasks(
 }
 
 async function execute(task: ShadowTask, handlers: ProviderHandler[]): Promise<ShadowResult> {
-  const { runId, ...extraTrackData } = task.trackData;
-  const trackData = {
-    ...makeRunTrackData({ configKey: task.configKey, config: task.config, meta: task.meta }),
-    ...task.trackData,
-  };
-  const handler = handlerFor(task.config, task.meta, handlers);
-  if (!handler) {
-    return { usage: NO_USAGE, trackData, error: `No handler for provider ${task.config.provider?.name}` };
-  }
+  let trackData = { ...task.trackData } as ShadowResult['trackData'];
   try {
+    const { runId, ...extraTrackData } = task.trackData;
+    trackData = {
+      ...makeRunTrackData({ configKey: task.configKey, config: task.config, meta: task.meta }),
+      ...task.trackData,
+    };
+    const handler = handlerFor(task.config, task.meta, handlers);
+    if (!handler) {
+      return { usage: NO_USAGE, trackData, error: `No handler for provider ${task.config.provider?.name}` };
+    }
     const result = await withExactConversationId(task.conversationId, () =>
       executeAndTrack({
         configKey: task.configKey,
@@ -307,8 +311,15 @@ async function execute(task: ShadowTask, handlers: ProviderHandler[]): Promise<S
     );
     return { usage: result.usage, trackData: { ...result.trackData, ...task.trackData } };
   } catch (err) {
-    return { usage: NO_USAGE, trackData, error: err instanceof Error ? err.message : String(err) };
+    return { usage: NO_USAGE, trackData, error: errorText(err) };
   }
+}
+
+function errorText(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message || err.name;
+  }
+  return String(err) || 'Error';
 }
 
 /** The handler rejects with `timeout` once `timeoutMs` passes. A promise cannot be cancelled, so a late result is ignored. */
@@ -370,6 +381,7 @@ function parseVariation(value: unknown): { config: AiConfigRep; meta: VariationM
   if (!variation || meta?.enabled !== true) {
     return undefined;
   }
+  // B never gets tools or judges, so they are dropped before validation, as the spec says.
   const { _ldMeta, tools: _tools, judgeConfiguration: _judges, shadowConfiguration: _shadows, ...config } = variation;
   const parsed = parseAiConfig(config);
   return parsed.success ? { config: parsed.data, meta: meta as VariationMeta } : undefined;

@@ -890,7 +890,7 @@ const support = shadowConfig({ key: 'support-agent', handler: [openaiHandler, an
 const { response } = await support.invoke(userInput, context);
 ```
 
-`shadowConfig()` takes the same arguments as `config()`, and its `invoke()` and `stream()` return exactly what `config()` would. After the served variation returns, or its stream reaches `done`, the SDK starts each sampled shadow in the background. Shadows never delay the served answer, and none run when the served variation fails. A shadow gets the same input, history and variables, but no tools and no judges, and it always runs as a plain invoke. Its answer is discarded, and nothing is added to history.
+`shadowConfig()` takes the same arguments as `config()`, and its `invoke()` and `stream()` return exactly what `config()` would. After the served variation returns, or its stream reaches `done`, the SDK starts each sampled shadow in the background. Shadows never delay the served answer, and none run when the served variation fails. `shutdown()` stops tracking running shadows, but a promise can't be cancelled, so if you call `initClient()` again before a shadow's timeout, that shadow's events go to the new client. A shadow gets the same input, history and variables, but no tools and no judges, and it always runs as a plain invoke. Its answer is discarded, and nothing is added to history.
 
 Sampling is sticky per context. A shadow is skipped when it has ended, when no handler you passed matches its provider, or when the context has no key. Each shadow sends the usual `$ld:ai:*` events for its own variation, with the served call's `runId`, `isShadow: true`, `primaryVariationKey`, `shadowRequestId`, `ownerKind` and `ownerId`. The served call's events do not change.
 
