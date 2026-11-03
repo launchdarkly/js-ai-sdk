@@ -15,11 +15,13 @@ import { ProviderResponse } from '@launchdarkly/ai-server';
 // @public
 export function createLangChainMessagesHandler(llm?: LangChainModelSource, options?: ContentCaptureOptions & {
     providers?: readonly string[];
+    maxRetries?: number;
 }): ProviderHandler;
 
 // @public (undocumented)
 export const langchainMessages: (configKey: string, userInput: string, context: LDContext, input?: Omit<Parameters<typeof config>[0], "handler" | "key"> & ContentCaptureOptions & {
     providers?: readonly string[];
+    maxRetries?: number;
     variables?: Record<string, unknown>;
 }) => Promise<ProviderResponse<string>>;
 

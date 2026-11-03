@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-agents-0.5.0...@launchdarkly/ai-langchain-agents-1.0.0) (2026-10-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** conversation content is now captured on spans by default. To keep it off, call configure({ options: { captureContent: false } }) once at startup.
+* **client:** createHandler returns a new wrapper function rather than adding providesFor to the function you pass and returning that same function. Use the handler createHandler returns; the function you passed in no longer carries providesFor.
+* **client:** add result variant and value to the feature_flag span event ([#186](https://github.com/launchdarkly/js-ai-sdk/issues/186))
+* **AIC-3439:** let wildcard handlers accept only named providers ([#111](https://github.com/launchdarkly/js-ai-sdk/issues/111))
+* **AIC-3598:** type toolHandlers on the handler contract; declare @langchain/anthropic ([#170](https://github.com/launchdarkly/js-ai-sdk/issues/170))
+
+### Features
+
+* **AIC-3439:** let wildcard handlers accept only named providers ([#111](https://github.com/launchdarkly/js-ai-sdk/issues/111)) ([9371975](https://github.com/launchdarkly/js-ai-sdk/commit/93719755d84df3923fa60e9ef687a96709cc438d))
+* **client:** add result variant and value to the feature_flag span event ([#186](https://github.com/launchdarkly/js-ai-sdk/issues/186)) ([8dbe2ec](https://github.com/launchdarkly/js-ai-sdk/commit/8dbe2ec266d635464a41facfde924b0707f747aa))
+* **client:** capture conversation content on spans by default and add configure() ([d9c7fc3](https://github.com/launchdarkly/js-ai-sdk/commit/d9c7fc3cb76d16b0973724725f4e9b6d06d6a052))
+
+
+### Bug Fixes
+
+* **AIC-3573:** never send a NativeTool to the model as a function tool ([#194](https://github.com/launchdarkly/js-ai-sdk/issues/194)) ([ec43b85](https://github.com/launchdarkly/js-ai-sdk/commit/ec43b85cbafd6ab446771ea7a92a29bba27208e0))
+* **AIC-3592:** make native LangGraph hand-offs complete ([#192](https://github.com/launchdarkly/js-ai-sdk/issues/192)) ([025f2ce](https://github.com/launchdarkly/js-ai-sdk/commit/025f2cec4e1e8372fc470cb203e038a482bb9589))
+* **AIC-3598:** type toolHandlers on the handler contract; declare @langchain/anthropic ([#170](https://github.com/launchdarkly/js-ai-sdk/issues/170)) ([c6c00fc](https://github.com/launchdarkly/js-ai-sdk/commit/c6c00fcbc31c62aad7aeefcadaaf1a1274d14207))
+* **client:** return a new handler from createHandler instead of changing the function passed in ([d9c7fc3](https://github.com/launchdarkly/js-ai-sdk/commit/d9c7fc3cb76d16b0973724725f4e9b6d06d6a052))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.5.0 to ^1.0.0
+
 ## [0.5.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-agents-0.4.0...@launchdarkly/ai-langchain-agents-0.5.0) (2026-10-26)
 
 

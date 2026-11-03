@@ -15,6 +15,7 @@ import {
   pickForwardedModelParameters,
   setLdSpanAttributes,
   setUsageSpanAttributes,
+  validateMaxRetries,
 } from '../utils.js';
 
 // ─── isFunctionTool ───────────────────────────────────────────────────────────
@@ -940,5 +941,33 @@ describe('camelizeModelParameters', () => {
 
   it('returns {} for an empty bag', () => {
     expect(camelizeModelParameters({})).toEqual({});
+  });
+});
+
+// ─── validateMaxRetries ───────────────────────────────────────────────────────
+
+// A factory refuses a value that is not a non-negative integer, naming the option.
+describe('validateMaxRetries', () => {
+  it.each([undefined, 0, 1, 7, 50])('accepts %s and returns it unchanged', (value) => {
+    expect(validateMaxRetries(value)).toBe(value);
+  });
+
+  it.each([
+    null,
+    true,
+    false,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    '3',
+    [3],
+  ])('refuses %s with a TypeError', (value) => {
+    expect(() => validateMaxRetries(value as never)).toThrow(TypeError);
+    expect(() => validateMaxRetries(value as never)).toThrow(/maxRetries/);
+  });
+
+  it.each([-1, -50])('refuses %s with a RangeError', (value) => {
+    expect(() => validateMaxRetries(value)).toThrow(RangeError);
+    expect(() => validateMaxRetries(value)).toThrow(/maxRetries/);
   });
 });

@@ -437,6 +437,7 @@ const ROOT_VALUES = [
   'textMessage',
   'toolResultString',
   'toSemconvFinishReason',
+  'validateMaxRetries',
   'waitForTelemetry',
   'withConversationId',
   'writeSkillsInternal',

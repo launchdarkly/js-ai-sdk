@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-node-0.4.0...@launchdarkly/ai-node-1.0.0) (2026-10-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **evaluations:** promote Evaluations from Code to core ([#181](https://github.com/launchdarkly/js-ai-sdk/issues/181))
+* **AIC-3686:** rename the LangChain and OpenAI messages factories to *MessagesHandler ([#173](https://github.com/launchdarkly/js-ai-sdk/issues/173))
+* **skills:** rename FDv2SkillStore to LaunchDarklySkillStore ([#172](https://github.com/launchdarkly/js-ai-sdk/issues/172))
+
+### Features
+
+* **AIC-3686:** rename the LangChain and OpenAI messages factories to *MessagesHandler ([#173](https://github.com/launchdarkly/js-ai-sdk/issues/173)) ([15a0d37](https://github.com/launchdarkly/js-ai-sdk/commit/15a0d377c74268f3045d219173b31faaba2fdbe8))
+* **evaluations:** promote Evaluations from Code to core ([#181](https://github.com/launchdarkly/js-ai-sdk/issues/181)) ([676a2ed](https://github.com/launchdarkly/js-ai-sdk/commit/676a2ed4e628e88b24d3bd183461dc09c74b1028))
+* **skills:** rename FDv2SkillStore to LaunchDarklySkillStore ([#172](https://github.com/launchdarkly/js-ai-sdk/issues/172)) ([d3e7c5f](https://github.com/launchdarkly/js-ai-sdk/commit/d3e7c5f88ae000da3a40be7eb97bac1f98169db2))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.5.0 to ^1.0.0
+
 ## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-node-0.3.0...@launchdarkly/ai-node-0.4.0) (2026-10-26)
 
 

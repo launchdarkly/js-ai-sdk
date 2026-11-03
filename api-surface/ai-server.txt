@@ -179,6 +179,7 @@ ToolHandlerFn
 - toSemconvFinishReason
 TrackData
 - TraverseVisitor
+- validateMaxRetries  # internal: plumbing for the handler packages; moves to the internal entry point
 - waitForTelemetry  # internal: not needed to init, configure, execute or read results
 + watchSkills  usage=client.watchSkills
 + WatchSkillsOptions

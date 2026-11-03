@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-otel-0.3.0...@launchdarkly/ai-otel-1.0.0) (2026-10-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** spans carry launchdarkly.project_id instead of highlight.project_id
+
+### Bug Fixes
+
+* **client:** stamp launchdarkly.project_id on the telemetry resource ([#176](https://github.com/launchdarkly/js-ai-sdk/issues/176)) ([93fb412](https://github.com/launchdarkly/js-ai-sdk/commit/93fb412e794bd7019404d5b12c7087bfaab71670))
+
 ## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-otel-0.2.0...@launchdarkly/ai-otel-0.3.0) (2026-10-26)
 
 

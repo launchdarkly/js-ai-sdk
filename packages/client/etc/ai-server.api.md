@@ -1123,6 +1123,11 @@ export type TrackData = {
 // @public
 export type TraverseVisitor<T = any> = (node: GraphNode, ctx: Record<string, unknown>) => T | Promise<T>;
 
+// Warning: (ae-internal-missing-underscore) The name "validateMaxRetries" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export function validateMaxRetries(maxRetries: number | undefined): number | undefined;
+
 // @public
 export function waitForTelemetry(timeoutMs?: number): Promise<void>;
 

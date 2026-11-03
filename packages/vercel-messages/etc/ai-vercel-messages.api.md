@@ -67,6 +67,7 @@ export const vercelMessages: (configKey: string, userInput: string, context: LDC
 
 // @public (undocumented)
 export interface VercelMessagesOptions extends ContentCaptureOptions {
+    maxRetries?: number;
     // (undocumented)
     model?: LanguageModel;
     // (undocumented)
