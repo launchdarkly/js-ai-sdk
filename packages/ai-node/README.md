@@ -41,11 +41,11 @@ Import from `@launchdarkly/ai-node` exactly as you would from `@launchdarkly/ai-
 ```ts
 import 'dotenv/config';
 import { config, shutdown } from '@launchdarkly/ai-node';
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
 
 const caller = config({
   key: 'my-ai-config-flag',
-  handler: createOpenAIHandler(),
+  handler: createOpenAIMessagesHandler(),
 });
 
 const result = await caller.invoke(
@@ -115,14 +115,18 @@ module.exports = {
 
 Experimental features are not exported from the package root. Import them from
 `@launchdarkly/ai-node/experimental`, which re-exports `@launchdarkly/ai-server/experimental`, so
-you need no direct dependency on `@launchdarkly/ai-server`. For example:
+you need no direct dependency on `@launchdarkly/ai-server`. Names there may change in a minor
+release. No feature is experimental now.
 
-```ts
-import { InMemorySkillStore, setSkillStore } from '@launchdarkly/ai-node/experimental';
-```
+Agent Skills is no longer experimental: import it from the package root, for example
+`import { InMemorySkillStore, setSkillStore } from '@launchdarkly/ai-node';`. It requires
+`@launchdarkly/ai-node` 1.0.0 or later. See the
+[Agent Skills guide](../client/README.md#agent-skills).
 
-Names there may change in a minor release. See the
-[Agent Skills guide](../client/README.md#agent-skills-experimental).
+Evaluations from Code is no longer experimental: import it from the package root, for example
+`import { initEvaluations } from '@launchdarkly/ai-node';`. It requires
+`@launchdarkly/ai-node` 1.0.0 or later. See the
+[Evaluations from Code guide](../client/README.md#evaluations-from-code).
 
 ## Full API reference
 

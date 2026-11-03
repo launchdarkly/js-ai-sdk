@@ -1,5 +1,5 @@
 /**
- * TESTING.md §3.27 — `$ld:ai:sdk:usage` for litellm-agents.
+ * `$ld:ai:sdk:usage` for litellm-agents.
  */
 
 import type { LDClientInterface, LDContext } from '@launchdarkly/ai-server';
@@ -34,7 +34,7 @@ async function settle(value: unknown): Promise<void> {
   }
 }
 
-describe('§3.27 litellm-agents helper usage', () => {
+describe('litellm-agents helper usage', () => {
   let client: ReturnType<typeof fakeClient>;
 
   beforeEach(async () => {

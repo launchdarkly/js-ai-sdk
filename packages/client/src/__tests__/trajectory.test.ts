@@ -14,7 +14,17 @@ describe('TrajectoryRecorder', () => {
     const recorder = new TrajectoryRecorder();
     const tools = recorder.wrap({ lookup: (args: unknown) => ({ found: args }) });
     expect((tools.lookup as Fn)({ id: 1 })).toEqual({ found: { id: 1 } });
-    expect(recorder.calls).toEqual([{ key: 'lookup', args: { id: 1 }, result: { found: { id: 1 } }, done: true }]);
+    expect(recorder.calls).toEqual([
+      {
+        key: 'lookup',
+        args: { id: 1 },
+        result: { found: { id: 1 } },
+        done: true,
+        startedAt: expect.any(Number),
+        endedAt: expect.any(Number),
+      },
+    ]);
+    expect(recorder.calls[0].endedAt).toBeGreaterThanOrEqual(recorder.calls[0].startedAt ?? Number.POSITIVE_INFINITY);
     expect(recorder.available).toEqual(['lookup']);
   });
 

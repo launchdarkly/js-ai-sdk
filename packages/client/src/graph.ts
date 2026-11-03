@@ -4,6 +4,7 @@ import { bindConversationId, bindSpanContext } from './conversation.js';
 import { runJudges } from './judges.js';
 import { extractVariation, getClient, initClient } from './lifecycle.js';
 import { resolveHandlers, resolveTools } from './registry.js';
+import { captureContentFor } from './sdk-options.js';
 import { reportUsage } from './sdk-usage.js';
 import { executeAndStream, modelStampsFromMeta, tryGetEnvironmentId } from './tracking.js';
 import { HANDOFF_TOOL_PREFIX } from './trajectory.js';
@@ -23,12 +24,13 @@ import {
   type ProviderResponse,
   type RouteResult,
   type RunNodeOptions,
+  type TokenUsage,
   type Tool,
   type TrackData,
   type TraverseVisitor,
   type VariationMeta,
 } from './types.js';
-import { endSpanOnce, normalizeMode, setLdSpanAttributes } from './utils.js';
+import { endSpanOnce, normalizeMode, selectModeHandler, setLdSpanAttributes } from './utils.js';
 
 // Cycle protection: cap how many BFS layers a traversal will expand.
 const MAX_TRAVERSAL_DEPTH = 100;
@@ -44,6 +46,20 @@ const drain = async <T, TReturn>(generator: AsyncGenerator<T, TReturn>): Promise
 };
 
 /**
+ * A node's `node_done` event. Carries the node's own judge results, and leaves
+ * the key out when no judge produced one. `done` holds only the graph-level judge.
+ */
+const nodeDoneEvent = (
+  nodeKey: string,
+  response: string,
+  usage: TokenUsage,
+  judgeResults: ProviderResponse['judgeResults'],
+): Extract<GraphStreamEvent, { type: 'node_done' }> =>
+  judgeResults && Object.keys(judgeResults).length > 0
+    ? { type: 'node_done', nodeKey, response, usage, judgeResults }
+    : { type: 'node_done', nodeKey, response, usage };
+
+/**
  * Selects the handler responsible for a node from the candidate `handlers`,
  * matching on the node config's provider and the variation mode. Falls back to
  * a provider-only match, then to a sole handler, before giving up.
@@ -56,16 +72,19 @@ const selectHandler = (config: AiConfigRep, meta: VariationMeta, handlers: Provi
 
   const mode = normalizeMode(meta.mode);
 
-  const exact = handlers.find((h) => h.providesFor?.[0] === provider && h.providesFor?.[1] === mode);
-  if (exact) return exact;
-
-  const wildcard = handlers.find((h) => h.providesFor?.[0] === '*' && h.providesFor?.[1] === mode);
-  if (wildcard) return wildcard;
+  const chosen = selectModeHandler(handlers, provider, mode);
+  if (chosen) return chosen;
 
   const byProvider = handlers.find((h) => h.providesFor?.[0] === provider);
   if (byProvider) return byProvider;
 
-  if (handlers.length === 1) return handlers[0];
+  if (handlers.length === 1) {
+    const only = handlers[0];
+    if (only.providers !== undefined && !only.providers.includes(provider)) {
+      throw new Error(`Handler for provider ${provider} not found`);
+    }
+    return only;
+  }
 
   throw new Error(`Handler for provider ${provider} not found`);
 };
@@ -92,7 +111,7 @@ const disabledDefinition = (key: string): GraphDefinition => ({
 const fetchGraphVariation = async (
   key: string,
   context: LDContext,
-): Promise<{ enabled: boolean; topology?: GraphTopology; meta: VariationMeta }> => {
+): Promise<{ enabled: boolean; topology?: GraphTopology; meta: VariationMeta; value: unknown }> => {
   await initClient();
   const variation: unknown = await getClient().variation(key, context, {});
 
@@ -103,10 +122,10 @@ const fetchGraphVariation = async (
 
   const parsed = GraphTopologySchema.safeParse(variation);
   if (!parsed.success || !parsed.data.root) {
-    return { enabled: false, meta };
+    return { enabled: false, meta, value: variation };
   }
 
-  return { enabled: true, topology: parsed.data, meta };
+  return { enabled: true, topology: parsed.data, meta, value: variation };
 };
 
 /**
@@ -124,6 +143,8 @@ const buildGraph = async (
 ): Promise<{
   def: GraphDefinition;
   graphTrackData: TrackData;
+  /** The graph flag variation exactly as the LaunchDarkly SDK returned it. */
+  graphValue: unknown;
   streamRoute: (
     node: GraphNode,
     input?: string,
@@ -131,7 +152,7 @@ const buildGraph = async (
     runTrackData?: TrackData,
   ) => AsyncGenerator<GraphStreamEvent, RouteResult>;
 }> => {
-  const { enabled, topology, meta } = await fetchGraphVariation(key, context);
+  const { enabled, topology, meta, value: graphValue } = await fetchGraphVariation(key, context);
 
   const graphTrackData: TrackData = {
     runId: crypto.randomUUID(),
@@ -153,6 +174,7 @@ const buildGraph = async (
     return {
       def: disabledDefinition(key),
       graphTrackData,
+      graphValue,
       streamRoute: disabledStreamRoute,
     };
   }
@@ -178,9 +200,12 @@ const buildGraph = async (
   const edgesFrom = (nodeKey: string): GraphEdge[] => edges.filter((e) => e.sourceKey === nodeKey);
 
   const nodes = new Map<string, GraphNode>();
+  // Raw variation per node, kept beside `GraphNode` so the public type is unchanged.
+  const nodeValues = new Map<string, unknown>();
   try {
     for (const nodeKey of allKeys) {
-      const { config, meta: nodeMeta } = await extractVariation(nodeKey, context);
+      const { config, meta: nodeMeta, value } = await extractVariation(nodeKey, context);
+      nodeValues.set(nodeKey, value);
       const nodeEdges = edgesFrom(nodeKey);
       nodes.set(nodeKey, {
         key: nodeKey,
@@ -198,6 +223,7 @@ const buildGraph = async (
     return {
       def: disabledDefinition(key),
       graphTrackData,
+      graphValue,
       streamRoute: disabledStreamRoute,
     };
   }
@@ -258,16 +284,14 @@ const buildGraph = async (
       };
       handoffHandlers[toolName] = () => {
         if (!chosen) chosen = edge.targetKey;
-        // Selecting an edge does not end the turn; execution continues until the model
-        // produces its final text. A "transferring now" reply reads as though control has
-        // already left, and the model stops short of its own work.
-        return `Handoff to ${edge.targetKey} recorded. Finish your own work and provide your final response.`;
+        // Same bytes as the Python and Go SDKs. The last sentence stops the router answering for its target.
+        return `Handoff to ${edge.targetKey} recorded. ${edge.targetKey} takes over when your turn ends. Finish your own part, then end your turn. Do not answer for ${edge.targetKey}.`;
       };
     }
 
     const routedConfig: AiConfigRep = {
       ...node.config,
-      instructions: `${node.config.instructions ?? ''}\n\nComplete your task using your available tools first. Only once you have your final answer, call exactly one transfer tool to route to the next agent.`,
+      instructions: `${node.config.instructions ?? ''}\n\nComplete your task using your available tools first. Only once your own part is done, call exactly one transfer tool to route to the next agent. Do not answer the parts of the request that belong to the agent you route to.`,
       tools: { ...(node.config.tools ?? {}), ...handoffTools },
     };
 
@@ -322,6 +346,7 @@ const buildGraph = async (
         variables: opts.variables,
         graphKey: key,
         history: opts.history,
+        evaluatedValue: nodeValues.get(node.key),
       })) {
         if (event.type === 'chunk') {
           yield { type: 'chunk', text: event.text, nodeKey: node.key };
@@ -357,7 +382,7 @@ const buildGraph = async (
         );
       }
 
-      yield { type: 'node_done', nodeKey: node.key, response, usage };
+      yield nodeDoneEvent(node.key, response, usage, judgeResults);
       return { response, usage, judgeResults, trackData };
     } catch (err) {
       if (opts.from) {
@@ -429,6 +454,7 @@ const buildGraph = async (
         variables: opts.variables,
         graphKey: key,
         history: opts.history,
+        evaluatedValue: nodeValues.get(node.key),
       })) {
         if (event.type === 'chunk') {
           yield { type: 'chunk', text: event.text, nodeKey: node.key };
@@ -467,7 +493,7 @@ const buildGraph = async (
         );
       }
 
-      yield { type: 'node_done', nodeKey: node.key, response, usage };
+      yield nodeDoneEvent(node.key, response, usage, judgeResults);
       return { response, usage, judgeResults, trackData, next };
     } catch (err) {
       const chosenKey = chosen();
@@ -581,7 +607,7 @@ const buildGraph = async (
     reverseTraverse,
   };
 
-  return { def, graphTrackData, streamRoute };
+  return { def, graphTrackData, graphValue, streamRoute };
 };
 
 /**
@@ -718,7 +744,12 @@ export const graphInternal = (key: string, options: GraphOptions): GraphCaller =
       );
     }
 
-    const { def, graphTrackData: builtTrackData, streamRoute } = await buildGraph(key, context, resolvedOptions);
+    const {
+      def,
+      graphTrackData: builtTrackData,
+      graphValue,
+      streamRoute,
+    } = await buildGraph(key, context, resolvedOptions);
     if (!def.enabled) {
       throw new Error(`Agent graph "${key}" is disabled`);
     }
@@ -727,7 +758,13 @@ export const graphInternal = (key: string, options: GraphOptions): GraphCaller =
     const graphTrackData: TrackData = { ...builtTrackData, runId: crypto.randomUUID() };
 
     const span = trace.getTracer('@launchdarkly/ai-server').startSpan('launchdarkly.graph', undefined, callerContext);
-    setLdSpanAttributes(span, { __ld: graphTrackData, ldContext: context });
+    // The root span has no single handler, so the raw graph variation follows the process-wide
+    // content capture default. Without it, feature_flag.result.value falls back to the variation key.
+    setLdSpanAttributes(span, {
+      __ld: graphTrackData,
+      ldContext: context,
+      ...(graphValue !== undefined && captureContentFor(undefined) ? { __ldValue: graphValue } : {}),
+    });
     const spanContext = trace.setSpan(callerContext, span);
     const ended = new Set<Span>();
 
@@ -803,6 +840,7 @@ export const graphInternal = (key: string, options: GraphOptions): GraphCaller =
             } as unknown as AiConfigRep,
             userContext: context,
             handler: selectHandler(judgeRoot.config, judgeRoot.meta, judgeHandlers),
+            handlers: judgeHandlers,
             userInput: resolvedInput,
             llmResponse: finalResponse,
             baseTrackData: graphTrackData,

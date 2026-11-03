@@ -1,5 +1,5 @@
 /**
- * TESTING.md §3.27 — `$ld:ai:sdk:usage` for claude-agents.
+ * `$ld:ai:sdk:usage` for claude-agents.
  */
 
 import type { LDClientInterface, LDContext } from '@launchdarkly/ai-server';
@@ -74,6 +74,8 @@ const fire = (call: () => unknown): Promise<void> => {
 const CALLS: Record<string, Call[]> = {
   'claude-agents.claudeAgents': [(fn) => settle(fn('k', 'q', ctx))],
   'claude-agents.createClaudeAgentsHandler': [(fn) => fire(() => fn())],
+  // Reports its own ID and not the core factory's.
+  'claude-agents.createClaudeAgentsSkillsHandler': [(fn) => fire(() => fn())],
   'claude-agents.claudeGraph': [
     (fn) => fire(() => fn('k', {})),
     // The returned caller's methods run later; they must not add client.graph.* events.
@@ -96,7 +98,7 @@ it('has a call for every usage ID its list reports, and none it does not', () =>
   expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());
 });
 
-describe('§3.27 claude-agents helper usage', () => {
+describe('claude-agents helper usage', () => {
   let client: FakeClient;
 
   beforeEach(async () => {

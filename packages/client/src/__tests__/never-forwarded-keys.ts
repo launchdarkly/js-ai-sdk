@@ -1,6 +1,6 @@
 /**
- * The never-forwarded `model.parameters` keys every handler package tests against (ai-sdks-monorepo
- * TESTING.md §1.12, "Never forwarded"). Each package's `__tests__/never-forwarded.ts` builds its bag
+ * The never-forwarded `model.parameters` keys every handler package tests against.
+ * Each package's `__tests__/never-forwarded.ts` builds its bag
  * from this list with `createNeverForwarded`, adding the keys only its own handler drops, so the
  * bags cannot drift apart. This file is test code: packages import it by relative path, the same
  * way their `sdk-usage` tests read `client/src/version.ts`, so it adds no runtime dependency and is
@@ -16,7 +16,7 @@ import { expect } from 'vitest';
 export const NEVER_FORWARDED = 'NEVER_FORWARDED';
 
 /**
- * Keys from every §1.12 never-forward category, in both the snake_case the LaunchDarkly UI writes
+ * Keys from every never-forward category, in both the snake_case the LaunchDarkly UI writes
  * and the camelCase the TypeScript frameworks read. No handler forwards any of them, so every
  * package's bag includes all of them.
  */
@@ -249,7 +249,7 @@ function findNeverForwarded(value: unknown, path: string, seen: Set<unknown>): s
 
 /**
  * One package's never-forward bag: `SHARED_NEVER_FORWARDED_KEYS` plus `extraKeys`, the keys that
- * package's handler also drops under its own §1.12 table (for example `reasoning` for the
+ * package's handler also drops under its own forwarding table (for example `reasoning` for the
  * LangChain `ChatOpenAI` list). An extra key must be one the handler never forwards.
  */
 export function createNeverForwarded(extraKeys: ReadonlyArray<string> = []) {

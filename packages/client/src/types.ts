@@ -42,6 +42,15 @@ export interface LDClientInterface {
   flush(): Promise<void>;
   // Server SDKs return void; a custom client may return a Promise, and shutdown() awaits either.
   close(): void | Promise<void>;
+  /**
+   * Registers a change listener. `watchSkills` uses `update:<key>` to follow an
+   * AI Config. Optional: a client without it cannot be followed.
+   */
+  on?(event: string, listener: (...args: unknown[]) => void): unknown;
+  /** Unregisters a listener added with `on`. Optional. */
+  off?(event: string, listener: (...args: unknown[]) => void): unknown;
+  /** Whether the client is offline, and so never reports changes. Optional; absent means online. */
+  isOffline?(): boolean;
 }
 
 export type RegistryInput = Registry;
@@ -100,8 +109,7 @@ export type TextContentBlock = { type: 'text'; text: string };
 /**
  * An image block inside a multimodal message, in LaunchDarkly-canonical form.
  * `source.type` is either an inline base64 payload (with its media type) or a
- * URL. Handlers map this into each provider's native image shape — see the
- * per-provider table in TESTING.md Appendix A.7.
+ * URL. Handlers map this into each provider's native image shape.
  */
 export type ImageContentBlock =
   | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
@@ -167,10 +175,8 @@ export type AiConfigRep = {
   /**
    * Optional version-pinned skill references attached to this variation, as
    * delivered. `parseAiConfig` does not validate it, so a malformed field never
-   * fails a core call; read it with `skillRefs` from
-   * `@launchdarkly/ai-server/experimental`, which does. Typed `unknown` because
-   * it is unvalidated, and because Agent Skills is experimental, so this core
-   * type does not name its types.
+   * fails a config call; read it with `skillRefs`, which does. Typed
+   * `unknown` because it is unvalidated.
    */
   skills?: unknown;
 };
@@ -300,7 +306,7 @@ export type RawSkillObject = {
 
 /**
  * The interface a source of skill content implements. Structurally typed: pass
- * any object with these methods. `FDv2SkillStore` (LaunchDarkly delivery) and
+ * any object with these methods. `LaunchDarklySkillStore` (LaunchDarkly delivery) and
  * `InMemorySkillStore` are the built-in implementations.
  *
  * Everything a store serves is treated as untrusted; the accessors re-verify
@@ -334,6 +340,70 @@ export type SkillStore = {
   /** Whether the store has received its initial data. Absent means initialized. */
   isInitialized?(): boolean;
 };
+
+/**
+ * A requested skill set that is read when it is needed, rather than fixed when
+ * `writeSkills` or `watchSkills` is called. Frozen; build one with
+ * {@link createSkillSource}, or use `configSkills` for the skills one AI Config
+ * pins.
+ *
+ * `writeSkills` reads it once per call. `watchSkills` reads it on every
+ * reconcile, and also reconciles when one of the `configKeys` changes, so the
+ * files on disk follow the config.
+ */
+export interface SkillSource {
+  /**
+   * Returns the current references, synchronously or as a promise. A throw,
+   * a rejection, or any answer that is not an array of `SkillReference` values
+   * and key strings is a failed read: nothing on disk changes. It is never
+   * treated as an empty list.
+   */
+  readonly refs: () => ReadonlyArray<SkillReference | string> | PromiseLike<ReadonlyArray<SkillReference | string>>;
+  /** The AI Configs whose changes make a watcher read `refs` again. Frozen. */
+  readonly configKeys: readonly string[];
+}
+
+/**
+ * Builds a frozen {@link SkillSource}. `configKeys` defaults to `[]`, and is
+ * copied, so changing the array passed in changes nothing.
+ *
+ * @throws TypeError if `refs` is not a function, or `configKeys` is not an
+ *   array of non-empty strings. A bare string is rejected rather than read as
+ *   one key per character.
+ */
+export function createSkillSource(init: { refs: SkillSource['refs']; configKeys?: readonly string[] }): SkillSource {
+  const { refs, configKeys = [] } = init ?? ({} as typeof init);
+  if (typeof refs !== 'function') {
+    throw new TypeError(`a SkillSource needs a refs function, got ${refs === null ? 'null' : typeof refs}`);
+  }
+  if (typeof configKeys === 'string') {
+    throw new TypeError(
+      `configKeys takes an array of AI Config keys; pass [key] rather than a bare string. Got ${JSON.stringify(configKeys)}.`,
+    );
+  }
+  if (!Array.isArray(configKeys)) {
+    throw new TypeError(`configKeys must be an array of AI Config keys, got ${typeof configKeys}`);
+  }
+  for (const [index, key] of configKeys.entries()) {
+    if (typeof key !== 'string' || key.length === 0) {
+      throw new TypeError(`configKeys[${index}] must be a non-empty string, got ${JSON.stringify(key) ?? typeof key}`);
+    }
+  }
+  return Object.freeze({ refs, configKeys: Object.freeze([...configKeys]) });
+}
+
+/**
+ * Whether `value` is a {@link SkillSource}, by shape: an object with a `refs`
+ * function. Arrays, `'*'` and skill values never have one.
+ */
+export function isSkillSource(value: unknown): value is SkillSource {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof (value as { refs?: unknown }).refs === 'function'
+  );
+}
 
 /** Builds a frozen {@link SkillReference}. */
 export function createSkillReference(init: { key: string; version: number }): SkillReference {
@@ -482,9 +552,8 @@ export function parseAiConfig(raw: unknown): ParseResult<AiConfigRep> {
     return { success: false, error: { message: 'outputFormat must be an object (JSON Schema)' } };
   }
 
-  // `skills` is passed through unvalidated. Agent Skills is experimental, so a
-  // malformed field must not fail a core config call (TESTING.md §0.3);
-  // `skillRefs` rejects it where the references are used.
+  // `skills` is passed through unvalidated, so a malformed field never fails a
+  // config call; `skillRefs` rejects it where the references are used.
 
   return { success: true, data: raw as AiConfigRep };
 }
@@ -588,6 +657,11 @@ export type JudgeTask = {
   judgeConfig: AiConfigRep;
   /** Variation metadata for the judge config. */
   judgeMeta: VariationMeta;
+  /**
+   * The judge variation exactly as the LaunchDarkly SDK returned it. Written as
+   * `feature_flag.result.value` on the judge span when the judge's handler captures content.
+   */
+  judgeValue?: unknown;
   /** The LLM response to evaluate. */
   actualOutput: string;
   /**
@@ -683,7 +757,14 @@ export type StreamEvent =
 export type GraphStreamEvent =
   | { type: 'node_start'; nodeKey: string }
   | { type: 'chunk'; text: string; nodeKey: string }
-  | { type: 'node_done'; nodeKey: string; response: string; usage: TokenUsage }
+  | {
+      type: 'node_done';
+      nodeKey: string;
+      response: string;
+      usage: TokenUsage;
+      /** This node's own judge results. Absent when none of its judges produced one. */
+      judgeResults?: ProviderResponse['judgeResults'];
+    }
   | { type: 'handoff'; sourceKey: string; targetKey: string }
   | {
       type: 'done';
@@ -704,9 +785,20 @@ export type ProviderHandler = ((
 }>) & {
   providesFor?: [provider: string, type: 'agent' | 'messages'];
   /**
-   * Whether this handler was built with content capture on. Declared here so the client core can
-   * apply the same gate to content it writes on the handler's behalf — notably the judge's
-   * reasoning — without reaching into the handler's closure.
+   * Allowlist consulted only when `providesFor` starts with `'*'`. Names must match
+   * `config.provider.name` exactly. Omitted means the wildcard accepts every provider.
+   */
+  providers?: readonly string[];
+  /**
+   * Whether this handler writes conversation content on its spans. Declared here so the client
+   * core can apply the same gate to content it writes on the handler's behalf (notably the judge's
+   * reasoning) without reaching into the handler's closure.
+   *
+   * On a handler built with {@link createHandler} or a handler factory, reading it returns the
+   * effective value for a run starting now: the handler's explicit `true` or `false` when it has
+   * one, otherwise the default from {@link configure}, otherwise `true`. Assigning `true` or
+   * `false` sets this handler's override and does not change the process default. A plain function
+   * that never went through `createHandler` has no value here and follows the process default.
    */
   captureContent?: boolean;
   /**
@@ -714,15 +806,11 @@ export type ProviderHandler = ((
    * this instead of the blocking handler and forwards `chunk` events to the
    * caller in real time. When absent, `model().stream()` falls back to calling
    * the blocking handler and emitting its output as a single chunk.
-   *
-   * toolHandlers uses Record<string, any> to avoid a contravariant mismatch
-   * when handler implementations narrow to Record<string, Function>.
    */
   stream?: (
     config: AiConfigRep,
     userInput?: string,
-    // biome-ignore lint/suspicious/noExplicitAny: avoids contravariant mismatch with narrowed handler implementations
-    toolHandlers?: Record<string, any>,
+    toolHandlers?: Record<string, ToolHandlerFn | NativeTool>,
     variables?: Record<string, unknown>,
     history?: Message[],
   ) => AsyncGenerator<HandlerStreamEvent>;
@@ -898,6 +986,21 @@ export type ProviderGraphResponse = {
   usage: TokenUsage;
   judgeResults?: ProviderResponse['judgeResults'];
 };
+
+/**
+ * Process-wide behavior defaults, applied by {@link configure}.
+ *
+ * `captureContent` is the default for writing prompts, model output, tool arguments, tool results
+ * and judge explanations on spans. The built-in value is `true`: a process that never calls
+ * `configure` sends that text. It is a default, not a ceiling: an explicit `true` or `false` on a
+ * handler factory or a convenience wrapper overrides it, and an explicit `false` removes the text
+ * everywhere, including on offline evaluation spans. Further process-wide defaults are added as
+ * fields on this type.
+ */
+export interface SDKOptions {
+  /** Default for conversation content on spans. Omitted means the built-in `true`. */
+  readonly captureContent?: boolean;
+}
 
 export type InitBaseClientOptions = {
   sdkKey?: string;

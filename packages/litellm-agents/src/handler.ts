@@ -7,6 +7,7 @@ import {
   createHandlerInternal,
   endSpanOnce,
   imageBlockToUrl,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -242,14 +243,14 @@ function runSettings(configRep: AiConfigRep) {
 
 function buildTools(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn | NativeTool>) {
   return Object.entries(configTools)
-    .filter(([name]) => typeof handlers[name] === 'function')
+    .filter(([name]) => isFunctionTool(name, handlers[name]))
     .map(([name, definition]) =>
       tool({
         name,
         description: definition.description ?? '',
         strict: false,
         parameters: definition.parameters,
-        // null, not undefined: the SDK default feeds a tool error back to the model; the spec (TESTING.md §1.4) says it must propagate.
+        // null, not undefined: the SDK default feeds a tool error back to the model, but it must propagate.
         errorFunction: null,
         execute: async (args: unknown) => {
           const handler = handlers[name] as unknown as (args: unknown) => unknown;
@@ -397,9 +398,8 @@ export function createLiteLLMAgentsHandler(options: LiteLLMAgentsOptions = {}): 
 /** `createLiteLLMAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions = {}): ProviderHandler {
   const resolvedOptions = checkedOptions(options);
-  const captureContent = resolvedOptions.captureContent ?? false;
 
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['*', 'agent'],
     async (
       configRep: AiConfigRep,
@@ -409,6 +409,8 @@ export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions
       history?: Message[],
     ) =>
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
+        // Resolved per run, not per factory call, so a `configure()` after construction applies.
+        const captureContent = handler.captureContent === true;
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setIdentity(span, configRep);
         setLdSpanAttributes(span, variables);
@@ -458,6 +460,7 @@ export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setIdentity(span, configRep);
@@ -527,8 +530,9 @@ export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions
         }
       }
     },
-    captureContent,
+    resolvedOptions.captureContent,
   );
+  return handler;
 }
 
 export const litellmAgents = (

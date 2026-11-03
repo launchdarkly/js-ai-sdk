@@ -1,5 +1,73 @@
 # Changelog
 
+## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-agents-0.5.0...@launchdarkly/ai-claude-agents-1.0.0) (2026-10-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** conversation content is now captured on spans by default. To keep it off, call configure({ options: { captureContent: false } }) once at startup.
+* **client:** createHandler returns a new wrapper function rather than adding providesFor to the function you pass and returning that same function. Use the handler createHandler returns; the function you passed in no longer carries providesFor.
+* **client:** add result variant and value to the feature_flag span event ([#186](https://github.com/launchdarkly/js-ai-sdk/issues/186))
+* **SEC-9507:** enable Claude native tools only when the active variation attaches them
+* **claude-agents:** honour the config's max_tokens and disable thinking unless the config asks ([#183](https://github.com/launchdarkly/js-ai-sdk/issues/183))
+* **skills:** rename FDv2SkillStore to LaunchDarklySkillStore ([#172](https://github.com/launchdarkly/js-ai-sdk/issues/172))
+* **AIC-3598:** type toolHandlers on the handler contract; declare @langchain/anthropic ([#170](https://github.com/launchdarkly/js-ai-sdk/issues/170))
+
+### Features
+
+* **client:** add result variant and value to the feature_flag span event ([#186](https://github.com/launchdarkly/js-ai-sdk/issues/186)) ([8dbe2ec](https://github.com/launchdarkly/js-ai-sdk/commit/8dbe2ec266d635464a41facfde924b0707f747aa))
+* **client:** capture conversation content on spans by default and add configure() ([d9c7fc3](https://github.com/launchdarkly/js-ai-sdk/commit/d9c7fc3cb76d16b0973724725f4e9b6d06d6a052))
+* **skills:** give Claude Agents runs the skills attached to their variation ([#136](https://github.com/launchdarkly/js-ai-sdk/issues/136)) ([df16ba0](https://github.com/launchdarkly/js-ai-sdk/commit/df16ba0823d093231e523a95c1c7180cc5de805f))
+* **skills:** rename FDv2SkillStore to LaunchDarklySkillStore ([#172](https://github.com/launchdarkly/js-ai-sdk/issues/172)) ([d3e7c5f](https://github.com/launchdarkly/js-ai-sdk/commit/d3e7c5f88ae000da3a40be7eb97bac1f98169db2))
+
+
+### Bug Fixes
+
+* **AIC-3598:** type toolHandlers on the handler contract; declare @langchain/anthropic ([#170](https://github.com/launchdarkly/js-ai-sdk/issues/170)) ([c6c00fc](https://github.com/launchdarkly/js-ai-sdk/commit/c6c00fcbc31c62aad7aeefcadaaf1a1274d14207))
+* **claude-agents:** honour the config's max_tokens and disable thinking unless the config asks ([#183](https://github.com/launchdarkly/js-ai-sdk/issues/183)) ([f58ce21](https://github.com/launchdarkly/js-ai-sdk/commit/f58ce2173daef438c34e436a56b0e9521fa39db1))
+* **client:** return a new handler from createHandler instead of changing the function passed in ([d9c7fc3](https://github.com/launchdarkly/js-ai-sdk/commit/d9c7fc3cb76d16b0973724725f4e9b6d06d6a052))
+* **SEC-9507:** dispatch litellm-messages tool calls only to tools offered for the request ([6926e8a](https://github.com/launchdarkly/js-ai-sdk/commit/6926e8a67f684bc4c40796392bb0d088e71e728e))
+* **SEC-9507:** enable Claude native tools only when the active variation attaches them ([6926e8a](https://github.com/launchdarkly/js-ai-sdk/commit/6926e8a67f684bc4c40796392bb0d088e71e728e))
+* **SEC-9507:** pass handlers only the tools attached to the active variation ([6926e8a](https://github.com/launchdarkly/js-ai-sdk/commit/6926e8a67f684bc4c40796392bb0d088e71e728e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.5.0 to ^1.0.0
+
+## [0.5.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-agents-0.4.0...@launchdarkly/ai-claude-agents-0.5.0) (2026-10-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* forward the same model.parameters keys as the Python SDK ([#118](https://github.com/launchdarkly/js-ai-sdk/issues/118))
+* **claude-agents:** accept trusted cwd and settingSources options, and load no host settings by default ([#135](https://github.com/launchdarkly/js-ai-sdk/issues/135))
+* **client:** the client no longer loads .env. Add import 'dotenv/config' to your entrypoint (and install dotenv) if you relied on it.
+
+### Features
+
+* **AIC-3623:** evals from code ([#143](https://github.com/launchdarkly/js-ai-sdk/issues/143)) ([dc74b48](https://github.com/launchdarkly/js-ai-sdk/commit/dc74b488b5c4f9918650c92e86d4cf45742504c5))
+* **claude-agents:** accept trusted cwd and settingSources options, and load no host settings by default ([#135](https://github.com/launchdarkly/js-ai-sdk/issues/135)) ([6acd53d](https://github.com/launchdarkly/js-ai-sdk/commit/6acd53d892710ed0c8d404698e71729ab462369e))
+
+
+### Bug Fixes
+
+* **AIC-3571:** visit every child before its parent in reverseTraverse ([#147](https://github.com/launchdarkly/js-ai-sdk/issues/147)) ([a17a2ce](https://github.com/launchdarkly/js-ai-sdk/commit/a17a2cebb973586bdfc0fa3fc8d79c9838d9a395))
+* **AIC-3577:** send object tool results to the model as JSON ([#146](https://github.com/launchdarkly/js-ai-sdk/issues/146)) ([be41d87](https://github.com/launchdarkly/js-ai-sdk/commit/be41d876056fe84883207cd3f3ca74f42aaa42a0))
+* **claude-agents:** fail the run when the CLI reports an API error as success ([#138](https://github.com/launchdarkly/js-ai-sdk/issues/138)) ([4637958](https://github.com/launchdarkly/js-ai-sdk/commit/463795828c0347f3f328a0135785fc62d9dabfd5))
+* **client:** stop loading dotenv from library code ([#69](https://github.com/launchdarkly/js-ai-sdk/issues/69)) ([fea34f3](https://github.com/launchdarkly/js-ai-sdk/commit/fea34f309dba7f94264efaf0d065b9d80b29a8c2))
+* forward the same model.parameters keys as the Python SDK ([#118](https://github.com/launchdarkly/js-ai-sdk/issues/118)) ([f7883ce](https://github.com/launchdarkly/js-ai-sdk/commit/f7883cec93b05824cf772a790eee2d93c2246a1e))
+* give native graph spans their LaunchDarkly identity ([#101](https://github.com/launchdarkly/js-ai-sdk/issues/101)) ([4d97cfa](https://github.com/launchdarkly/js-ai-sdk/commit/4d97cfa4f81564f5389728dbd3e2d418e2f44f27))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.4.0 to ^0.5.0
+
 ## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-agents-0.3.0...@launchdarkly/ai-claude-agents-0.4.0) (2026-10-09)
 
 

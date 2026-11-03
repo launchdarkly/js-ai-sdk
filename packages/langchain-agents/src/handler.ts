@@ -12,12 +12,14 @@ import {
   createHandlerInternal,
   createRunUsage,
   endSpanOnce,
+  isFunctionTool,
   type LDContext,
   langChainContentText,
   langChainFinishReasons,
   langChainSpanMessages,
   langChainSpanUsage,
   type Message,
+  type NativeTool,
   type ProviderHandler,
   parseTemplate,
   reportUsage,
@@ -301,9 +303,9 @@ async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSourc
   return new ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o', 'openai') as any);
 }
 
-const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record<string, ToolHandlerFn>) =>
+const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record<string, ToolHandlerFn | NativeTool>) =>
   Object.entries(configTools)
-    .filter(([name]) => typeof toolHandlers[name] === 'function')
+    .filter(([name]) => isFunctionTool(name, toolHandlers[name]))
     .map(([name, toolConfig]) =>
       tool(
         async (args: Record<string, unknown>) => {
@@ -385,7 +387,7 @@ const toToolDefinitions = (configTools: Record<string, Tool> | undefined): ToolD
 /** `llm` may be a chat model, or `(config) => model` so `model.parameters` can be applied unchanged. */
 export function createLangChainAgentsHandler(
   llm?: LangChainModelSource,
-  options: ContentCaptureOptions = {},
+  options: ContentCaptureOptions & { providers?: readonly string[] } = {},
 ): ProviderHandler {
   reportUsage('langchain-agents.createLangChainAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
   return createLangChainAgentsHandlerInternal(llm, options);
@@ -394,17 +396,19 @@ export function createLangChainAgentsHandler(
 /** `createLangChainAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createLangChainAgentsHandlerInternal(
   llm?: LangChainModelSource,
-  { captureContent = false }: ContentCaptureOptions = {},
+  { captureContent, providers }: ContentCaptureOptions & { providers?: readonly string[] } = {},
 ): ProviderHandler {
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['*', 'agent'],
     async (
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ToolHandlerFn> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      // Resolved per run, not per factory call, so a `configure()` after construction applies.
+      const captureContent = handler.captureContent === true;
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, servingProvider(config), config.model.name, 'langchain');
@@ -474,10 +478,11 @@ export function createLangChainAgentsHandlerInternal(
     async function* streamHandler(
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ToolHandlerFn> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, servingProvider(config), config.model.name, 'langchain');
@@ -562,23 +567,28 @@ export function createLangChainAgentsHandlerInternal(
       }
     },
     captureContent,
+    providers,
   );
+  return handler;
 }
 
 export const langchainAgents = (
   configKey: string,
   userInput: string,
   context: LDContext,
-  // Both `captureContent` and `variables` are lifted out of `options`: the first configures the
-  // handler, the second belongs to the invocation. Passing either through to `config()` drops it —
-  // which is how a `{{user_input}}` placeholder used to reach the model unsubstituted whenever a
-  // caller used one of these wrappers instead of `config().invoke()`.
+  // `captureContent` and `providers` configure the handler; `variables` belongs to the invocation.
+  // Passing any of them through to `config()` drops it — which is how a `{{user_input}}` placeholder
+  // used to reach the model unsubstituted whenever a caller used one of these wrappers instead of
+  // `config().invoke()`.
   {
     captureContent,
+    providers,
     variables,
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     ContentCaptureOptions & {
+      /** Provider names this wildcard accepts. Forwarded to the handler, not to `config`. */
+      providers?: readonly string[];
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
@@ -587,6 +597,6 @@ export const langchainAgents = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createLangChainAgentsHandlerInternal(undefined, { captureContent }),
+    handler: createLangChainAgentsHandlerInternal(undefined, { captureContent, providers }),
   }).invoke(userInput, context, variables);
 };

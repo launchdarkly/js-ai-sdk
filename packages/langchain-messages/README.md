@@ -4,6 +4,8 @@ LangChain handler for `@launchdarkly/ai-server` using **LangChain chat models** 
 
 **`providesFor`:** `['*', 'messages']` — matches any flag variation where `meta.mode` is `"messages"` and no more-specific handler is registered. LangChain is a framework adapter, not a provider: it routes through `langchain-anthropic`, `langchain-openai`, and others at runtime based on `config.provider.name`. Use `'*'` so that flags configured with `provider.name = "Anthropic"` or `"OpenAI"` are automatically handled without requiring a separate Anthropic or OpenAI handler.
 
+Pass `{ providers: ['Bedrock'] }` to `createLangChainMessagesHandler` (and to `langchainMessages`) to accept only those `config.provider.name` values. Names must match the config exactly. Several scoped handlers can be registered together; the shortest list that contains the name wins. Omit `providers` to keep matching every provider.
+
 ## Installation
 
 ```bash
@@ -19,11 +21,11 @@ The default model is `ChatOpenAI`, so set `OPENAI_API_KEY` unless you pass a cus
 ```ts
 import 'dotenv/config';
 import { config, shutdown } from '@launchdarkly/ai-server';
-import { createLangChainHandler } from '@launchdarkly/ai-langchain-messages';
+import { createLangChainMessagesHandler } from '@launchdarkly/ai-langchain-messages';
 
 const result = await config({
   key: 'my-ai-config-flag',
-  handler: createLangChainHandler(),
+  handler: createLangChainMessagesHandler(),
 }).invoke('What is feature flagging?', { kind: 'user', key: 'user-123' });
 
 console.log(result.response);
@@ -34,16 +36,16 @@ await shutdown();
 
 ```ts
 import { ChatAnthropic } from '@langchain/anthropic';
-import { createLangChainHandler } from '@launchdarkly/ai-langchain-messages';
+import { createLangChainMessagesHandler } from '@launchdarkly/ai-langchain-messages';
 
-const handler = createLangChainHandler(new ChatAnthropic({ model: 'claude-opus-4-5' }));
+const handler = createLangChainMessagesHandler(new ChatAnthropic({ model: 'claude-opus-4-5' }));
 ```
 
 A constructed instance cannot see flag parameters. Pass a function instead if the model should
 be built after evaluation:
 
 ```ts
-const handler = createLangChainHandler((config) => new ChatAnthropic({
+const handler = createLangChainMessagesHandler((config) => new ChatAnthropic({
   model: config.model.name,
   temperature: typeof config.model.parameters?.temperature === 'number' ? config.model.parameters.temperature : undefined,
 }));

@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EvalTool, EvaluationsError, initEvaluations, Judge, type RunOptions, Scorer } from '../experimental.js';
+import { EvalTool, EvaluationsError, initEvaluations, Judge, type RunOptions, Scorer } from '../index.js';
 import { NativeTool } from '../types.js';
 import {
   completion,
@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.2 Initialization
+// Initialization
 // ---------------------------------------------------------------------------
 
 describe('initEvaluations', () => {
@@ -198,20 +198,21 @@ describe('initEvaluations', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.1 Criterion references (construction only; the phase is not implemented)
+// Criterion references (construction only; the phase is not implemented)
 // ---------------------------------------------------------------------------
 
 describe('criterion references', () => {
   it('a Judge defaults its thresholds', () => {
-    expect(new Judge('accuracy')).toMatchObject({ threshold: 0.5, passRateThreshold: 0.95 });
+    expect(new Judge('accuracy')).toMatchObject({ threshold: 0.5 });
+    expect(new Judge('accuracy').passRateThreshold).toBeUndefined();
   });
 
   it('a Scorer defaults its thresholds and success direction', () => {
     expect(new Scorer('exact', () => true)).toMatchObject({
       threshold: 1.0,
-      passRateThreshold: 0.95,
       successDirection: 'higher_is_better',
     });
+    expect(new Scorer('exact', () => true).passRateThreshold).toBeUndefined();
   });
 
   it('rejects a blank judge key and a blank scorer name', () => {
@@ -259,7 +260,7 @@ describe('criterion references', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.4 run() argument validation — zero requests
+// run() argument validation — zero requests
 // ---------------------------------------------------------------------------
 
 describe('run() argument validation', () => {
@@ -401,6 +402,29 @@ describe('run() argument validation', () => {
       const b = stubHandler('OpenAI', 'messages');
       (b.providesFor as unknown as string[])[1] = 'completion';
       await rejects(base({ handler: undefined, handlers: [a, b] }), /provider 'OpenAI' in mode 'messages'/);
+    });
+
+    it('accepts two wildcards of one mode scoped to different providers', async () => {
+      const bedrock = stubHandler('*', 'messages');
+      const anthropic = stubHandler('*', 'messages');
+      bedrock.providers = ['Bedrock'];
+      anthropic.providers = ['Anthropic'];
+      await rejects(
+        base({
+          handler: undefined,
+          handlers: [bedrock, anthropic],
+          generation: completion({ provider: 'Bedrock', instructions: 'grade it', messages: undefined }),
+        }),
+        /needs messages, not instructions.*\[\*, messages\]/,
+      );
+    });
+
+    it('rejects two wildcards whose provider sets match', async () => {
+      const first = stubHandler('*', 'messages');
+      const second = stubHandler('*', 'messages');
+      first.providers = ['Bedrock', 'Anthropic'];
+      second.providers = ['Anthropic', 'Bedrock'];
+      await rejects(base({ handler: undefined, handlers: [first, second] }), /provider '\*' in mode 'messages'/);
     });
   });
 

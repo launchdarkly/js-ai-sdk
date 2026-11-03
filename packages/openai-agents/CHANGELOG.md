@@ -1,5 +1,64 @@
 # Changelog
 
+## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-openai-agents-0.5.0...@launchdarkly/ai-openai-agents-1.0.0) (2026-10-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** conversation content is now captured on spans by default. To keep it off, call configure({ options: { captureContent: false } }) once at startup.
+* **client:** createHandler returns a new wrapper function rather than adding providesFor to the function you pass and returning that same function. Use the handler createHandler returns; the function you passed in no longer carries providesFor.
+* **client:** add result variant and value to the feature_flag span event ([#186](https://github.com/launchdarkly/js-ai-sdk/issues/186))
+* **AIC-3687:** rename createOpenAIAgentHandler to createOpenAIAgentsHandler ([#174](https://github.com/launchdarkly/js-ai-sdk/issues/174))
+
+### Features
+
+* **AIC-3687:** rename createOpenAIAgentHandler to createOpenAIAgentsHandler ([#174](https://github.com/launchdarkly/js-ai-sdk/issues/174)) ([cfba4d2](https://github.com/launchdarkly/js-ai-sdk/commit/cfba4d206d0ce977ccbcc68f4e31c98b70a808e0))
+* **client:** add result variant and value to the feature_flag span event ([#186](https://github.com/launchdarkly/js-ai-sdk/issues/186)) ([8dbe2ec](https://github.com/launchdarkly/js-ai-sdk/commit/8dbe2ec266d635464a41facfde924b0707f747aa))
+* **client:** capture conversation content on spans by default and add configure() ([d9c7fc3](https://github.com/launchdarkly/js-ai-sdk/commit/d9c7fc3cb76d16b0973724725f4e9b6d06d6a052))
+
+
+### Bug Fixes
+
+* **AIC-3573:** never send a NativeTool to the model as a function tool ([#194](https://github.com/launchdarkly/js-ai-sdk/issues/194)) ([ec43b85](https://github.com/launchdarkly/js-ai-sdk/commit/ec43b85cbafd6ab446771ea7a92a29bba27208e0))
+* **AIC-3726:** realign three usage IDs with the 1.0 factory names ([#197](https://github.com/launchdarkly/js-ai-sdk/issues/197)) ([fc83c7a](https://github.com/launchdarkly/js-ai-sdk/commit/fc83c7a0a4caab196aebd4402063794e4f0bc77b))
+* **client:** return a new handler from createHandler instead of changing the function passed in ([d9c7fc3](https://github.com/launchdarkly/js-ai-sdk/commit/d9c7fc3cb76d16b0973724725f4e9b6d06d6a052))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.5.0 to ^1.0.0
+
+## [0.5.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-openai-agents-0.4.0...@launchdarkly/ai-openai-agents-0.5.0) (2026-10-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* forward the same model.parameters keys as the Python SDK ([#118](https://github.com/launchdarkly/js-ai-sdk/issues/118))
+* **client:** the client no longer loads .env. Add import 'dotenv/config' to your entrypoint (and install dotenv) if you relied on it.
+
+### Features
+
+* **AIC-3623:** evals from code ([#143](https://github.com/launchdarkly/js-ai-sdk/issues/143)) ([dc74b48](https://github.com/launchdarkly/js-ai-sdk/commit/dc74b488b5c4f9918650c92e86d4cf45742504c5))
+
+
+### Bug Fixes
+
+* **AIC-3571:** visit every child before its parent in reverseTraverse ([#147](https://github.com/launchdarkly/js-ai-sdk/issues/147)) ([a17a2ce](https://github.com/launchdarkly/js-ai-sdk/commit/a17a2cebb973586bdfc0fa3fc8d79c9838d9a395))
+* **AIC-3577:** send object tool results to the model as JSON ([#146](https://github.com/launchdarkly/js-ai-sdk/issues/146)) ([be41d87](https://github.com/launchdarkly/js-ai-sdk/commit/be41d876056fe84883207cd3f3ca74f42aaa42a0))
+* **AIC-3586:** propagate tool handler errors instead of sending them to the model ([#139](https://github.com/launchdarkly/js-ai-sdk/issues/139)) ([1f31e85](https://github.com/launchdarkly/js-ai-sdk/commit/1f31e853f04aa7a60f4f6ad82f29762042d78bd4))
+* **client:** stop loading dotenv from library code ([#69](https://github.com/launchdarkly/js-ai-sdk/issues/69)) ([fea34f3](https://github.com/launchdarkly/js-ai-sdk/commit/fea34f309dba7f94264efaf0d065b9d80b29a8c2))
+* forward the same model.parameters keys as the Python SDK ([#118](https://github.com/launchdarkly/js-ai-sdk/issues/118)) ([f7883ce](https://github.com/launchdarkly/js-ai-sdk/commit/f7883cec93b05824cf772a790eee2d93c2246a1e))
+* give native graph spans their LaunchDarkly identity ([#101](https://github.com/launchdarkly/js-ai-sdk/issues/101)) ([4d97cfa](https://github.com/launchdarkly/js-ai-sdk/commit/4d97cfa4f81564f5389728dbd3e2d418e2f44f27))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.4.0 to ^0.5.0
+
 ## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-openai-agents-0.3.0...@launchdarkly/ai-openai-agents-0.4.0) (2026-10-09)
 
 

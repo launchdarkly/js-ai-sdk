@@ -1,5 +1,91 @@
 # Changelog
 
+## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.5.0...@launchdarkly/ai-server-1.0.0) (2026-10-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** conversation content is now captured on spans by default. To keep it off, call configure({ options: { captureContent: false } }) once at startup.
+* **client:** createHandler returns a new wrapper function rather than adding providesFor to the function you pass and returning that same function. Use the handler createHandler returns; the function you passed in no longer carries providesFor.
+* **client:** add result variant and value to the feature_flag span event ([#186](https://github.com/launchdarkly/js-ai-sdk/issues/186))
+* **AIC-3439:** let wildcard handlers accept only named providers ([#111](https://github.com/launchdarkly/js-ai-sdk/issues/111))
+* **SEC-9507:** enable Claude native tools only when the active variation attaches them
+* **evaluations:** export each offline row as one trace ([#175](https://github.com/launchdarkly/js-ai-sdk/issues/175))
+* **evaluations:** promote Evaluations from Code to core ([#181](https://github.com/launchdarkly/js-ai-sdk/issues/181))
+* **evaluations:** remove default pass rate threshold ([#184](https://github.com/launchdarkly/js-ai-sdk/issues/184))
+* **client:** spans carry launchdarkly.project_id instead of highlight.project_id
+* **AIC-3687:** rename createOpenAIAgentHandler to createOpenAIAgentsHandler ([#174](https://github.com/launchdarkly/js-ai-sdk/issues/174))
+* **AIC-3686:** rename the LangChain and OpenAI messages factories to *MessagesHandler ([#173](https://github.com/launchdarkly/js-ai-sdk/issues/173))
+* **skills:** rename FDv2SkillStore to LaunchDarklySkillStore ([#172](https://github.com/launchdarkly/js-ai-sdk/issues/172))
+* **AIC-3598:** type toolHandlers on the handler contract; declare @langchain/anthropic ([#170](https://github.com/launchdarkly/js-ai-sdk/issues/170))
+
+### Features
+
+* **AIC-3439:** let wildcard handlers accept only named providers ([#111](https://github.com/launchdarkly/js-ai-sdk/issues/111)) ([9371975](https://github.com/launchdarkly/js-ai-sdk/commit/93719755d84df3923fa60e9ef687a96709cc438d))
+* **AIC-3686:** rename the LangChain and OpenAI messages factories to *MessagesHandler ([#173](https://github.com/launchdarkly/js-ai-sdk/issues/173)) ([15a0d37](https://github.com/launchdarkly/js-ai-sdk/commit/15a0d377c74268f3045d219173b31faaba2fdbe8))
+* **AIC-3687:** rename createOpenAIAgentHandler to createOpenAIAgentsHandler ([#174](https://github.com/launchdarkly/js-ai-sdk/issues/174)) ([cfba4d2](https://github.com/launchdarkly/js-ai-sdk/commit/cfba4d206d0ce977ccbcc68f4e31c98b70a808e0))
+* **client:** add result variant and value to the feature_flag span event ([#186](https://github.com/launchdarkly/js-ai-sdk/issues/186)) ([8dbe2ec](https://github.com/launchdarkly/js-ai-sdk/commit/8dbe2ec266d635464a41facfde924b0707f747aa))
+* **client:** capture conversation content on spans by default and add configure() ([d9c7fc3](https://github.com/launchdarkly/js-ai-sdk/commit/d9c7fc3cb76d16b0973724725f4e9b6d06d6a052))
+* **client:** point judge spans at the run they graded ([#200](https://github.com/launchdarkly/js-ai-sdk/issues/200)) ([ba9c936](https://github.com/launchdarkly/js-ai-sdk/commit/ba9c936546bde25593b7a7b4b93ccbcb10f88f84))
+* **evaluations:** export each offline row as one trace ([#175](https://github.com/launchdarkly/js-ai-sdk/issues/175)) ([05a7eb1](https://github.com/launchdarkly/js-ai-sdk/commit/05a7eb1ae428f9db2fb0fb8670f539a56ea4600f))
+* **evaluations:** promote Evaluations from Code to core ([#181](https://github.com/launchdarkly/js-ai-sdk/issues/181)) ([676a2ed](https://github.com/launchdarkly/js-ai-sdk/commit/676a2ed4e628e88b24d3bd183461dc09c74b1028))
+* **evaluations:** remove default pass rate threshold ([#184](https://github.com/launchdarkly/js-ai-sdk/issues/184)) ([f3a3e37](https://github.com/launchdarkly/js-ai-sdk/commit/f3a3e371927be11e566d3177bd8c56968b2bd0f3))
+* **skills:** give Claude Agents runs the skills attached to their variation ([#136](https://github.com/launchdarkly/js-ai-sdk/issues/136)) ([df16ba0](https://github.com/launchdarkly/js-ai-sdk/commit/df16ba0823d093231e523a95c1c7180cc5de805f))
+* **skills:** rename FDv2SkillStore to LaunchDarklySkillStore ([#172](https://github.com/launchdarkly/js-ai-sdk/issues/172)) ([d3e7c5f](https://github.com/launchdarkly/js-ai-sdk/commit/d3e7c5f88ae000da3a40be7eb97bac1f98169db2))
+
+
+### Bug Fixes
+
+* **AIC-3573:** never send a NativeTool to the model as a function tool ([#194](https://github.com/launchdarkly/js-ai-sdk/issues/194)) ([ec43b85](https://github.com/launchdarkly/js-ai-sdk/commit/ec43b85cbafd6ab446771ea7a92a29bba27208e0))
+* **AIC-3598:** type toolHandlers on the handler contract; declare @langchain/anthropic ([#170](https://github.com/launchdarkly/js-ai-sdk/issues/170)) ([c6c00fc](https://github.com/launchdarkly/js-ai-sdk/commit/c6c00fcbc31c62aad7aeefcadaaf1a1274d14207))
+* **AIC-3601:** stop multi-edge routing text from asking a router for a final answer ([#177](https://github.com/launchdarkly/js-ai-sdk/issues/177)) ([10cce54](https://github.com/launchdarkly/js-ai-sdk/commit/10cce54d91f72f86efc0d141004aa305fac7b9e1))
+* **client:** return a new handler from createHandler instead of changing the function passed in ([d9c7fc3](https://github.com/launchdarkly/js-ai-sdk/commit/d9c7fc3cb76d16b0973724725f4e9b6d06d6a052))
+* **client:** stamp launchdarkly.project_id on the telemetry resource ([#176](https://github.com/launchdarkly/js-ai-sdk/issues/176)) ([93fb412](https://github.com/launchdarkly/js-ai-sdk/commit/93fb412e794bd7019404d5b12c7087bfaab71670))
+* **evaluations:** update stale test import ([#189](https://github.com/launchdarkly/js-ai-sdk/issues/189)) ([f4d8083](https://github.com/launchdarkly/js-ai-sdk/commit/f4d8083590d915d5fb8d0e0f77d841d5dcd73526))
+* **evaluations:** warn once when a scorer returns an invalid score ([#199](https://github.com/launchdarkly/js-ai-sdk/issues/199)) ([f43c888](https://github.com/launchdarkly/js-ai-sdk/commit/f43c88877bd01d9b0f7ce81ed87680be030dfb19))
+* **graph:** report a node's own judge scores on its node_done stream event ([#182](https://github.com/launchdarkly/js-ai-sdk/issues/182)) ([1230f02](https://github.com/launchdarkly/js-ai-sdk/commit/1230f02b57a77f9f1e6f3a4e5fe8f1c012ce214c))
+* **SEC-9507:** dispatch litellm-messages tool calls only to tools offered for the request ([6926e8a](https://github.com/launchdarkly/js-ai-sdk/commit/6926e8a67f684bc4c40796392bb0d088e71e728e))
+* **SEC-9507:** enable Claude native tools only when the active variation attaches them ([6926e8a](https://github.com/launchdarkly/js-ai-sdk/commit/6926e8a67f684bc4c40796392bb0d088e71e728e))
+* **SEC-9507:** pass handlers only the tools attached to the active variation ([6926e8a](https://github.com/launchdarkly/js-ai-sdk/commit/6926e8a67f684bc4c40796392bb0d088e71e728e))
+
+## [0.5.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.4.0...@launchdarkly/ai-server-0.5.0) (2026-10-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **skills:** promote Agent Skills to core ([#159](https://github.com/launchdarkly/js-ai-sdk/issues/159))
+* forward the same model.parameters keys as the Python SDK ([#118](https://github.com/launchdarkly/js-ai-sdk/issues/118))
+* **client:** the client no longer loads .env. Add import 'dotenv/config' to your entrypoint (and install dotenv) if you relied on it.
+
+### Experimental
+
+* **evaluations:** hash eventId and contentHash as RFC 8785 canonical JSON, the same in every SDK ([c971649](https://github.com/launchdarkly/js-ai-sdk/commit/c97164991ee5b070c0d2a2970fadf74d63b3d5fb))
+* **evaluations:** Set JSON as standard for output to pass to judge ([#152](https://github.com/launchdarkly/js-ai-sdk/issues/152)) ([330da44](https://github.com/launchdarkly/js-ai-sdk/commit/330da44f899ea2581d1af10f7448ac7c89e1ca07))
+
+
+### Features
+
+* **AIC-3534:** add a TypeSafe Jev judge handler ([#122](https://github.com/launchdarkly/js-ai-sdk/issues/122)) ([0c1d6b7](https://github.com/launchdarkly/js-ai-sdk/commit/0c1d6b73261a17b83d11d29a28fcaa8facc11fc6))
+* **AIC-3623:** evals from code ([#143](https://github.com/launchdarkly/js-ai-sdk/issues/143)) ([dc74b48](https://github.com/launchdarkly/js-ai-sdk/commit/dc74b488b5c4f9918650c92e86d4cf45742504c5))
+* **skills:** promote Agent Skills to core ([#159](https://github.com/launchdarkly/js-ai-sdk/issues/159)) ([c7135cd](https://github.com/launchdarkly/js-ai-sdk/commit/c7135cd90e1893dac959cca3bc762ff4862ffc25))
+
+
+### Bug Fixes
+
+* **AIC-3541:** accept a node-server-sdk client in initClient() without a cast ([#128](https://github.com/launchdarkly/js-ai-sdk/issues/128)) ([5819449](https://github.com/launchdarkly/js-ai-sdk/commit/58194493ebcea036115563ed2c2eda5aea303edd))
+* **AIC-3570:** re-resolve graph flags on every invoke and stream ([#145](https://github.com/launchdarkly/js-ai-sdk/issues/145)) ([ce4f72e](https://github.com/launchdarkly/js-ai-sdk/commit/ce4f72e1512db304710e42f5358238f8bc0aa8f8))
+* **AIC-3571:** visit every child before its parent in reverseTraverse ([#147](https://github.com/launchdarkly/js-ai-sdk/issues/147)) ([a17a2ce](https://github.com/launchdarkly/js-ai-sdk/commit/a17a2cebb973586bdfc0fa3fc8d79c9838d9a395))
+* **AIC-3576:** record deferred judge scores under the evaluated config ([#148](https://github.com/launchdarkly/js-ai-sdk/issues/148)) ([d9fbee6](https://github.com/launchdarkly/js-ai-sdk/commit/d9fbee654da27c97cfeb69ef694b33e2bbac2d16))
+* **AIC-3577:** send object tool results to the model as JSON ([#146](https://github.com/launchdarkly/js-ai-sdk/issues/146)) ([be41d87](https://github.com/launchdarkly/js-ai-sdk/commit/be41d876056fe84883207cd3f3ca74f42aaa42a0))
+* **AIC-3596:** point the missing-OTel warning and docs at @launchdarkly/ai-otel ([#144](https://github.com/launchdarkly/js-ai-sdk/issues/144)) ([9b5f32e](https://github.com/launchdarkly/js-ai-sdk/commit/9b5f32e26c7e98025ab53082da0b810026695b31))
+* **client:** show a judge an output of 0, false, {} or [] ([c971649](https://github.com/launchdarkly/js-ai-sdk/commit/c97164991ee5b070c0d2a2970fadf74d63b3d5fb))
+* **client:** stop loading dotenv from library code ([#69](https://github.com/launchdarkly/js-ai-sdk/issues/69)) ([fea34f3](https://github.com/launchdarkly/js-ai-sdk/commit/fea34f309dba7f94264efaf0d065b9d80b29a8c2))
+* forward the same model.parameters keys as the Python SDK ([#118](https://github.com/launchdarkly/js-ai-sdk/issues/118)) ([f7883ce](https://github.com/launchdarkly/js-ai-sdk/commit/f7883cec93b05824cf772a790eee2d93c2246a1e))
+* give native graph spans their LaunchDarkly identity ([#101](https://github.com/launchdarkly/js-ai-sdk/issues/101)) ([4d97cfa](https://github.com/launchdarkly/js-ai-sdk/commit/4d97cfa4f81564f5389728dbd3e2d418e2f44f27))
+* **judges:** a judge config's outputFormat must not reach the provider ([#56](https://github.com/launchdarkly/js-ai-sdk/issues/56)) ([8c6f4d2](https://github.com/launchdarkly/js-ai-sdk/commit/8c6f4d2c75a63bb39ec25e24a7c35abc5da2e4bc))
+* **skills:** Correct the HTTP 403 advice now that server-side FDv2 is available to every account ([#141](https://github.com/launchdarkly/js-ai-sdk/issues/141)) ([5b7b732](https://github.com/launchdarkly/js-ai-sdk/commit/5b7b732c726dd701a84f7480848e71bfc1d50ff4))
+* **skills:** default FDv2SkillStore endpoints from LD_BASE_URI and LD_STREAM_URI ([#134](https://github.com/launchdarkly/js-ai-sdk/issues/134)) ([05f77d9](https://github.com/launchdarkly/js-ai-sdk/commit/05f77d91b3e7e763d5f763677d93ca7d76f64774))
+
 ## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.3.0...@launchdarkly/ai-server-0.4.0) (2026-10-09)
 
 

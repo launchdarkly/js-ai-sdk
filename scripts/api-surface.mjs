@@ -73,7 +73,7 @@ export function listDirectory(listDir = process.env.API_SURFACE_DIR) {
 }
 
 /**
- * The usage-test rows of one entry point (§3.27): one per usage ID a name on
+ * The usage-test rows of one entry point: one per usage ID a name on
  * its list reports, with the function the entry point exports under that
  * name. A marked name (`+` or `-`) that is not exported is skipped, since the
  * list allows it to be absent. An unmarked name is always a row, so a missing

@@ -3,7 +3,7 @@ import { createNeverForwarded } from '../../../client/src/__tests__/never-forwar
 export { NEVER_FORWARDED } from '../../../client/src/__tests__/never-forwarded-keys.js';
 
 /**
- * This package's never-forward bag (ai-sdks-monorepo TESTING.md §1.12): the shared key list from
+ * This package's never-forward bag: the shared key list from
  * every never-forward category.
  */
 const bag = createNeverForwarded();

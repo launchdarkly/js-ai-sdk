@@ -7,7 +7,7 @@
 
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EvalTool, Judge, type RunOptions, Scorer } from '../experimental.js';
+import { EvalTool, Judge, type RunOptions, Scorer } from '../index.js';
 import { buildMessageHistory, FORMATTING_INSTRUCTIONS } from '../judge-scoring.js';
 import { FORMATTING_INSTRUCTIONS as ONLINE_FORMATTING_INSTRUCTIONS } from '../judges.js';
 import { parseTemplate } from '../utils.js';
@@ -92,11 +92,11 @@ const createBody = (api: FakeApi) =>
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
 
 // ---------------------------------------------------------------------------
-// §8.8.2 Pinning
+// Pinning
 // ---------------------------------------------------------------------------
 
 describe('criteria on the create body', () => {
-  it('pins a judge left on its defaults, with both thresholds and no success direction', async () => {
+  it('pins a judge left on its defaults, with its row threshold and no success direction', async () => {
     const api = routeHostedRun(new FakeApi());
     await makeModule(api).run(run());
     expect(createBody(api).criteria).toEqual([
@@ -104,7 +104,7 @@ describe('criteria on the create body', () => {
         criterionType: 'accuracy',
         kind: 'judge',
         judgeKey: 'accuracy',
-        options: { threshold: 0.5, passRateThreshold: 0.95 },
+        options: { threshold: 0.5 },
       },
     ]);
   });
@@ -124,13 +124,13 @@ describe('criteria on the create body', () => {
         criterionType: 'typos',
         kind: 'scorer',
         successDirection: 'lower_is_better',
-        options: { threshold: 0.2, passRateThreshold: 0.95 },
+        options: { threshold: 0.2 },
       },
       {
         criterionType: 'accuracy',
         kind: 'judge',
         judgeKey: 'accuracy',
-        options: { threshold: 0.5, passRateThreshold: 0.95, groundTruthContext: 'The policy is {{policy}}' },
+        options: { threshold: 0.5, groundTruthContext: 'The policy is {{policy}}' },
       },
     ]);
   });
@@ -144,7 +144,7 @@ describe('criteria on the create body', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.2 Resolution
+// Resolution
 // ---------------------------------------------------------------------------
 
 describe('judge resolution', () => {
@@ -204,7 +204,7 @@ describe('judge resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.3 Judge handler selection
+// Judge handler selection
 // ---------------------------------------------------------------------------
 
 describe('judge handler selection', () => {
@@ -282,7 +282,7 @@ describe('judge handler selection', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.3 Judge invocation
+// Judge invocation
 // ---------------------------------------------------------------------------
 
 describe('judge invocation', () => {
@@ -470,11 +470,11 @@ describe('judge invocation', () => {
     [
       'a string score',
       () => judgeReply('high (0.9)'),
-      /^judge score must be a number between 0 and 1, got 'high \(0.9\)'$/,
+      /^judge score must be a number between 0 and 1, got "high \(0.9\)"$/,
     ],
     ['a score of 3', () => judgeReply(3), /got 3$/],
-    ['a NaN score', () => ({ output: { score: Number.NaN, reasoning: 'x' } }), /got nan$/],
-    ['a boolean score', () => judgeReply(true), /got True$/],
+    ['a NaN score', () => ({ output: { score: Number.NaN, reasoning: 'x' } }), /got NaN$/],
+    ['a boolean score', () => judgeReply(true), /got true$/],
   ])('records %s as an ERROR result with no score, and the run still completes', async (_name, reply, message) => {
     const handler = dualHandler('OpenAI', 'messages', reply as () => ReturnType<typeof judgeReply>);
     const api = routeHostedRun(new FakeApi());
@@ -523,7 +523,7 @@ describe('judge invocation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.4 Scorers
+// Scorers
 // ---------------------------------------------------------------------------
 
 describe('scorers', () => {
@@ -554,16 +554,44 @@ describe('scorers', () => {
   });
 
   it.each([
-    ['a boolean', () => true, /^scorer fn must return a finite number, got True$/],
-    ['NaN', () => Number.NaN, /^scorer fn must return a finite number, got nan$/],
+    ['a boolean', () => true, /^scorer fn must return a finite number, got true$/],
+    ['NaN', () => Number.NaN, /^scorer fn must return a finite number, got NaN$/],
     ['an out-of-range number', () => 1.5, /^scorer fn score must be between 0 and 1, got 1.5$/],
-    ['a string', () => '0.5', /^scorer fn must return a finite number, got '0.5'$/],
+    ['a string', () => '0.5', /^scorer fn must return a finite number, got "0.5"$/],
   ])('records %s as an invalid score naming the value', async (_name, fn, message) => {
     await makeModule(routeHostedRun(new FakeApi())).run(run({ criteria: [new Scorer('exact', fn as never)] }));
     const { data } = criterionEvents()[0];
     expect(data.status).toBe('ERROR');
     expect(data.errorMessage).toMatch(message);
     expect('score' in data).toBe(false);
+  });
+
+  it('warns once for each scorer that returns an invalid score in a run', async () => {
+    const api = routeHostedRun(new FakeApi(), [datasetRow(0), datasetRow(1), datasetRow(2)]);
+    await makeModule(api).run(
+      run({
+        criteria: [new Scorer('quality', (() => 'high') as never), new Scorer('flag', (() => true) as never)],
+      }),
+    );
+    const scorerWarnings = warn.mock.calls.map((call) => String(call[0])).filter((m) => m.includes('invalid score'));
+    expect(scorerWarnings).toEqual([
+      expect.stringMatching(/^\[LaunchDarkly\] Scorer 'quality' returned an invalid score: .*got "high"$/),
+      expect.stringMatching(/^\[LaunchDarkly\] Scorer 'flag' returned an invalid score: .*got true$/),
+    ]);
+  });
+
+  it('warns again for an invalid score in a later run', async () => {
+    const module = makeModule(routeHostedRun(new FakeApi()));
+    for (let i = 0; i < 2; i += 1) {
+      await module.run(run({ criteria: [new Scorer('quality', (() => 'high') as never)] }));
+    }
+    const scorerWarnings = warn.mock.calls.filter((call) => String(call[0]).includes('invalid score'));
+    expect(scorerWarnings).toHaveLength(2);
+  });
+
+  it('does not warn for a valid score', async () => {
+    await makeModule(routeHostedRun(new FakeApi())).run(run({ criteria: [new Scorer('exact', () => 1)] }));
+    expect(warn.mock.calls.filter((call) => String(call[0]).includes('invalid score'))).toHaveLength(0);
   });
 
   it.each([
@@ -653,7 +681,7 @@ describe('scorers', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.5 Criterion events
+// Criterion events
 // ---------------------------------------------------------------------------
 
 describe('criterion events', () => {
@@ -731,7 +759,7 @@ describe('criterion events', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8.8.6 Sequencing, concurrency and isolation
+// Sequencing, concurrency and isolation
 // ---------------------------------------------------------------------------
 
 describe('phase sequencing', () => {

@@ -7,9 +7,11 @@ import {
   createHandlerInternal,
   endSpanOnce,
   imageBlockToUrl,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
+  type NativeTool,
   type ProviderHandler,
   parseTemplate,
   reportUsage,
@@ -22,6 +24,7 @@ import {
   type Tool,
   type ToolHandlerFn,
   textMessage,
+  validateMaxRetries,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
@@ -72,6 +75,15 @@ export interface LiteLLMMessagesOptions extends ContentCaptureOptions {
   baseURL?: string;
   client?: CompatibleClient;
   clientFactory?: (config: AiConfigRep) => CompatibleClient;
+  /**
+   * How many times the OpenAI-compatible client the handler builds retries a failed request (a
+   * rate limit, a timeout, a 5xx) before the error reaches the handler. Omit it to keep the
+   * client's own default of 2. Raise it when many calls share one rate-limit window, as an
+   * evaluation run with many concurrent workers does: two retries is thin when a whole batch hits
+   * the same window at once. It cannot be combined with `client` or `clientFactory`, because the
+   * handler does not build those: set the retry count on that client instead.
+   */
+  maxRetries?: number;
 }
 
 const proxyApiKey = (apiKey?: string) => (apiKey ?? process.env.LITELLM_API_KEY) || 'not-needed';
@@ -186,17 +198,32 @@ function buildMessages(
   return messages;
 }
 
-function buildTools(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn>) {
-  return Object.entries(configTools)
-    .filter(([name]) => typeof handlers[name] === 'function')
-    .map(([name, definition]) => ({
-      type: 'function',
-      function: {
-        name,
-        description: definition.description ?? '',
-        parameters: definition.parameters,
+type ExecutableTool = (args: Record<string, unknown>) => unknown;
+
+/**
+ * The tools offered to the model for this request, and the only handlers a
+ * returned tool call may dispatch to: `config.tools` entries backed by a
+ * callable own property of `handlers`.
+ */
+function buildTools(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn | NativeTool>) {
+  const executableTools = new Map<string, ExecutableTool>();
+  const tools = Object.entries(configTools).flatMap(([name, definition]) => {
+    if (!Object.hasOwn(handlers, name)) return [];
+    const handler = handlers[name];
+    if (!isFunctionTool(name, handler)) return [];
+    executableTools.set(name, handler as unknown as ExecutableTool);
+    return [
+      {
+        type: 'function',
+        function: {
+          name,
+          description: definition.description ?? '',
+          parameters: definition.parameters,
+        },
       },
-    }));
+    ];
+  });
+  return { tools, executableTools };
 }
 
 function resolveClient(options: LiteLLMMessagesOptions, configRep: AiConfigRep): CompatibleClient {
@@ -207,12 +234,23 @@ function resolveClient(options: LiteLLMMessagesOptions, configRep: AiConfigRep):
   return new OpenAI({
     apiKey: proxyApiKey(options.apiKey),
     baseURL,
+    // Passed only when set, so an omitted value keeps the vendor default rather than a copy of it.
+    ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
   }) as unknown as CompatibleClient;
 }
 
 function checkedOptions(options: LiteLLMMessagesOptions): LiteLLMMessagesOptions {
   if (!options.client && !options.clientFactory && !(options.baseURL ?? process.env.LITELLM_BASE_URL)) {
     throw new Error('LiteLLM proxy baseURL is required (pass baseURL or set LITELLM_BASE_URL)');
+  }
+  // Checked at construction rather than when the first client is built, on the first request.
+  validateMaxRetries(options.maxRetries);
+  // Refused rather than ignored: the handler never constructs a client it is given, so the value
+  // would go nowhere and the caller would believe their retries had been raised.
+  if (options.maxRetries !== undefined && (options.client || options.clientFactory)) {
+    throw new Error(
+      'maxRetries applies only to the client the handler builds. Set the retry count on the client passed as client or returned by clientFactory instead.',
+    );
   }
   return options;
 }
@@ -272,25 +310,28 @@ export function createLiteLLMMessagesHandler(options: LiteLLMMessagesOptions = {
 /** `createLiteLLMMessagesHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
 export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOptions = {}): ProviderHandler {
   const resolvedOptions = checkedOptions(options);
-  const captureContent = resolvedOptions.captureContent ?? false;
 
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['*', 'messages'],
     async (
       configRep: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ToolHandlerFn> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) =>
       trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
+        // Resolved per run, not per factory call, so a `configure()` after construction applies.
+        const captureContent = handler.captureContent === true;
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setIdentity(span, configRep);
         setLdSpanAttributes(span, variables);
         const parentContext = trace.setSpan(context.active(), span);
         const messages = buildMessages(configRep, userInput, variables, history);
         setInputContentAttributes(span, captureContent, { messages: spanMessages(messages) });
-        const tools = configRep.tools ? buildTools(configRep.tools, toolHandlers) : [];
+        const { tools, executableTools } = configRep.tools
+          ? buildTools(configRep.tools, toolHandlers)
+          : { tools: [], executableTools: new Map<string, ExecutableTool>() };
         const usage = { input_tokens: 0, output_tokens: 0 };
 
         try {
@@ -332,9 +373,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
               calls.map(async (call: ToolCall) => {
                 const toolSpan = startToolSpan(call.function.name, call.id, parentContext);
                 setToolCallContentAttributes(toolSpan, captureContent, { arguments: call.function.arguments });
-                const handler = toolHandlers[call.function.name] as unknown as (
-                  args: Record<string, unknown>,
-                ) => unknown;
+                const handler = executableTools.get(call.function.name);
                 try {
                   if (typeof handler !== 'function')
                     throw new Error(`No handler registered for tool "${call.function.name}"`);
@@ -375,10 +414,11 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
     async function* streamHandler(
       configRep: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ToolHandlerFn> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setIdentity(span, configRep);
@@ -386,7 +426,9 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
       const parentContext = trace.setSpan(context.active(), span);
       const messages = buildMessages(configRep, userInput, variables, history);
       setInputContentAttributes(span, captureContent, { messages: spanMessages(messages) });
-      const tools = configRep.tools ? buildTools(configRep.tools, toolHandlers) : [];
+      const { tools, executableTools } = configRep.tools
+        ? buildTools(configRep.tools, toolHandlers)
+        : { tools: [], executableTools: new Map<string, ExecutableTool>() };
       const usage = { input_tokens: 0, output_tokens: 0 };
       let client: CompatibleClient;
       let activeStream: ChatStream | undefined;
@@ -449,7 +491,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
             [...calls.values()].map(async (call) => {
               const toolSpan = startToolSpan(call.name, call.id, parentContext);
               setToolCallContentAttributes(toolSpan, captureContent, { arguments: call.arguments });
-              const handler = toolHandlers[call.name] as unknown as (args: Record<string, unknown>) => unknown;
+              const handler = executableTools.get(call.name);
               try {
                 if (typeof handler !== 'function') throw new Error(`No handler registered for tool "${call.name}"`);
                 const result = await handler(parseToolArguments(call.name, call.arguments));
@@ -503,8 +545,9 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
         }
       }
     },
-    captureContent,
+    resolvedOptions.captureContent,
   );
+  return handler;
 }
 
 export const litellmMessages = (
@@ -517,6 +560,7 @@ export const litellmMessages = (
     captureContent,
     client,
     clientFactory,
+    maxRetries,
     variables,
     ...options
   }: Omit<Parameters<typeof configInternal>[0], 'handler' | 'key'> &
@@ -526,6 +570,13 @@ export const litellmMessages = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createLiteLLMMessagesHandlerInternal({ apiKey, baseURL, captureContent, client, clientFactory }),
+    handler: createLiteLLMMessagesHandlerInternal({
+      apiKey,
+      baseURL,
+      captureContent,
+      client,
+      clientFactory,
+      maxRetries,
+    }),
   }).invoke(userInput, context, variables);
 };

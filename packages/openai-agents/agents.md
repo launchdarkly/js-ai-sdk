@@ -31,9 +31,9 @@ That means the LaunchDarkly flag variation must have `provider.name === "OpenAI"
 
 ```ts
 // Factory — returns a ProviderHandler with providesFor attached
-export function createOpenAIAgentHandler(): ProviderHandler
+export function createOpenAIAgentsHandler(): ProviderHandler
 
-// Convenience wrapper — identical to config({ ...options, key: configKey, handler: createOpenAIAgentHandler() }).invoke(userInput, context)
+// Convenience wrapper — identical to config({ ...options, key: configKey, handler: createOpenAIAgentsHandler() }).invoke(userInput, context)
 export const openaiAgents: (
   configKey: string,
   userInput: string,
@@ -41,7 +41,7 @@ export const openaiAgents: (
   options?: Omit<ConfigArgs, 'handler' | 'key'>
 ) => Promise<ProviderResponse>
 
-// Graph convenience wrapper — identical to graph(key, { ...options, handlers: [createOpenAIAgentHandler()] })
+// Graph convenience wrapper — identical to graph(key, { ...options, handlers: [createOpenAIAgentsHandler()] })
 export function openaiGraph(key: string, options: Omit<GraphOptions, 'handlers'>): { invoke(input, context, variables?): Promise<ProviderGraphResponse> }
 
 // Native graph adapter — builds an OpenAI Agents SDK swarm from a resolved GraphDefinition
@@ -82,7 +82,7 @@ tool({
   description: toolConfig.description ?? '',
   strict: false,
   parameters: toolConfig.parameters as any,   // JSON Schema passed directly
-  errorFunction: null,                        // propagate tool errors (TESTING.md §1.4)
+  errorFunction: null,                        // propagate tool errors
   execute: async (args) => {
     const result = await toolHandlers[name](args);
     return String(result);
@@ -126,8 +126,9 @@ Span attributes set before the call:
 - `gen_ai.system` = `'openai'`
 - `gen_ai.request.model` = `config.model.name`
 
-Conversation content, only when the handler is built with `captureContent: true`
-(off by default — content is PII): `gen_ai.system_instructions`,
+Conversation content, written unless capture is off for the run (the handler's
+explicit `captureContent`, otherwise the `configure()` default, which is `true`):
+`gen_ai.system_instructions`,
 `gen_ai.input.messages`, `gen_ai.output.messages` and `gen_ai.tool.definitions`
 as canonical JSON, mirrored into the flat `gen_ai.prompt.{i}.*` /
 `gen_ai.completion.{i}.*` attributes the LaunchDarkly trace view reads today.
@@ -195,5 +196,5 @@ Span names and attributes are described in [Implementation Details → Telemetry
 - **`result.state.usage` uses camelCase**: `inputTokens`, `outputTokens`, `totalTokens` — not the snake_case used by the OpenAI REST API. The returned `usage` object converts these back to `input_tokens`/`output_tokens` so the client's normalizer works.
 - **`execute` receives parsed args**: unlike the Responses API where arguments arrive as a JSON string, the Agents SDK parses them before calling `execute`. Do not call `JSON.parse` in the executor.
 - **`typeof handler !== 'function'` guard**: the execute callback checks `typeof handler !== 'function'` before calling it, so passing a `NativeTool` instance as a `toolHandlers` value will produce a clear `"No handler registered"` error rather than an opaque TypeError.
-- **`errorFunction: null` is required on every `tool()`**: leaving it unset makes the SDK catch a tool error and send it to the model as the tool result, so the run carries on. The spec (TESTING.md §1.4) requires the error to propagate. A test that calls a mocked tool's `execute` directly cannot catch this; build the tool with the real `tool()` and call `invoke`.
+- **`errorFunction: null` is required on every `tool()`**: leaving it unset makes the SDK catch a tool error and send it to the model as the tool result, so the run carries on. The handler must let the error propagate instead. A test that calls a mocked tool's `execute` directly cannot catch this; build the tool with the real `tool()` and call `invoke`.
 - **No manual loop**: do not add a tool-call loop. The Agents SDK's `run()` handles everything. Adding a manual loop on top would double-execute tools.

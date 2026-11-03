@@ -12,8 +12,7 @@ export type ConfigTurn = { role: 'user' | 'assistant'; content: string };
 
 /**
  * Composes the ordered conversation turns a handler sends to its provider when
- * runtime `history` is present, applying the rules shared by every handler
- * (TESTING.md §1.11):
+ * runtime `history` is present, applying the rules shared by every handler:
  *
  *   [config conversation messages] → [history] → [userInput?]
  *

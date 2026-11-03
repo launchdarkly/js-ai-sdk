@@ -31,19 +31,40 @@ describe('@launchdarkly/ai-node re-exports', () => {
 });
 
 describe('@launchdarkly/ai-node/experimental re-exports', () => {
-  it('exports every named export from @launchdarkly/ai-server/experimental, as the same references', async () => {
+  it('exports the same names as @launchdarkly/ai-server/experimental', async () => {
     const serverExperimental = await import('@launchdarkly/ai-server/experimental');
     const nodeExperimental = await import('../experimental.js');
 
-    const serverKeys = Object.keys(serverExperimental);
-    expect(serverKeys.length).toBeGreaterThan(0);
-    for (const key of serverKeys) {
-      expect((nodeExperimental as any)[key], key).toBe((serverExperimental as any)[key]);
+    expect(Object.keys(nodeExperimental).sort()).toEqual(Object.keys(serverExperimental).sort());
+  });
+
+  it('exports Evaluations from Code from the package root only', async () => {
+    const nodeExperimental = await import('../experimental.js');
+    for (const key of [
+      'initEvaluations',
+      'EvaluationsModule',
+      'EvaluationsError',
+      'EvalTool',
+      'Judge',
+      'Scorer',
+    ] as const) {
+      expect((node as any)[key], key).toBe((server as any)[key]);
+      expect(key in nodeExperimental, key).toBe(false);
     }
   });
 
-  it('keeps experimental names off the package root', () => {
-    expect('getSkill' in node).toBe(false);
-    expect('setSkillStore' in node).toBe(false);
+  it('exports Agent Skills from the package root only', async () => {
+    const nodeExperimental = await import('../experimental.js');
+    for (const key of [
+      'getSkill',
+      'setSkillStore',
+      'InMemorySkillStore',
+      'LaunchDarklySkillStore',
+      'configSkills',
+      'createSkillSource',
+    ] as const) {
+      expect((node as any)[key], key).toBe((server as any)[key]);
+      expect(key in nodeExperimental, key).toBe(false);
+    }
   });
 });

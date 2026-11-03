@@ -5,6 +5,7 @@ import {
   type GraphNode,
   getClient,
   imageBlockToUrl,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -42,14 +43,14 @@ function instructionsFor(node: GraphNode, variables: Record<string, unknown>): s
 function buildTools(node: GraphNode, handlers: Record<string, ToolHandlerFn | NativeTool>) {
   if (!node.config.tools) return [];
   return Object.entries(node.config.tools)
-    .filter(([name]) => typeof handlers[name] === 'function')
+    .filter(([name]) => isFunctionTool(name, handlers[name]))
     .map(([name, definition]) =>
       tool({
         name,
         description: definition.description ?? '',
         strict: false,
         parameters: definition.parameters,
-        // null, not undefined: the SDK default feeds a tool error back to the model; the spec (TESTING.md §1.4) says it must propagate.
+        // null, not undefined: the SDK default feeds a tool error back to the model, but it must propagate.
         errorFunction: null,
         execute: async (args: unknown) => (handlers[name] as unknown as (args: unknown) => unknown)(args),
       } as unknown as Parameters<typeof tool>[0]),

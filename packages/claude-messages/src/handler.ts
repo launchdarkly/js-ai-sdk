@@ -16,6 +16,7 @@ import {
   createHandlerInternal,
   endSpanOnce,
   isContentBlocks,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -35,8 +36,10 @@ import {
   setUsageSpanAttributes,
   type Tool,
   type ToolDefinitionInput,
+  type ToolHandlerFn,
   toolResultString,
   toSemconvFinishReason,
+  validateMaxRetries,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
@@ -227,14 +230,14 @@ function createRawRunUsage(): RawRunUsage {
 
 const buildTools = (
   configTools: Record<string, Tool>,
-  toolHandlers: Record<string, ((...args: unknown[]) => unknown) | NativeTool>,
+  toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
 ): { tools: AnthropicTool[]; executableTools: Map<string, (...args: unknown[]) => unknown> } => {
   const executableTools = new Map<string, (...args: unknown[]) => unknown>();
   const tools = Object.entries(configTools).flatMap(([name, toolConfig]) => {
     if (!Object.hasOwn(toolHandlers, name)) return [];
     const handler = toolHandlers[name];
-    if (typeof handler !== 'function') return [];
-    executableTools.set(name, handler);
+    if (!isFunctionTool(name, handler)) return [];
+    executableTools.set(name, handler as (...args: unknown[]) => unknown);
     return [
       {
         name,
@@ -355,7 +358,7 @@ const buildMessages = (
  * `effort` rename below is folded into `output_config`), beyond `max_tokens`, which is handled
  * separately because it carries a default of 1024.
  *
- * This is the Claude Messages list in the cross-SDK spec (ai-sdks-monorepo TESTING.md §1.12), the
+ * This is the cross-SDK Claude Messages list, the
  * same list the Python SDK forwards: settings that shape what the model generates, and nothing
  * else. Adding a key after 1.0 breaks nobody, and removing one does, so a key that does not
  * clearly shape generation stays off.
@@ -485,21 +488,40 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
 
 const MAX_STEPS = 10;
 
-export function createClaudeMessagesHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
+export function createClaudeMessagesHandler({
+  captureContent,
+  maxRetries,
+}: ContentCaptureOptions & {
+  /**
+   * How many times the `Anthropic` client retries a failed request (a rate limit, an overload, a
+   * timeout, a 5xx) before the error reaches the handler. Omit it to keep the client's own default
+   * of 2. Raise it when many calls share one rate-limit window, as an evaluation run with many
+   * concurrent workers does: two retries is thin when a whole batch hits the same window at once.
+   * The retries happen inside the client, so a retried turn is still one `chat` span.
+   */
+  maxRetries?: number;
+} = {}): ProviderHandler {
   reportUsage('claude-messages.createClaudeMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  return createClaudeMessagesHandlerInternal({ captureContent });
+  return createClaudeMessagesHandlerInternal({ captureContent, maxRetries });
 }
 
-function createClaudeMessagesHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  const anthropic = new Anthropic();
+function createClaudeMessagesHandlerInternal({
+  captureContent,
+  maxRetries,
+}: ContentCaptureOptions & { maxRetries?: number } = {}): ProviderHandler {
+  // Checked here rather than left to the client, which accepts `-1` or `1.5` without complaint.
+  validateMaxRetries(maxRetries);
+  // Passed only when set, so an omitted value keeps the vendor default rather than a copy of it.
+  const anthropic = new Anthropic(maxRetries !== undefined ? { maxRetries } : {});
 
   async function runToolLoop(
     config: AiConfigRep,
     messages: MessageParam[],
     system: string | undefined,
-    toolHandlers: Record<string, ((...args: unknown[]) => unknown) | NativeTool>,
+    toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
     parentContext: Context,
     runUsage: RawRunUsage,
+    captureContent: boolean,
   ) {
     const { tools, executableTools } = config.tools
       ? buildTools(config.tools, toolHandlers)
@@ -591,15 +613,17 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
     return { output, usage };
   }
 
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['Anthropic', 'messages'],
     async (
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ((...args: unknown[]) => unknown) | NativeTool> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      // Resolved per run, not per factory call, so a `configure()` after construction applies.
+      const captureContent = handler.captureContent === true;
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, 'anthropic', config.model.name);
@@ -617,7 +641,15 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
 
         const runUsage = createRawRunUsage();
         try {
-          const { output, usage } = await runToolLoop(config, messages, system, toolHandlers, parentContext, runUsage);
+          const { output, usage } = await runToolLoop(
+            config,
+            messages,
+            system,
+            toolHandlers,
+            parentContext,
+            runUsage,
+            captureContent,
+          );
           setOutputContentAttributes(span, captureContent, [
             { role: 'assistant', parts: [{ type: 'text', content: output }] },
           ]);
@@ -638,10 +670,11 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
     async function* streamHandler(
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, ((...args: unknown[]) => unknown) | NativeTool> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, 'anthropic', config.model.name);
@@ -784,22 +817,26 @@ function createClaudeMessagesHandlerInternal({ captureContent = false }: Content
     },
     captureContent,
   );
+  return handler;
 }
 
 export const claudeMessages = (
   configKey: string,
   userInput: string,
   context: LDContext,
-  // Both `captureContent` and `variables` are lifted out of `options`: the first configures the
-  // handler, the second belongs to the invocation. Passing either through to `config()` drops it —
-  // which is how a `{{user_input}}` placeholder used to reach the model unsubstituted whenever a
-  // caller used one of these wrappers instead of `config().invoke()`.
+  // `captureContent`, `maxRetries` and `variables` are lifted out of `options`: the first two
+  // configure the handler, the third belongs to the invocation. Passing any through to `config()`
+  // drops it — which is how a `{{user_input}}` placeholder used to reach the model unsubstituted
+  // whenever a caller used one of these wrappers instead of `config().invoke()`.
   {
     captureContent,
+    maxRetries,
     variables,
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     ContentCaptureOptions & {
+      /** Retry count for the `Anthropic` client. See `createClaudeMessagesHandler`. */
+      maxRetries?: number;
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
@@ -808,6 +845,6 @@ export const claudeMessages = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createClaudeMessagesHandlerInternal({ captureContent }),
+    handler: createClaudeMessagesHandlerInternal({ captureContent, maxRetries }),
   }).invoke(userInput, context, variables);
 };

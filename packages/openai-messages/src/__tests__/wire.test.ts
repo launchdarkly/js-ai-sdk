@@ -26,7 +26,7 @@ function finalResponseBody() {
   };
 }
 
-describe('createOpenAIHandler — wire-level request body', () => {
+describe('createOpenAIMessagesHandler — wire-level request body', () => {
   let capturedBody: Record<string, unknown> | undefined;
   let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -46,7 +46,7 @@ describe('createOpenAIHandler — wire-level request body', () => {
   });
 
   it('sends max_output_tokens and drops frequency_penalty for a config that sets both Chat Completions keys', async () => {
-    const { createOpenAIHandler } = await import('../handler.js');
+    const { createOpenAIMessagesHandler } = await import('../handler.js');
     const config = {
       model: {
         name: 'gpt-4o',
@@ -61,7 +61,7 @@ describe('createOpenAIHandler — wire-level request body', () => {
       instructions: 'You are helpful.',
     };
 
-    const handler = createOpenAIHandler();
+    const handler = createOpenAIMessagesHandler();
     await handler(config as any, 'hi');
 
     expect(fetchMock).toHaveBeenCalled();
@@ -71,28 +71,28 @@ describe('createOpenAIHandler — wire-level request body', () => {
   });
 
   it('forwards an accepted key (temperature) to the wire request', async () => {
-    const { createOpenAIHandler } = await import('../handler.js');
+    const { createOpenAIMessagesHandler } = await import('../handler.js');
     const config = {
       model: { name: 'gpt-4o', parameters: { temperature: 0.25 } },
       provider: { name: 'OpenAI' },
       instructions: 'You are helpful.',
     };
 
-    const handler = createOpenAIHandler();
+    const handler = createOpenAIMessagesHandler();
     await handler(config as any, 'hi');
 
     expect(capturedBody?.temperature).toBe(0.25);
   });
 
   it('drops store (data retention) and background (would break the handler) from the request body', async () => {
-    const { createOpenAIHandler } = await import('../handler.js');
+    const { createOpenAIMessagesHandler } = await import('../handler.js');
     const config = {
       model: { name: 'gpt-4o', parameters: { store: true, background: true } },
       provider: { name: 'OpenAI' },
       instructions: 'You are helpful.',
     };
 
-    const handler = createOpenAIHandler();
+    const handler = createOpenAIMessagesHandler();
     await handler(config as any, 'hi');
 
     expect(capturedBody).not.toHaveProperty('store');
@@ -110,7 +110,7 @@ describe('createOpenAIHandler — wire-level request body', () => {
       bodies.push(JSON.parse(init.body as string));
       return mockFetchResponse(bodies.length === 1 ? toolCallBody : finalResponseBody());
     });
-    const { createOpenAIHandler } = await import('../handler.js');
+    const { createOpenAIMessagesHandler } = await import('../handler.js');
     const config = {
       model: { name: 'gpt-4o' },
       provider: { name: 'OpenAI' },
@@ -118,7 +118,7 @@ describe('createOpenAIHandler — wire-level request body', () => {
       tools: { weather: { name: 'weather', type: 'function' as const, parameters: {} } },
     };
 
-    await createOpenAIHandler()(config as any, 'hi', { weather: () => ({ temp: 72, city: 'Zürich' }) });
+    await createOpenAIMessagesHandler()(config as any, 'hi', { weather: () => ({ temp: 72, city: 'Zürich' }) });
 
     const output = bodies[1].input.find((item: any) => item.type === 'function_call_output');
     expect(output.output).toBe('{"temp":72,"city":"Zürich"}');

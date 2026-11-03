@@ -230,6 +230,15 @@ describe('OpenLLMetry carrier', () => {
 
     expect(attrs['gen_ai.completion.0.content']).toBe('0');
   });
+
+  it('does not throw on a text part with no text', () => {
+    // Capture is on by default, so a handler output that came back undefined must not fail the run.
+    const attrs = attributesOf((span) =>
+      setOutputContentAttributes(span, true, [textMessage('assistant', undefined as unknown as string)]),
+    );
+
+    expect(attrs['gen_ai.output.messages']).toBeDefined();
+  });
 });
 
 describe('tool call I/O', () => {

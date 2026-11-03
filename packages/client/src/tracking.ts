@@ -1,4 +1,5 @@
 import { getClient } from './lifecycle.js';
+import { captureContentFor, noteAiInvocation } from './sdk-options.js';
 import { exposedToolKeys, HANDOFF_TOOL_PREFIX, renderTrajectory, TrajectoryRecorder } from './trajectory.js';
 import type {
   AiConfigRep,
@@ -46,28 +47,50 @@ export const wrapToolHandlers = (
   userContext: LDContext,
   trackData: TrackData,
 ): Record<string, ToolHandlerFn> => {
-  if (!toolHandlers) return {};
-  return Object.fromEntries(
-    Object.entries(toolHandlers).map(([name, fn]) => {
-      if (fn instanceof NativeTool) {
-        const stub = () => {
-          getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolKey: name }, 1);
-        };
-        (stub as unknown as Record<symbol, unknown>)[NATIVE_TOOL_KEY] = fn;
-        return [name, stub];
-      }
-      return [
-        name,
-        (...args: unknown[]) => {
-          // Synthetic handoff tools (graph routing) are not real tool calls;
-          // they must not pollute `$ld:ai:tool_call` metrics.
-          if (!name.startsWith(HANDOFF_TOOL_PREFIX)) {
+  if (!toolHandlers) return Object.create(null);
+  // Null prototype: a config tool named `toString` or `constructor` resolves to no handler.
+  return Object.assign(
+    Object.create(null),
+    Object.fromEntries(
+      Object.entries(toolHandlers).map(([name, fn]) => {
+        if (fn instanceof NativeTool) {
+          const stub = () => {
             getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolKey: name }, 1);
-          }
-          return (fn as (...args: unknown[]) => unknown)(...args);
-        },
-      ];
-    }),
+          };
+          (stub as unknown as Record<symbol, unknown>)[NATIVE_TOOL_KEY] = fn;
+          return [name, stub];
+        }
+        return [
+          name,
+          (...args: unknown[]) => {
+            // Synthetic handoff tools (graph routing) are not real tool calls;
+            // they must not pollute `$ld:ai:tool_call` metrics.
+            if (!name.startsWith(HANDOFF_TOOL_PREFIX)) {
+              getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolKey: name }, 1);
+            }
+            return (fn as (...args: unknown[]) => unknown)(...args);
+          },
+        ];
+      }),
+    ),
+  );
+};
+
+/**
+ * Narrows `toolHandlers` to the tools attached to the active variation: own
+ * properties whose key is in `config.tools`. A registry holds the tools of every
+ * variation, so this is the authorization boundary (SEC-9507): a tool name the
+ * model returns can only reach a handler this variation was given.
+ */
+export const scopeToolHandlers = (
+  config: Pick<AiConfigRep, 'tools'>,
+  toolHandlers: Record<string, ToolHandlerFn | NativeTool> | undefined,
+): Record<string, ToolHandlerFn | NativeTool> | undefined => {
+  if (!toolHandlers) return undefined;
+  return Object.fromEntries(
+    Object.keys(config.tools ?? {})
+      .filter((key) => Object.hasOwn(toolHandlers, key))
+      .map((key) => [key, toolHandlers[key]]),
   );
 };
 
@@ -87,8 +110,9 @@ function instrumentTools(
 ): { tools: Record<string, ToolHandlerFn>; recorder: TrajectoryRecorder } {
   // One recorder per invocation: invocations run concurrently against one map.
   const recorder = new TrajectoryRecorder();
-  if (!toolHandlers) return { tools: {}, recorder };
-  const recorded = recorder.wrap(toolHandlers, exposedToolKeys(config, toolHandlers));
+  const scoped = scopeToolHandlers(config, toolHandlers);
+  if (!scoped) return { tools: {}, recorder };
+  const recorded = recorder.wrap(scoped, exposedToolKeys(config, scoped));
   return { tools: wrapToolHandlers(recorded, userContext, trackData), recorder };
 }
 
@@ -213,6 +237,27 @@ export const makeRunTrackData = ({
   environmentId: tryGetEnvironmentId(),
 });
 
+/**
+ * The variables a handler receives. `ldContext`, `__ld` and `__ldValue` are SDK-owned, so a
+ * caller-supplied value never survives: `__ldValue` is the evaluated variation for a handler
+ * that captures content, and absent otherwise.
+ */
+const handlerVariables = (
+  variables: Record<string, unknown> | undefined,
+  userContext: LDContext,
+  trackData: TrackData,
+  handler: ProviderHandler,
+  evaluatedValue: unknown,
+): Record<string, unknown> => {
+  const merged: Record<string, unknown> = { ...variables, ldContext: { ...userContext }, __ld: trackData };
+  if (evaluatedValue !== undefined && captureContentFor(handler)) {
+    merged.__ldValue = evaluatedValue;
+  } else {
+    delete merged.__ldValue;
+  }
+  return merged;
+};
+
 export const executeAndTrack = async ({
   configKey,
   config,
@@ -224,6 +269,7 @@ export const executeAndTrack = async ({
   variables,
   graphKey,
   history,
+  evaluatedValue,
 }: {
   configKey: string;
   config: AiConfigRep;
@@ -235,26 +281,25 @@ export const executeAndTrack = async ({
   variables?: Record<string, unknown>;
   graphKey?: string;
   history?: Message[];
+  /**
+   * The flag value as the LaunchDarkly SDK returned it, before parsing. Passed to the handler as
+   * `variables.__ldValue` (not in `TrackData`, which is the `$ld:ai:*` event payload) so
+   * `setLdSpanAttributes` can write `feature_flag.result.value`, but only when the handler has
+   * `captureContent` on: the value holds the prompt. Omit it when there is none.
+   */
+  evaluatedValue?: unknown;
 }): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData; trajectory: string }> => {
   const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
   const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
+  const mergedVariables = handlerVariables(variables, userContext, trackData, handler, evaluatedValue);
 
   const startTime = Date.now();
   let response: Awaited<ReturnType<ProviderHandler>>;
 
   try {
-    response = await handler(
-      config,
-      userInput,
-      trackedToolHandlers,
-      {
-        ...variables,
-        ldContext: { ...userContext },
-        __ld: trackData,
-      },
-      history,
-    );
+    noteAiInvocation();
+    response = await handler(config, userInput, trackedToolHandlers, mergedVariables, history);
   } catch (err) {
     getClient().track('$ld:ai:duration:total', userContext, trackData, Date.now() - startTime);
     getClient().track('$ld:ai:generation:error', userContext, trackData, 1);
@@ -302,6 +347,7 @@ export async function* executeAndStream({
   variables,
   graphKey,
   history,
+  evaluatedValue,
 }: {
   configKey: string;
   config: AiConfigRep;
@@ -313,17 +359,25 @@ export async function* executeAndStream({
   variables?: Record<string, unknown>;
   graphKey?: string;
   history?: Message[];
+  /**
+   * The flag value as the LaunchDarkly SDK returned it, before parsing. Passed to the handler as
+   * `variables.__ldValue` (not in `TrackData`, which is the `$ld:ai:*` event payload) so
+   * `setLdSpanAttributes` can write `feature_flag.result.value`, but only when the handler has
+   * `captureContent` on: the value holds the prompt. Omit it when there is none.
+   */
+  evaluatedValue?: unknown;
 }): AsyncGenerator<ExecuteStreamEvent> {
   const trackData = makeRunTrackData({ configKey, config, meta, graphKey });
 
   const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
-  const mergedVariables = { ...variables, ldContext: { ...userContext }, __ld: trackData };
+  const mergedVariables = handlerVariables(variables, userContext, trackData, handler, evaluatedValue);
 
   const startTime = Date.now();
   let fullText = '';
   let rawUsage: Record<string, unknown> = {};
 
   try {
+    noteAiInvocation();
     if (handler.stream) {
       for await (const event of handler.stream(config, userInput, trackedToolHandlers, mergedVariables, history)) {
         if (event.type === 'chunk') {

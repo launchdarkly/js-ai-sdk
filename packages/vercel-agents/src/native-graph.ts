@@ -3,6 +3,7 @@ import {
   type GraphDefinition,
   type GraphNode,
   getClient,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -124,8 +125,8 @@ export const toVercelAgents = (
           setLdSpanAttributes(span, { __ld: makeGraphTrackData(def.key, runId), ldContext: context });
           await def.traverse(async (node) => {
             nodes.set(node.key, node);
-            const regularTools = Object.entries(node.config.tools ?? {}).filter(
-              ([name]) => typeof handlers[name] === 'function',
+            const regularTools = Object.entries(node.config.tools ?? {}).filter(([name]) =>
+              isFunctionTool(name, handlers[name]),
             );
             const tools: ToolSet = Object.fromEntries(
               regularTools.map(([name, definition]) => [

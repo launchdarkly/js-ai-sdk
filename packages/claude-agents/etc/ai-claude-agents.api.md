@@ -18,12 +18,21 @@ import { ProviderResponse } from '@launchdarkly/ai-server';
 import { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import { ToolHandlerFn } from '@launchdarkly/ai-server';
 
-// Warning: (ae-forgotten-export) The symbol "ClaudeAgentsHostOptions" needs to be exported by the entry point index.d.ts
-//
 // @public (undocumented)
 export const claudeAgents: (configKey: string, userInput: string, context: LDContext, input?: Omit<Parameters<typeof config>[0], "handler" | "key"> & ContentCaptureOptions & ClaudeAgentsHostOptions & {
     variables?: Record<string, unknown>;
 }) => Promise<ProviderResponse<string>>;
+
+// @public
+export type ClaudeAgentsHostOptions = {
+    cwd?: string;
+    settingSources?: SettingSource[];
+};
+
+// @public
+export type ClaudeAgentsSkillsHandlerOptions = ContentCaptureOptions & ClaudeAgentsHostOptions & {
+    skillsTempDir?: string;
+};
 
 // @public
 export const ClaudeBash: NativeTool;
@@ -63,6 +72,9 @@ export const ClaudeWrite: NativeTool;
 
 // @public (undocumented)
 export function createClaudeAgentsHandler(options?: ContentCaptureOptions & ClaudeAgentsHostOptions): ProviderHandler;
+
+// @public
+export function createClaudeAgentsSkillsHandler(options?: ClaudeAgentsSkillsHandlerOptions): ProviderHandler;
 
 // @public
 export const toClaudeAgents: (defPromise: Promise<GraphDefinition>, opts?: {

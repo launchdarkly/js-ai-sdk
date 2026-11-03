@@ -6,4 +6,4 @@ import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 registerAiSdkPackage(LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
 
-export { createOpenAIHandler, openaiMessages } from './handler.js';
+export { createOpenAIMessagesHandler, openaiMessages } from './handler.js';

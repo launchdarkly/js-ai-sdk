@@ -18,7 +18,7 @@ import { ProviderResponse } from '@launchdarkly/ai-server';
 import { ToolHandlerFn } from '@launchdarkly/ai-server';
 
 // @public (undocumented)
-export function createOpenAIAgentHandler(input?: ContentCaptureOptions): ProviderHandler;
+export function createOpenAIAgentsHandler(input?: ContentCaptureOptions): ProviderHandler;
 
 // @public (undocumented)
 export const openaiAgents: (configKey: string, userInput: string, context: LDContext, input?: Omit<Parameters<typeof config>[0], "handler" | "key"> & ContentCaptureOptions & {

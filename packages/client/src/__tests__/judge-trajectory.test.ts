@@ -128,15 +128,13 @@ describe('inline judges (config().invoke)', () => {
   });
 
   it('see only the tools the config offered, not the rest of a wider map', async () => {
-    const { handler, histories } = makeHandler([
-      { toolName: 'lookup', args: { id: 'A-17' } },
-      { toolName: 'extra', args: {} },
-    ]);
+    const { handler, histories, fn } = makeHandler();
     await config({
       key: 'support',
       handler,
       toolHandlers: { lookup: () => 'order A-17 shipped', extra: () => 'registry-only' },
     }).invoke('Where is A-17?', context);
+    expect(Object.keys(fn.mock.calls[0][2] ?? {})).toEqual(['lookup']);
     expect(histories[0]).toContain(lookupBlock);
     expect(histories[0]).not.toContain('extra');
   });

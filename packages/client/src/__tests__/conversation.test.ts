@@ -4,10 +4,12 @@ import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   ConversationIdSpanProcessor,
+  countSdkSpans,
   GEN_AI_CONVERSATION_ID,
   setConversationIdIfAbsent,
   withConversationId,
   withJudgeEvaluation,
+  withSpanAttributes,
 } from '../conversation.js';
 
 const exporter = new InMemorySpanExporter();
@@ -239,5 +241,92 @@ describe('judge explanation is gated on captureContent', () => {
     expect(Object.keys(span.attributes).some((k) => k.includes('explanation'))).toBe(false);
     const event = span.events.find((e) => e.name === 'gen_ai.evaluation.result');
     expect(Object.keys(event?.attributes ?? {}).some((k) => k.includes('explanation'))).toBe(false);
+  });
+});
+
+describe('withSpanAttributes', () => {
+  // Core knows no feature's attribute names: the caller supplies the whole set.
+  const foreign = provider.getTracer('some-orm');
+
+  it('writes a caller-supplied set onto every SDK span started in the scope', () => {
+    withSpanAttributes({ 'acme.batch.id': 'b-7', 'acme.batch.slot': 3 }, () => {
+      const root = tracer.startSpan('invoke_agent');
+      tracer.startSpan('chat m', undefined, trace.setSpan(context.active(), root)).end();
+      root.end();
+    });
+    const spans = finished();
+    expect(spans).toHaveLength(2);
+    for (const span of spans) {
+      expect(span.attributes['acme.batch.id']).toBe('b-7');
+      expect(span.attributes['acme.batch.slot']).toBe(3);
+    }
+  });
+
+  it('never overwrites an attribute the span already has', () => {
+    withSpanAttributes({ 'acme.batch.id': 'b-7' }, () => {
+      tracer.startSpan('invoke_agent', { attributes: { 'acme.batch.id': 'own' } }).end();
+    });
+    expect(finished()[0].attributes['acme.batch.id']).toBe('own');
+  });
+
+  it('leaves spans from other tracers alone', () => {
+    withSpanAttributes({ 'acme.batch.id': 'b-7' }, () => foreign.startSpan('SELECT 1').end());
+    expect(finished()[0].attributes['acme.batch.id']).toBeUndefined();
+  });
+
+  it('skips values that are neither strings nor integers', () => {
+    withSpanAttributes({ 'acme.ok': 'yes', 'acme.ratio': 0.5, 'acme.flag': true as unknown as number }, () =>
+      tracer.startSpan('invoke_agent').end(),
+    );
+    const { attributes } = finished()[0];
+    expect(attributes['acme.ok']).toBe('yes');
+    expect(attributes['acme.ratio']).toBeUndefined();
+    expect(attributes['acme.flag']).toBeUndefined();
+  });
+
+  it('adds a nested set to the outer one, the inner value winning on a shared key', () => {
+    withSpanAttributes({ 'acme.a': 'outer', 'acme.b': 'outer' }, () =>
+      withSpanAttributes({ 'acme.b': 'inner' }, () => tracer.startSpan('invoke_agent').end()),
+    );
+    const { attributes } = finished()[0];
+    expect(attributes['acme.a']).toBe('outer');
+    expect(attributes['acme.b']).toBe('inner');
+  });
+
+  it('writes nothing outside the scope', () => {
+    withSpanAttributes({ 'acme.batch.id': 'b-7' }, () => {});
+    tracer.startSpan('invoke_agent').end();
+    expect(finished()[0].attributes['acme.batch.id']).toBeUndefined();
+  });
+});
+
+describe('countSdkSpans', () => {
+  it('counts the SDK spans started in the scope, and no others', async () => {
+    const foreign = provider.getTracer('some-orm');
+    const counted = await countSdkSpans(async (counter) => {
+      tracer.startSpan('invoke_agent').end();
+      await Promise.resolve();
+      provider.getTracer('@launchdarkly/ai-openai-agents').startSpan('chat m').end();
+      foreign.startSpan('SELECT 1').end();
+      return counter.count;
+    });
+    expect(counted).toBe(2);
+  });
+
+  it('counts a span only in the innermost scope', () => {
+    const counts = countSdkSpans((outer) => {
+      const inner = countSdkSpans((counter) => {
+        tracer.startSpan('invoke_agent').end();
+        return counter.count;
+      });
+      return [outer.count, inner];
+    });
+    expect(counts).toEqual([0, 1]);
+  });
+
+  it('counts nothing outside the scope', () => {
+    const counter = countSdkSpans((c) => c);
+    tracer.startSpan('invoke_agent').end();
+    expect(counter.count).toBe(0);
   });
 });

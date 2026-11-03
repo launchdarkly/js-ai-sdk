@@ -10,6 +10,7 @@ import {
   createHandlerInternal,
   endSpanOnce,
   imageBlockToUrl,
+  isFunctionTool,
   type LDContext,
   type Message,
   type MessageContent,
@@ -460,7 +461,7 @@ function attachToolSpanHooks(
 
 const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record<string, ToolHandlerFn | NativeTool>) =>
   Object.entries(configTools)
-    .filter(([name]) => typeof toolHandlers[name] === 'function')
+    .filter(([name]) => isFunctionTool(name, toolHandlers[name]))
     .map(([name, toolConfig]) =>
       tool({
         name,
@@ -468,7 +469,7 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
         strict: false,
         // biome-ignore lint/suspicious/noExplicitAny: OpenAI Agents SDK tool parameters type does not accept Record<string, unknown>
         parameters: toolConfig.parameters as any,
-        // null, not undefined: the SDK default feeds a tool error back to the model; the spec (TESTING.md §1.4) says it must propagate.
+        // null, not undefined: the SDK default feeds a tool error back to the model, but it must propagate.
         errorFunction: null,
         execute: async (args) => {
           const handler = toolHandlers[name] as (...args: unknown[]) => unknown;
@@ -598,16 +599,14 @@ function promptToSpanMessages(prompt: string | OpenAIInputItem[]): SpanMessage[]
   }));
 }
 
-export function createOpenAIAgentHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  reportUsage('openai-agents.createOpenAIAgentHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  return createOpenAIAgentHandlerInternal({ captureContent });
+export function createOpenAIAgentsHandler({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
+  reportUsage('openai-agents.createOpenAIAgentsHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createOpenAIAgentsHandlerInternal({ captureContent });
 }
 
-/** `createOpenAIAgentHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
-export function createOpenAIAgentHandlerInternal({
-  captureContent = false,
-}: ContentCaptureOptions = {}): ProviderHandler {
-  return createHandlerInternal(
+/** `createOpenAIAgentsHandler` without the `$ld:ai:sdk:usage` report. Package-internal; not exported from the package index. */
+export function createOpenAIAgentsHandlerInternal({ captureContent }: ContentCaptureOptions = {}): ProviderHandler {
+  const handler = createHandlerInternal(
     ['OpenAI', 'agent'],
     async (
       config: AiConfigRep,
@@ -616,6 +615,8 @@ export function createOpenAIAgentHandlerInternal({
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      // Resolved per run, not per factory call, so a `configure()` after construction applies.
+      const captureContent = handler.captureContent === true;
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, 'openai', config.model.name);
@@ -675,6 +676,7 @@ export function createOpenAIAgentHandlerInternal({
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, 'openai', config.model.name);
@@ -775,6 +777,7 @@ export function createOpenAIAgentHandlerInternal({
     },
     captureContent,
   );
+  return handler;
 }
 
 export const openaiAgents = (
@@ -799,6 +802,6 @@ export const openaiAgents = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createOpenAIAgentHandlerInternal({ captureContent }),
+    handler: createOpenAIAgentsHandlerInternal({ captureContent }),
   }).invoke(userInput, context, variables);
 };

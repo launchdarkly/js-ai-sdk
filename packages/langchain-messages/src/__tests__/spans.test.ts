@@ -3,7 +3,7 @@ import { context, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createLangChainHandler } from '../handler.js';
+import { createLangChainMessagesHandler } from '../handler.js';
 
 /**
  * Unlike `handler.test.ts`, this file mocks no modules at all — the chat model is injected through
@@ -91,7 +91,7 @@ describe('langchain-messages span tree against a real tracer', () => {
   });
 
   it('nests the chat span under the invoke_agent root', async () => {
-    await createLangChainHandler(makeLLM([textResponse()]))(baseConfig as never, 'q');
+    await createLangChainMessagesHandler(makeLLM([textResponse()]))(baseConfig as never, 'q');
 
     const [chat] = named('chat');
     expect(chat).toBeDefined();
@@ -101,7 +101,7 @@ describe('langchain-messages span tree against a real tracer', () => {
   it('keeps every chat span of a multi-turn tool loop a direct child of the root', async () => {
     const llm = makeLLM([toolCallResponse(), textResponse('Final')]);
 
-    await createLangChainHandler(llm)(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') });
+    await createLangChainMessagesHandler(llm)(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') });
 
     const chats = named('chat');
     const rootId = root()?.spanContext().spanId;
@@ -114,7 +114,7 @@ describe('langchain-messages span tree against a real tracer', () => {
   it('nests the execute_tool span under the root and keeps one trace id across the tree', async () => {
     const llm = makeLLM([toolCallResponse(), textResponse('Final')]);
 
-    await createLangChainHandler(llm)(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') });
+    await createLangChainMessagesHandler(llm)(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') });
 
     const [tool] = named('execute_tool ');
     expect(tool).toBeDefined();
@@ -125,7 +125,7 @@ describe('langchain-messages span tree against a real tracer', () => {
   });
 
   it('nests the chat span under the root in the streaming path', async () => {
-    const handler = createLangChainHandler(makeLLM([]));
+    const handler = createLangChainMessagesHandler(makeLLM([]));
 
     await collectStream(handler.stream?.(baseConfig as never, 'q', {}, {}) as never);
 
@@ -137,7 +137,7 @@ describe('langchain-messages span tree against a real tracer', () => {
   it('carries the run-level token totals on the invoke_agent root, not only on the children', async () => {
     const llm = makeLLM([toolCallResponse(), textResponse('Final')]);
 
-    await createLangChainHandler(llm)(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') });
+    await createLangChainMessagesHandler(llm)(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') });
 
     // The root is the only span carrying `launchdarkly.*` and the `feature_flag` event, so a
     // config-scoped query finds it and nothing else. Totals must be readable there.
@@ -172,7 +172,7 @@ describe('langchain-messages span tree against a real tracer', () => {
         })(),
     } as never;
 
-    await collectStream(createLangChainHandler(llm).stream?.(baseConfig as never, 'q', {}, {}) as never);
+    await collectStream(createLangChainMessagesHandler(llm).stream?.(baseConfig as never, 'q', {}, {}) as never);
 
     const [chat] = named('chat');
     expect(chat.attributes['gen_ai.usage.cache_read.input_tokens']).toBe(10000);
@@ -195,7 +195,12 @@ describe('langchain-messages span tree against a real tracer', () => {
     // `break` makes the generator run `finally` without ever entering `catch`. Without cleanup
     // there the root span is never ended, so it is never exported, and the run vanishes from AI
     // Config Monitoring along with its `feature_flag` event.
-    const gen = createLangChainHandler(llm).stream?.(baseConfig as never, 'q', {}, {}) as AsyncGenerator<unknown>;
+    const gen = createLangChainMessagesHandler(llm).stream?.(
+      baseConfig as never,
+      'q',
+      {},
+      {},
+    ) as AsyncGenerator<unknown>;
     for await (const _chunk of gen) break;
 
     const rootSpan = root();
@@ -215,13 +220,13 @@ describe('langchain-messages span tree against a real tracer', () => {
       new AIMessage({ content: 'Hello!', usage_metadata: usage, response_metadata: { finish_reason: 'stop' } }),
     ]);
 
-    await createLangChainHandler(llm)(baseConfig as never, 'q');
+    await createLangChainMessagesHandler(llm)(baseConfig as never, 'q');
 
     expect(named('chat')[0].attributes['gen_ai.response.finish_reasons']).toEqual(['stop']);
   });
 
   it('omits the finish reason when the provider reports none', async () => {
-    await createLangChainHandler(makeLLM([textResponse()]))(baseConfig as never, 'q');
+    await createLangChainMessagesHandler(makeLLM([textResponse()]))(baseConfig as never, 'q');
 
     expect(named('chat')[0].attributes['gen_ai.response.finish_reasons']).toBeUndefined();
   });
@@ -229,7 +234,7 @@ describe('langchain-messages span tree against a real tracer', () => {
   it('ends and parents both spans when the model call throws', async () => {
     const llm = { invoke: vi.fn().mockRejectedValue(new Error('model down')), bindTools: () => llm } as never;
 
-    await expect(createLangChainHandler(llm)(baseConfig as never, 'q')).rejects.toThrow('model down');
+    await expect(createLangChainMessagesHandler(llm)(baseConfig as never, 'q')).rejects.toThrow('model down');
 
     // The exporter only receives ended spans, so seeing both proves neither was orphaned.
     const [chat] = named('chat');
@@ -247,7 +252,7 @@ describe('langchain-messages span tree against a real tracer', () => {
     const llm = { invoke, bindTools: () => llm } as never;
 
     await expect(
-      createLangChainHandler(llm)(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') }),
+      createLangChainMessagesHandler(llm)(toolConfig as never, 'q', { myTool: vi.fn().mockReturnValue('r') }),
     ).rejects.toThrow('model down mid-loop');
 
     const attrs = root()?.attributes ?? {};
@@ -260,7 +265,7 @@ describe('langchain-messages span tree against a real tracer', () => {
   it('writes no token attributes on the root when no turn ever completed', async () => {
     const llm = { invoke: vi.fn().mockRejectedValue(new Error('model down')), bindTools: () => llm } as never;
 
-    await expect(createLangChainHandler(llm)(baseConfig as never, 'q')).rejects.toThrow('model down');
+    await expect(createLangChainMessagesHandler(llm)(baseConfig as never, 'q')).rejects.toThrow('model down');
 
     expect(root()?.attributes['gen_ai.usage.input_tokens']).toBeUndefined();
   });
@@ -268,7 +273,7 @@ describe('langchain-messages span tree against a real tracer', () => {
   it('puts context identity on the invoke_agent root and on no child span', async () => {
     const llm = makeLLM([toolCallResponse(), textResponse('Final')]);
 
-    await createLangChainHandler(llm)(
+    await createLangChainMessagesHandler(llm)(
       toolConfig as never,
       'q',
       { myTool: vi.fn().mockReturnValue('r') },

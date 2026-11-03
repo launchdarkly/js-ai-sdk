@@ -1,5 +1,5 @@
 /**
- * TESTING.md §3.27 — `$ld:ai:sdk:usage` for openai-messages.
+ * `$ld:ai:sdk:usage` for openai-messages.
  */
 
 import type { LDClientInterface, LDContext } from '@launchdarkly/ai-server';
@@ -10,7 +10,7 @@ import {
   LD_AI_PACKAGE_NAME as AI_SDK_NAME,
   LD_AI_PACKAGE_VERSION as AI_SDK_VERSION,
 } from '../../../client/src/version.js';
-import { createOpenAIHandler } from '../handler.js';
+import { createOpenAIMessagesHandler } from '../handler.js';
 import * as entry from '../index.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from '../version.js';
 
@@ -63,7 +63,7 @@ const fire = (call: () => unknown): Promise<void> => {
  */
 const CALLS: Record<string, Call[]> = {
   'openai-messages.openaiMessages': [(fn) => settle(fn('k', 'q', ctx))],
-  'openai-messages.createOpenAIHandler': [(fn) => fire(() => fn())],
+  'openai-messages.createOpenAIMessagesHandler': [(fn) => fire(() => fn())],
 };
 
 const listRows = usageRows('ai-openai-messages.txt', entry);
@@ -76,7 +76,7 @@ it('has a call for every usage ID its list reports, and none it does not', () =>
   expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());
 });
 
-describe('§3.27 openai-messages helper usage', () => {
+describe('openai-messages helper usage', () => {
   let client: FakeClient;
 
   beforeEach(async () => {
@@ -106,7 +106,7 @@ describe('§3.27 openai-messages helper usage', () => {
   it('sends a helper called before a client exists with its package fields once the client exists', async () => {
     await shutdown();
     try {
-      createOpenAIHandler();
+      createOpenAIMessagesHandler();
     } catch {
       // A factory may throw after the report. The held record is what is under test.
     }
@@ -114,6 +114,6 @@ describe('§3.27 openai-messages helper usage', () => {
     await initClient(client);
     const calls = client.track.mock.calls.filter((entry) => entry[0] === '$ld:ai:sdk:usage');
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.[2]).toEqual(expectedPayload('openai-messages.createOpenAIHandler'));
+    expect(calls[0]?.[2]).toEqual(expectedPayload('openai-messages.createOpenAIMessagesHandler'));
   });
 });

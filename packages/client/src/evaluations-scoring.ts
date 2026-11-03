@@ -10,11 +10,23 @@
  * Internal: nothing here is exported from an entry point.
  */
 
+import type { Span } from '@opentelemetry/api';
 import { toolResultString } from './content.js';
 import type { DatasetRow } from './evaluations.js';
 import { EvaluationsError, errorMessage, isPlainObject } from './evaluations-api.js';
 import { type Criterion, criterionType, Judge, type Scorer } from './evaluations-criteria.js';
 import { eventIdFor, mapBounded, type RowResult, type RunIdentity, rowIdentity } from './evaluations-runner.js';
+import {
+  captureFor,
+  endSpan,
+  finishCriterionSpan,
+  recordChat,
+  setConfigModelIdentity,
+  startCriterionSpan,
+  traceHandlerCall,
+  withActiveSpan,
+  withEvaluationRow,
+} from './evaluations-spans.js';
 import {
   buildMessageHistory,
   FORMATTING_INSTRUCTIONS,
@@ -23,8 +35,8 @@ import {
   withoutOutputFormat,
 } from './judge-scoring.js';
 import { extractVariation } from './lifecycle.js';
-import { pythonRepr } from './python-format.js';
 import { findHandler } from './registry.js';
+import { noteAiInvocation } from './sdk-options.js';
 import { renderTrajectory } from './trajectory.js';
 import type { AiConfigRep, LDContext, ProviderHandler } from './types.js';
 import { normalizeMode, parseTemplate, parseUsage } from './utils.js';
@@ -164,6 +176,20 @@ export function judgeVariables(result: RowResult, judge: Judge): Record<string, 
   };
 }
 
+/**
+ * A value in an error message, as JSON rather than a language repr, so it reads
+ * the same in every SDK. Absent is `null`, a non-finite number is `NaN` /
+ * `Infinity`, and a value JSON cannot hold is its `String()`.
+ */
+function describeValue(value: unknown): string {
+  if (typeof value === 'number' && !Number.isFinite(value)) return String(value);
+  try {
+    return JSON.stringify(value ?? null) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
 /** A clock for one criterion result. `evaluatedAt` never precedes `startedAt`, which ingest would reject. */
 function startClock() {
   const startedMs = Date.now();
@@ -177,7 +203,12 @@ function startClock() {
   };
 }
 
-async function runJudge(result: RowResult, resolved: ResolvedJudge): Promise<CriterionResult> {
+/**
+ * Score one row with a judge. With `span`, the row's `evaluate` span, the
+ * span carries the judge's provider and model, and a judge call that started
+ * no SDK span is described by a `chat` child of it.
+ */
+async function runJudge(result: RowResult, resolved: ResolvedJudge, span?: Span): Promise<CriterionResult> {
   const clock = startClock();
   const base = {
     rowIndex: result.row.rowIndex,
@@ -192,16 +223,30 @@ async function runJudge(result: RowResult, resolved: ResolvedJudge): Promise<Cri
     ...clock.stop(),
   });
   let response: unknown;
+  const judged = toolResultString(result.output);
+  const variables = judgeVariables(result, resolved.judge);
+  // The config is passed unrendered: the handler makes the one template
+  // pass, so `{{…}}` in generated output or dataset values is never expanded.
+  // Judges get no tools.
+  const invoke = () => {
+    noteAiInvocation();
+    return resolved.handler(resolved.config, judged, {}, variables);
+  };
   try {
-    // The config is passed unrendered: the handler makes the one template
-    // pass, so `{{…}}` in generated output or dataset values is never expanded.
-    // Judges get no tools.
-    response = await resolved.handler(
-      resolved.config,
-      toolResultString(result.output),
-      {},
-      judgeVariables(result, resolved.judge),
-    );
+    if (span) {
+      setConfigModelIdentity(span, resolved.config);
+      response = await traceHandlerCall(invoke, (outcome) =>
+        recordChat(span, {
+          ...outcome,
+          config: resolved.config,
+          userInput: judged,
+          variables,
+          capture: captureFor(resolved.handler),
+        }),
+      );
+    } else {
+      response = await invoke();
+    }
   } catch (err) {
     return fail('handler_raised', `judge handler raised: ${errorMessage(err)}`);
   }
@@ -213,7 +258,7 @@ async function runJudge(result: RowResult, resolved: ResolvedJudge): Promise<Cri
   if (!parsed.reasoning) return fail('invalid_judge_output', 'judge output has no reasoning');
   const score = unitScore(parsed.score);
   if (score === undefined) {
-    return fail('invalid_score', `judge score must be a number between 0 and 1, got ${pythonRepr(parsed.score)}`);
+    return fail('invalid_score', `judge score must be a number between 0 and 1, got ${describeValue(parsed.score)}`);
   }
   const done: CriterionResult = {
     ...base,
@@ -241,7 +286,7 @@ function copyOutput(output: unknown): unknown {
   }
 }
 
-async function runScorer(result: RowResult, scorer: Scorer): Promise<CriterionResult> {
+async function runScorer(result: RowResult, scorer: Scorer, warnedScorers: Set<string>): Promise<CriterionResult> {
   const clock = startClock();
   const base = { rowIndex: result.row.rowIndex, criterion: scorer, startedAt: clock.startedAt };
   let score: unknown;
@@ -263,8 +308,14 @@ async function runScorer(result: RowResult, scorer: Scorer): Promise<CriterionRe
     // The Python SDK's two messages, without its boolean shortcut: a boolean is not a score.
     const message =
       numericScore(score) === undefined
-        ? `scorer fn must return a finite number, got ${pythonRepr(score)}`
-        : `scorer fn score must be between 0 and 1, got ${pythonRepr(score)}`;
+        ? `scorer fn must return a finite number, got ${describeValue(score)}`
+        : `scorer fn score must be between 0 and 1, got ${describeValue(score)}`;
+    // Warn once for each scorer in a run.
+    if (!warnedScorers.has(scorer.name)) {
+      warnedScorers.add(scorer.name);
+      // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; an invalid score must be visible
+      console.warn(`[LaunchDarkly] Scorer '${scorer.name}' returned an invalid score: ${message}`);
+    }
     return { ...base, status: 'ERROR', error: { cause: 'invalid_score', message }, ...clock.stop() };
   }
   return { ...base, status: 'COMPLETE', score: valid, ...clock.stop() };
@@ -275,23 +326,46 @@ async function runScorer(result: RowResult, scorer: Scorer): Promise<CriterionRe
  * `concurrency` pairs in flight across the whole phase. A row that did not
  * generate is skipped entirely: it yields no criterion result, because
  * LaunchDarkly has already counted it as failed.
+ *
+ * With `evaluationRunId`, each pair on a row that has a trace root runs inside
+ * an `evaluate {criterionType}` child of that root, opened before the judge or
+ * scorer runs and closed after it answers.
  */
 export function scoreRows(
   results: readonly RowResult[],
   criteria: readonly Criterion[],
   judges: ReadonlyMap<string, ResolvedJudge>,
   concurrency: number,
+  evaluationRunId?: string,
 ): Promise<CriterionResult[]> {
   const pairs = results
     .filter((result) => result.status === 'COMPLETE')
     .flatMap((result) => criteria.map((criterion) => ({ result, criterion })));
-  return mapBounded(pairs, concurrency, ({ result, criterion }) => {
+  const warnedScorers = new Set<string>();
+  const score = (result: RowResult, criterion: Criterion, span?: Span): Promise<CriterionResult> => {
     if (criterion instanceof Judge) {
       const resolved = judges.get(criterion.key);
       if (!resolved) throw new EvaluationsError(`judge '${criterion.key}' was not resolved`);
-      return runJudge(result, resolved);
+      return runJudge(result, resolved, span);
     }
-    return runScorer(result, criterion);
+    return runScorer(result, criterion, warnedScorers);
+  };
+  return mapBounded(pairs, concurrency, ({ result, criterion }) => {
+    const rowSpan = result.span;
+    if (evaluationRunId === undefined || rowSpan === undefined) return score(result, criterion);
+    const { rowIndex } = result.row;
+    const name = criterionType(criterion);
+    return withEvaluationRow(evaluationRunId, rowIndex, async () => {
+      const span = startCriterionSpan(evaluationRunId, rowIndex, name, rowSpan);
+      try {
+        const scored = await withActiveSpan(span, () => score(result, criterion, span));
+        // A scorer has no reason, so only a judge's capture setting matters.
+        finishCriterionSpan(span, name, scored, captureFor(scored.judge?.handler));
+        return scored;
+      } finally {
+        endSpan(span);
+      }
+    });
   });
 }
 

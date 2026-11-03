@@ -6,6 +6,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import type { Span } from '@opentelemetry/api';
 import type { DatasetRow, RunSummary } from './evaluations.js';
 import {
   EvaluationsError,
@@ -18,8 +19,18 @@ import {
   segment,
 } from './evaluations-api.js';
 import { type Criterion, criterionWire } from './evaluations-criteria.js';
+import {
+  captureFor,
+  finishRowSpan,
+  recordChat,
+  recordToolCalls,
+  startRowSpan,
+  traceHandlerCall,
+  withActiveSpan,
+  withEvaluationRow,
+} from './evaluations-spans.js';
 import { createBodyTools, type EvalTool, handlerConfigTools } from './evaluations-tools.js';
-import { pythonJsonNumber } from './python-format.js';
+import { noteAiInvocation } from './sdk-options.js';
 import { TrajectoryRecorder } from './trajectory.js';
 import type {
   AiConfigRep,
@@ -79,6 +90,8 @@ export type RowResult = {
   generatedAt: string;
   latencyMs: number;
   trajectory: TrajectoryRecorder;
+  /** The row's open `launchdarkly.dataset_row` root, when the run traces rows. The run ends it. */
+  span?: Span;
 };
 
 // ---------------------------------------------------------------------------
@@ -532,6 +545,10 @@ export async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (
  * Generate every row once with `handler`. A handler error becomes an `ERROR`
  * row instead of failing the run, and a handler is never retried: a retry
  * could repeat tool side effects.
+ *
+ * With `evaluationRunId`, each row opens its trace root before the handler
+ * runs, and the handler runs under it with the row bound. The caller ends each
+ * row's `span` after the row's criteria.
  */
 export function generateRows(
   rows: readonly DatasetRow[],
@@ -539,12 +556,14 @@ export function generateRows(
   config: AiConfigRep,
   tools: Record<string, ToolHandlerFn | NativeTool>,
   concurrency: number,
+  evaluationRunId?: string,
 ): Promise<RowResult[]> {
   return mapBounded(rows, concurrency, async (row) => {
     // One recorder per row: rows share the tool map, so a shared recorder
     // would splice their calls together.
     const trajectory = new TrajectoryRecorder();
     const rowTools = trajectory.wrap(tools);
+    const span = evaluationRunId === undefined ? undefined : startRowSpan(evaluationRunId, row.rowIndex);
     const startedAt = new Date().toISOString();
     const started = performance.now();
     const finish = () => ({
@@ -552,22 +571,51 @@ export function generateRows(
       generatedAt: new Date().toISOString(),
       latencyMs: Math.round(performance.now() - started),
     });
+    const invoke = () => {
+      noteAiInvocation();
+      return handler(config, row.input ?? undefined, rowTools, { ...row.variables });
+    };
     try {
-      const result: unknown = await handler(config, row.input ?? undefined, rowTools, {
-        ...row.variables,
-      });
+      const result: unknown =
+        evaluationRunId === undefined || span === undefined
+          ? await invoke()
+          : await withEvaluationRow(evaluationRunId, row.rowIndex, () =>
+              withActiveSpan(span, () =>
+                traceHandlerCall(invoke, (outcome) => {
+                  const capture = captureFor(handler);
+                  recordChat(span, {
+                    ...outcome,
+                    config,
+                    userInput: row.input,
+                    variables: row.variables,
+                    toolCalls: trajectory.calls,
+                    capture,
+                  });
+                  recordToolCalls(span, trajectory.calls, capture);
+                }),
+              ),
+            );
       if (!isPlainObject(result)) throw new TypeError('handler result must be an object');
       const done: RowResult = { row, status: 'COMPLETE', output: result.output, ...finish(), trajectory };
       if (isPlainObject(result.usage)) done.usage = { ...result.usage };
+      if (span) {
+        finishRowSpan(span);
+        done.span = span;
+      }
       return done;
     } catch (err) {
-      return {
+      const failed: RowResult = {
         row,
         status: 'ERROR',
         error: { code: HANDLER_ERROR_CODE, message: `handler raised: ${errorMessage(err)}` },
         ...finish(),
         trajectory,
       };
+      if (span) {
+        finishRowSpan(span, err);
+        failed.span = span;
+      }
+      return failed;
     }
   });
 }
@@ -576,22 +624,26 @@ export function generateRows(
 // Events
 // ---------------------------------------------------------------------------
 
-/** JSON with object keys sorted at every level: the canonical form `eventId` hashes. */
-export function canonicalJson(value: unknown, formatNumber: (n: number) => string = JSON.stringify): string {
+/**
+ * RFC 8785 canonical JSON (JCS): `JSON.stringify`'s spelling of strings and
+ * numbers, no whitespace, and object keys sorted by UTF-16 code unit at every
+ * level, which is what `sort()` compares. The form `eventId` and `contentHash`
+ * hash, and the one every SDK can produce.
+ */
+export function canonicalJson(value: unknown): string {
   // A value JSON cannot hold is handled as JSON.stringify handles it, so the
   // hash covers the same JSON the tracked event carries: `null` in an array,
   // and no key in an object. Python, which has no undefined, writes None as null.
   if (Array.isArray(value)) {
-    return `[${value.map((item) => (omittedByJson(item) ? 'null' : canonicalJson(item, formatNumber))).join(',')}]`;
+    return `[${value.map((item) => (omittedByJson(item) ? 'null' : canonicalJson(item))).join(',')}]`;
   }
   if (isPlainObject(value)) {
     const entries = Object.keys(value)
       .sort()
       .filter((key) => !omittedByJson(value[key]))
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key], formatNumber)}`);
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`);
     return `{${entries.join(',')}}`;
   }
-  if (typeof value === 'number') return formatNumber(value);
   return JSON.stringify(value);
 }
 
@@ -714,35 +766,10 @@ function generatedContent(result: RowResult): GeneratedContent {
 }
 
 /**
- * Escape every non-ASCII UTF-16 code unit as `\uXXXX`, as Python's
- * `json.dumps` does by default, so the same content hashes the same in every
- * language. An astral character becomes its surrogate pair in both.
- */
-function asciiJson(json: string): string {
-  let out = '';
-  for (let i = 0; i < json.length; i++) {
-    const code = json.charCodeAt(i);
-    out += code > 0x7f ? `\\u${code.toString(16).padStart(4, '0')}` : json[i];
-  }
-  return out;
-}
-
-/**
- * SHA-256 of what a row generated, serialized as the Python SDK serializes it:
- * canonical JSON with non-ASCII escaped. Numbers in `output` are read as
- * `json.loads` reads the JSON they usually come from: a safe integer is an
- * int, anything else a float ({@link pythonJsonNumber}), the same reading the
- * judge text uses. `usage` counts and the error code are integers.
+ * SHA-256 of the UTF-8 canonical JSON ({@link canonicalJson}) of what a row
+ * generated. Every SDK hashes the same form, so the same content hashes the
+ * same whichever language generated it.
  */
 export function contentHashFor(generated: GeneratedContent): string {
-  const entries = Object.keys(generated)
-    .sort()
-    .filter((key) => generated[key as keyof GeneratedContent] !== undefined)
-    .map((key) => {
-      const value = generated[key as keyof GeneratedContent];
-      return `${JSON.stringify(key)}:${canonicalJson(value, key === 'output' ? pythonJsonNumber : undefined)}`;
-    });
-  return createHash('sha256')
-    .update(asciiJson(`{${entries.join(',')}}`))
-    .digest('hex');
+  return createHash('sha256').update(canonicalJson(generated)).digest('hex');
 }

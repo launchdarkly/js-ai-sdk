@@ -1621,7 +1621,7 @@ describe('writeSkills crash-mid-reconcile recovery', () => {
     expect(await readManifest(root)).toMatchObject({ entries: {} });
   });
 
-  it('bounds the adoption comparison read at content.byteLength + 1 (§3.22)', async () => {
+  it('bounds the adoption comparison read at content.byteLength + 1', async () => {
     // The read reaches arbitrary foreign files at a managed path, so a planted
     // multi-GB file must not be pulled into memory before the hash is compared.
     // One byte past the resolved content's length is all that is needed to
@@ -2845,7 +2845,7 @@ describe('writeSkills uninitialized store', () => {
 // ─── The "*" form's own hole: a withholding with no key to protect anything ──
 
 describe('writeSkills unattributed withholding', () => {
-  it('an unattributable failure never prunes (§3.22: the run is reported incomplete)', async () => {
+  it('an unattributable failure never prunes (the run is reported incomplete)', async () => {
     // Every per-object failure the wildcard resolve can attribute to a key
     // keeps that key in the requested set, which is what holds prune off the
     // copy on disk. When neither the object's own `key` nor the store's map key

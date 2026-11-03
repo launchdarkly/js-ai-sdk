@@ -11,8 +11,10 @@ import {
   endSpanOnce,
   imageBlockToUrl,
   isContentBlocks,
+  isFunctionTool,
   type LDContext,
   type Message,
+  type NativeTool,
   normalizeModelParameters,
   type ProviderHandler,
   parseTemplate,
@@ -29,7 +31,9 @@ import {
   setUsageSpanAttributes,
   type Tool,
   type ToolDefinitionInput,
+  type ToolHandlerFn,
   toolResultString,
+  validateMaxRetries,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
@@ -128,14 +132,14 @@ type FunctionTool = {
 
 const buildTools = (
   configTools: Record<string, Tool>,
-  toolHandlers: Record<string, (...args: unknown[]) => unknown>,
+  toolHandlers: Record<string, ToolHandlerFn | NativeTool>,
 ): { tools: FunctionTool[]; executableTools: Map<string, (...args: unknown[]) => unknown> } => {
   const executableTools = new Map<string, (...args: unknown[]) => unknown>();
   const tools = Object.entries(configTools).flatMap<FunctionTool>(([name, toolConfig]) => {
     if (!Object.hasOwn(toolHandlers, name)) return [];
     const handler = toolHandlers[name];
-    if (typeof handler !== 'function') return [];
-    executableTools.set(name, handler);
+    if (!isFunctionTool(name, handler)) return [];
+    executableTools.set(name, handler as (...args: unknown[]) => unknown);
     return [
       {
         type: 'function',
@@ -374,10 +378,10 @@ const toToolDefinitions = (tools: FunctionTool[]): ToolDefinitionInput[] =>
  * offers the Chat Completions parameter set, and the Responses API this handler calls accepts
  * neither of those two names. `invoke` and `stream` forward the same keys.
  *
- * This is the OpenAI Messages list in the cross-SDK spec (ai-sdks-monorepo TESTING.md §1.12), the
+ * This is the cross-SDK OpenAI Messages list, the
  * same list the Python SDK forwards: settings that shape what the model generates, and nothing
  * else. Adding a key after 1.0 breaks nobody, and removing one does, so a key that does not
- * clearly shape generation stays off. The spec also lists `max_tool_calls`, which
+ * clearly shape generation stays off. The cross-SDK list also has `max_tool_calls`, which
  * `ResponseCreateParamsBase` in the installed `openai` package does not have, so it is not
  * forwarded.
  *
@@ -482,25 +486,45 @@ function buildModelParameterOptions(parameters: AiConfigRep['model']['parameters
   return picked;
 }
 
-export function createOpenAIHandler({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  reportUsage('openai-messages.createOpenAIHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
-  return createOpenAIHandlerInternal({ captureContent });
+export function createOpenAIMessagesHandler({
+  captureContent,
+  maxRetries,
+}: ContentCaptureOptions & {
+  /**
+   * How many times the `OpenAI` client retries a failed request (a rate limit, a timeout, a 5xx)
+   * before the error reaches the handler. Omit it to keep the client's own default of 2. Raise it
+   * when many calls share one rate-limit window, as an evaluation run with many concurrent workers
+   * does: two retries is thin when a whole batch hits the same window at once. The retries happen
+   * inside the client, so a retried turn is still one `chat` span.
+   */
+  maxRetries?: number;
+} = {}): ProviderHandler {
+  reportUsage('openai-messages.createOpenAIMessagesHandler', LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
+  return createOpenAIMessagesHandlerInternal({ captureContent, maxRetries });
 }
 
-function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureOptions = {}): ProviderHandler {
-  const openai = new OpenAI();
+function createOpenAIMessagesHandlerInternal({
+  captureContent,
+  maxRetries,
+}: ContentCaptureOptions & { maxRetries?: number } = {}): ProviderHandler {
+  // Checked here rather than left to the client, which accepts `-1` or `1.5` without complaint.
+  validateMaxRetries(maxRetries);
+  // Passed only when set, so an omitted value keeps the vendor default rather than a copy of it.
+  const openai = new OpenAI(maxRetries !== undefined ? { maxRetries } : {});
 
   const MAX_STEPS = 10;
 
-  return createHandlerInternal(
+  const handler = createHandlerInternal(
     ['OpenAI', 'messages'],
     async (
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, (...args: unknown[]) => unknown> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) => {
+      // Resolved per run, not per factory call, so a `configure()` after construction applies.
+      const captureContent = handler.captureContent === true;
       return trace.getTracer(TRACER_NAME).startActiveSpan('invoke_agent', async (span) => {
         span.setAttribute('gen_ai.operation.name', 'invoke_agent');
         setModelIdentityAttributes(span, 'openai', config.model.name);
@@ -643,10 +667,11 @@ function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureO
     async function* streamHandler(
       config: AiConfigRep,
       userInput = '',
-      toolHandlers: Record<string, (...args: unknown[]) => unknown> = {},
+      toolHandlers: Record<string, ToolHandlerFn | NativeTool> = {},
       variables: Record<string, unknown> = {},
       history?: Message[],
     ) {
+      const captureContent = handler.captureContent === true;
       const span = trace.getTracer(TRACER_NAME).startSpan('invoke_agent');
       span.setAttribute('gen_ai.operation.name', 'invoke_agent');
       setModelIdentityAttributes(span, 'openai', config.model.name);
@@ -799,22 +824,26 @@ function createOpenAIHandlerInternal({ captureContent = false }: ContentCaptureO
     },
     captureContent,
   );
+  return handler;
 }
 
 export const openaiMessages = (
   configKey: string,
   userInput: string,
   context: LDContext,
-  // Both `captureContent` and `variables` are lifted out of `options`: the first configures the
-  // handler, the second belongs to the invocation. Passing either through to `config()` drops it —
-  // which is how a `{{user_input}}` placeholder used to reach the model unsubstituted whenever a
-  // caller used one of these wrappers instead of `config().invoke()`.
+  // `captureContent`, `maxRetries` and `variables` are lifted out of `options`: the first two
+  // configure the handler, the third belongs to the invocation. Passing any through to `config()`
+  // drops it — which is how a `{{user_input}}` placeholder used to reach the model unsubstituted
+  // whenever a caller used one of these wrappers instead of `config().invoke()`.
   {
     captureContent,
+    maxRetries,
     variables,
     ...options
   }: Omit<Parameters<typeof config>[0], 'handler' | 'key'> &
     ContentCaptureOptions & {
+      /** Retry count for the `OpenAI` client. See `createOpenAIMessagesHandler`. */
+      maxRetries?: number;
       /** Template variables for the config's prompt. Forwarded to `invoke`, not to `config`. */
       variables?: Record<string, unknown>;
     } = {},
@@ -823,6 +852,6 @@ export const openaiMessages = (
   return configInternal({
     ...options,
     key: configKey,
-    handler: createOpenAIHandlerInternal({ captureContent }),
+    handler: createOpenAIMessagesHandlerInternal({ captureContent, maxRetries }),
   }).invoke(userInput, context, variables);
 };

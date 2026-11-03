@@ -1,5 +1,51 @@
 # Changelog
 
+## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-node-0.4.0...@launchdarkly/ai-node-1.0.0) (2026-10-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **evaluations:** promote Evaluations from Code to core ([#181](https://github.com/launchdarkly/js-ai-sdk/issues/181))
+* **AIC-3686:** rename the LangChain and OpenAI messages factories to *MessagesHandler ([#173](https://github.com/launchdarkly/js-ai-sdk/issues/173))
+* **skills:** rename FDv2SkillStore to LaunchDarklySkillStore ([#172](https://github.com/launchdarkly/js-ai-sdk/issues/172))
+
+### Features
+
+* **AIC-3686:** rename the LangChain and OpenAI messages factories to *MessagesHandler ([#173](https://github.com/launchdarkly/js-ai-sdk/issues/173)) ([15a0d37](https://github.com/launchdarkly/js-ai-sdk/commit/15a0d377c74268f3045d219173b31faaba2fdbe8))
+* **evaluations:** promote Evaluations from Code to core ([#181](https://github.com/launchdarkly/js-ai-sdk/issues/181)) ([676a2ed](https://github.com/launchdarkly/js-ai-sdk/commit/676a2ed4e628e88b24d3bd183461dc09c74b1028))
+* **skills:** rename FDv2SkillStore to LaunchDarklySkillStore ([#172](https://github.com/launchdarkly/js-ai-sdk/issues/172)) ([d3e7c5f](https://github.com/launchdarkly/js-ai-sdk/commit/d3e7c5f88ae000da3a40be7eb97bac1f98169db2))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.5.0 to ^1.0.0
+
+## [0.4.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-node-0.3.0...@launchdarkly/ai-node-0.4.0) (2026-10-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **skills:** promote Agent Skills to core ([#159](https://github.com/launchdarkly/js-ai-sdk/issues/159))
+* **client:** the client no longer loads .env. Add import 'dotenv/config' to your entrypoint (and install dotenv) if you relied on it.
+
+### Features
+
+* **skills:** promote Agent Skills to core ([#159](https://github.com/launchdarkly/js-ai-sdk/issues/159)) ([c7135cd](https://github.com/launchdarkly/js-ai-sdk/commit/c7135cd90e1893dac959cca3bc762ff4862ffc25))
+
+
+### Bug Fixes
+
+* **client:** stop loading dotenv from library code ([#69](https://github.com/launchdarkly/js-ai-sdk/issues/69)) ([fea34f3](https://github.com/launchdarkly/js-ai-sdk/commit/fea34f309dba7f94264efaf0d065b9d80b29a8c2))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^0.4.0 to ^0.5.0
+
 ## [0.3.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-node-0.2.0...@launchdarkly/ai-node-0.3.0) (2026-10-09)
 
 

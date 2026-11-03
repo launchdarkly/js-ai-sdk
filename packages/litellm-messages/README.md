@@ -36,7 +36,8 @@ const result = await config({
 ```
 
 The handler advertises `['*', 'messages']`, supports tools, structured output,
-multimodal history, streaming, and optional `captureContent`. `baseURL` (or
+multimodal history, streaming, and `captureContent` (unset follows the `configure()`
+default, which is on). `baseURL` (or
 `LITELLM_BASE_URL`) is mandatory unless `client` or `clientFactory` is supplied,
 and `createLiteLLMMessagesHandler` throws at creation when it is missing. The
 agents package throws at creation the same way.

@@ -11,7 +11,7 @@ import type { ModelSettings } from '@openai/agents';
  * bag (`top_p` becomes `topP`). Every other key is dropped. The handler and the native graph use
  * this same list.
  *
- * This is the OpenAI Agents list in the cross-SDK spec (ai-sdks-monorepo TESTING.md §1.12), the
+ * This is the cross-SDK OpenAI Agents list, the
  * same list the Python SDK forwards, plus `max_turns`, which goes to the run (see
  * `buildMaxTurns`), and a top-level `verbosity`, which becomes `text.verbosity`.
  */

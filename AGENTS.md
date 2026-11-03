@@ -98,13 +98,11 @@ Biome organises imports alphabetically within each group. Vitest's `vi.mock` cal
 
 PRs are squash-merged with the PR title as the commit message, and release-please builds each package's changelog from those messages.
 
-- **A change to an experimental feature uses that feature's scope:** `skills` (Agent Skills), `evaluations` (Evaluations from Code). `feat`, `fix` and `perf` commits with one of these scopes are listed under **Experimental** (`changelog-sections` in `release-please-config.json`), for example `feat(skills): watch skills for revocations`. Any other scope, such as `client`, lists the change as a core feature or fix.
-- **Use exactly one scope.** `feat(skills,client):` matches no Experimental row, so it lands under Features.
+- **A change to an experimental feature uses that feature's scope.** `feat`, `fix` and `perf` commits with that scope are listed under **Experimental** (`changelog-sections` in `release-please-config.json`). No feature is experimental now. Any other scope, such as `client`, `skills` (Agent Skills) or `evaluations` (Evaluations from Code), lists the change as a core feature or fix.
+- **Use exactly one scope.** `feat(beta,client):` matches no Experimental row, so it lands under Features.
 - **A PR that changes both core and experimental behaviour** should be split. If it can't be, add a `BEGIN_COMMIT_OVERRIDE` block to its description with one conventional-commit line per change. An override also corrects a merged PR's title, as long as the release PR hasn't merged yet.
-- **A breaking experimental change** uses `!` while the package is 0.x: `feat(skills)!:` bumps the minor version, which is what an experimental break is allowed. After 1.0, `!` would force a major release. Use `feat(skills):` without `!` instead, and say the change is breaking in the title.
+- **A breaking experimental change** uses `!` while the package is 0.x: `feat(beta)!:` bumps the minor version, which is what an experimental break is allowed. After 1.0, `!` would force a major release. Use `feat(beta):` without `!` instead, and say the change is breaking in the title.
 - **When a feature is promoted to core,** remove its rows from `changelog-sections`.
-
-The rule is specified in `TESTING.md` §0.3 in `launchdarkly/ai-sdks-monorepo`.
 
 ## Public API Reports
 
@@ -119,7 +117,7 @@ Every public entry point has a committed API Extractor report at `packages/<pack
 
 The approved public names of each entry point are the lists in `api-surface/`, copied in by sync PRs and never edited by hand. `yarn api:surface` compares each list with the names its entry point's API Extractor report (`packages/<package>/etc/*.api.md`) exports, type-only names included, and fails on an exported name the list does not allow or an unmarked name that is no longer exported. Regenerate the reports with `yarn api:update` first. `API_SURFACE_DIR=<dir>` reads the lists from another directory, and `API_SURFACE_STRICT=1`, set for every major release, also fails on any `-` or `+` marker. The entry points it covers are listed in `ENTRY_POINTS` in `scripts/api-surface.mjs`. `yarn test:api-surface` tests the check itself. CI runs both, after `api:check`.
 
-The `usage=` fields on the lists drive every package's `sdk-usage.test.ts` (§3.27): `usageRows()` from `scripts/api-surface.mjs` turns a list into one row per usage ID, and each suite's `CALLS` table says only how to call the function the package exports under that name. A usage ID with no entry in `CALLS`, or an entry for an ID the list no longer reports, fails the suite, so adding a reporting helper means adding its call there.
+The `usage=` fields on the lists drive every package's `sdk-usage.test.ts`: `usageRows()` from `scripts/api-surface.mjs` turns a list into one row per usage ID, and each suite's `CALLS` table says only how to call the function the package exports under that name. A usage ID with no entry in `CALLS`, or an entry for an ID the list no longer reports, fails the suite, so adding a reporting helper means adding its call there.
 
 ## Package Hierarchy
 
@@ -329,7 +327,7 @@ The handler package wires it to the provider SDK's built-in implementation and e
 
 #### `ProviderHandler`
 
-The callable data type that handler packages produce. Use `createHandler(providesFor, fn)` to construct one — it attaches `providesFor` and returns the function as a typed `ProviderHandler`. See [Handler Package Contract](#handler-package-contract) for full details.
+The callable data type that handler packages produce. Use `createHandler(providesFor, fn)` to construct one — it returns a new function, a typed `ProviderHandler` that carries `providesFor` and calls yours. See [Handler Package Contract](#handler-package-contract) for full details.
 
 ---
 
@@ -424,7 +422,7 @@ Returns:
 **Behavior when `.invoke()` is called:**
 
 1. Fetches and validates the `AiConfigRep` variation from LaunchDarkly using `args.key` and the supplied `context`. Throws if the variation is disabled or invalid.
-2. Selects the handler by matching on `[config.provider.name, normalized mode]`. Selection priority: (a) exact provider match, (b) wildcard `['*', mode]` fallback for multi-provider adapters (e.g. LangChain). Throws if no matching handler is found.
+2. Selects the handler by matching on `[config.provider.name, normalized mode]`. Selection priority: (a) exact provider match, ignoring any `providers` list; (b) a wildcard `['*', mode]` whose `providers` list contains the name, shortest list first and earlier registration on a tie; (c) an unscoped wildcard `['*', mode]`. Throws if no matching handler is found.
 3. Invokes the selected handler with the config, user input, tool handlers, variables, and history. The `context` passed to `.invoke()` is automatically merged into `variables` under the key `ldContext`, so templates can reference `{{ldContext.key}}`, `{{ldContext.email}}`, etc. Any caller-supplied `ldContext` variable is silently overwritten. If `history` is provided, it is passed to the handler as the 5th positional argument — messages-mode handlers splice it into the messages array; agent-mode handlers append it to the system prompt.
 4. Emits LaunchDarkly telemetry events: duration (`$ld:ai:duration:total`), outcome (`$ld:ai:generation:success` / `$ld:ai:generation:error`), and token counts (`$ld:ai:tokens:*`).
 5. If `judgeConfiguration` is present:
@@ -457,7 +455,7 @@ const registry = new Registry({
 });
 ```
 
-`.register(config)` can be called multiple times to add more handlers or tools. Duplicate `providesFor` keys or tool names produce a warning and the last registration wins.
+`.register(config)` can be called multiple times to add more handlers or tools. Handler identity is `providesFor` plus the provider set: two wildcards of the same mode with different `providers` lists both stay registered, while the same set (order-independent; repeated names collapse) or two unscoped wildcards warn and the last registration wins, taking the earlier one's place in the order. A `providers` list on an exact handler is not part of its identity. Duplicate tool names do the same.
 
 `globalRegistry` is a pre-constructed singleton `Registry` instance.
 
@@ -475,7 +473,7 @@ const combined = compose(globalRegistry, localRegistry);
 
 | Export | Description |
 |---|---|
-| `createHandler(providesFor, handler)` | Attaches `providesFor` metadata to a handler function and returns it as a `ProviderHandler`. This is the canonical way to build any handler — both package-internal factories and user-supplied custom handlers. See [Factory Function](#factory-function). |
+| `createHandler(providesFor, handler, options?)` | Returns a new `ProviderHandler` that carries `providesFor` and calls `handler`; `handler` itself is not changed. `options` is `{ stream?, captureContent?, providers? }`; a third argument that is not an object, or a fourth argument, throws a `TypeError`. This is the canonical way to build any handler — both package-internal factories and user-supplied custom handlers. See [Factory Function](#factory-function). |
 | `makeNodeTrackData(node, graphKey, runId)` | Builds the standard `TrackData` for a graph node event (including the `_ldMeta` model stamps). Native graph adapter packages must use this instead of building their own payload. |
 | `parseTemplate(template, variables)` | Replaces `{{variable}}` placeholders in a string. Supports dot-notation for nested values (e.g. `{{user.name}}`). Unrecognized placeholders are left as-is. |
 | `parseJSONWithPossibleFences(text)` | Parses a JSON string that may be wrapped in markdown code fences (` ```json ` or ` ``` `). Returns `null` if the text is not valid JSON. |
@@ -508,7 +506,7 @@ A handler is a **callable that also carries metadata**. It must be both invokabl
 providesFor: [providerName: string, mode: 'agent' | 'messages']
 ```
 
-The `providesFor` tuple is how `config()` routes to the correct handler at runtime. The mode element must exactly match the normalized `meta.mode`. The provider element must either exactly match `config.provider.name` **or** be the wildcard `'*'`. A wildcard handler is chosen only when no handler with an exact provider name matches — it acts as a fallback for multi-provider adapters like LangChain. **Always attach `providesFor` using `createHandler` rather than direct property assignment.**
+The `providesFor` tuple is how `config()` routes to the correct handler at runtime. The mode element must exactly match the normalized `meta.mode`. The provider element must either exactly match `config.provider.name` **or** be the wildcard `'*'`. A wildcard handler is chosen only when no handler with an exact provider name matches — it acts as a fallback for multi-provider adapters like LangChain. Pass `{ providers: ['Bedrock'] }` as the third-argument options object, `createHandler(providesFor, fn, { providers: ['Bedrock'] })`, to limit which `config.provider.name` values that wildcard accepts; names must match exactly, and an empty list or a blank name is rejected. Omit `providers` to leave the property unset, which accepts every provider. **Always attach `providesFor` using `createHandler` rather than direct property assignment.**
 
 ### Factory Function
 
@@ -518,9 +516,9 @@ Each handler package must export a **factory function** that:
 - Initializes any provider-specific resources.
 - Returns the handler callable with `providesFor` attached via `createHandler`.
 
-The naming convention is `create<Provider>Handler()`. For example: `createClaudeAgentsHandler()`, `createOpenAIAgentHandler()`.
+The naming convention is `create<Provider>Handler()`. For example: `createClaudeAgentsHandler()`, `createOpenAIAgentsHandler()`.
 
-**Always use `createHandler` to build and return the handler.** It attaches `providesFor` in place and returns the same function reference as a properly typed `ProviderHandler`. Do not manually assign `handler.providesFor` — `createHandler` is the single canonical path.
+**Always use `createHandler` to build and return the handler.** It returns a new function, a properly typed `ProviderHandler` that carries `providesFor` and calls yours. The function you pass in is not changed, so always use the returned handler. Passing a returned handler through `createHandler` again keeps its `stream`, explicit `captureContent` and `providers` unless the new options replace them. Do not manually assign `handler.providesFor` — `createHandler` is the single canonical path.
 
 ```ts
 import { createHandler, parseTemplate } from '@launchdarkly/ai-server';
@@ -558,7 +556,7 @@ If `config.tools` is present, the handler must:
 
 If `config.tools` is absent or empty, tool handling should be skipped entirely.
 
-**Native tools:** A `toolHandlers` value may be a `NativeTool` instance rather than a plain function. When encountered, the handler should wire it to the provider SDK's built-in capability (not invoke it as a function), and emit `$ld:ai:tool_call` tracking when the model invokes it. Read the `NATIVE_TOOL_KEY` symbol off the tracking stub to recover the original `NativeTool` instance and its `toolName`.
+**Native tools:** A `toolHandlers` value may be a `NativeTool` instance rather than a plain function. The same `config.tools` allowlist applies: a native tool whose key is not in `config.tools` must not be enabled. When encountered, the handler should wire it to the provider SDK's built-in capability (not invoke it as a function), and emit `$ld:ai:tool_call` tracking when the model invokes it. Read the `NATIVE_TOOL_KEY` symbol off the tracking stub to recover the original `NativeTool` instance and its `toolName`.
 
 ### Telemetry
 
@@ -614,9 +612,13 @@ two names for one concept. Don't reintroduce it: a reader filtering on
 `launchdarkly.` should see everything this SDK owns and nothing should hide
 elsewhere.
 
-**Content attributes** — only when the caller passes `captureContent: true`.
-Conversation content is PII, so it is off by default and every write goes
-through `client/src/content.ts`, which takes the flag as an argument:
+**Content attributes** — written unless capture is off for the run. Each handler
+resolves its effective `captureContent` when it runs: an explicit `true` or
+`false` from the factory (or convenience wrapper), otherwise the process default
+from `configure({ options })`, otherwise `true`. Factories leave the option unset
+by default and read `handler.captureContent` at the start of each run, so a
+`configure()` after construction applies. Every write goes through
+`client/src/content.ts`, which takes the resolved flag as an argument:
 - `gen_ai.system_instructions` — the system prompt, as a JSON part array
 - `gen_ai.input.messages` / `gen_ai.output.messages` — the canonical
   `[{ role, parts }]` JSON from the OTel GenAI semconv
@@ -632,7 +634,23 @@ Span events are not a content carrier. OTEP 4430 deprecated the span-event
 recording API, and the `gen_ai.content.prompt` / `gen_ai.content.completion`
 events these handlers used to emit were read by nothing on the LaunchDarkly
 side. The only event a handler emits is `feature_flag`, on the root, for
-trace correlation. When `variables.ldContext` has a usable identity, that
+trace correlation. It carries `feature_flag.result.variant` (the served
+variation key) whenever that key is non-empty; graph spans can have an empty
+one, and then it is left off. It also carries `feature_flag.result.value`.
+When `variables.__ldValue` is present, it is `JSON.stringify` of that raw
+variation (messages or instructions, model, provider, `_ldMeta`, judge
+configuration), the same string the LaunchDarkly OTel `TracingHook` writes
+with `includeValue: true`. Otherwise it is `JSON.stringify` of the variation
+key (for example `"\"opus\""`), and it is left off when there is neither.
+The core client sets `__ldValue`, beside `__ld`, only when the handler that
+runs has `captureContent` on (`ProviderHandler.captureContent`, the same gate
+judge reasoning uses), so the raw config never reaches a capture-off handler.
+A deferred judge carries its variation on `JudgeTask.judgeValue`, and
+`runJudge` applies the same gate with the judge's handler. The
+`launchdarkly.graph` root span has no single handler, so it gets the graph
+flag's raw variation only when the process-wide default captures content.
+It is not in `TrackData`, because `TrackData` is the `$ld:ai:*` event payload.
+When `variables.ldContext` has a usable identity, that
 event also carries `feature_flag.context.id` and `feature_flag.contextKeys`,
 and the root span gets `context.contextKeys.<kind>`. Child spans must not.
 
@@ -644,12 +662,24 @@ a number, no conversation content — and the same two keys are mirrored as span
 attributes. It is defined by the GenAI semantic conventions and read by the
 conversation view's turn badges, so do not "fix" it by deleting it.
 
-The judge's reasoning is deliberately **not** on the span or the event.
-`gen_ai.evaluation.explanation` is model-generated prose about the user's
-conversation, which makes it a content attribute under the rule above, and
-`captureContent` is a handler-factory option the client core never receives.
-The reasoning still reaches the caller in `judgeResults`; only the telemetry
-copy is withheld. Adding it back needs its own opt-in, not a quiet write.
+The judge's reasoning, `gen_ai.evaluation.explanation`, is model-generated
+prose about the user's conversation, which makes it a content attribute under
+the rule above. It is written on the span and the event only when the judge
+handler's effective capture flag is true (`handler.captureContent`, or the
+process default for a plain function). The reasoning always reaches the caller
+in `judgeResults`.
+
+A judge runs after the graded handler has ended its span, so its spans start a
+trace of their own, with their own `launchdarkly.run.id`. To tie them back,
+`runJudges` (inline) and `runJudge` (deferred) wrap each judge's run in
+`withSpanAttributes`, so every span of that run carries the graded run's
+identity: `launchdarkly.judge.target.run.id`,
+`launchdarkly.judge.target.config.key` and
+`launchdarkly.judge.target.variation.key` (constants `LD_JUDGE_TARGET_*` in
+`client/src/judges.ts`). Each is written only when the graded run's `TrackData`
+has the value. They are identifiers, not content, so capture settings do not
+gate them. The judge's metric event already carries the graded `runId` in its
+`TrackData`; these attributes put the same link on the trace.
 
 **Span status:**
 - Set to OK on success.
@@ -668,7 +698,7 @@ The handler must return:
 
 ### Streaming (optional)
 
-A handler package may implement real-time token streaming by passing a streaming generator as the **third argument** to `createHandler`. When present, `config().stream()` calls this instead of the blocking handler and forwards `chunk` events to the caller in real time.
+A handler package may implement real-time token streaming by passing a streaming generator as the **`stream` option** to `createHandler`. When present, `config().stream()` calls this instead of the blocking handler and forwards `chunk` events to the caller in real time.
 
 **Type:**
 
@@ -706,22 +736,24 @@ export function createMyProviderHandler(): ProviderHandler {
     async (config, userInput = '', toolHandlers = {}, variables = {}, history) => {
       // ... blocking implementation ...
     },
-    async function* streamHandler(config, userInput = '', toolHandlers = {}, variables = {}, history) {
-      const span = trace.getTracer('my-package').startSpan('my.stream');
-      try {
-        // ... stream from provider SDK ...
-        for await (const chunk of providerStream) {
-          yield { type: 'chunk', text: chunk.text };
+    {
+      stream: async function* streamHandler(config, userInput = '', toolHandlers = {}, variables = {}, history) {
+        const span = trace.getTracer('my-package').startSpan('my.stream');
+        try {
+          // ... stream from provider SDK ...
+          for await (const chunk of providerStream) {
+            yield { type: 'chunk', text: chunk.text };
+          }
+          yield { type: 'done', output: fullText, usage: { input_tokens: 10, output_tokens: 20 } };
+          span.setStatus({ code: SpanStatusCode.OK });
+        } catch (err) {
+          span.recordException(err as Error);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
+          throw err;
+        } finally {
+          span.end();
         }
-        yield { type: 'done', output: fullText, usage: { input_tokens: 10, output_tokens: 20 } };
-        span.setStatus({ code: SpanStatusCode.OK });
-      } catch (err) {
-        span.recordException(err as Error);
-        span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
-        throw err;
-      } finally {
-        span.end();
-      }
+      },
     },
   );
 }
@@ -770,7 +802,7 @@ Current adapters:
 
 ## Claude Provider Built-ins (`@launchdarkly/ai-claude-agents`)
 
-The Claude agents package exports pre-constructed `NativeTool` sentinels for Claude Code built-in capabilities. Place these as values in `toolHandlers` to enable the corresponding native Claude tool without writing a handler function:
+The Claude agents package exports pre-constructed `NativeTool` sentinels for Claude Code built-in capabilities. Place these as values in `toolHandlers` to enable the corresponding native Claude tool without writing a handler function. Like any tool, a native tool is enabled only for a variation whose `config.tools` has its `toolHandlers` key; registering it is not enough:
 
 | Export | Claude SDK tool name |
 |---|---|

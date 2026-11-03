@@ -96,6 +96,10 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 | `[@launchdarkly/ai-litellm-agents](packages/litellm-agents/README.md)`         | `*` (any) | `agent`    | OpenAI Agents SDK through a LiteLLM proxy              |
 | `[@launchdarkly/ai-typesafe](packages/typesafe/README.md)`                     | TypeSafe  | `messages` | TypeSafe Jev judge handler                            |
 
+### Versioning
+
+From 1.0.0 every package in this SDK is released at the same version, so install them at matching versions. Each package depends on `@launchdarkly/ai-server` within the same major (`^1.0.0`), and a breaking change in any package is a new major for all of them. Names exported from `@launchdarkly/ai-server/experimental` are the exception: they may change in a minor release.
+
 
 ## Module format support
 
@@ -130,6 +134,8 @@ npm install @launchdarkly/ai-server @launchdarkly/vercel-server-sdk @launchdarkl
 ```
 
 Then call `initClient(preInitializedClient)` with your platform's LD client before the first AI call.
+
+> **The runtime must provide Node's built-in modules.** For Agent Skills, the `@launchdarkly/ai-server` package root imports `node:fs`, `node:fs/promises`, `node:path`, `node:os` and `node:crypto` when it loads, and every handler package imports that root. On a runtime that doesn't provide them, the import fails even if you never use Agent Skills. Restoring support for those runtimes is tracked in AIC-3674.
 
 **With telemetry** (recommended for production) — traces export to the LaunchDarkly Observability dashboard:
 
@@ -203,7 +209,7 @@ console.log(result.response);
 
 `config()` accepts either a single handler or an array of handlers and routes to the correct one at invoke-time based on the flag variation's provider and mode. The handler can be one of the pre-built `create*Handler()` factories, an array of them, or any function you write — useful for internal endpoints or providers without a pre-built package.
 
-Use `createHandler(providesFor, fn)` to build a custom handler. It attaches routing metadata (`providesFor`) so the handler works with `config()` routing and registries.
+Use `createHandler(providesFor, fn)` to build a custom handler. It returns a new handler that carries routing metadata (`providesFor`), so it works with `config()` routing and registries. Use the returned handler, not the function you passed in.
 
 
 | Argument            | Type                                    | Required | Description                                            |
@@ -222,8 +228,8 @@ Returns `{ invoke(...): Promise<ProviderResponse>, stream(...): AsyncGenerator<S
 ```ts
 import 'dotenv/config';
 import { config, createHandler, shutdown } from '@launchdarkly/ai-server';
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
-import { createOpenAIAgentHandler } from '@launchdarkly/ai-openai-agents';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIAgentsHandler } from '@launchdarkly/ai-openai-agents';
 import { createClaudeAgentsHandler } from '@launchdarkly/ai-claude-agents';
 import { createClaudeMessagesHandler } from '@launchdarkly/ai-claude-messages';
 
@@ -249,8 +255,8 @@ const result = await config({
     search: async ({ query }) => { /* ... */ },
   },
   handler: [
-    createOpenAIHandler(),
-    createOpenAIAgentHandler(),
+    createOpenAIMessagesHandler(),
+    createOpenAIAgentsHandler(),
     createClaudeAgentsHandler(),
     createClaudeMessagesHandler(),
   ],
@@ -305,7 +311,7 @@ for await (const event of g.stream('I was double charged', { kind: 'user', key: 
 await shutdown();
 ```
 
-`stream()` uses the same model-driven router and graph telemetry as `invoke()`, and yields `GraphStreamEvent` values (`node_start`, `chunk`+`nodeKey`, `node_done`, `handoff`, final `done`) so callers can render per-node UI.
+`stream()` uses the same model-driven router and graph telemetry as `invoke()`, and yields `GraphStreamEvent` values (`node_start`, `chunk`+`nodeKey`, `node_done`, `handoff`, final `done`) so callers can render per-node UI. A node's own judge scores are on its `node_done` as `judgeResults`; `done.judgeResults` holds only the graph-level judge.
 
 Provider packages also export single-provider conveniences (`claudeGraph`, `openaiGraph`, `langchainGraph`, `vercelGraph`, `litellmGraph`) that pre-bind their handler. For mixed-provider graphs, use the base `graph()` and pass multiple handlers.
 
@@ -473,11 +479,11 @@ Handlers and tools can be registered once and reused across every call in your a
 ```ts
 import { globalRegistry, config, graph } from '@launchdarkly/ai-server';
 import { createClaudeAgentsHandler, ClaudeWebSearch } from '@launchdarkly/ai-claude-agents';
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
 
 // Called once at app startup
 globalRegistry.register({
-  handlers: [createClaudeAgentsHandler(), createOpenAIHandler()],
+  handlers: [createClaudeAgentsHandler(), createOpenAIMessagesHandler()],
   tools: {
     'web-search': ClaudeWebSearch,
     'get-prefs': getPreferencesFn,
@@ -500,11 +506,11 @@ Scoping configurations allows you to define registries that have only a subset o
 
 ```ts
 import { Registry } from '@launchdarkly/ai-server';
-import { createOpenAIHandler } from '@launchdarkly/ai-openai-messages';
-import { createOpenAIAgentHandler } from '@launchdarkly/ai-openai-agents';
+import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
+import { createOpenAIAgentsHandler } from '@launchdarkly/ai-openai-agents';
 
 const openaiRegistry = new Registry({
-  handlers: [createOpenAIHandler(), createOpenAIAgentHandler()],
+  handlers: [createOpenAIMessagesHandler(), createOpenAIAgentsHandler()],
   tools: { 'get-prefs': getPreferencesFn },
 });
 ```
@@ -515,7 +521,7 @@ When you have separate registries for separate concerns, use `compose()` to merg
 import { compose } from '@launchdarkly/ai-server';
 
 const baseRegistry = new Registry({
-  handlers: [createOpenAIHandler()],
+  handlers: [createOpenAIMessagesHandler()],
   tools: { 'get-prefs': getPreferencesFn },
 });
 

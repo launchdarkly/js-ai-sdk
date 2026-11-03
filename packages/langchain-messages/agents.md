@@ -12,7 +12,7 @@ This is a **Tier 1 handler package**. It wraps LangChain chat models (`@langchai
 providesFor = ['*', 'messages']
 ```
 
-The `'*'` wildcard means this handler acts as a fallback for any `meta.mode === "messages"` variation that has no more-specific (exact-provider-name) handler registered. LangChain is a framework adapter — not a provider itself — so it routes through `langchain-anthropic`, `langchain-openai`, or other `BaseChatModel` implementations at runtime by inspecting `config.provider.name`. Using `'*'` lets users keep their flag variations configured with their real provider name (`"Anthropic"`, `"OpenAI"`, etc.) without needing a native handler for each.
+The `'*'` wildcard means this handler acts as a fallback for any `meta.mode === "messages"` variation that has no more-specific (exact-provider-name) handler registered. LangChain is a framework adapter — not a provider itself — so it routes through `langchain-anthropic`, `langchain-openai`, or other `BaseChatModel` implementations at runtime by inspecting `config.provider.name`. Using `'*'` lets users keep their flag variations configured with their real provider name (`"Anthropic"`, `"OpenAI"`, etc.) without needing a native handler for each. Pass `{ providers: ['Bedrock'] }` to `createLangChainMessagesHandler` to accept only those names; an omitted list still matches every provider.
 
 > **Priority rule:** if the caller also registers an explicit provider handler (e.g. `['OpenAI', 'messages']`), that handler takes precedence over the wildcard for matching variations.
 
@@ -25,7 +25,7 @@ The handler is model-agnostic — it accepts any `BaseChatModel`. The default is
 | File | Responsibility |
 |---|---|
 | `src/handler.ts` | All implementation — message building, tool binding, invoke loop, telemetry |
-| `src/index.ts` | Barrel: `export { createLangChainHandler, langchainMessages }` |
+| `src/index.ts` | Barrel: `export { createLangChainMessagesHandler, langchainMessages }` |
 
 ---
 
@@ -34,9 +34,9 @@ The handler is model-agnostic — it accepts any `BaseChatModel`. The default is
 ```ts
 // Factory — accepts a BaseChatModel or `(config) => model` so flag parameters can be applied
 // unchanged after evaluation. Defaults to ChatOpenAI / ChatAnthropic constructed from the config.
-export function createLangChainHandler(llm?: LangChainModelSource): ProviderHandler
+export function createLangChainMessagesHandler(llm?: LangChainModelSource): ProviderHandler
 
-// Convenience wrapper — identical to config({ ...options, key: configKey, handler: createLangChainHandler() }).invoke(userInput, context)
+// Convenience wrapper — identical to config({ ...options, key: configKey, handler: createLangChainMessagesHandler() }).invoke(userInput, context)
 export const langchainMessages: (configKey: string, userInput: string, context: LDContext, options?: Omit<ConfigArgs, 'handler' | 'key'>) => Promise<ProviderResponse>
 ```
 
@@ -122,8 +122,9 @@ Span attributes set before the call:
 - `gen_ai.system` = `'langchain'`
 - `gen_ai.request.model` = `config.model.name`
 
-Conversation content, only when the handler is built with `captureContent: true`
-(off by default — content is PII): `gen_ai.system_instructions`,
+Conversation content, written unless capture is off for the run (the handler's
+explicit `captureContent`, otherwise the `configure()` default, which is `true`):
+`gen_ai.system_instructions`,
 `gen_ai.input.messages`, `gen_ai.output.messages` and `gen_ai.tool.definitions`
 as canonical JSON, mirrored into the flat `gen_ai.prompt.{i}.*` /
 `gen_ai.completion.{i}.*` attributes the LaunchDarkly trace view reads today.

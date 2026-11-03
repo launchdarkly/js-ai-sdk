@@ -1,5 +1,5 @@
 /**
- * TESTING.md §3.27 — `$ld:ai:sdk:usage` for vercel-messages. JavaScript only.
+ * `$ld:ai:sdk:usage` for vercel-messages. JavaScript only.
  */
 
 import type { LDClientInterface, LDContext } from '@launchdarkly/ai-server';
@@ -88,7 +88,7 @@ it('has a call for every usage ID its list reports, and none it does not', () =>
   expect(Object.keys(CALLS).sort()).toEqual([...new Set(listRows.map(({ id }) => id))].sort());
 });
 
-describe('§3.27 vercel-messages helper usage', () => {
+describe('vercel-messages helper usage', () => {
   let client: FakeClient;
 
   beforeEach(async () => {

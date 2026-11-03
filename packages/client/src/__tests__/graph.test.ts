@@ -1,7 +1,7 @@
 import { context, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -27,7 +27,12 @@ vi.mock('../judges.js', () => ({
 import { ConversationIdSpanProcessor, GEN_AI_CONVERSATION_ID, withConversationId } from '../conversation.js';
 import { graph, resolveGraph } from '../graph.js';
 import { getClient } from '../lifecycle.js';
+import { configure, resetSdkOptions } from '../sdk-options.js';
 import type { HandlerStreamEvent, ProviderHandler } from '../types.js';
+
+// Every graph run latches the process options, so each test starts from the built-in defaults.
+beforeEach(() => resetSdkOptions());
+afterEach(() => resetSdkOptions());
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -338,6 +343,15 @@ describe('graph().invoke()', () => {
     await expect(graph('graph-flag', {}).invoke('hi', mockContext)).rejects.toThrow(/handlers/i);
   });
 
+  it('does not run a scoped wildcard for a provider outside its list', async () => {
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+    handler.providesFor = ['*', 'messages'];
+    handler.providers = ['Bedrock'];
+    await expect(graph('graph-flag', { handlers: [handler] }).invoke('hi', mockContext)).rejects.toThrow(/OpenAI/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('visits all nodes and accumulates usage', async () => {
     setupTwoNodeGraph();
     const handler = makeHandler();
@@ -500,6 +514,18 @@ describe('graph().invoke()', () => {
     );
     expect(runJudges).toHaveBeenCalled();
     expect(result.judgeResults).toEqual(judgeData);
+  });
+
+  it('passes the graph handlers to the graphJudge, so its provider allowlist applies', async () => {
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    setupTwoNodeGraph();
+    const handler = makeHandler();
+    await graph('graph-flag', { handlers: [handler], graphJudge: 'graph-judge' }).invoke('hi', mockContext);
+    const graphJudgeCall = (runJudges as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([args]) => args.config.judgeConfiguration?.judges?.[0]?.key === 'graph-judge',
+    );
+    expect(graphJudgeCall?.[0].handlers).toEqual([handler]);
   });
 
   it('forwards history as the 4th invoke arg to the root handler only', async () => {
@@ -665,6 +691,35 @@ describe('graph() conversation id', () => {
     const flagEvents = graphSpan?.events.filter((e) => e.name === 'feature_flag') ?? [];
     expect(flagEvents).toHaveLength(1);
     expect(flagEvents[0].attributes?.['feature_flag.key']).toBe('graph-flag');
+  });
+
+  it.each([
+    ['invoke', undefined],
+    ['stream', undefined],
+    ['invoke', false],
+    ['stream', false],
+    ['invoke', true],
+    ['stream', true],
+  ] as const)('writes feature_flag.result.value on the launchdarkly.graph span on %s with configured capture %s', async (mode, capture) => {
+    setupTwoNodeGraph();
+    const rawGraphVariation = {
+      root: 'root-node',
+      edges: { 'root-node': [{ key: 'leaf-node' }] },
+      _ldMeta: { variationKey: 'graph-v1', version: 3 },
+    };
+    mockVariation.mockResolvedValue(rawGraphVariation);
+    // undefined leaves configure() uncalled, so the graph root follows the built-in default (on).
+    if (capture !== undefined) configure({ options: { captureContent: capture } });
+    const g = graph('graph-flag', { handlers: [makeStreamingHandler(['ok'])] });
+    if (mode === 'invoke') await g.invoke('hi', mockContext);
+    else await collectStream(g.stream('hi', mockContext));
+
+    const graphSpan = exporter.getFinishedSpans().find((s) => s.name === 'launchdarkly.graph');
+    const flagEvent = graphSpan?.events.find((e) => e.name === 'feature_flag');
+    expect(flagEvent?.attributes?.['feature_flag.result.variant']).toBe('graph-v1');
+    expect(flagEvent?.attributes?.['feature_flag.result.value']).toBe(
+      capture === false ? JSON.stringify('graph-v1') : JSON.stringify(rawGraphVariation),
+    );
   });
 
   it('gives each invocation with the same context its own run id', async () => {
@@ -1037,6 +1092,61 @@ describe('graph().stream()', () => {
     expect(done.judgeResults).toBeUndefined();
   });
 
+  it("puts a node's own judge results on its node_done", async () => {
+    const leafJudge = { 'leaf-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'good', score: 0.9 } };
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockImplementation(async (args: { config: { instructions?: string } }) =>
+      args.config.instructions === 'I am leaf' ? leafJudge : {},
+    );
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+    const events = await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+
+    const dones = events.filter((e) => e.type === 'node_done');
+    expect(dones.map((e) => e.nodeKey)).toEqual(['root-node', 'leaf-node']);
+    expect('judgeResults' in dones[0]).toBe(false);
+    expect(dones[1]).toMatchObject({ nodeKey: 'leaf-node', judgeResults: leafJudge });
+    // done holds only the graph-level judge; per-node results are not merged into it.
+    expect((events.at(-1) as { judgeResults?: unknown }).judgeResults).toBeUndefined();
+  });
+
+  it('keeps node judge results on node_done and only the graph judge on done', async () => {
+    const leafJudge = { 'leaf-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'good', score: 0.9 } };
+    const graphJudge = { 'graph-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'whole', score: 0.5 } };
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockImplementation(
+      async (args: { config: { instructions?: string; judgeConfiguration?: { judges: Array<{ key: string }> } } }) => {
+        if (args.config.judgeConfiguration?.judges[0]?.key === 'graph-judge') return graphJudge;
+        return args.config.instructions === 'I am leaf' ? leafJudge : {};
+      },
+    );
+    setupTwoNodeGraph();
+    const handler = makeStreamingHandler(['ok']);
+    const events = await collectStream(
+      graph('graph-flag', { handlers: [handler], graphJudge: 'graph-judge' }).stream('hi', mockContext),
+    );
+
+    const leafDone = events.find((e) => e.type === 'node_done' && e.nodeKey === 'leaf-node');
+    expect(leafDone).toMatchObject({ judgeResults: leafJudge });
+    expect((events.at(-1) as { judgeResults?: unknown }).judgeResults).toEqual(graphJudge);
+  });
+
+  it("multi-edge route: the routing node's judge results are on its node_done", async () => {
+    const rootJudge = { 'root-judge': { usage: { input: 1, output: 1, total: 2 }, response: 'routed', score: 1 } };
+    const { runJudges } = await import('../judges.js');
+    (runJudges as ReturnType<typeof vi.fn>).mockImplementation(async (args: { config: { instructions?: string } }) =>
+      args.config.instructions === 'I am root' ? rootJudge : {},
+    );
+    setupBranchingGraph();
+    const handler = makeBranchPickingStreamHandler('agent-b');
+    const events = await collectStream(graph('graph-flag', { handlers: [handler] }).stream('hi', mockContext));
+
+    const dones = events.filter((e) => e.type === 'node_done');
+    expect(dones.map((e) => e.nodeKey)).toEqual(['root-node', 'agent-b']);
+    expect(dones[0]).toMatchObject({ nodeKey: 'root-node', judgeResults: rootJudge });
+    expect('judgeResults' in dones[1]).toBe(false);
+  });
+
   it('multi-edge route: model pick emits handoff_success from the route branch', async () => {
     setupBranchingGraph();
     const handler = makeBranchPickingStreamHandler('agent-b');
@@ -1096,7 +1206,132 @@ describe('graph().stream()', () => {
     expect(rootConfig.tools.__handoff_agent_b.description).toBe('Transfer control to agent-b. I am B');
     expect(rootConfig.instructions).toContain('Complete your task using your available tools first.');
     expect(rootToolHandlers.__handoff_agent_b()).toBe(
-      'Handoff to agent-b recorded. Finish your own work and provide your final response.',
+      'Handoff to agent-b recorded. agent-b takes over when your turn ends. Finish your own part, then end your turn. Do not answer for agent-b.',
     );
+  });
+});
+
+// ─── Multi-edge routing text ──────────────────────────────────────────────────
+
+// Pinned byte-for-byte; Python and Go use the same strings.
+const ROUTING_SUFFIX =
+  '\n\nComplete your task using your available tools first. Only once your own part is done, call exactly one transfer tool to route to the next agent. Do not answer the parts of the request that belong to the agent you route to.';
+const handoffResult = (target: string) =>
+  `Handoff to ${target} recorded. ${target} takes over when your turn ends. Finish your own part, then end your turn. Do not answer for ${target}.`;
+
+describe('graph() multi-edge routing text', () => {
+  type ToolFn = (...args: unknown[]) => unknown;
+  type RoutedCall = { config: { instructions: string; tools?: Record<string, unknown> }; handlerNames: string[] };
+
+  const lookupTool = {
+    name: 'lookup_case',
+    type: 'function' as const,
+    description: 'Look up the case file.',
+    parameters: { type: 'object', properties: {} },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockTrack.mockReset();
+    (getClient as ReturnType<typeof vi.fn>).mockReturnValue({ track: mockTrack, variation: mockVariation });
+  });
+
+  function setupRouterGraph(withTool: boolean) {
+    mockVariation.mockResolvedValue({
+      root: 'root-node',
+      edges: { 'root-node': [{ key: 'agent-a' }, { key: 'agent-b' }] },
+    });
+    mockExtractVariation.mockImplementation(async (key: string) => {
+      if (key === 'root-node') {
+        const config = makeAgentConfig('I am root');
+        return { config: withTool ? { ...config, tools: { lookup_case: lookupTool } } : config, meta: makeMeta() };
+      }
+      if (key === 'agent-a') return { config: makeAgentConfig('I am A'), meta: makeMeta() };
+      if (key === 'agent-b') return { config: makeAgentConfig('I am B'), meta: makeMeta() };
+      throw new Error(`Unknown node key: ${key}`);
+    });
+  }
+
+  /**
+   * Handler that acts like a model on the routed node: it calls the node's own tool when it
+   * has one, then the `agent-b` transfer tool, and records what it was given and what the
+   * transfer tool returned to it.
+   */
+  function makeRecordingRouterHandler() {
+    const routedCalls: RoutedCall[] = [];
+    const handoffResults: unknown[] = [];
+    const ownToolResults: unknown[] = [];
+    const usage = { input_tokens: 1, output_tokens: 1 };
+
+    const act = async (config: RoutedCall['config'], toolHandlers?: Record<string, ToolFn>) => {
+      if (!toolHandlers?.__handoff_agent_b) return;
+      routedCalls.push({ config, handlerNames: Object.keys(toolHandlers) });
+      if (toolHandlers.lookup_case) ownToolResults.push(await toolHandlers.lookup_case({}));
+      handoffResults.push(await toolHandlers.__handoff_agent_b());
+    };
+
+    const h: ProviderHandler = vi
+      .fn()
+      .mockImplementation(
+        async (config: RoutedCall['config'], _input?: string, toolHandlers?: Record<string, ToolFn>) => {
+          await act(config, toolHandlers);
+          return { output: 'ok', usage };
+        },
+      );
+    h.providesFor = ['OpenAI', 'messages'];
+    h.stream = vi.fn().mockImplementation(async function* (
+      config: RoutedCall['config'],
+      _input?: string,
+      toolHandlers?: Record<string, ToolFn>,
+    ): AsyncGenerator<HandlerStreamEvent> {
+      await act(config, toolHandlers);
+      yield { type: 'chunk', text: 'ok' };
+      yield { type: 'done', usage };
+    });
+    return { handler: h, routedCalls, handoffResults, ownToolResults };
+  }
+
+  const entrypoints = [
+    {
+      name: 'invoke()',
+      run: (g: ReturnType<typeof graph>) => g.invoke('who did it?', mockContext),
+    },
+    {
+      name: 'stream()',
+      run: (g: ReturnType<typeof graph>) => collectStream(g.stream('who did it?', mockContext)),
+    },
+  ];
+
+  describe.each(entrypoints)('$name', ({ run }) => {
+    it('gives a node with its own tool the pinned suffix and handoff result', async () => {
+      setupRouterGraph(true);
+      const lookup = vi.fn().mockReturnValue('case file');
+      const { handler, routedCalls, handoffResults, ownToolResults } = makeRecordingRouterHandler();
+      await run(graph('graph-flag', { handlers: [handler], toolHandlers: { lookup_case: lookup } }));
+
+      expect(routedCalls).toHaveLength(1);
+      const [{ config, handlerNames }] = routedCalls;
+      expect(config.instructions).toBe(`I am root${ROUTING_SUFFIX}`);
+      expect(Object.keys(config.tools ?? {})).toEqual(['lookup_case', '__handoff_agent_a', '__handoff_agent_b']);
+      expect(handlerNames).toEqual(expect.arrayContaining(['lookup_case', '__handoff_agent_a', '__handoff_agent_b']));
+      // The node's own tool still reaches the caller's handler alongside the transfer tools.
+      expect(lookup).toHaveBeenCalledTimes(1);
+      expect(ownToolResults).toEqual(['case file']);
+      // `<target>` is the raw edge key, not the sanitized `agent_b` in the tool name.
+      expect(handoffResults).toEqual([handoffResult('agent-b')]);
+    });
+
+    it('gives a node with no tools the pinned suffix and handoff result', async () => {
+      setupRouterGraph(false);
+      const { handler, routedCalls, handoffResults } = makeRecordingRouterHandler();
+      await run(graph('graph-flag', { handlers: [handler] }));
+
+      expect(routedCalls).toHaveLength(1);
+      const [{ config, handlerNames }] = routedCalls;
+      expect(config.instructions).toBe(`I am root${ROUTING_SUFFIX}`);
+      expect(Object.keys(config.tools ?? {})).toEqual(['__handoff_agent_a', '__handoff_agent_b']);
+      expect(handlerNames.sort()).toEqual(['__handoff_agent_a', '__handoff_agent_b']);
+      expect(handoffResults).toEqual([handoffResult('agent-b')]);
+    });
   });
 });

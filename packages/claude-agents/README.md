@@ -40,7 +40,7 @@ await shutdown();
 
 | Option | Default | Description |
 |---|---|---|
-| `captureContent` | `false` | Put prompts, model output, and tool arguments and results on the emitted spans. |
+| `captureContent` | unset (follows `configure()`, which defaults to `true`) | Put prompts, model output, and tool arguments and results on the emitted spans. Pass `false` to keep this handler to metadata only. |
 | `cwd` | `process.cwd()` | Working directory for the Claude Code process the Agent SDK starts. |
 | `settingSources` | `[]` (none) | Which Claude Code settings sources to load: `'user'` (`~/.claude/settings.json`), `'project'` (`.claude/settings.json`, and `CLAUDE.md`), `'local'` (`.claude/settings.local.json`). |
 
@@ -71,6 +71,15 @@ claudeGraph('support-graph', { settingSources: ['user'] });
 toClaudeAgents(resolveGraph('support-graph', { context }), { context, settingSources: ['user'] });
 ```
 
+### Output limit and thinking
+
+- `max_tokens` in the config's model parameters sets the output-token limit for each model request. The Agent SDK has no option for it, so the handler sets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` in the environment of the Claude Code process. Without `max_tokens`, Claude Code uses its own default. A `CLAUDE_CODE_MAX_OUTPUT_TOKENS` in the `env` of a Claude Code settings file, including `~/.claude.json`, wins over `max_tokens`.
+- Thinking is off unless the config sets `thinking` or `max_thinking_tokens`. Models that reject disabled thinking, such as `claude-fable-5`, still use their own default. Claude Code lowers a thinking budget to one less than `max_tokens`, so when a config sets both, keep `max_tokens` above the budget.
+
+#### Migrating from a version that used Claude Code's thinking default
+
+Earlier versions passed no thinking setting when the config had none, so Claude Code chose one: adaptive thinking on models that support it, and a 31,999-token budget on others such as `claude-haiku-4-5`. A run now thinks only when its config asks. To keep thinking, set it in the config's model parameters, for example `{"thinking": {"type": "adaptive"}}`.
+
 ### Built-in tools
 
 A run has no Claude Code built-in tools (`Read`, `Bash`, and the rest) unless its config attaches them. Attach one by mapping a tool key to its exported sentinel, such as `ClaudeRead` or `ClaudeBash`, in `toolHandlers`. Tools you define in the flag config are always available to the model through the handler's MCP server, whatever built-ins are attached.
@@ -99,6 +108,38 @@ const result = await claudeGraph('support-graph', {}).invoke(
   { kind: 'user', key: 'user-123' },
 );
 ```
+
+## Agent Skills
+
+`createClaudeAgentsHandler` doesn't give the model a variation's skills. `createClaudeAgentsSkillsHandler` does. It takes the same options, plus `skillsTempDir`.
+
+```ts
+import { config, LaunchDarklySkillStore, setSkillStore } from '@launchdarkly/ai-server';
+import { createClaudeAgentsSkillsHandler } from '@launchdarkly/ai-claude-agents';
+
+const store = new LaunchDarklySkillStore(process.env.LD_SDK_KEY!).start();
+await store.waitForSkills({ timeoutSeconds: 10 });
+setSkillStore(store);
+
+const triage = config({
+  key: 'triage-agent',
+  handler: createClaudeAgentsSkillsHandler({ settingSources: [] }),
+});
+```
+
+On every invoke and stream it:
+
+1. Writes the variation's `skills` into a new directory under `skillsTempDir` (default: the OS temp directory), through the store you configured with `setSkillStore`. Pinned versions are honored.
+2. Hands that directory to the Claude Agent SDK as a local plugin named `launchdarkly`, enables only those skills (`launchdarkly:<key>`), and turns on the `Skill` tool.
+3. Removes the directory when the run ends, whether it succeeded, failed, or a stream was abandoned.
+
+Each run has its own directory, so concurrent runs and different variations never share files, and nothing needs to watch for changes. Detaching a skill from a variation takes effect on the next run.
+
+**A run whose skills can't be written doesn't start.** The handler throws before the model is called if no store is configured, the store hasn't received its first payload, a skill fails integrity verification, or a pinned version isn't in the store. The error names each skill. A variation with no skills runs exactly as it would with `createClaudeAgentsHandler`, and needs no store.
+
+A `Skill` call shows up in traces as an `execute_tool Skill` span.
+
+**Not covered yet:** `claudeAgents()`, `claudeGraph()` and `toClaudeAgents()` use the core handler, so a variation run through them doesn't get its skills.
 
 ## How It Works
 

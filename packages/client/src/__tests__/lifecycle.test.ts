@@ -233,7 +233,7 @@ describe('lifecycle', () => {
       delete process.env.LD_BASE_URI;
     });
 
-    it('stamps highlight.project_id resource attribute with the resolved SDK key', async () => {
+    it('stamps launchdarkly.project_id resource attribute with the resolved SDK key', async () => {
       const mockClient = makeMockClient();
       mockLdInit.mockReturnValue(mockClient);
       process.env.LD_SDK_KEY = 'sdk-test-key';
@@ -242,8 +242,11 @@ describe('lifecycle', () => {
       await initClient();
 
       expect(mockResourceFromAttributes).toHaveBeenCalledWith(
-        expect.objectContaining({ 'highlight.project_id': 'sdk-test-key' }),
+        expect.objectContaining({ 'launchdarkly.project_id': 'sdk-test-key' }),
       );
+      for (const [attributes] of mockResourceFromAttributes.mock.calls) {
+        expect(attributes).not.toHaveProperty(['highlight.project_id']);
+      }
     });
 
     it('configures GZIP compression on the OTLP exporter', async () => {
@@ -328,6 +331,21 @@ describe('lifecycle', () => {
           ['[LaunchDarkly] Ignoring unrecognized initClient option(s): sdkkey'],
           ['[LaunchDarkly] Ignoring unrecognized initClient option(s): alpha, zeta'],
         ]);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('treats captureContent as an unrecognized option that does not set the default', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const { initClient } = await import('../lifecycle.js');
+        const { effectiveCaptureContent } = await import('../sdk-options.js');
+        await initClient(makeMockClient(), { captureContent: false } as never);
+        expect(warn.mock.calls).toEqual([
+          ['[LaunchDarkly] Ignoring unrecognized initClient option(s): captureContent'],
+        ]);
+        expect(effectiveCaptureContent(undefined)).toBe(true);
       } finally {
         warn.mockRestore();
       }
@@ -504,6 +522,22 @@ describe('lifecycle', () => {
   });
 
   describe('shutdown', () => {
+    it('restores the configure defaults and clears the invocation lock, with no client', async () => {
+      const { shutdown } = await import('../lifecycle.js');
+      const { configure, effectiveCaptureContent, noteAiInvocation } = await import('../sdk-options.js');
+      configure({ options: { captureContent: false } });
+      noteAiInvocation();
+      expect(() => configure({ options: { captureContent: true } })).toThrow(/cannot change/);
+
+      const done = shutdown();
+      // Reset before any await, on the same early path as the rest of the singleton state.
+      expect(effectiveCaptureContent(undefined)).toBe(true);
+      await done;
+      configure({ options: { captureContent: false } });
+      expect(effectiveCaptureContent(undefined)).toBe(false);
+      await shutdown();
+    });
+
     it('clears the singleton so getClient throws again', async () => {
       const mockClient = makeMockClient();
       mockLdInit.mockReturnValue(mockClient);
@@ -709,8 +743,7 @@ describe('lifecycle', () => {
       });
 
       it('a throwing hook is logged and fails neither the other hooks nor client teardown', async () => {
-        // Experimental code reached from core through a hook must not break
-        // the core call.
+        // Feature cleanup reached through a hook must not break shutdown().
         const { registerShutdownHook } = await import('../shutdown-hooks.js');
         registerShutdownHook('test: throws', () => {
           throw new Error('clear exploded');
@@ -748,13 +781,15 @@ describe('lifecycle', () => {
         expect(second).toHaveBeenCalledOnce();
       });
 
-      it('loading the package root registers no Agent Skills hook', async () => {
-        // The root entry point must not import experimental code. Agent Skills
-        // registers its hook when its core module loads, so the hook's absence
-        // after loading the root shows the root never loaded that module.
+      it('loading the package root registers the Agent Skills hook and no experimental hook', async () => {
+        // Agent Skills is exported from the root, and registers its hook when
+        // its core module loads, so the root's shutdown() clears its state.
+        // The root must still not load experimental code.
         await import('../index.js');
 
-        expect([...(hooks()?.keys() ?? [])].filter((name) => !name.startsWith('test: '))).toEqual([]);
+        const names = [...(hooks()?.keys() ?? [])].filter((name) => !name.startsWith('test: '));
+        expect(names).toEqual(['Agent Skills']);
+        expect(names.filter((name) => /experimental/i.test(name))).toEqual([]);
       });
     });
   });
@@ -877,7 +912,7 @@ describe('lifecycle', () => {
     it('tears down the provider of an init in flight at shutdown, so the next init builds its own', async () => {
       // shutdown() used to return early without a client, leaving the in-flight
       // attempt's provider registered for the next init to reuse — with the
-      // abandoned attempt's sdkKey as highlight.project_id.
+      // abandoned attempt's sdkKey as launchdarkly.project_id.
       let resolveFirst: () => void = () => {};
       const first = makeMockClient();
       first.waitForInitialization = vi.fn(
@@ -899,7 +934,7 @@ describe('lifecycle', () => {
       expect(tracerProviders).toHaveLength(2);
       expect(otel.held.trace).toBe(tracerProviders[1]);
       expect(mockResourceFromAttributes).toHaveBeenLastCalledWith(
-        expect.objectContaining({ 'highlight.project_id': 'second-key' }),
+        expect.objectContaining({ 'launchdarkly.project_id': 'second-key' }),
       );
 
       resolveFirst();
@@ -913,7 +948,7 @@ describe('lifecycle', () => {
       // No await before shutdown(): setupTelemetry is still awaiting its
       // imports, so there is no provider yet for shutdown to tear down. One
       // built afterwards would outlive the attempt and be reused by the next
-      // init, with the abandoned attempt's sdkKey as highlight.project_id.
+      // init, with the abandoned attempt's sdkKey as launchdarkly.project_id.
       const first = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
       mockLdInit.mockReturnValueOnce(first).mockReturnValueOnce(makeMockClient());
 
@@ -929,7 +964,7 @@ describe('lifecycle', () => {
       expect(otel.held.trace).toBe(tracerProviders[0]);
       expect(mockResourceFromAttributes).toHaveBeenCalledOnce();
       expect(mockResourceFromAttributes).toHaveBeenCalledWith(
-        expect.objectContaining({ 'highlight.project_id': 'second-key' }),
+        expect.objectContaining({ 'launchdarkly.project_id': 'second-key' }),
       );
     });
 
@@ -974,7 +1009,7 @@ describe('lifecycle', () => {
 
     it('builds the retry its own provider, with the options the retry passed', async () => {
       // Reusing the failed attempt's provider would stamp its spans with the
-      // failed attempt's sdkKey as highlight.project_id.
+      // failed attempt's sdkKey as launchdarkly.project_id.
       const failed = makeMockClient();
       failed.waitForInitialization = vi.fn().mockRejectedValue(new Error('timeout'));
       mockLdInit.mockReturnValueOnce(failed).mockReturnValueOnce(makeMockClient());
@@ -984,7 +1019,7 @@ describe('lifecycle', () => {
       await initClient({ sdkKey: 'second-key' });
 
       expect(mockResourceFromAttributes).toHaveBeenLastCalledWith(
-        expect.objectContaining({ 'highlight.project_id': 'second-key' }),
+        expect.objectContaining({ 'launchdarkly.project_id': 'second-key' }),
       );
     });
   });
@@ -1070,9 +1105,31 @@ describe('lifecycle', () => {
       expect(result.meta?.variationKey).toBe('v1');
     });
 
+    it('does not latch configure, since it makes no AI call', async () => {
+      const mockClient = makeMockClient();
+      mockClient.variation = vi.fn().mockResolvedValue({
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'messages' },
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'You are helpful.',
+      });
+      mockLdInit.mockReturnValue(mockClient);
+      process.env.LD_SDK_KEY = 'test-key';
+
+      const { inspectConfig } = await import('../lifecycle.js');
+      const { configure, effectiveCaptureContent } = await import('../sdk-options.js');
+      configure({ options: { captureContent: true } });
+      const result = await inspectConfig('my-flag', { kind: 'user' as const, key: 'user-1' });
+
+      expect(result.enabled).toBe(true);
+      expect(mockClient.variation).toHaveBeenCalled();
+      expect(() => configure({ options: { captureContent: false } })).not.toThrow();
+      expect(effectiveCaptureContent(undefined)).toBe(false);
+    });
+
     it('does not fail on a malformed skills field', async () => {
-      // Agent Skills is experimental, so its field cannot break a core call
-      // (TESTING.md §0.3). `skillRefs` rejects it instead.
+      // A malformed skills field cannot break a config call; `skillRefs`
+      // rejects it instead.
       const mockClient = makeMockClient();
       mockClient.variation = vi.fn().mockResolvedValue({
         _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'messages' },

@@ -7,5 +7,5 @@ import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 registerAiSdkPackage(LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION);
 
 export { openaiGraph } from './graph.js';
-export { createOpenAIAgentHandler, openaiAgents } from './handler.js';
+export { createOpenAIAgentsHandler, openaiAgents } from './handler.js';
 export { toOpenAIAgents } from './native-graph.js';

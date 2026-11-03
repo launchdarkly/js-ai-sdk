@@ -10,6 +10,12 @@ import { Span } from '@opentelemetry/api';
 // @public
 export function addCachedTokensToInput(rawUsage: Record<string, unknown>): SpanUsage;
 
+// @public
+export type AIConfig = {
+    key: string;
+    variation: string;
+};
+
 // @public (undocumented)
 export type AiConfigRep = {
     instructions?: string;
@@ -41,6 +47,9 @@ export type AiConfigRep = {
     outputFormat?: Record<string, unknown>;
     skills?: unknown;
 };
+
+// @public
+export function allSkills(): Promise<Skill[]>;
 
 // @public
 export function anyMultimodal(turns: ReadonlyArray<{
@@ -104,10 +113,18 @@ export type ConfigMessage = {
 };
 
 // @public
+export function configSkills(key: string, context: LDContext): SkillSource;
+
+// @public
 export type ConfigTurn = {
     role: 'user' | 'assistant';
     content: string;
 };
+
+// @public
+export function configure(input: {
+    options: SDKOptions;
+}): void;
 
 // @public
 export type ContentBlock = TextContentBlock | ImageContentBlock;
@@ -133,24 +150,156 @@ export class ConversationIdSpanProcessor {
 }
 
 // Warning: (ae-forgotten-export) The symbol "HandlerInput" needs to be exported by the entry point index.d.ts
-// Warning: (ae-forgotten-export) The symbol "StreamHandlerInput" needs to be exported by the entry point index.d.ts
 //
 // @public
-export function createHandler(providesFor: [string, 'agent' | 'messages'], handler: HandlerInput, streamHandler?: StreamHandlerInput, captureContent?: boolean): ProviderHandler;
+export function createHandler(providesFor: [string, 'agent' | 'messages'], handler: HandlerInput, options?: {
+    stream?: StreamHandlerInput;
+    captureContent?: boolean;
+    providers?: readonly string[];
+}): ProviderHandler;
 
 // Warning: (ae-internal-missing-underscore) The name "createHandlerInternal" should be prefixed with an underscore because the declaration is marked as @internal
 //
 // @internal
-export function createHandlerInternal(providesFor: [string, 'agent' | 'messages'], handler: HandlerInput, streamHandler?: StreamHandlerInput, captureContent?: boolean): ProviderHandler;
+export function createHandlerInternal(providesFor: [string, 'agent' | 'messages'], handler: HandlerInput, streamHandler?: StreamHandlerInput, captureContent?: boolean, providers?: readonly string[]): ProviderHandler;
 
 // @public
 export function createRunUsage(): RunUsage;
 
 // @public
+export function createSkill(init: {
+    key: string;
+    version: number;
+    content: Uint8Array;
+    contentHash: string;
+    name?: string | null;
+    description?: string | null;
+}): Skill;
+
+// @public
+export function createSkillOutcome(init: {
+    skill?: Skill | null;
+    reason: SkillOutcomeReason;
+    detail?: string | null;
+}): SkillOutcome;
+
+// @public
+export function createSkillReference(init: {
+    key: string;
+    version: number;
+}): SkillReference;
+
+// @public
+export function createSkillSource(init: {
+    refs: SkillSource['refs'];
+    configKeys?: readonly string[];
+}): SkillSource;
+
+// @public
+export type Criterion = Judge | Scorer;
+
+// @public
+export type DatasetRow = {
+    rowIndex: number;
+    input: string | null;
+    expectedOutput: string | null;
+    variables: Record<string, unknown>;
+    metadata: Record<string, unknown> | null;
+};
+
+// Warning: (ae-internal-missing-underscore) The name "effectiveCaptureContent" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export function effectiveCaptureContent(override: boolean | undefined): boolean;
+
+// @public
 export function endSpanOnce(span: Span, tracker: Set<Span>, abandoned?: boolean): void;
+
+// @public
+export type EvalRunResult = {
+    passed: boolean;
+    url: string;
+    runId: string;
+    summary: RunSummary;
+};
+
+// @public
+export class EvalTool {
+    constructor(key: string, implementation: EvalToolImplementation, schema: Record<string, unknown>, description?: string);
+    readonly description: string;
+    // Warning: (ae-forgotten-export) The symbol "EvalToolImplementation" needs to be exported by the entry point index.d.ts
+    readonly implementation: EvalToolImplementation;
+    readonly key: string;
+    readonly projectKey: string | undefined;
+    readonly schema: Readonly<Record<string, unknown>>;
+    readonly source: 'library' | 'inline';
+    readonly version: number | undefined;
+}
+
+// @public
+export class EvaluationsError extends Error {
+    constructor(message: string, options?: {
+        cause?: unknown;
+    });
+}
+
+// @public
+export class EvaluationsModule {
+    // @internal
+    constructor(internalsArg: unknown);
+    readonly projectKey: string;
+    run(options: RunOptions): Promise<EvalRunResult>;
+    readonly sdkKey: string | undefined;
+    // Warning: (ae-forgotten-export) The symbol "ToolsClient" needs to be exported by the entry point index.d.ts
+    readonly tools: ToolsClient;
+    readonly uiBaseUri: string;
+}
+
+// @public @deprecated (undocumented)
+export type FDv2Mode = LaunchDarklySkillStoreMode;
+
+// @public @deprecated (undocumented)
+export const FDv2SkillStore: typeof LaunchDarklySkillStore;
+
+// @public @deprecated (undocumented)
+export type FDv2SkillStore = LaunchDarklySkillStore;
+
+// @public @deprecated (undocumented)
+export type FDv2SkillStoreOptions = LaunchDarklySkillStoreOptions;
+
+// @public
+export type GenerationConfig = {
+    provider: string;
+    model: string;
+    mode: GenerationMode;
+    parameters?: Record<string, unknown>;
+    instructions?: string;
+    messages?: ConfigMessage[];
+    promptSnippets?: Record<string, string>;
+    outputFormat?: Record<string, unknown>;
+};
+
+// @public
+export type GenerationMode = 'completion' | 'agent';
+
+// @public
+export type GenerationOverrides = Partial<Omit<GenerationConfig, 'mode'>>;
 
 // @public (undocumented)
 export function getClient(): LDClientInterface;
+
+// @public
+export function getSkill(key: string, options?: {
+    version?: number;
+}): Promise<Skill | null>;
+
+// @public
+export function getSkillResult(key: string, options?: {
+    version?: number;
+}): Promise<SkillOutcome>;
+
+// @public
+export function getSkills(refs: ReadonlyArray<SkillReference | string>): Promise<Skill[]>;
 
 // @public (undocumented)
 export const globalRegistry: Registry;
@@ -224,6 +373,7 @@ export type GraphStreamEvent = {
     nodeKey: string;
     response: string;
     usage: TokenUsage;
+    judgeResults?: ProviderResponse['judgeResults'];
 } | {
     type: 'handoff';
     sourceKey: string;
@@ -291,6 +441,39 @@ export function initClient(client: LDClientInterface, options?: InitBaseClientOp
 export function initClient(options?: InitBaseClientOptions): Promise<LDClientInterface>;
 
 // @public
+export function initEvaluations(options?: InitEvaluationsOptions): EvaluationsModule;
+
+// @public
+export type InitEvaluationsOptions = {
+    projectKey?: string;
+    apiKey?: string;
+    sdkKey?: string;
+    apiBaseUri?: string;
+    uiBaseUri?: string;
+    logEvents?: boolean;
+    transport?: Transport;
+};
+
+// @public
+export type InlineDatasetRow = {
+    rowIdx?: number;
+    input: string;
+    expectedOutput?: string;
+    variables?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+};
+
+// @public
+export class InMemorySkillStore implements SkillStore {
+    constructor(objects?: Record<string, RawSkillObject>);
+    addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    allObjects(kind: string): Record<string, RawSkillObject>;
+    getObject(kind: string, key: string, version?: number | null): RawSkillObject | null;
+    put(raw: RawSkillObject): void;
+    removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+}
+
+// @public
 export function inspectConfig(key: string, context: LDContext): Promise<InspectConfigResult>;
 
 // Warning: (ae-internal-missing-underscore) The name "inspectConfigInternal" should be prefixed with an underscore because the declaration is marked as @internal
@@ -307,6 +490,22 @@ export type InspectConfigResult = {
 
 // @public
 export function isContentBlocks(content: MessageContent): content is ContentBlock[];
+
+// @public
+export function isFunctionTool(name: string, handler: unknown): handler is ToolHandlerFn;
+
+// @public
+export class Judge {
+    constructor(key: string, options?: {
+        threshold?: number;
+        passRateThreshold?: number;
+        groundTruthContext?: string;
+    });
+    readonly groundTruthContext?: string;
+    readonly key: string;
+    readonly passRateThreshold?: number;
+    readonly threshold: number;
+}
 
 // @public
 export type JudgeCallResult = {
@@ -338,6 +537,7 @@ export type JudgeTask = {
     configKey: string;
     judgeConfig: AiConfigRep;
     judgeMeta: LDVariationMeta;
+    judgeValue?: unknown;
     actualOutput: string;
     userInput?: string;
     trajectory?: string;
@@ -365,12 +565,50 @@ export function langChainSpanMessages(messages: ReadonlyArray<unknown>): {
 // @public
 export function langChainSpanUsage(usage: Record<string, unknown> | undefined): SpanUsage | undefined;
 
+// @public
+export class LaunchDarklySkillStore implements SkillStore {
+    constructor(sdkKey: string, options?: LaunchDarklySkillStoreOptions);
+    addListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    // (undocumented)
+    allObjects(kind: string): Record<string, RawSkillObject>;
+    _backoffResetIntervalMs: number;
+    close(): Promise<void>;
+    get diagnostics(): StoreDiagnostics;
+    get failed(): string | null;
+    // (undocumented)
+    getObject(kind: string, key: string, version?: number | null): RawSkillObject | null;
+    isInitialized(): boolean;
+    removeListener(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    start(): this;
+    waitForSkills(options?: {
+        readonly timeoutSeconds?: number;
+    }): Promise<boolean>;
+}
+
+// @public (undocumented)
+export type LaunchDarklySkillStoreMode = 'stream' | 'poll';
+
+// @public (undocumented)
+export type LaunchDarklySkillStoreOptions = {
+    readonly mode?: LaunchDarklySkillStoreMode;
+    readonly baseUri?: string;
+    readonly streamUri?: string;
+    readonly pollIntervalSeconds?: number;
+    readonly readTimeoutSeconds?: number;
+    readonly initialBackoffSeconds?: number;
+    readonly maxBackoffSeconds?: number;
+    readonly requester?: Requester;
+};
+
 // @public (undocumented)
 export interface LDClientInterface {
     // (undocumented)
     close(): void | Promise<void>;
     // (undocumented)
     flush(): Promise<void>;
+    isOffline?(): boolean;
+    off?(event: string, listener: (...args: unknown[]) => void): unknown;
+    on?(event: string, listener: (...args: unknown[]) => void): unknown;
     // (undocumented)
     track(eventName: string, context: LDContext, data?: unknown, metricValue?: number): void;
     // (undocumented)
@@ -430,6 +668,12 @@ export const makeRunTrackData: (input: {
 }) => TrackData;
 
 // @public
+export const MANIFEST_FILENAME = ".launchdarkly-skills.json";
+
+// @public
+export const MANIFEST_VERSION = 1;
+
+// @public
 export type Message = {
     role: 'user' | 'assistant' | 'system';
     content: MessageContent;
@@ -453,11 +697,19 @@ export class NativeTool {
 // @public
 export function normalizeModelParameters(parameters: unknown): Record<string, unknown>;
 
+// Warning: (ae-internal-missing-underscore) The name "noteAiInvocation" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export function noteAiInvocation(): void;
+
 // @public
 export const omitModelStamps: <T extends {
     modelKey?: string;
     modelVersion?: number;
 }>(trackData: T) => Omit<T, "modelKey" | "modelVersion">;
+
+// @public
+export type OnUnavailable = 'keep' | 'raise';
 
 // @public
 export function parseJSONWithPossibleFences<T>(rawText: string): T | null;
@@ -481,8 +733,9 @@ export type ProviderHandler = ((config: AiConfigRep, userInput?: string, toolHan
     usage?: Record<string, unknown>;
 }>) & {
     providesFor?: [provider: string, type: 'agent' | 'messages'];
+    providers?: readonly string[];
     captureContent?: boolean;
-    stream?: (config: AiConfigRep, userInput?: string, toolHandlers?: Record<string, any>, variables?: Record<string, unknown>, history?: Message[]) => AsyncGenerator<HandlerStreamEvent>;
+    stream?: (config: AiConfigRep, userInput?: string, toolHandlers?: Record<string, ToolHandlerFn | NativeTool>, variables?: Record<string, unknown>, history?: Message[]) => AsyncGenerator<HandlerStreamEvent>;
 };
 
 // @public (undocumented)
@@ -496,6 +749,36 @@ export type ProviderResponse<T = string> = {
 
 // @public (undocumented)
 export type ProviderSetupFn = () => ProviderHandler;
+
+// @public
+export type RawSkillObject = {
+    key?: unknown;
+    version?: unknown;
+    content?: unknown;
+    contentHash?: unknown;
+    name?: unknown;
+    description?: unknown;
+    [field: string]: unknown;
+};
+
+// @public
+export type ReconcileAction = {
+    readonly key: string;
+    readonly action: ReconcileActionKind;
+    readonly version: number | null;
+    readonly path: string | null;
+    readonly error: string | null;
+};
+
+// @public
+export type ReconcileActionKind = 'written' | 'updated' | 'skipped_current' | 'removed' | 'error';
+
+// @public
+export type ReconcileReport = {
+    readonly actions: readonly ReconcileAction[];
+    readonly ok: boolean;
+    readonly errors: readonly ReconcileAction[];
+};
 
 // @public
 export function registerAiSdkPackage(name: string, version: string): void;
@@ -546,11 +829,64 @@ export type RunNodeOptions = {
 };
 
 // @public
+export type RunOptions = {
+    key: string;
+    dataset: string | readonly InlineDatasetRow[];
+    tools?: readonly EvalTool[];
+    criteria?: readonly Criterion[];
+    concurrency?: number;
+    pollIntervalSeconds?: number;
+    pollTimeoutSeconds?: number;
+} & ({
+    handler: ProviderHandler;
+    handlers?: never;
+} | {
+    handlers: ProviderHandler[];
+    handler?: never;
+}) & ({
+    generation: GenerationConfig;
+    aiConfig?: never;
+} | {
+    aiConfig: AIConfig;
+    generation?: GenerationOverrides;
+});
+
+// @public
+export type RunSummary = {
+    totalRows: number;
+    passedRows: number;
+    failedRows: number;
+    errorRows: number;
+    pendingRows: number;
+};
+
+// @public
 export interface RunUsage {
     add(turn: SpanUsage | undefined): void;
     readonly reported: boolean;
     // (undocumented)
     readonly total: SpanUsage;
+}
+
+// @public
+export class Scorer {
+    constructor(name: string, fn: ScorerFn, options?: {
+        threshold?: number;
+        passRateThreshold?: number;
+        successDirection?: SuccessDirection;
+    });
+    // Warning: (ae-forgotten-export) The symbol "ScorerFn" needs to be exported by the entry point index.d.ts
+    readonly fn: ScorerFn;
+    readonly name: string;
+    readonly passRateThreshold?: number;
+    // Warning: (ae-forgotten-export) The symbol "SuccessDirection" needs to be exported by the entry point index.d.ts
+    readonly successDirection: SuccessDirection;
+    readonly threshold: number;
+}
+
+// @public
+export interface SDKOptions {
+    readonly captureContent?: boolean;
 }
 
 // @public
@@ -573,6 +909,9 @@ export function setModelIdentityAttributes(span: Span, providerName: string, req
 export function setOutputContentAttributes(span: Span, capture: boolean, messages: SpanMessage[]): void;
 
 // @public
+export function setSkillStore(store: SkillStore | null | undefined): void;
+
+// @public
 export function setToolCallContentAttributes(span: Span, capture: boolean, io: {
     arguments?: unknown;
     result?: unknown;
@@ -584,11 +923,79 @@ export function setToolDefinitionAttributes(span: Span, capture: boolean, tools:
 // @public
 export function setUsageSpanAttributes(span: Span, usage: SpanUsage): void;
 
-// @public (undocumented)
+// @public
 export function shutdown(): Promise<void>;
 
 // @public
 export function shutdownTelemetry(): Promise<void>;
+
+// @public
+export type Skill = {
+    readonly key: string;
+    readonly version: number;
+    readonly content: Uint8Array;
+    readonly contentHash: string;
+    readonly name: string | null;
+    readonly description: string | null;
+};
+
+// @public
+export const SKILL_FILENAME = "SKILL.md";
+
+// @public
+export type SkillOutcome = {
+    readonly skill: Skill | null;
+    readonly reason: SkillOutcomeReason;
+    readonly detail: string | null;
+};
+
+// @public
+export type SkillOutcomeReason = 'absent' | 'integrity_failure' | 'ok' | 'store_unavailable' | 'wrong_version';
+
+// @public
+export type SkillReference = {
+    readonly key: string;
+    readonly version: number;
+};
+
+// @public
+export function skillRefs(config: AiConfigRep | null | undefined): SkillReference[];
+
+// @public
+export function skillRefsInternal(config: AiConfigRep | null | undefined): SkillReference[];
+
+// @public
+export const SKILLS_DEFAULT_BASE_URI = "https://sdk.launchdarkly.com";
+
+// @public
+export const SKILLS_DEFAULT_DEBOUNCE_MS = 500;
+
+// @public
+export const SKILLS_DEFAULT_STREAM_URI = "https://stream.launchdarkly.com";
+
+// @public
+export interface SkillSource {
+    readonly configKeys: readonly string[];
+    readonly refs: () => ReadonlyArray<SkillReference | string> | PromiseLike<ReadonlyArray<SkillReference | string>>;
+}
+
+// @public
+export type SkillStore = {
+    getObject(kind: string, key: string, version?: number | null): RawSkillObject | null | undefined;
+    allObjects(kind: string): Record<string, RawSkillObject>;
+    addListener?(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    removeListener?(kind: string, fn: (raw: RawSkillObject) => unknown): void;
+    isInitialized?(): boolean;
+};
+
+// @public
+export class SkillWatcher {
+    constructor(store: SkillStore, request: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource, root: string, options: WriteSkillsOptions, debounceMs: number, onReconcile?: ((report: ReconcileReport) => unknown) | undefined);
+    close(): Promise<void>;
+    readonly notify: () => void;
+    get reconciles(): number;
+    runInitial(): Promise<ReconcileReport>;
+}
 
 // @public
 export interface SpanMessage {
@@ -623,6 +1030,18 @@ export type SpanUsage = {
     output: number;
     cacheRead: number;
     cacheCreation: number;
+};
+
+// @public
+export type StoreDiagnostics = {
+    readonly payloadsTransferred: number;
+    readonly skillObjectsReceived: number;
+    readonly objectsIgnored: number;
+    readonly objectsRevoked: number;
+    readonly payloadsIgnored: number;
+    readonly hashlessObjects: number;
+    readonly connectionFailures: number;
+    readonly lastError: string | null;
 };
 
 // @public
@@ -704,15 +1123,48 @@ export type TrackData = {
 // @public
 export type TraverseVisitor<T = any> = (node: GraphNode, ctx: Record<string, unknown>) => T | Promise<T>;
 
+// Warning: (ae-internal-missing-underscore) The name "validateMaxRetries" should be prefixed with an underscore because the declaration is marked as @internal
+//
+// @internal
+export function validateMaxRetries(maxRetries: number | undefined): number | undefined;
+
 // @public
 export function waitForTelemetry(timeoutMs?: number): Promise<void>;
 
 // @public
+export function watchSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource, root: string, options?: WatchSkillsOptions): Promise<{
+    report: ReconcileReport;
+    watcher: SkillWatcher;
+}>;
+
+// @public
+export type WatchSkillsOptions = WriteSkillsOptions & {
+    debounceMs?: number;
+    onReconcile?: (report: ReconcileReport) => unknown;
+};
+
+// @public
 export function withConversationId<T>(id: string, fn: () => T): T;
+
+// @public
+export function writeSkills(skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource, root: string, options?: WriteSkillsOptions): Promise<ReconcileReport>;
+
+// @public
+export function writeSkillsInternal(skills: ReadonlyArray<Skill | SkillReference | string> | '*' | SkillSource, root: string, options?: WriteSkillsOptions): Promise<ReconcileReport>;
+
+// @public
+export type WriteSkillsOptions = {
+    prune?: boolean;
+    timeout?: number;
+    onUnavailable?: OnUnavailable;
+};
 
 // Warnings were encountered during analysis:
 //
-// temp/dts/types.d.ts:381:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
+// temp/dts/evaluations.d.ts:48:5 - (ae-forgotten-export) The symbol "Transport" needs to be exported by the entry point index.d.ts
+// temp/dts/skills-fdv2.d.ts:460:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point index.d.ts
+// temp/dts/types.d.ts:425:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
+// temp/dts/utils.d.ts:44:5 - (ae-forgotten-export) The symbol "StreamHandlerInput" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 

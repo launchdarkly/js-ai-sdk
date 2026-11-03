@@ -48,12 +48,20 @@ const OPTIONAL_DEPS: Record<string, string[]> = {
 const RESOLVED_SYMBOLS = {
   aiNodeConfig: 'function',
   aiNodeInitClient: 'function',
-  aiNodeExperimentalGetSkill: 'function',
-  aiNodeRootGetSkill: 'undefined',
+  aiNodeExperimentalInitEvaluations: 'undefined',
+  aiNodeRootInitEvaluations: 'function',
+  aiNodeExperimentalGetSkill: 'undefined',
+  aiNodeRootGetSkill: 'function',
+  aiNodeExperimentalConfigSkills: 'undefined',
+  aiNodeRootConfigSkills: 'function',
   aiServerConfig: 'function',
-  // The experimental subpath resolves, and its names stay off the root.
-  aiServerExperimentalGetSkill: 'function',
-  aiServerRootGetSkill: 'undefined',
+  // The experimental subpath resolves; Agent Skills and Evaluations from Code are on the root, not the subpath.
+  aiServerExperimentalInitEvaluations: 'undefined',
+  aiServerRootInitEvaluations: 'function',
+  aiServerExperimentalGetSkill: 'undefined',
+  aiServerRootGetSkill: 'function',
+  aiServerExperimentalConfigSkills: 'undefined',
+  aiServerRootConfigSkills: 'function',
   openaiMessages: 'function',
   langchainMessages: 'function',
 };
