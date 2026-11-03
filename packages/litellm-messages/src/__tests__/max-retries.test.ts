@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// `maxRetries` reaches the OpenAI-compatible client the handler builds, and only when set
-// (TESTING.md §1.1a). The real client is constructed, so the assertions read its own retry count.
+// `maxRetries` reaches the OpenAI-compatible client the handler builds, and only when set.
+// The real client is constructed, so the assertions read its own retry count.
 // Only `chat.completions.create` is replaced, so no test reaches a proxy.
 
 type Built = { options: Record<string, unknown>; client: { maxRetries: number } };
@@ -46,7 +46,7 @@ const completion = {
 };
 const stubClient = { chat: { completions: { create: vi.fn() } } };
 
-describe('createLiteLLMMessagesHandler — maxRetries (§1.1a)', () => {
+describe('createLiteLLMMessagesHandler — maxRetries', () => {
   beforeEach(() => {
     built.length = 0;
     mockCreate.mockReset().mockResolvedValue(completion);

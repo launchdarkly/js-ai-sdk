@@ -946,7 +946,7 @@ describe('camelizeModelParameters', () => {
 
 // ─── validateMaxRetries ───────────────────────────────────────────────────────
 
-// TESTING.md A.25: a factory refuses a value that is not a non-negative integer, naming the option.
+// A factory refuses a value that is not a non-negative integer, naming the option.
 describe('validateMaxRetries', () => {
   it.each([undefined, 0, 1, 7, 50])('accepts %s and returns it unchanged', (value) => {
     expect(validateMaxRetries(value)).toBe(value);

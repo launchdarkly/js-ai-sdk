@@ -602,8 +602,8 @@ describe('createVercelMessagesHandler', () => {
 });
 
 // `maxRetries` is a per-call AI SDK setting, so it is asserted on the `generateText` / `streamText`
-// request rather than on a client (TESTING.md §1.1a, A.25).
-describe('createVercelMessagesHandler — maxRetries (§1.1a)', () => {
+// request rather than on a client.
+describe('createVercelMessagesHandler — maxRetries', () => {
   const streamResult = () => ({
     textStream: (async function* () {
       yield 'ok';

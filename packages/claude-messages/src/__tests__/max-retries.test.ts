@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// `maxRetries` reaches the `Anthropic` client the factory builds, and only when set (TESTING.md §1.1a).
+// `maxRetries` reaches the `Anthropic` client the factory builds, and only when set.
 // The real client is constructed, so the assertions read its own retry count rather than the
 // arguments a stub happened to receive.
 
@@ -32,7 +32,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { configInternal } from '@launchdarkly/ai-server';
 import { claudeMessages, createClaudeMessagesHandler } from '../handler.js';
 
-describe('createClaudeMessagesHandler — maxRetries (§1.1a)', () => {
+describe('createClaudeMessagesHandler — maxRetries', () => {
   beforeEach(() => {
     built.length = 0;
     vi.mocked(configInternal).mockClear();

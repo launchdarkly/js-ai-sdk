@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// `maxRetries` reaches the chat model the handler builds, and only when set (TESTING.md §1.1a).
+// `maxRetries` reaches the chat model the handler builds, and only when set.
 // The real LangChain classes are constructed, so the assertions read each model's own retry count.
 // Only `invoke` and `stream` are replaced, so no test reaches a provider.
 
@@ -75,7 +75,7 @@ const configFor = (provider: string, name: string, parameters?: Record<string, u
   instructions: 'You are helpful.',
 });
 
-describe('createLangChainMessagesHandler — maxRetries (§1.1a)', () => {
+describe('createLangChainMessagesHandler — maxRetries', () => {
   beforeEach(() => {
     built.length = 0;
     vi.mocked(configInternal).mockClear();
