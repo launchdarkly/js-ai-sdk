@@ -60,7 +60,16 @@ function selectHandler(
  * @internal Exported for the LaunchDarkly handler packages; applications should
  * call {@link config}.
  */
-export const configInternal = ({ key, handler, toolHandlers, registry, skipJudges = false }: ConfigArgs) => {
+export const configInternal = (input: ConfigArgs) =>
+  configFromVariation(input, (context) => extractVariation(input.key, context));
+
+/** @internal {@link configInternal} on the variation `evaluate` returns, instead of on a flag evaluation. */
+export const configFromVariation = (
+  { key, handler, toolHandlers, registry, skipJudges = false }: ConfigArgs,
+  evaluate: (
+    context: LDContext,
+  ) => Promise<{ config: AiConfigRep; meta: VariationMeta; value?: unknown; runId?: string }>,
+) => {
   const normalizeHandlers = (): ProviderHandler[] | undefined => {
     if (handler === undefined) return undefined;
     return Array.isArray(handler) ? handler : [handler];
@@ -75,7 +84,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
     const resolvedHandlerArray = resolveHandlers(registry, normalizeHandlers());
     const resolvedTools = resolveTools(registry, toolHandlers);
 
-    const { config: aiConfig, meta, value: evaluatedValue } = await extractVariation(key, context);
+    const { config: aiConfig, meta, value: evaluatedValue, runId } = await evaluate(context);
     const resolvedHandler = selectHandler(aiConfig, meta, resolvedHandlerArray);
 
     const {
@@ -94,6 +103,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       variables,
       history,
       evaluatedValue,
+      runId,
     });
 
     const parsedResponse = resolveOutputFormatResponse(rawResponse, aiConfig.outputFormat);
@@ -162,7 +172,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
     const resolvedHandlerArray = resolveHandlers(registry, normalizeHandlers());
     const resolvedTools = resolveTools(registry, toolHandlers);
 
-    const { config: aiConfig, meta, value: evaluatedValue } = await extractVariation(key, context);
+    const { config: aiConfig, meta, value: evaluatedValue, runId } = await evaluate(context);
     const resolvedHandler = selectHandler(aiConfig, meta, resolvedHandlerArray);
 
     let doneEvent: ExecuteStreamDoneEvent | undefined;
@@ -178,6 +188,7 @@ export const configInternal = ({ key, handler, toolHandlers, registry, skipJudge
       variables,
       history,
       evaluatedValue,
+      runId,
     })) {
       if (event.type === 'chunk') {
         yield event;

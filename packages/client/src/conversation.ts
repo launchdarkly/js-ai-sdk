@@ -112,6 +112,17 @@ const conversationIdFrom = (ctx: Context): string | undefined => {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 };
 
+/** @internal The conversation id bound on the active context, if any. */
+export function currentConversationId(): string | undefined {
+  return conversationIdFrom(context.active());
+}
+
+/** @internal Runs `fn` under exactly `id`: a bound id is replaced, and `undefined` unbinds it. */
+export function withExactConversationId<T>(id: string | undefined, fn: () => T): T {
+  const active = context.active();
+  return context.with(id ? active.setValue(CONVERSATION_ID_KEY, id) : active.deleteValue(CONVERSATION_ID_KEY), fn);
+}
+
 const stampedAttributesFrom = (ctx: Context): StampedAttributes | undefined =>
   ctx.getValue(STAMPED_ATTRIBUTES_KEY) as StampedAttributes | undefined;
 
