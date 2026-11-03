@@ -96,7 +96,7 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
-    # A newly published advisory must not turn every open PR red; push and the weekly run still fail.
+    # A newly published advisory shows red on PRs but does not fail the workflow; push and the weekly run still fail.
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
