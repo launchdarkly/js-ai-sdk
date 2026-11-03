@@ -814,4 +814,24 @@ describe('failure edges', () => {
     caller.end();
     expect(traceIds).toEqual([caller.spanContext().traceId, caller.spanContext().traceId]);
   });
+
+  it('hands over no task when the served call fails', async () => {
+    await use(makeClient(variationA()));
+    const tasks: ShadowTask[] = [];
+    await expect(
+      shadowConfig({
+        key: 'flag',
+        handler: [recorder('TestProvider', 'x', { rejects: true }).handler, recorder('ShadowProvider').handler],
+        onTask: (task) => tasks.push(task),
+      }).invoke('hi', CONTEXT),
+    ).rejects.toThrow();
+    expect(tasks).toEqual([]);
+  });
+
+  it('still runs a shadow variation with malformed tools', async () => {
+    const b = { ...variationB(), tools: 'not-a-tools-map' };
+    const { b: shadow } = await invoke(makeClient(variationA(undefined, { b })));
+    expect(shadow.calls).toHaveLength(1);
+    expect(shadow.calls[0].config).not.toHaveProperty('tools');
+  });
 });

@@ -381,7 +381,7 @@ function parseVariation(value: unknown): { config: AiConfigRep; meta: VariationM
   if (!variation || meta?.enabled !== true) {
     return undefined;
   }
-  // B never gets tools or judges, so they are dropped before validation, as the spec says.
+  // B never gets tools or judges, so they are dropped before validation.
   const { _ldMeta, tools: _tools, judgeConfiguration: _judges, shadowConfiguration: _shadows, ...config } = variation;
   const parsed = parseAiConfig(config);
   return parsed.success ? { config: parsed.data, meta: meta as VariationMeta } : undefined;
