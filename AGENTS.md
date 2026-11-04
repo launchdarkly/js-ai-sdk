@@ -119,6 +119,14 @@ The approved public names of each entry point are the lists in `api-surface/`, c
 
 The `usage=` fields on the lists drive every package's `sdk-usage.test.ts`: `usageRows()` from `scripts/api-surface.mjs` turns a list into one row per usage ID, and each suite's `CALLS` table says only how to call the function the package exports under that name. A usage ID with no entry in `CALLS`, or an entry for an ID the list no longer reports, fails the suite, so adding a reporting helper means adding its call there.
 
+## Cross-SDK Spec
+
+The behavioural spec for every SDK language is `TESTING.md` in `launchdarkly/ai-sdks-monorepo`, which also holds the `api-surface/` lists and `EXPERIMENTAL.md`.
+
+- **Check the spec before opening a PR that changes observable behaviour:** span names, span attributes or events, event payloads, error and retry semantics, handler or tool contracts, or public API. Grep `TESTING.md` for the affected section.
+- **If the change contradicts the spec or adds behaviour it doesn't cover,** open a companion PR in `ai-sdks-monorepo` and link it from the SDK PR.
+- **A change made in one language only** flags the spec with `<!-- verify: <language> -->`, and gets a parity follow-up in `launchdarkly/python-ai-sdk` (Python).
+
 ## Package Hierarchy
 
 The monorepo is organized into three tiers plus a convenience wrapper. Dependencies only flow **downward** — never sideways between packages in the same tier, and never upward.
