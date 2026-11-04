@@ -241,7 +241,7 @@ describe('dataset resolution', () => {
 describe('evaluation create body', () => {
   const createBody = (api: FakeApi) => api.calls.find((call) => call.path === EVALUATION_PATH)?.body;
 
-  it('carries the generation settings, with no mode field and no tools when there are none', async () => {
+  it('carries the generation settings, with no mode field and empty tools/criteria when there are none', async () => {
     const api = routeHostedRun(new FakeApi());
     await makeModule(api).run(
       hosted({
@@ -264,6 +264,8 @@ describe('evaluation create body', () => {
       parameters: { temperature: 0.2 },
       messages: [{ role: 'system', content: 'Use {{snippet.tone}}' }],
       promptSnippets: { tone: 'a calm tone' },
+      tools: [],
+      criteria: [],
     });
   });
 
@@ -381,8 +383,40 @@ describe('offline-evaluations reconcile', () => {
       generationProvider: 'OpenAI',
       generationModel: 'gpt-4o',
       messages: [{ role: 'user', content: '{{input}}' }],
+      tools: [],
+      criteria: [],
     });
     expect(api.calls.some((call) => call.method === 'POST' && call.path === EVALUATION_PATH)).toBe(false);
+    expect(generationEvents()[0].data.evaluationVersion).toBe(2);
+  });
+
+  it('PATCHes when clearing previously pinned tools and criteria', async () => {
+    const api = new FakeApi()
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}/rows`, {
+        body: { items: [datasetRow(0)], totalCount: 1 },
+      })
+      .on('GET', EVALUATION_BY_KEY_PATH, {
+        body: {
+          id: 'ev-1',
+          version: 1,
+          key: 'eval-key',
+          name: 'eval-key',
+          generationProvider: 'OpenAI',
+          generationModel: 'gpt-4o',
+          messages: [{ role: 'user', content: '{{input}}' }],
+          tools: [{ key: 'lookup', version: 1, source: 'library' }],
+          criteria: [{ criterionType: 'accuracy', kind: 'judge', judgeKey: 'accuracy', options: { threshold: 0.5 } }],
+        },
+      })
+      .on('PATCH', EVALUATION_BY_KEY_PATH, {
+        body: { id: 'ev-1', version: 2, key: 'eval-key', name: 'eval-key' },
+      })
+      .on('POST', RUN_PATH, { status: 201, body: { id: 'run-1', evaluationId: 'ev-1', state: 'PENDING' } })
+      .on('GET', SUMMARY_PATH, { body: { statusCounts: { total: 1, passed: 1 } } });
+    await makeModule(api).run(hosted({ tools: [], criteria: [] }));
+    const patch = api.calls.find((call) => call.method === 'PATCH');
+    expect(patch?.body).toMatchObject({ tools: [], criteria: [] });
     expect(generationEvents()[0].data.evaluationVersion).toBe(2);
   });
 

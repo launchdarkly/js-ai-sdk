@@ -358,9 +358,10 @@ export function evaluationConfigBody(
     body.messages = generation.messages ?? [];
   }
   if (generation.promptSnippets !== undefined) body.promptSnippets = generation.promptSnippets;
-  if (tools.length) body.tools = createBodyTools(tools);
-  // Pinned on the evaluation: ingest drops a result for a criterion not configured there.
-  if (criteria.length) body.criteria = criteria.map(criterionWire);
+  // Always send tools/criteria — including [] — so a PATCH snapshot can clear pins that
+  // ingest still expects results for when a prior version listed them.
+  body.tools = createBodyTools(tools);
+  body.criteria = criteria.map(criterionWire);
   return body;
 }
 
