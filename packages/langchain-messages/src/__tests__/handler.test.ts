@@ -1552,6 +1552,40 @@ describe('model source', () => {
     expectNoNeverForwardedValue(args);
   });
 
+  it.each([
+    ['OpenAI', 'gpt-4o', () => ChatOpenAI],
+    ['Anthropic', 'claude-sonnet-4-5', () => ChatAnthropic],
+    ['Bedrock', 'anthropic.claude-sonnet-4-5', () => ChatBedrockConverse],
+  ] as const)('passes the same settings to the default %s constructor on invoke and stream', async (provider, name, ctor) => {
+    vi.mocked(ctor()).mockClear();
+    vi.mocked(ctor()).mockImplementation(function MockChatModel() {
+      return {
+        ...makeMockLLM('default'),
+        stream: vi.fn().mockReturnValue(
+          (async function* () {
+            yield new AIMessage({ content: 'streamed' });
+          })(),
+        ),
+      } as any;
+    } as any);
+    const cfg = {
+      ...baseConfig,
+      provider: { name: provider },
+      model: { name, parameters: { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 } },
+    };
+    await createLangChainMessagesHandler()(cfg as any, 'q');
+    for await (const _e of createLangChainMessagesHandler().stream?.(cfg as any, 'q', {}, {}) ?? []) {
+      // drain
+    }
+    const calls = vi.mocked(ctor()).mock.calls.map(([args]) => args as Record<string, unknown>);
+    expect(calls).toHaveLength(2);
+    for (const args of calls) {
+      expect(args.temperature).toBe(0.3);
+      expectNoNeverForwardedValue(args);
+    }
+    expect(calls[1]).toEqual(calls[0]);
+  });
+
   it('spreads model.parameters into the default Anthropic constructor', async () => {
     vi.mocked(ChatAnthropic).mockImplementation(function MockChatAnthropic() {
       return makeMockLLM('default-anthropic') as any;

@@ -344,14 +344,24 @@ describe('createOpenAIMessagesHandler', () => {
     expect(call.max_output_tokens).toBe(256);
   });
 
-  it('never forwards credentials, endpoints, request overrides or remote tools from model.parameters', async () => {
+  it('never forwards credentials, endpoints, request overrides or remote tools from model.parameters on invoke and stream', async () => {
     mockResponsesCreate.mockResolvedValue(mockFinalResponse());
-    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
+    mockResponsesStream.mockReturnValue(makeResponseStreamMock([], baseFinalResponse));
+    const cfg = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 } },
+    };
     await createOpenAIMessagesHandler()(cfg as any, 'hi');
+    await collectStream(createOpenAIMessagesHandler().stream?.(cfg as any, 'hi', {}, {}));
     expect(mockResponsesCreate).toHaveBeenCalledTimes(1);
-    for (const arg of mockResponsesCreate.mock.calls[0]) {
+    expect(mockResponsesStream).toHaveBeenCalledTimes(1);
+    for (const arg of [...mockResponsesCreate.mock.calls[0], ...mockResponsesStream.mock.calls[0]]) {
       expectNoNeverForwardedValue(arg);
     }
+    const invokeParams = mockResponsesCreate.mock.calls[0][0];
+    const streamParams = mockResponsesStream.mock.calls[0][0];
+    expect(invokeParams.temperature).toBe(0.3);
+    expect(streamParams).toEqual(invokeParams);
   });
 
   it('drops an unrecognized model.parameters key rather than forwarding it', async () => {

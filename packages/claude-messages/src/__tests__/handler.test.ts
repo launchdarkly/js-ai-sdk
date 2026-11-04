@@ -1484,15 +1484,27 @@ describe('createClaudeMessagesHandler — model.parameters forwarding', () => {
     expect(call.tools).toBeUndefined();
   });
 
-  it('never forwards credentials, endpoints, request overrides or remote tools from model.parameters', async () => {
+  it('never forwards credentials, endpoints, request overrides or remote tools from model.parameters on invoke and stream', async () => {
     mockMessagesCreate.mockResolvedValue(mockFinalResponse());
-    const cfg = { ...baseConfig, model: { ...baseConfig.model, parameters: NEVER_FORWARDED_PARAMETERS } };
+    mockMessagesStream.mockReturnValue(makeStreamMock([], mockFinalResponse()));
+    const cfg = {
+      ...baseConfig,
+      model: { ...baseConfig.model, parameters: { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 } },
+    };
     await createClaudeMessagesHandler()(cfg as any, 'hi');
+    for await (const _e of createClaudeMessagesHandler().stream?.(cfg as any, 'hi', {}, {}) ?? []) {
+      // drain
+    }
     expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
-    for (const arg of mockMessagesCreate.mock.calls[0]) {
+    expect(mockMessagesStream).toHaveBeenCalledTimes(1);
+    for (const arg of [...mockMessagesCreate.mock.calls[0], ...mockMessagesStream.mock.calls[0]]) {
       // The handler sets `system` itself; the deep check proves it does not carry the config's value.
       expectNoNeverForwardedValue(arg, ['system']);
     }
+    const invokeParams = mockMessagesCreate.mock.calls[0][0];
+    const streamParams = mockMessagesStream.mock.calls[0][0];
+    expect(invokeParams.temperature).toBe(0.3);
+    expect(streamParams).toEqual(invokeParams);
   });
 
   it('drops an unrecognized model.parameters key rather than forwarding it', async () => {
