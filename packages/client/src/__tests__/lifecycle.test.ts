@@ -687,6 +687,113 @@ describe('lifecycle', () => {
       expect(otel.held.trace).toBe(tracerProviders[0]);
     });
 
+    // A passed client while an attempt is in flight, in each order the attempt
+    // and the passed call's own telemetry setup can finish.
+    function deferredClient() {
+      const settle = { resolve: () => {}, reject: (_err: Error) => {} };
+      const client = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+      client.waitForInitialization = vi.fn(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            settle.resolve = resolve;
+            settle.reject = reject;
+          }),
+      );
+      return { client, settle };
+    }
+
+    it('abandons an in-flight init that finishes while a passed client sets up telemetry', async () => {
+      // The attempt finishes before the passed call's telemetry setup does. It
+      // must still see that it was replaced, rather than adopting its client
+      // for the passed call to overwrite, leaving it open.
+      const { client: first, settle } = deferredClient();
+      mockLdInit.mockReturnValueOnce(first);
+      process.env.LD_SDK_KEY = 'test-key';
+      const byocClient = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+
+      const { initClient, getClient } = await import('../lifecycle.js');
+      const inFlight = initClient();
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      const passed = initClient(byocClient);
+      settle.resolve();
+
+      await expect(inFlight).rejects.toThrow(/abandoned/);
+      await expect(passed).resolves.toBe(byocClient);
+      expect(getClient()).toBe(byocClient);
+      expect(first.close).toHaveBeenCalledOnce();
+      expect(byocClient.close).not.toHaveBeenCalled();
+    });
+
+    it('rejects an in-flight init replaced by a passed client and then shutdown()', async () => {
+      const { client: first, settle } = deferredClient();
+      mockLdInit.mockReturnValueOnce(first);
+      process.env.LD_SDK_KEY = 'test-key';
+      const byocClient = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+
+      const { initClient, getClient, shutdown } = await import('../lifecycle.js');
+      const inFlight = initClient();
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      await initClient(byocClient);
+      await shutdown();
+      settle.resolve();
+
+      await expect(inFlight).rejects.toThrow(/abandoned/);
+      expect(() => getClient()).toThrow(/not initialized/i);
+      expect(first.close).toHaveBeenCalledOnce();
+      // Installed before shutdown(), so shutdown() closed it.
+      expect(byocClient.close).toHaveBeenCalledOnce();
+    });
+
+    it('rejects a passed client that shutdown() abandons during its telemetry setup', async () => {
+      const byocClient = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+
+      const { initClient, getClient, shutdown } = await import('../lifecycle.js');
+      const passed = initClient(byocClient);
+      await shutdown();
+
+      await expect(passed).rejects.toThrow(/abandoned/);
+      expect(() => getClient()).toThrow(/not initialized/i);
+      expect(byocClient.close).not.toHaveBeenCalled();
+    });
+
+    it('rejects an in-flight init that fails after a passed client replaced it', async () => {
+      // The init error comes first, so callers get it rather than the
+      // abandonment error: still a rejection.
+      const { client: first, settle } = deferredClient();
+      mockLdInit.mockReturnValueOnce(first);
+      process.env.LD_SDK_KEY = 'test-key';
+      const byocClient = { ...makeMockClient(), close: vi.fn().mockResolvedValue(undefined) };
+
+      const { initClient, getClient } = await import('../lifecycle.js');
+      const inFlight = initClient();
+      await vi.waitFor(() => expect(first.waitForInitialization).toHaveBeenCalled());
+      const passed = initClient(byocClient);
+      settle.reject(new Error('timeout'));
+
+      await expect(inFlight).rejects.toThrow('timeout');
+      await expect(passed).resolves.toBe(byocClient);
+      expect(getClient()).toBe(byocClient);
+      expect(first.close).toHaveBeenCalledOnce();
+      expect(byocClient.close).not.toHaveBeenCalled();
+      // The failed attempt leaves its provider to the passed client.
+      expect(tracerProviders).toHaveLength(1);
+      expect(mockTracerProviderShutdown).not.toHaveBeenCalled();
+      expect(otel.held.trace).toBe(tracerProviders[0]);
+    });
+
+    it('has later calls join a passed client still setting up telemetry', async () => {
+      const byocClient = makeMockClient();
+      const other = makeMockClient();
+
+      const { initClient, getClient } = await import('../lifecycle.js');
+      const calls = [initClient(byocClient), initClient(other), initClient({ sdkKey: 'test-key' })];
+
+      for (const got of await Promise.all(calls)) expect(got).toBe(byocClient);
+      expect(getClient()).toBe(byocClient);
+      expect(mockLdInit).not.toHaveBeenCalled();
+      expect(tracerProviders).toHaveLength(1);
+    });
+
     it('is a no-op (does not throw) when called without a prior initClient', async () => {
       const { shutdown } = await import('../lifecycle.js');
       // Should not throw even though the client was never initialized.

@@ -284,6 +284,11 @@ const SINGLETON_KEY = Symbol.for('@launchdarkly/ai-server:singleton');
 interface Singleton {
   client: LDClientInterface | null;
   initPromise: Promise<LDClientInterface> | null;
+  /**
+   * The latest pre-initialized-client attempt. While it is also `initPromise`,
+   * the in-flight attempt installs a passed client rather than building one.
+   */
+  passedClientAttempt?: Promise<LDClientInterface> | null;
 }
 
 function getSingleton(): Singleton {
@@ -316,8 +321,11 @@ async function initBaseClient(options: InitBaseClientOptions = {}): Promise<LDCl
     // drop the provider this attempt built instead of leaving the retry to reuse
     // it. Only if it is still the current one: `shutdown()` may have torn it
     // down already and a newer attempt built its own. And not if a BYOC call
-    // has adopted it for its own client meanwhile.
-    if (builtProvider && tracerProvider === builtProvider && !getSingleton().client) {
+    // has adopted it for its own client meanwhile, or is still setting up to.
+    const singleton = getSingleton();
+    const passedClientPending =
+      singleton.initPromise !== null && singleton.initPromise === singleton.passedClientAttempt;
+    if (builtProvider && tracerProvider === builtProvider && !singleton.client && !passedClientPending) {
       try {
         await shutdownTelemetry();
       } catch {
@@ -464,20 +472,18 @@ export async function initClient(
     return singleton.client;
   }
 
+  let pending: Promise<LDClientInterface>;
   if (isLDClient(optionsOrClient)) {
-    // Pre-initialized client path (edge / custom runtimes).
-    // Still run telemetry setup (with the caller's options) so OTel traces work
-    // regardless of which LD SDK provides the client. The SDK key is optional
-    // here — it's only used for the launchdarkly.project_id resource attribute.
-    await setupTelemetry(clientOptions ?? {}, clientOptions?.sdkKey ?? process.env.LD_SDK_KEY ?? '');
-    singleton.client = optionsOrClient;
-    singleton.initPromise = Promise.resolve(optionsOrClient);
-    flushAiSdkInfo(optionsOrClient);
-    flushSdkUsage(optionsOrClient);
-    return optionsOrClient;
+    // A passed client replaces an options-path attempt in flight, but joins
+    // another passed client still setting up, as it would once that one is set.
+    const inFlight = singleton.initPromise;
+    pending =
+      inFlight && inFlight === singleton.passedClientAttempt
+        ? inFlight
+        : startPassedClient(singleton, optionsOrClient, clientOptions);
+  } else {
+    pending = singleton.initPromise ?? startInit(singleton, optionsOrClient);
   }
-
-  const pending = singleton.initPromise ?? startInit(singleton, optionsOrClient);
   let client: LDClientInterface;
   try {
     client = await pending;
@@ -493,6 +499,8 @@ export async function initClient(
   flushSdkUsage(client);
   return client;
 }
+
+const ABANDONED = '[LaunchDarkly] initClient was abandoned: shutdown() or another initClient() replaced it.';
 
 /**
  * Starts an options-path init attempt and records it as the in-flight one.
@@ -515,12 +523,47 @@ function startInit(singleton: Singleton, options?: InitBaseClientOptions): Promi
       } catch {
         // The abandonment is the error worth reporting.
       }
-      throw new Error('[LaunchDarkly] initClient was abandoned: shutdown() or another initClient() replaced it.');
+      throw new Error(ABANDONED);
     }
     singleton.client = client;
     return client;
   });
   singleton.initPromise = attempt;
+  return attempt;
+}
+
+/**
+ * Starts installing a pre-initialized client (edge / custom runtimes) and
+ * records it as the in-flight attempt.
+ *
+ * It is recorded before telemetry setup awaits anything, so an options-path
+ * attempt that finishes during that wait sees it was replaced and closes the
+ * client it built. Recorded only after the wait, it adopted that client and was
+ * then overwritten, leaving the client open with its caller holding it.
+ *
+ * Telemetry still runs with the caller's options, so OTel traces work whichever
+ * LD SDK provides the client. The SDK key is optional here; it only sets the
+ * launchdarkly.project_id resource attribute. The caller owns the client, so it
+ * is never closed here.
+ */
+function startPassedClient(
+  singleton: Singleton,
+  client: LDClientInterface,
+  options?: InitBaseClientOptions,
+): Promise<LDClientInterface> {
+  const attempt: Promise<LDClientInterface> = setupTelemetry(
+    options ?? {},
+    options?.sdkKey ?? process.env.LD_SDK_KEY ?? '',
+  ).then(() => {
+    if (singleton.initPromise !== attempt) {
+      // Only `shutdown()` replaces this attempt: every other call joins it.
+      throw new Error(ABANDONED);
+    }
+    singleton.client = client;
+    return client;
+  });
+  singleton.initPromise = attempt;
+  singleton.passedClientAttempt = attempt;
   return attempt;
 }
 
