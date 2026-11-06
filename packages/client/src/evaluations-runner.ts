@@ -29,7 +29,7 @@ import {
   withActiveSpan,
   withEvaluationRow,
 } from './evaluations-spans.js';
-import { createBodyTools, type EvalTool, handlerConfigTools } from './evaluations-tools.js';
+import { createBodyTools, type EvalTool, handlerConfigTools, returnToolErrors } from './evaluations-tools.js';
 import { noteAiInvocation } from './sdk-options.js';
 import { TrajectoryRecorder } from './trajectory.js';
 import type {
@@ -614,7 +614,7 @@ export function generateRows(
     // One recorder per row: rows share the tool map, so a shared recorder
     // would splice their calls together.
     const trajectory = new TrajectoryRecorder();
-    const rowTools = trajectory.wrap(tools);
+    const rowTools = returnToolErrors(trajectory.wrap(tools));
     const span = evaluationRunId === undefined ? undefined : startRowSpan(evaluationRunId, row.rowIndex);
     const startedAt = new Date().toISOString();
     const started = performance.now();

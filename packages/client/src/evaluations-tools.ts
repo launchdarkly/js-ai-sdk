@@ -84,7 +84,11 @@ export class EvalTool {
    * Define an inline tool.
    *
    * @param key - The tool key. Must be lowercase.
-   * @param implementation - The function the handler calls.
+   * @param implementation - The function the handler calls, sync or async. It receives one
+   *   argument: an object of the arguments the model sent, keyed as in `schema`. Write
+   *   `(args) => getWeather(args.city)`, not `(city) => getWeather(city)`. What it returns
+   *   goes back to the model as the tool result. If it throws, the model receives
+   *   `"Error: <type>: <message>"` as the result and the row continues.
    * @param schema - JSON Schema for the tool's parameters. Required; `{}` is valid.
    * @param description - Description passed to the model. Defaults to `''`.
    */
@@ -211,6 +215,50 @@ export function validateTools(tools: readonly unknown[], projectKey: string): as
 /** The tools as the `{ key: executable }` map a handler receives. */
 export function toolHandlerMap(tools: readonly EvalTool[]): Record<string, ToolHandlerFn | NativeTool> {
   return Object.fromEntries(tools.map((tool) => [tool.key, tool.implementation as ToolHandlerFn | NativeTool]));
+}
+
+/** The tool result a model receives when its tool call threw. */
+export function toolErrorResult(err: unknown): string {
+  const type = err instanceof Error ? err.constructor.name || err.name : typeof err;
+  return `Error: ${type}: ${errorMessage(err)}`;
+}
+
+/**
+ * Returns `handlers` with each throwing call answered by an error result.
+ *
+ * An evaluation measures how an agent copes with a failing tool, so the error
+ * goes back to the model as the tool's result instead of failing the row. Wrap
+ * outside the trajectory recorder: it still records the call as an error, for
+ * the judge and the `execute_tool` span.
+ */
+export function returnToolErrors(
+  handlers: Record<string, ToolHandlerFn | NativeTool>,
+): Record<string, ToolHandlerFn | NativeTool> {
+  const wrapped: Record<string, ToolHandlerFn | NativeTool> = {};
+  for (const [key, implementation] of Object.entries(handlers)) {
+    wrapped[key] =
+      implementation instanceof NativeTool || typeof implementation !== 'function'
+        ? implementation
+        : answerErrors(implementation as (...args: unknown[]) => unknown);
+  }
+  return wrapped;
+}
+
+function answerErrors(implementation: (...args: unknown[]) => unknown): ToolHandlerFn {
+  // A sync tool stays sync, as in the trajectory recorder: a handler may call
+  // it directly and use the value.
+  return function answered(this: unknown, ...args: unknown[]): unknown {
+    let result: unknown;
+    try {
+      result = implementation.apply(this, args);
+    } catch (err) {
+      return toolErrorResult(err);
+    }
+    if (typeof (result as PromiseLike<unknown> | undefined)?.then === 'function') {
+      return Promise.resolve(result).catch(toolErrorResult);
+    }
+    return result;
+  } as ToolHandlerFn;
 }
 
 /** The `tools` entry of a handler config. One shape for both sources. */
