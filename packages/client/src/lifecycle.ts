@@ -442,9 +442,11 @@ function warnOnUnknownOptions(options: unknown): void {
  * retries initialization (once `LD_SDK_KEY` is available, say) rather than
  * replaying the same rejection.
  *
- * A call still in flight when `shutdown()` runs, or when a pre-initialized
- * client is passed meanwhile, is abandoned: it closes the client it built and
- * rejects, rather than replacing whatever client came after it.
+ * A call still in flight when `shutdown()` runs is abandoned: it closes the
+ * client it built, if any, and rejects, rather than replacing whatever client
+ * came after it. An options-path call in flight is also abandoned when a
+ * pre-initialized client is passed meanwhile. A pre-initialized client that is
+ * still setting up is not replaced: later calls wait for it and return it.
  *
  * Both overloads return the client instance for further customization.
  */
