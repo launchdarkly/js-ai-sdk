@@ -196,8 +196,8 @@ export class LDApiClient {
     return this.request('POST', path, { body, idempotent: options.idempotent });
   }
 
-  patch(path: string, body?: unknown): Promise<unknown> {
-    return this.request('PATCH', path, { body });
+  patch(path: string, body?: unknown, options: { idempotent?: boolean } = {}): Promise<unknown> {
+    return this.request('PATCH', path, { body, idempotent: options.idempotent });
   }
 }
 

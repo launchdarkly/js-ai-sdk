@@ -164,7 +164,11 @@ export type InlineDatasetRow = {
  * or `aiConfig` with optional `generation` overrides.
  */
 export type RunOptions = {
-  /** Key for the evaluation this run creates. Must be unique per run. */
+  /**
+   * Stable key for the offline evaluation this run reconciles. Reuse the same
+   * string across CI calls so trends share one evaluation identity; each
+   * `run()` still creates a new run under that evaluation.
+   */
   key: string;
   /** A hosted dataset key, or the rows of an inline dataset. */
   dataset: string | readonly InlineDatasetRow[];

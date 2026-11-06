@@ -350,14 +350,16 @@ export function evaluationConfigBody(
     name: key,
     generationProvider: generation.provider,
     generationModel: generation.model,
+    // Always send parameters/promptSnippets — including {} — so a PATCH snapshot
+    // can clear previously set values (omitting the field leaves the old value).
+    parameters: generation.parameters ?? {},
+    promptSnippets: generation.promptSnippets ?? {},
   };
-  if (generation.parameters !== undefined) body.parameters = generation.parameters;
   if (generation.instructions !== undefined) {
     body.messages = [{ role: 'system', content: generation.instructions }];
   } else {
     body.messages = generation.messages ?? [];
   }
-  if (generation.promptSnippets !== undefined) body.promptSnippets = generation.promptSnippets;
   // Always send tools/criteria — including [] — so a PATCH snapshot can clear pins that
   // ingest still expects results for when a prior version listed them.
   body.tools = createBodyTools(tools);
@@ -419,7 +421,9 @@ export async function ensureEvaluation(
     }
   }
 
-  const patched = requireObject(await api.patch(byKey, desired), 'evaluation');
+  // Full-snapshot PATCH is idempotent: replaying the same body is a server
+  // no-op when nothing changed, so transient 5xx may be retried.
+  const patched = requireObject(await api.patch(byKey, desired, { idempotent: true }), 'evaluation');
   return evaluationRefFrom(patched, key);
 }
 

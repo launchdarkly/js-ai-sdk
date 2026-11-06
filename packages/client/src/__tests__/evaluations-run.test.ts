@@ -358,6 +358,8 @@ describe('offline-evaluations reconcile', () => {
       name: 'eval-key',
       generationProvider: 'OpenAI',
       generationModel: 'gpt-4o',
+      parameters: {},
+      promptSnippets: {},
       messages: [{ role: 'user', content: '{{input}}' }],
       tools: [],
       criteria: [],
@@ -392,8 +394,42 @@ describe('offline-evaluations reconcile', () => {
       .on('GET', SUMMARY_PATH, { body: { statusCounts: { total: 1, passed: 1 } } });
     await makeModule(api).run(hosted({ tools: [], criteria: [] }));
     const patch = api.calls.find((call) => call.method === 'PATCH');
-    expect(patch?.body).toMatchObject({ tools: [], criteria: [] });
+    expect(patch?.body).toMatchObject({
+      tools: [],
+      criteria: [],
+      parameters: {},
+      promptSnippets: {},
+    });
     expect(generationEvents()[0].data.evaluationVersion).toBe(2);
+  });
+
+  it('PATCHes empty parameters and promptSnippets to clear prior settings', async () => {
+    const api = new FakeApi()
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}/rows`, {
+        body: { items: [datasetRow(0)], totalCount: 1 },
+      })
+      .on('GET', EVALUATION_BY_KEY_PATH, {
+        body: {
+          id: 'ev-1',
+          version: 1,
+          key: 'eval-key',
+          name: 'eval-key',
+          generationProvider: 'OpenAI',
+          generationModel: 'gpt-4o',
+          messages: [{ role: 'user', content: '{{input}}' }],
+          parameters: { temperature: 0.9 },
+          promptSnippets: { tone: 'formal' },
+        },
+      })
+      .on('PATCH', EVALUATION_BY_KEY_PATH, {
+        body: { id: 'ev-1', version: 2, key: 'eval-key', name: 'eval-key' },
+      })
+      .on('POST', RUN_PATH, { status: 201, body: { id: 'run-1', evaluationId: 'ev-1', state: 'PENDING' } })
+      .on('GET', SUMMARY_PATH, { body: { statusCounts: { total: 1, passed: 1 } } });
+    await makeModule(api).run(hosted());
+    const patch = api.calls.find((call) => call.method === 'PATCH');
+    expect(patch?.body).toMatchObject({ parameters: {}, promptSnippets: {} });
   });
 
   it('re-GETs after a POST 409 create race, then PATCHes', async () => {
