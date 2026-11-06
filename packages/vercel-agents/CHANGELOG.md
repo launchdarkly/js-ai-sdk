@@ -1,5 +1,7 @@
 # Changelog
 
+## [1.0.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-vercel-agents-1.0.0...@launchdarkly/ai-vercel-agents-1.0.1) (2026-11-06)
+
 ## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-vercel-agents-0.3.0...@launchdarkly/ai-vercel-agents-1.0.0) (2026-10-30)
 
 
