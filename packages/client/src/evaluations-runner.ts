@@ -382,35 +382,11 @@ function evaluationRefFrom(raw: Record<string, unknown>, fallbackKey: string): E
   return { id, key: responseKey, version: raw.version as number };
 }
 
-/** Stable JSON for comparing desired config against a GET response. */
-function stableJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`).join(',')}}`;
-}
-
-/**
- * Whether the live evaluation already matches the desired config snapshot.
- * Compares only fields the harness sends on create/PATCH.
- */
-export function evaluationConfigMatches(current: Record<string, unknown>, desired: Record<string, unknown>): boolean {
-  for (const [field, want] of Object.entries(desired)) {
-    const have = current[field];
-    if (have === undefined && want !== undefined) {
-      // Absent on the wire is equivalent to an empty list for messages/tools/criteria.
-      if (Array.isArray(want) && want.length === 0) continue;
-      return false;
-    }
-    if (stableJson(have) !== stableJson(want)) return false;
-  }
-  return true;
-}
-
 /**
  * Resolve a stable evaluation by key on `…/offline-evaluations`:
- * GET → POST (create-only on miss) or PATCH (full config snapshot when drifted).
- * No PUT. A POST 409 race re-GETs and continues as the 200 path.
+ * GET → POST (create-only on miss) or always PATCH the full desired snapshot
+ * when the evaluation already exists. The server decides whether anything
+ * changed. No PUT. A POST 409 race re-GETs and continues as the 200 path.
  */
 export async function ensureEvaluation(
   api: LDApiClient,
@@ -424,29 +400,27 @@ export async function ensureEvaluation(
   const collection = `projects/${segment(projectKey)}/offline-evaluations`;
   const byKey = `${collection}/${segment(key)}`;
 
-  let current: Record<string, unknown> | undefined;
+  let missing = false;
   try {
-    current = requireObject(await api.get(byKey), 'evaluation');
+    requireObject(await api.get(byKey), 'evaluation');
   } catch (err) {
     if (!(err instanceof LDApiError) || err.status !== 404) throw err;
+    missing = true;
   }
 
-  if (!current) {
+  if (missing) {
     try {
       const created = requireObject(await api.post(collection, { key, ...desired }), 'evaluation');
       return evaluationRefFrom(created, key);
     } catch (err) {
       if (!(err instanceof LDApiError) || err.status !== 409) throw err;
       // Lost the create race — another caller minted the key; continue as GET 200.
-      current = requireObject(await api.get(byKey), 'evaluation');
+      requireObject(await api.get(byKey), 'evaluation');
     }
   }
 
-  if (!evaluationConfigMatches(current, desired)) {
-    const patched = requireObject(await api.patch(byKey, desired), 'evaluation');
-    return evaluationRefFrom(patched, key);
-  }
-  return evaluationRefFrom(current, key);
+  const patched = requireObject(await api.patch(byKey, desired), 'evaluation');
+  return evaluationRefFrom(patched, key);
 }
 
 export async function createEvaluationRun(

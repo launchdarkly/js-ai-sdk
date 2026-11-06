@@ -324,7 +324,7 @@ describe('evaluation create body', () => {
 });
 
 describe('offline-evaluations reconcile', () => {
-  it('reuses a matching evaluation without PATCH', async () => {
+  it('always PATCHes a full config snapshot when the evaluation already exists', async () => {
     const desired = {
       name: 'eval-key',
       generationProvider: 'OpenAI',
@@ -339,6 +339,9 @@ describe('offline-evaluations reconcile', () => {
       .on('GET', EVALUATION_BY_KEY_PATH, {
         body: { id: 'ev-1', version: 3, key: 'eval-key', ...desired },
       })
+      .on('PATCH', EVALUATION_BY_KEY_PATH, {
+        body: { id: 'ev-1', version: 3, key: 'eval-key', ...desired },
+      })
       .on('POST', RUN_PATH, { status: 201, body: { id: 'run-1', evaluationId: 'ev-1', state: 'PENDING' } })
       .on('GET', SUMMARY_PATH, { body: { statusCounts: { total: 1, passed: 1 } } });
     await makeModule(api).run(hosted());
@@ -346,37 +349,10 @@ describe('offline-evaluations reconcile', () => {
       `GET projects/${PROJECT}/datasets/${DATASET}`,
       `GET projects/${PROJECT}/datasets/${DATASET}/rows`,
       `GET ${EVALUATION_BY_KEY_PATH}`,
+      `PATCH ${EVALUATION_BY_KEY_PATH}`,
       `POST ${RUN_PATH}`,
       `GET ${SUMMARY_PATH}`,
     ]);
-    expect(api.calls.some((call) => call.method === 'POST' && call.path === EVALUATION_PATH)).toBe(false);
-    expect(api.calls.some((call) => call.method === 'PATCH')).toBe(false);
-  });
-
-  it('PATCHes a full config snapshot when the live evaluation drifted', async () => {
-    const api = new FakeApi()
-      .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
-      .on('GET', `projects/${PROJECT}/datasets/${DATASET}/rows`, {
-        body: { items: [datasetRow(0)], totalCount: 1 },
-      })
-      .on('GET', EVALUATION_BY_KEY_PATH, {
-        body: {
-          id: 'ev-1',
-          version: 1,
-          key: 'eval-key',
-          name: 'eval-key',
-          generationProvider: 'OpenAI',
-          generationModel: 'gpt-3.5-turbo',
-          messages: [{ role: 'user', content: '{{input}}' }],
-        },
-      })
-      .on('PATCH', EVALUATION_BY_KEY_PATH, {
-        body: { id: 'ev-1', version: 2, key: 'eval-key', name: 'eval-key' },
-      })
-      .on('POST', RUN_PATH, { status: 201, body: { id: 'run-1', evaluationId: 'ev-1', state: 'PENDING' } })
-      .on('GET', SUMMARY_PATH, { body: { statusCounts: { total: 1, passed: 1 } } });
-    await makeModule(api).run(hosted());
-    expect(api.sequence).toContain(`PATCH ${EVALUATION_BY_KEY_PATH}`);
     const patch = api.calls.find((call) => call.method === 'PATCH');
     expect(patch?.body).toEqual({
       name: 'eval-key',
@@ -387,7 +363,7 @@ describe('offline-evaluations reconcile', () => {
       criteria: [],
     });
     expect(api.calls.some((call) => call.method === 'POST' && call.path === EVALUATION_PATH)).toBe(false);
-    expect(generationEvents()[0].data.evaluationVersion).toBe(2);
+    expect(generationEvents()[0].data.evaluationVersion).toBe(3);
   });
 
   it('PATCHes when clearing previously pinned tools and criteria', async () => {
@@ -420,7 +396,7 @@ describe('offline-evaluations reconcile', () => {
     expect(generationEvents()[0].data.evaluationVersion).toBe(2);
   });
 
-  it('re-GETs after a POST 409 create race, then continues', async () => {
+  it('re-GETs after a POST 409 create race, then PATCHes', async () => {
     const desired = {
       name: 'eval-key',
       generationProvider: 'OpenAI',
@@ -439,6 +415,9 @@ describe('offline-evaluations reconcile', () => {
         { body: { id: 'ev-1', version: 4, key: 'eval-key', ...desired } },
       )
       .on('POST', EVALUATION_PATH, { status: 409, body: 'key in use' })
+      .on('PATCH', EVALUATION_BY_KEY_PATH, {
+        body: { id: 'ev-1', version: 4, key: 'eval-key', ...desired },
+      })
       .on('POST', RUN_PATH, { status: 201, body: { id: 'run-1', evaluationId: 'ev-1', state: 'PENDING' } })
       .on('GET', SUMMARY_PATH, { body: { statusCounts: { total: 1, passed: 1 } } });
     await makeModule(api).run(hosted());
@@ -448,6 +427,7 @@ describe('offline-evaluations reconcile', () => {
       `GET ${EVALUATION_BY_KEY_PATH}`,
       `POST ${EVALUATION_PATH}`,
       `GET ${EVALUATION_BY_KEY_PATH}`,
+      `PATCH ${EVALUATION_BY_KEY_PATH}`,
       `POST ${RUN_PATH}`,
       `GET ${SUMMARY_PATH}`,
     ]);

@@ -686,12 +686,12 @@ Import every name in this section from `@launchdarkly/ai-server` (or `@launchdar
 
 An evaluation from code runs a dataset through your own code and reports the results to LaunchDarkly. One `run()` call:
 
-1. reconciles a **stable evaluation** by `key` on `…/offline-evaluations` (GET by key → POST create with `key` + `name` on miss, or PATCH a full config snapshot when the live config drifted — never PUT), then creates a new run;
+1. reconciles a **stable evaluation** by `key` on `…/offline-evaluations` (GET by key → POST create with `key` + `name` on miss, or always PATCH a full config snapshot when the evaluation already exists — the server decides whether anything changed; never PUT), then creates a new run;
 2. **generates**: calls your handler once per dataset row;
 3. **evaluates**: scores each generated output against your criteria, LaunchDarkly AI Judges and local scorer functions, if you pass any;
 4. waits for LaunchDarkly to account for every row, and returns the outcome.
 
-Reuse the same `key` across CI runs so trends and history stay attached to one evaluation. A config change PATCHes in place and bumps `version`; each `run()` still starts a new run.
+Reuse the same `key` across CI runs so trends and history stay attached to one evaluation. Every reuse PATCHes the full desired snapshot in place (the server no-ops when nothing changed) and may bump `version`; each `run()` still starts a new run.
 
 Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row and on the run; the SDK reports scores and never computes a verdict itself.
 
