@@ -10,8 +10,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-server",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-server"
     },
     "packages/ai-node": {
       "release-type": "node",
@@ -20,8 +19,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-node",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-node"
     },
     "packages/ai-otel": {
       "release-type": "node",
@@ -29,8 +27,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
-      "component": "@launchdarkly/ai-otel",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-otel"
     },
     "packages/claude-agents": {
       "release-type": "node",
@@ -39,8 +36,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-claude-agents",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-claude-agents"
     },
     "packages/claude-messages": {
       "release-type": "node",
@@ -49,8 +45,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-claude-messages",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-claude-messages"
     },
     "packages/openai-agents": {
       "release-type": "node",
@@ -59,8 +54,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-openai-agents",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-openai-agents"
     },
     "packages/openai-messages": {
       "release-type": "node",
@@ -69,8 +63,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-openai-messages",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-openai-messages"
     },
     "packages/langchain-agents": {
       "release-type": "node",
@@ -79,8 +72,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-langchain-agents",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-langchain-agents"
     },
     "packages/langchain-messages": {
       "release-type": "node",
@@ -89,8 +81,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-langchain-messages",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-langchain-messages"
     },
     "packages/vercel-agents": {
       "release-type": "node",
@@ -99,8 +90,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-vercel-agents",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-vercel-agents"
     },
     "packages/vercel-messages": {
       "release-type": "node",
@@ -109,8 +99,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-vercel-messages",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-vercel-messages"
     },
     "packages/typesafe": {
       "release-type": "node",
@@ -119,8 +108,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-typesafe",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-typesafe"
     },
     "packages/litellm-agents": {
       "release-type": "node",
@@ -129,8 +117,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-litellm-agents",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-litellm-agents"
     },
     "packages/litellm-messages": {
       "release-type": "node",
@@ -139,8 +126,7 @@
       "bump-patch-for-minor-pre-major": false,
       "include-v-in-tag": false,
       "extra-files": ["src/version.ts"],
-      "component": "@launchdarkly/ai-litellm-messages",
-      "release-as": "1.0.0"
+      "component": "@launchdarkly/ai-litellm-messages"
     }
   },
   "changelog-sections": [
