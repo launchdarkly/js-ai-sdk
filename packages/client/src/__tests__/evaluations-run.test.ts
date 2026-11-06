@@ -14,6 +14,7 @@ import {
   completion,
   DATASET,
   datasetRow,
+  EVALUATION_BY_KEY_PATH,
   EVALUATION_PATH,
   FakeApi,
   makeModule,
@@ -91,6 +92,7 @@ describe('request sequence', () => {
       `GET ${toolPath('lookup')}`,
       `GET projects/${PROJECT}/datasets/${DATASET}`,
       `GET projects/${PROJECT}/datasets/${DATASET}/rows`,
+      `GET ${EVALUATION_BY_KEY_PATH}`,
       `POST ${EVALUATION_PATH}`,
       `POST ${RUN_PATH}`,
       `GET ${SUMMARY_PATH}`,
@@ -106,6 +108,7 @@ describe('request sequence', () => {
     expect(api.sequence).toEqual([
       `GET projects/${PROJECT}/datasets/${DATASET}`,
       `GET projects/${PROJECT}/datasets/${DATASET}/rows`,
+      `GET ${EVALUATION_BY_KEY_PATH}`,
       `POST ${EVALUATION_PATH}`,
       `POST ${RUN_PATH}`,
       `GET ${SUMMARY_PATH}`,
@@ -132,6 +135,7 @@ describe('request sequence', () => {
     const api = routeInlineRun(new FakeApi(), 2);
     await makeModule(api).run(inline([{ input: 'a' }, { input: 'b' }], { tools: [new EvalTool('t', () => 1, {})] }));
     expect(api.sequence).toEqual([
+      `GET ${EVALUATION_BY_KEY_PATH}`,
       `POST ${EVALUATION_PATH}`,
       `POST ${RUN_PATH}`,
       `POST ${RUN_PATH}/run-1/dataset-rows`,
@@ -158,7 +162,10 @@ describe('request sequence', () => {
     const api = new FakeApi()
       .on('GET', 'projects/my%2Fproj/datasets/d%20s', { body: { id: 'ds-id', key: 'd s' } })
       .on('GET', 'projects/my%2Fproj/datasets/d%20s/rows', { body: { items: [datasetRow(0)], totalCount: 1 } })
-      .on('POST', 'projects/my%2Fproj/evaluations', { body: { id: 'ev/1', version: 1 } })
+      .on('GET', 'projects/my%2Fproj/offline-evaluations/eval-key', { status: 404 })
+      .on('POST', 'projects/my%2Fproj/offline-evaluations', {
+        body: { id: 'ev/1', version: 1, key: 'eval-key', name: 'eval-key' },
+      })
       .on('POST', 'projects/my%2Fproj/evaluations/ev%2F1/runs', {
         body: { id: 'run?1', evaluationId: 'ev/1', state: 'PENDING' },
       })
@@ -234,7 +241,7 @@ describe('dataset resolution', () => {
 describe('evaluation create body', () => {
   const createBody = (api: FakeApi) => api.calls.find((call) => call.path === EVALUATION_PATH)?.body;
 
-  it('carries the generation settings, with no mode field and no tools when there are none', async () => {
+  it('carries the generation settings, with no mode field and empty tools/criteria when there are none', async () => {
     const api = routeHostedRun(new FakeApi());
     await makeModule(api).run(
       hosted({
@@ -250,12 +257,15 @@ describe('evaluation create body', () => {
       }),
     );
     expect(createBody(api)).toEqual({
+      key: 'eval-key',
       name: 'eval-key',
       generationProvider: 'OpenAI',
       generationModel: 'gpt-4o',
       parameters: { temperature: 0.2 },
       messages: [{ role: 'system', content: 'Use {{snippet.tone}}' }],
       promptSnippets: { tone: 'a calm tone' },
+      tools: [],
+      criteria: [],
     });
   });
 
@@ -281,9 +291,10 @@ describe('evaluation create body', () => {
   });
 
   it.each([
-    ['the response name', { name: 'from-name', label: 'from-label' }, 'from-name'],
-    ['the response label when there is no name', { label: 'from-label' }, 'from-label'],
-    ['the caller key when the response has neither', {}, 'eval-key'],
+    ['the response key', { key: 'from-key', name: 'from-name', label: 'from-label' }, 'from-key'],
+    ['the response name when there is no key', { name: 'from-name', label: 'from-label' }, 'from-name'],
+    ['the response label when there is no key or name', { label: 'from-label' }, 'from-label'],
+    ['the caller key when the response has none of those', {}, 'eval-key'],
   ])('takes evaluationKey from %s', async (_name, fields, expected) => {
     const api = routeHostedRun(new FakeApi()).on('POST', EVALUATION_PATH, {
       status: 201,
@@ -309,6 +320,160 @@ describe('evaluation create body', () => {
     await makeModule(api).run(hosted({ handler, tools: [tool] }));
     expect((createBody(api) as { tools: Array<{ schema: unknown }> }).tools[0].schema).toEqual(schema);
     expect(tool.schema).toEqual(schema);
+  });
+});
+
+describe('offline-evaluations reconcile', () => {
+  it('always PATCHes a full config snapshot when the evaluation already exists', async () => {
+    const desired = {
+      name: 'eval-key',
+      generationProvider: 'OpenAI',
+      generationModel: 'gpt-4o',
+      messages: [{ role: 'user', content: '{{input}}' }],
+    };
+    const api = new FakeApi()
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}/rows`, {
+        body: { items: [datasetRow(0)], totalCount: 1 },
+      })
+      .on('GET', EVALUATION_BY_KEY_PATH, {
+        body: { id: 'ev-1', version: 3, key: 'eval-key', ...desired },
+      })
+      .on('PATCH', EVALUATION_BY_KEY_PATH, {
+        body: { id: 'ev-1', version: 3, key: 'eval-key', ...desired },
+      })
+      .on('POST', RUN_PATH, { status: 201, body: { id: 'run-1', evaluationId: 'ev-1', state: 'PENDING' } })
+      .on('GET', SUMMARY_PATH, { body: { statusCounts: { total: 1, passed: 1 } } });
+    await makeModule(api).run(hosted());
+    expect(api.sequence).toEqual([
+      `GET projects/${PROJECT}/datasets/${DATASET}`,
+      `GET projects/${PROJECT}/datasets/${DATASET}/rows`,
+      `GET ${EVALUATION_BY_KEY_PATH}`,
+      `PATCH ${EVALUATION_BY_KEY_PATH}`,
+      `POST ${RUN_PATH}`,
+      `GET ${SUMMARY_PATH}`,
+    ]);
+    const patch = api.calls.find((call) => call.method === 'PATCH');
+    expect(patch?.body).toEqual({
+      name: 'eval-key',
+      generationProvider: 'OpenAI',
+      generationModel: 'gpt-4o',
+      parameters: {},
+      promptSnippets: {},
+      messages: [{ role: 'user', content: '{{input}}' }],
+      tools: [],
+      criteria: [],
+    });
+    expect(api.calls.some((call) => call.method === 'POST' && call.path === EVALUATION_PATH)).toBe(false);
+    expect(generationEvents()[0].data.evaluationVersion).toBe(3);
+  });
+
+  it('PATCHes when clearing previously pinned tools and criteria', async () => {
+    const api = new FakeApi()
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}/rows`, {
+        body: { items: [datasetRow(0)], totalCount: 1 },
+      })
+      .on('GET', EVALUATION_BY_KEY_PATH, {
+        body: {
+          id: 'ev-1',
+          version: 1,
+          key: 'eval-key',
+          name: 'eval-key',
+          generationProvider: 'OpenAI',
+          generationModel: 'gpt-4o',
+          messages: [{ role: 'user', content: '{{input}}' }],
+          tools: [{ key: 'lookup', version: 1, source: 'library' }],
+          criteria: [{ criterionType: 'accuracy', kind: 'judge', judgeKey: 'accuracy', options: { threshold: 0.5 } }],
+        },
+      })
+      .on('PATCH', EVALUATION_BY_KEY_PATH, {
+        body: { id: 'ev-1', version: 2, key: 'eval-key', name: 'eval-key' },
+      })
+      .on('POST', RUN_PATH, { status: 201, body: { id: 'run-1', evaluationId: 'ev-1', state: 'PENDING' } })
+      .on('GET', SUMMARY_PATH, { body: { statusCounts: { total: 1, passed: 1 } } });
+    await makeModule(api).run(hosted({ tools: [], criteria: [] }));
+    const patch = api.calls.find((call) => call.method === 'PATCH');
+    expect(patch?.body).toMatchObject({
+      tools: [],
+      criteria: [],
+      parameters: {},
+      promptSnippets: {},
+    });
+    expect(generationEvents()[0].data.evaluationVersion).toBe(2);
+  });
+
+  it('PATCHes empty parameters and promptSnippets to clear prior settings', async () => {
+    const api = new FakeApi()
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}/rows`, {
+        body: { items: [datasetRow(0)], totalCount: 1 },
+      })
+      .on('GET', EVALUATION_BY_KEY_PATH, {
+        body: {
+          id: 'ev-1',
+          version: 1,
+          key: 'eval-key',
+          name: 'eval-key',
+          generationProvider: 'OpenAI',
+          generationModel: 'gpt-4o',
+          messages: [{ role: 'user', content: '{{input}}' }],
+          parameters: { temperature: 0.9 },
+          promptSnippets: { tone: 'formal' },
+        },
+      })
+      .on('PATCH', EVALUATION_BY_KEY_PATH, {
+        body: { id: 'ev-1', version: 2, key: 'eval-key', name: 'eval-key' },
+      })
+      .on('POST', RUN_PATH, { status: 201, body: { id: 'run-1', evaluationId: 'ev-1', state: 'PENDING' } })
+      .on('GET', SUMMARY_PATH, { body: { statusCounts: { total: 1, passed: 1 } } });
+    await makeModule(api).run(hosted());
+    const patch = api.calls.find((call) => call.method === 'PATCH');
+    expect(patch?.body).toMatchObject({ parameters: {}, promptSnippets: {} });
+  });
+
+  it('re-GETs after a POST 409 create race, then PATCHes', async () => {
+    const desired = {
+      name: 'eval-key',
+      generationProvider: 'OpenAI',
+      generationModel: 'gpt-4o',
+      messages: [{ role: 'user', content: '{{input}}' }],
+    };
+    const api = new FakeApi()
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}/rows`, {
+        body: { items: [datasetRow(0)], totalCount: 1 },
+      })
+      .on(
+        'GET',
+        EVALUATION_BY_KEY_PATH,
+        { status: 404 },
+        { body: { id: 'ev-1', version: 4, key: 'eval-key', ...desired } },
+      )
+      .on('POST', EVALUATION_PATH, { status: 409, body: 'key in use' })
+      .on('PATCH', EVALUATION_BY_KEY_PATH, {
+        body: { id: 'ev-1', version: 4, key: 'eval-key', ...desired },
+      })
+      .on('POST', RUN_PATH, { status: 201, body: { id: 'run-1', evaluationId: 'ev-1', state: 'PENDING' } })
+      .on('GET', SUMMARY_PATH, { body: { statusCounts: { total: 1, passed: 1 } } });
+    await makeModule(api).run(hosted());
+    expect(api.sequence).toEqual([
+      `GET projects/${PROJECT}/datasets/${DATASET}`,
+      `GET projects/${PROJECT}/datasets/${DATASET}/rows`,
+      `GET ${EVALUATION_BY_KEY_PATH}`,
+      `POST ${EVALUATION_PATH}`,
+      `GET ${EVALUATION_BY_KEY_PATH}`,
+      `PATCH ${EVALUATION_BY_KEY_PATH}`,
+      `POST ${RUN_PATH}`,
+      `GET ${SUMMARY_PATH}`,
+    ]);
+    expect(generationEvents()[0].data.evaluationVersion).toBe(4);
+  });
+
+  it('never issues a PUT', async () => {
+    const api = routeHostedRun(new FakeApi());
+    await makeModule(api).run(hosted());
+    expect(api.calls.some((call) => call.method === 'PUT')).toBe(false);
   });
 });
 
@@ -394,6 +559,7 @@ describe('aiConfig source', () => {
       `GET ${MODEL_CONFIG}`,
       `GET projects/${PROJECT}/datasets/${DATASET}`,
       `GET projects/${PROJECT}/datasets/${DATASET}/rows`,
+      `GET ${EVALUATION_BY_KEY_PATH}`,
       `POST ${EVALUATION_PATH}`,
       `POST ${RUN_PATH}`,
       `GET ${SUMMARY_PATH}`,

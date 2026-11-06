@@ -195,6 +195,10 @@ export class LDApiClient {
   post(path: string, body?: unknown, options: { idempotent?: boolean } = {}): Promise<unknown> {
     return this.request('POST', path, { body, idempotent: options.idempotent });
   }
+
+  patch(path: string, body?: unknown, options: { idempotent?: boolean } = {}): Promise<unknown> {
+    return this.request('PATCH', path, { body, idempotent: options.idempotent });
+  }
 }
 
 /** Percent-encode one path segment. */

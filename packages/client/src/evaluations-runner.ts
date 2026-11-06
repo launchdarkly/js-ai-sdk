@@ -336,7 +336,61 @@ export async function fetchDatasetRows(
   return rows;
 }
 
-export async function createEvaluation(
+/**
+ * Mutable config fields shared by create (POST) and reconcile (PATCH) on
+ * `offline-evaluations`. Mode selects the handler only and is never sent.
+ */
+export function evaluationConfigBody(
+  key: string,
+  generation: ResolvedGeneration,
+  tools: readonly EvalTool[],
+  criteria: readonly Criterion[] = [],
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    name: key,
+    generationProvider: generation.provider,
+    generationModel: generation.model,
+    // Always send parameters/promptSnippets — including {} — so a PATCH snapshot
+    // can clear previously set values (omitting the field leaves the old value).
+    parameters: generation.parameters ?? {},
+    promptSnippets: generation.promptSnippets ?? {},
+  };
+  if (generation.instructions !== undefined) {
+    body.messages = [{ role: 'system', content: generation.instructions }];
+  } else {
+    body.messages = generation.messages ?? [];
+  }
+  // Always send tools/criteria — including [] — so a PATCH snapshot can clear pins that
+  // ingest still expects results for when a prior version listed them.
+  body.tools = createBodyTools(tools);
+  body.criteria = criteria.map(criterionWire);
+  return body;
+}
+
+function evaluationRefFrom(raw: Record<string, unknown>, fallbackKey: string): EvaluationRef {
+  const id = requireString(raw, 'id', 'evaluation');
+  // The only source for evaluationVersion on every event, so it is required.
+  if (!Number.isInteger(raw.version)) {
+    throw new EvaluationsError("LaunchDarkly evaluation response is missing integer field 'version'");
+  }
+  const responseKey =
+    typeof raw.key === 'string' && raw.key
+      ? raw.key
+      : typeof raw.name === 'string'
+        ? raw.name
+        : typeof raw.label === 'string'
+          ? raw.label
+          : fallbackKey;
+  return { id, key: responseKey, version: raw.version as number };
+}
+
+/**
+ * Resolve a stable evaluation by key on `…/offline-evaluations`:
+ * GET → POST (create-only on miss) or always PATCH the full desired snapshot
+ * when the evaluation already exists. The server decides whether anything
+ * changed. No PUT. A POST 409 race re-GETs and continues as the 200 path.
+ */
+export async function ensureEvaluation(
   api: LDApiClient,
   projectKey: string,
   key: string,
@@ -344,31 +398,33 @@ export async function createEvaluation(
   tools: readonly EvalTool[],
   criteria: readonly Criterion[] = [],
 ): Promise<EvaluationRef> {
-  // The mode selects the handler and validates the prompt only; it is not sent.
-  const body: Record<string, unknown> = {
-    name: key,
-    generationProvider: generation.provider,
-    generationModel: generation.model,
-  };
-  if (generation.parameters !== undefined) body.parameters = generation.parameters;
-  if (generation.instructions !== undefined) {
-    body.messages = [{ role: 'system', content: generation.instructions }];
-  } else {
-    body.messages = generation.messages ?? [];
-  }
-  if (generation.promptSnippets !== undefined) body.promptSnippets = generation.promptSnippets;
-  if (tools.length) body.tools = createBodyTools(tools);
-  // Pinned on the evaluation: ingest drops a result for a criterion not configured there.
-  if (criteria.length) body.criteria = criteria.map(criterionWire);
+  const desired = evaluationConfigBody(key, generation, tools, criteria);
+  const collection = `projects/${segment(projectKey)}/offline-evaluations`;
+  const byKey = `${collection}/${segment(key)}`;
 
-  const raw = requireObject(await api.post(`projects/${segment(projectKey)}/evaluations`, body), 'evaluation');
-  const id = requireString(raw, 'id', 'evaluation');
-  // The only source for evaluationVersion on every event, so it is required.
-  if (!Number.isInteger(raw.version)) {
-    throw new EvaluationsError("LaunchDarkly evaluation response is missing integer field 'version'");
+  let missing = false;
+  try {
+    requireObject(await api.get(byKey), 'evaluation');
+  } catch (err) {
+    if (!(err instanceof LDApiError) || err.status !== 404) throw err;
+    missing = true;
   }
-  const responseKey = typeof raw.name === 'string' ? raw.name : typeof raw.label === 'string' ? raw.label : key;
-  return { id, key: responseKey, version: raw.version as number };
+
+  if (missing) {
+    try {
+      const created = requireObject(await api.post(collection, { key, ...desired }), 'evaluation');
+      return evaluationRefFrom(created, key);
+    } catch (err) {
+      if (!(err instanceof LDApiError) || err.status !== 409) throw err;
+      // Lost the create race — another caller minted the key; continue as GET 200.
+      requireObject(await api.get(byKey), 'evaluation');
+    }
+  }
+
+  // Full-snapshot PATCH is idempotent: replaying the same body is a server
+  // no-op when nothing changed, so transient 5xx may be retried.
+  const patched = requireObject(await api.patch(byKey, desired, { idempotent: true }), 'evaluation');
+  return evaluationRefFrom(patched, key);
 }
 
 export async function createEvaluationRun(
