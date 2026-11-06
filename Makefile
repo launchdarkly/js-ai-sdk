@@ -1,4 +1,11 @@
-.PHONY: start build clean test typecheck lint lint-fix lint-packages lint-packages-fix format format-fix code-check code-fix review size size-install
+.PHONY: start build clean test typecheck lint lint-fix lint-packages lint-packages-fix format format-fix code-check code-fix review size size-install audit
+
+# Fail on known high or critical vulnerabilities in runtime (non-dev) dependencies
+# Yarn 1 exits with a bitmask of severities found (info 1, low 2, moderate 4, high 8, critical 16) and
+# --level only filters the printed list, so test bits 8|16. Exactly 1 is also yarn's error exit: fail closed.
+audit:
+	yarn audit --groups dependencies --level high; s=$$?; \
+	if [ $$s -eq 1 ] || [ $$((s & 24)) -ne 0 ]; then echo "make audit: failed (yarn audit exit $$s)"; exit 1; fi
 
 # Run main.ts (yarn start)
 start:
