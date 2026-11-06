@@ -101,6 +101,16 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 From 1.0.0 every package in this SDK is released at the same version, so install them at matching versions. Each package depends on `@launchdarkly/ai-server` within the same major (`^1.0.0`), and a breaking change in any package is a new major for all of them. Names exported from `@launchdarkly/ai-server/experimental` are the exception: they may change in a minor release.
 
 
+<!-- experimental-features:start (generated; do not edit by hand) -->
+## Experimental features
+
+These features are experimental. Their names and behavior may change in a minor release, and every change is listed under **Experimental** in the changelog.
+
+| Feature | What it does | Import from | Changelog scope |
+| --- | --- | --- | --- |
+| [Shadow requests](packages/client/README.md#shadow-requests-experimental) | Run another AI Config variation in the background on the same input and report it as its own metrics, without changing the response. | `@launchdarkly/ai-server/experimental` | `shadow-requests` |
+<!-- experimental-features:end -->
+
 ## Module format support
 
 Every package publishes both formats. The `"exports"` map declares an `import` condition (`dist/index.js`, ESM) and a `require` condition (`dist/index.cjs`, CommonJS). Each condition has its own declaration file.
