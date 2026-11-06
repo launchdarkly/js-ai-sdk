@@ -1,6 +1,6 @@
 {
   "name": "@launchdarkly/ai-typesafe",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "Apache-2.0",
   "author": "LaunchDarkly <team@launchdarkly.com>",
   "description": "TypeSafe Jev handler for @launchdarkly/ai-server judges",

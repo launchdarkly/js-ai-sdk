@@ -1,6 +1,6 @@
 {
   "name": "@launchdarkly/ai-vercel-agents",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "Apache-2.0",
   "author": "LaunchDarkly <team@launchdarkly.com>",
   "description": "Vercel AI SDK Agents provider for @launchdarkly/ai-server",
