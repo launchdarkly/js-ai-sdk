@@ -603,6 +603,19 @@ describe('toLangGraph', () => {
     expect(names).not.toContain('constructor');
   });
 
+  it('never gives the SDK a registered tool the node does not attach', async () => {
+    const { ToolNode } = await import('@langchain/langgraph/prebuilt');
+    const root = makeNode('root', 'instr', [], {
+      safe: { name: 'safe', type: 'function' as const, parameters: { type: 'object' } },
+    });
+    const def = makeGraphDef([root], {}, 'root');
+    const privileged = vi.fn();
+    await toLangGraph(Promise.resolve(def), { toolHandlers: { safe: vi.fn(), privileged } }).invoke('hi');
+    const names = (ToolNode as any).mock.calls.flatMap(([tools]: any[]) => tools.map((t: any) => t.name));
+    expect(names).toEqual(['safe']);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
   // ── NativeTool is skipped ───────────────────────────────────────────────────
 
   it('NativeTool in toolHandlers is never registered as a tool, and warns once per tool key', async () => {

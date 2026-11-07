@@ -343,6 +343,19 @@ describe('createLangChainAgentsHandler', () => {
     expect(agentArgs.tools).toHaveLength(1);
   });
 
+  it('never gives the SDK a registered tool the config does not attach', async () => {
+    mockCreateAgent.mockReturnValue(makeMockAgent());
+    const privileged = vi.fn();
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: { type: 'object' } } },
+    };
+    await createLangChainAgentsHandler({} as any)(config as any, 'q', { safe: vi.fn(), privileged });
+    const agentArgs = mockCreateAgent.mock.calls[0][0];
+    expect(agentArgs.tools.map((t: any) => t.name)).toEqual(['safe']);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
   // ── 1.5 Telemetry ───────────────────────────────────────────────────────────
 
   it('sets invoke_agent on the root and gen_ai usage on the chat model span', async () => {

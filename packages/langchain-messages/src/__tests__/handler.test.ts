@@ -1115,6 +1115,27 @@ describe('createLangChainMessagesHandler', () => {
     expect(stream).toHaveBeenCalledOnce();
   });
 
+  it('rejects a tool registered nowhere during streaming', async () => {
+    const stream = vi.fn().mockReturnValue(
+      (async function* () {
+        yield new AIMessage({
+          content: '',
+          tool_calls: [{ name: 'unknownTool', args: {}, id: 'tc1' }],
+          usage_metadata: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        });
+      })(),
+    );
+    const llm = { invoke: vi.fn(), stream, bindTools: vi.fn().mockReturnThis() };
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(
+      collectStream(createLangChainMessagesHandler(llm as any).stream?.(config as any, 'q', { safe: vi.fn() }, {})),
+    ).rejects.toThrow(/unknownTool/);
+  });
+
   it('rejects a returned tool during streaming when the active config has no tools', async () => {
     const dangerous = vi.fn();
     const stream = vi.fn().mockReturnValue(

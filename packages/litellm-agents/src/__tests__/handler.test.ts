@@ -353,6 +353,18 @@ describe('createLiteLLMAgentsHandler', () => {
     warn.mockRestore();
   });
 
+  it('never gives the SDK a registered tool the config does not attach', async () => {
+    mockRun.mockResolvedValue(result());
+    const privileged = vi.fn();
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: { type: 'object' } } },
+    };
+    await createLiteLLMAgentsHandler({ client: {} as never })(config as any, 'q', { safe: vi.fn(), privileged });
+    expect((agentArgs[0].tools as any[]).map((t) => t.name)).toEqual(['safe']);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
   it('maps instructions, tools, structured history, and output format to the Agents SDK', async () => {
     mockRun.mockResolvedValue(result({ answer: 'yes' }));
     const search = vi.fn();
