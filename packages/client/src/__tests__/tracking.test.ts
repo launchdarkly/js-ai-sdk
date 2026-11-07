@@ -487,6 +487,27 @@ describe('executeAndStream', () => {
     expect('__ldValue' in seen[0]).toBe(expected);
   });
 
+  it('streams the handler only the tools attached to the active config', async () => {
+    const handler = makeStreamingHandler(['Hi']);
+    const seen: Record<string, unknown>[] = [];
+    const inner = handler.stream;
+    handler.stream = (c: unknown, u: unknown, t: Record<string, unknown>, v: unknown, h: unknown) => {
+      seen.push(t);
+      return inner(c, u, t, v, h);
+    };
+    await collectExecStream(
+      executeAndStream({
+        configKey: 'f',
+        config: { ...execConfig, tools: { safe: { name: 'safe', type: 'function', parameters: {} } } } as any,
+        meta: execMeta,
+        userContext: execContext,
+        handler,
+        toolHandlers: { safe: vi.fn(), privileged: vi.fn() },
+      }),
+    );
+    expect(Object.keys(seen[0])).toEqual(['safe']);
+  });
+
   it('copies modelKey and modelVersion from meta onto every streamed event payload', async () => {
     const handler = makeStreamingHandler(['Hi']);
     await collectExecStream(

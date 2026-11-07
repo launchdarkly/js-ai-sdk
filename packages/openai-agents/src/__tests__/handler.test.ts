@@ -502,6 +502,19 @@ describe('createOpenAIAgentsHandler', () => {
     expect(agentArgs.tools ?? []).toHaveLength(0);
   });
 
+  it('never gives the SDK a registered tool the config does not attach', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const privileged = vi.fn();
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: { type: 'object' } } },
+    };
+    await createOpenAIAgentsHandler()(config as any, 'q', { safe: vi.fn(), privileged });
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    expect(agentArgs.tools.map((t: any) => t.name)).toEqual(['safe']);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
   // ── 1.5 Telemetry ───────────────────────────────────────────────────────────
 
   it('sets invoke_agent on the root and gen_ai usage on the chat model span', async () => {

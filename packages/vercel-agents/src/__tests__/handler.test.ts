@@ -373,6 +373,17 @@ describe('createVercelAgentsHandler', () => {
     expect(weather).toHaveBeenCalledWith({ city: 'Austin' });
   });
 
+  it('never gives the SDK a registered tool the config does not attach', async () => {
+    const privileged = vi.fn();
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function', parameters: { type: 'object' } } },
+    };
+    await createVercelAgentsHandler()(config as any, 'q', { safe: vi.fn(), privileged });
+    expect(Object.keys(aiMocks.agentArguments[0].tools)).toEqual(['safe']);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
   it('uses native structured output for blocking agent generation', async () => {
     aiMocks.generate.mockResolvedValue({
       ...agentResult('', 4, 2),

@@ -1488,6 +1488,15 @@ describe('createClaudeAgentsHandler — host options and built-in tool set', () 
       });
       expect([...(options.tools as string[])].sort()).toEqual(['Bash', 'Read']);
     });
+
+    it('does not send a registered native tool that the config does not attach', async () => {
+      const config = { ...baseConfig, tools: { read: { name: 'read', type: 'function', parameters: {} } } };
+      const options = await queryOptions(createClaudeAgentsHandler(), path, config, {
+        read: nativeStub('Read'),
+        bash: nativeStub('Bash'),
+      });
+      expect(options.tools).toEqual(['Read']);
+    });
   });
 });
 
