@@ -93,7 +93,8 @@ export class TrajectoryRecorder {
    * is the offline case.
    */
   wrap(tools: ToolMap, exposed?: readonly string[]): ToolMap {
-    const wrapped: ToolMap = {};
+    // Null prototype: a `__proto__` tool key stays an own key instead of being dropped.
+    const wrapped: ToolMap = Object.create(null);
     // Rebuilt, so wrapping again cannot list a tool twice.
     this.available.length = 0;
     for (const [key, implementation] of Object.entries(tools)) {

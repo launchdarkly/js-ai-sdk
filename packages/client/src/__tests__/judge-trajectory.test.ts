@@ -274,4 +274,13 @@ describe('exposedToolKeys', () => {
     expect(recorder.calls).toEqual([]);
     expect(recorder.available).toEqual(['lookup']);
   });
+
+  it('keeps and records a tool keyed __proto__', () => {
+    const recorder = new TrajectoryRecorder();
+    const tools = Object.fromEntries([['__proto__', () => 'proto result']]);
+    const wrapped = recorder.wrap(tools, ['__proto__']);
+    expect(Object.hasOwn(wrapped, '__proto__')).toBe(true);
+    expect((wrapped.__proto__ as unknown as () => string)()).toBe('proto result');
+    expect(recorder.calls.map((call) => call.key)).toEqual(['__proto__']);
+  });
 });
