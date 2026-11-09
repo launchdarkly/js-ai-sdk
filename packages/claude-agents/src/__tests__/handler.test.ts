@@ -216,6 +216,37 @@ describe('createClaudeAgentsHandler', () => {
     expect(options.model).toBe('claude-opus-4-5');
   });
 
+  it.each([
+    ['Bedrock', 'us', 'anthropic.claude-sonnet-4-5-20250929-v1:0', 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'],
+    ['bedrock', 'global', 'anthropic.claude-opus-5-5', 'global.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'eu', 'anthropic.claude-opus-5-5', 'eu.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'ca', 'anthropic.claude-opus-5-5', 'ca.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'us.anthropic.claude-opus-5-5', 'us.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'ca.anthropic.claude-opus-5-5', 'ca.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'global.anthropic.claude-opus-5-5', 'global.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'us-gov.anthropic.claude-opus-5-5', 'us-gov.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'sa', 'sa.anthropic.claude-opus-5-5', 'sa.anthropic.claude-opus-5-5'],
+    [
+      'Bedrock',
+      'us',
+      'arn:aws:bedrock:us-east-2:123456789012:application-inference-profile/abc',
+      'arn:aws:bedrock:us-east-2:123456789012:application-inference-profile/abc',
+    ],
+    ['Bedrock', undefined, 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
+    ['Bedrock', '', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
+    ['Anthropic', 'us', 'claude-opus-4-5', 'claude-opus-4-5'],
+  ])('sends a %s model with region %j from %s as %s', async (provider, region, name, expected) => {
+    const config = { ...baseConfig, model: { name, region }, provider: { name: provider } };
+    mockQuery.mockImplementation(makeResultMessage());
+    await createClaudeAgentsHandler()(config as any, 'hello');
+    expect(mockQuery.mock.calls[0][0].options.model).toBe(expected);
+
+    mockQuery.mockClear();
+    mockQuery.mockImplementation(makeResultMessage());
+    await collectStream(createClaudeAgentsHandler().stream?.(config as any, 'hello', {}, {}));
+    expect(mockQuery.mock.calls[0][0].options.model).toBe(expected);
+  });
+
   it('returns the result from the query generator', async () => {
     mockQuery.mockImplementation(makeResultMessage('final answer'));
     const result = await createClaudeAgentsHandler()(baseConfig as any, 'q');
