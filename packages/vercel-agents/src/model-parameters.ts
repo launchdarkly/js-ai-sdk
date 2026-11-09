@@ -23,7 +23,8 @@ import type { LanguageModelCallOptions, RequestOptions, ToolLoopAgentSettings } 
  * - `headers`: call-level headers win over the provider's own, so a config could replace the
  *   customer's `Authorization` header.
  * - `providerOptions`: the Vercel AI Gateway reads credentials (`gateway.byok`) and routing
- *   (`gateway.order`, `gateway.only`, `gateway.models`) from it.
+ *   (`gateway.order`, `gateway.only`, `gateway.models`) from it. The handler itself sets only the
+ *   Bedrock `gateway.inferenceRegion`, from `model.region` (see `inference-region.ts`).
  * - `maxRetries`, `timeout`: client retry and timeout policy.
  * - `abortSignal`: cannot be expressed in a JSON config and belongs to the caller.
  *

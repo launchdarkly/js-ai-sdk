@@ -37,6 +37,7 @@ import {
   type ToolSet,
   tool,
 } from 'ai';
+import { gatewayRegionProviderOptions } from './inference-region.js';
 import { gatewayModelId } from './model-id.js';
 import { buildModelParameterOptions } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
@@ -253,9 +254,12 @@ async function buildAgent(
     structuredOutput && config.outputFormat
       ? Output.object({ schema: jsonSchema(normalizeOutputSchema(config.outputFormat)) })
       : undefined;
+  const model = await resolveModel(config, options);
+  const providerOptions = gatewayRegionProviderOptions(config, model);
   const agent = new ToolLoopAgent({
     ...buildModelParameterOptions(config.model.parameters),
-    model: await resolveModel(config, options),
+    model,
+    ...(providerOptions ? { providerOptions } : {}),
     ...(system ? { instructions: system } : {}),
     ...(Object.keys(tools).length > 0 ? { tools } : {}),
     stopWhen: stepCountIs(MAX_STEPS),

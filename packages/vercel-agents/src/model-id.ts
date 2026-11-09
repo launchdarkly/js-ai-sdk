@@ -101,8 +101,9 @@ function creatorFromModel(model: string): { creator: string; model: string } | u
 }
 
 export function gatewayModelId(config: AiConfigRep): string {
-  const model = config.model.name;
-  if (model.includes('/')) return model;
+  if (config.model.name.includes('/')) return config.model.name;
+  // Bedrock model versions (`-v1:0`) are not part of any Gateway id.
+  const model = config.model.name.replace(/-v\d+:\d+$/, '');
 
   const provider = config.provider?.name ?? '';
   const providerName = providerKey(provider);

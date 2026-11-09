@@ -6,7 +6,8 @@ This Tier 1 wildcard handler adapts LaunchDarkly agent configs and graphs to AI 
 
 - Routing metadata is `['*', 'agent']`.
 - Every invocation constructs the stable `ToolLoopAgent`; do not replace it with a messages-only loop.
-- Build Gateway `creator/model` ids from the evaluated provider and model. Preserve slash-qualified ids; map `xAI` to `spacexai` and split recognized LD dotted creator prefixes once. Do not load `@ai-sdk/<provider>` from `config.provider.name`.
+- Build Gateway `creator/model` ids from the evaluated provider and model. Preserve slash-qualified ids; map `xAI` to `spacexai` and split recognized LD dotted creator prefixes once. Do not load `@ai-sdk/<provider>` from `config.provider.name`. Drop a Bedrock `-vN:M` version suffix; no Gateway id has one.
+- A Bedrock config's `model.region` is sent only as `providerOptions.gateway.inferenceRegion.providers.bedrock`, and only to a Gateway model. A region the Gateway has no zone for throws; never drop it silently.
 - Only callable tools are exposed, and AI SDK owns their execution loop.
 - Structured history remains on the native messages path; it is never flattened into instructions.
 - Streaming closes the provider iterator and root span on completion, error, or early consumer exit.
@@ -17,6 +18,8 @@ This Tier 1 wildcard handler adapts LaunchDarkly agent configs and graphs to AI 
 ## Files
 
 - `src/handler.ts` — ToolLoopAgent construction and handler contract.
+- `src/model-id.ts` — Gateway `creator/model` id from the config.
+- `src/inference-region.ts` — Bedrock `model.region` to Gateway `inferenceRegion`.
 - `src/graph.ts` — LaunchDarkly graph convenience wrapper.
 - `src/native-graph.ts` — selected-handoff native graph runner.
 - `src/index.ts` / `src/version.ts` — registration, exports, and package identity.
