@@ -39,6 +39,24 @@ describe('createVercelMessagesHandler, model call (real AI SDK, mock model)', ()
     expect(model.doGenerateCalls[0]).toMatchObject({ maxOutputTokens: 321, topP: 0.42, stopSequences: ['END'] });
   });
 
+  it('sends a Bedrock model.region to a Gateway model as gateway.inferenceRegion', async () => {
+    const model = new MockLanguageModelV4({
+      provider: 'gateway',
+      doGenerate: async () => {
+        throw new Error('aborted: request captured');
+      },
+    });
+    const config = {
+      ...baseConfig,
+      provider: { name: 'Bedrock' },
+      model: { name: 'anthropic/claude-sonnet-4.5', region: 'eu-west-1' },
+    };
+    await expect(createVercelMessagesHandler({ model })(config as any, 'hi')).rejects.toThrow();
+    expect(model.doGenerateCalls[0].providerOptions).toEqual({
+      gateway: { inferenceRegion: { providers: { bedrock: { scope: 'zone', geoRegion: 'eu' } } } },
+    });
+  });
+
   it('streamText sends the same settings', async () => {
     const model = capturingModel();
     const stream = createVercelMessagesHandler({ model }).stream?.(baseConfig as any, 'hi', {}, {});

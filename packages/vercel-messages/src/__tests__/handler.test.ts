@@ -158,6 +158,65 @@ describe('createVercelMessagesHandler', () => {
     expect(aiMocks.generateText).toHaveBeenCalledWith(expect.objectContaining({ model: 'openai/gpt-5.6-sol' }));
   });
 
+  describe('Bedrock model.region', () => {
+    const bedrockConfig = (region?: string) => ({
+      ...baseConfig,
+      provider: { name: 'Bedrock' },
+      model: { name: 'eu.anthropic.claude-sonnet-4-5-20250929-v1:0', ...(region ? { region } : {}) },
+    });
+    const pinned = { gateway: { inferenceRegion: { providers: { bedrock: { scope: 'zone', geoRegion: 'eu' } } } } };
+
+    it('sends the Gateway id and a Bedrock-scoped inferenceRegion to generateText', async () => {
+      await createVercelMessagesHandler()(bedrockConfig('eu-central-1') as any, 'hello');
+      expect(aiMocks.generateText).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'anthropic/claude-sonnet-4-5-20250929', providerOptions: pinned }),
+      );
+    });
+
+    it('sends the same inferenceRegion to streamText', async () => {
+      aiMocks.streamText.mockReturnValue({
+        textStream: (async function* () {
+          yield 'ok';
+        })(),
+        usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+      });
+      await collect(
+        createVercelMessagesHandler().stream?.(bedrockConfig('eu-central-1') as any, 'q', {}, {}) as AsyncIterable<any>,
+      );
+      expect(aiMocks.streamText).toHaveBeenCalledWith(expect.objectContaining({ providerOptions: pinned }));
+    });
+
+    it('sends no providerOptions without a region', async () => {
+      await createVercelMessagesHandler()(bedrockConfig() as any, 'hello');
+      expect(aiMocks.generateText.mock.calls[0][0]).not.toHaveProperty('providerOptions');
+    });
+
+    it('fails the run, and its spans, for a region the Gateway cannot express', async () => {
+      await expect(createVercelMessagesHandler()(bedrockConfig('ap-south-1') as any, 'hello')).rejects.toThrow(
+        'Bedrock region "ap-south-1" has no Vercel AI Gateway inference region',
+      );
+      expect(aiMocks.generateText).not.toHaveBeenCalled();
+      expect(spanMocks.root.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: 2 }));
+    });
+
+    it('cannot be replaced by providerOptions in model.parameters', async () => {
+      const config = bedrockConfig('us-east-1');
+      await createVercelMessagesHandler()(
+        {
+          ...config,
+          model: {
+            ...config.model,
+            parameters: { providerOptions: { gateway: { inferenceRegion: { scope: 'global' } } } },
+          },
+        } as any,
+        'hello',
+      );
+      expect(aiMocks.generateText.mock.calls[0][0].providerOptions).toEqual({
+        gateway: { inferenceRegion: { providers: { bedrock: { scope: 'zone', geoRegion: 'us' } } } },
+      });
+    });
+  });
+
   it('uses a supplied model instance instead of resolving a gateway model', async () => {
     const model = { specificationVersion: 'v3', provider: 'test', modelId: 'injected' };
     await createVercelMessagesHandler({ model } as any)(baseConfig as any, 'hello');
