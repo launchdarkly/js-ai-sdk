@@ -234,7 +234,8 @@ export function toolErrorResult(err: unknown): string {
 export function returnToolErrors(
   handlers: Record<string, ToolHandlerFn | NativeTool>,
 ): Record<string, ToolHandlerFn | NativeTool> {
-  const wrapped: Record<string, ToolHandlerFn | NativeTool> = {};
+  // Null prototype: a `__proto__` tool key stays an own key instead of being dropped.
+  const wrapped: Record<string, ToolHandlerFn | NativeTool> = Object.create(null);
   for (const [key, implementation] of Object.entries(handlers)) {
     wrapped[key] =
       implementation instanceof NativeTool || typeof implementation !== 'function'
