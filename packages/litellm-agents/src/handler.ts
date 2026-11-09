@@ -70,18 +70,20 @@ export function resolveLiteLLMClient(options: LiteLLMAgentsOptions, configRep: A
 }
 
 const CROSS_REGION_PREFIXES = ['global.', 'us.', 'eu.', 'jp.', 'apac.', 'au.', 'us-gov.'];
-const BEDROCK_ROUTE = /^(bedrock\/(?:(?:converse|invoke)\/)?)(.*)$/;
 
 /**
  * Bedrock variations keep the cross-region inference-profile prefix (`us`, `global`, ...) in
- * `model.region`, but LiteLLM only reads it from the model id, after any `bedrock/` route.
+ * `model.region`, but LiteLLM only reads it from the model id, after any `bedrock/<route>/` path.
+ * Bedrock ids never contain `/` (ARNs, which do, are left alone), so the id is the last segment.
  */
 export function requestModel(configRep: AiConfigRep): string {
   const name = configRep.model.name;
   const region = configRep.model.region ?? '';
   if (!region || (configRep.provider?.name ?? '').toLowerCase() !== 'bedrock') return name;
-  const [, route = '', id = name] = BEDROCK_ROUTE.exec(name) ?? [];
-  if (id.startsWith('arn:') || id.startsWith(`${region}.`)) return name;
+  if (name.includes('arn:')) return name;
+  const route = name.slice(0, name.lastIndexOf('/') + 1);
+  const id = name.slice(route.length);
+  if (id.startsWith(`${region}.`)) return name;
   if (CROSS_REGION_PREFIXES.some((prefix) => id.startsWith(prefix))) return name;
   return `${route}${region}.${id}`;
 }
