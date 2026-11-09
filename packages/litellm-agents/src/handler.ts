@@ -69,7 +69,8 @@ export function resolveLiteLLMClient(options: LiteLLMAgentsOptions, configRep: A
   });
 }
 
-const CROSS_REGION_PREFIXES = ['global.', 'us.', 'eu.', 'jp.', 'apac.', 'au.', 'us-gov.'];
+// https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
+const CROSS_REGION_PREFIXES = ['global.', 'us.', 'us-gov.', 'eu.', 'apac.', 'au.', 'jp.', 'ca.', 'in.'];
 
 /**
  * Bedrock variations keep the cross-region inference-profile prefix (`us`, `global`, ...) in
@@ -83,7 +84,6 @@ export function requestModel(configRep: AiConfigRep): string {
   if (name.includes('arn:')) return name;
   const route = name.slice(0, name.lastIndexOf('/') + 1);
   const id = name.slice(route.length);
-  if (id.startsWith(`${region}.`)) return name;
   if (CROSS_REGION_PREFIXES.some((prefix) => id.startsWith(prefix))) return name;
   return `${route}${region}.${id}`;
 }

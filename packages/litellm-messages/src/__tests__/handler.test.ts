@@ -262,6 +262,10 @@ describe('createLiteLLMMessagesHandler', () => {
       ['bedrock', 'us', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/us.anthropic.claude-opus-5-5'],
       ['Bedrock', 'eu', 'bedrock/converse/anthropic.claude-opus-5-5', 'bedrock/converse/eu.anthropic.claude-opus-5-5'],
       ['Bedrock', 'us', 'us.anthropic.claude-opus-5-5', 'us.anthropic.claude-opus-5-5'],
+      ['Bedrock', 'ca', 'anthropic.claude-opus-5-5', 'ca.anthropic.claude-opus-5-5'],
+      ['Bedrock', 'in', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/in.anthropic.claude-opus-5-5'],
+      ['Bedrock', 'us', 'ca.anthropic.claude-opus-5-5', 'ca.anthropic.claude-opus-5-5'],
+      ['Bedrock', 'us', 'bedrock/in.anthropic.claude-opus-5-5', 'bedrock/in.anthropic.claude-opus-5-5'],
       [
         'Bedrock',
         'us',
