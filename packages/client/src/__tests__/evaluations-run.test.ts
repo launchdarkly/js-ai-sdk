@@ -7,8 +7,14 @@
 
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { generateRows, generationPayload, type RowResult, SUMMARY_POLL_DEFAULTS } from '../evaluations-runner.js';
-import { EvalTool, type RunOptions } from '../index.js';
+import {
+  generateRows,
+  generationPayload,
+  type RowResult,
+  SUMMARY_POLL_DEFAULTS,
+  VERDICT_POLL_DEFAULTS,
+} from '../evaluations-runner.js';
+import { EvalTool, type RunOptions, Scorer } from '../index.js';
 import { NativeTool } from '../types.js';
 import {
   completion,
@@ -76,6 +82,23 @@ const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
 const generationEvents = () => client.tracked.filter((t) => t.name === '$ld:ai:offline-evals:generation');
 
 const toolPath = (key: string) => `projects/${PROJECT}/ai-tools/${key}`;
+
+const RUN_STATUS_PATH = `${RUN_PATH}/run-1`;
+
+/** A run resource, with `verdict` only when one is given. */
+const runBody = (state: string, verdict?: unknown) => ({
+  body: { id: 'run-1', evaluationId: 'ev-1', state, ...(verdict === undefined ? {} : { verdict }) },
+});
+
+/** A terminal summary whose one criterion has a pass rate threshold of 0.8. */
+const thresholdSummary = (statusCounts: Record<string, number>, passRateVerdict: unknown = 'pass') => ({
+  body: {
+    statusCounts,
+    criterionSummaries: [
+      { criterionType: 'exact', criterionPassRateThreshold: 0.8, passed: 9, failed: 1, passRate: 0.9, passRateVerdict },
+    ],
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Request sequence
@@ -147,9 +170,14 @@ describe('request sequence', () => {
     expect(api.sequence[runIndex + 1]).toBe(`GET ${SUMMARY_PATH}`);
   });
 
-  it('never uses the run-status endpoint or a result-ingest endpoint', async () => {
-    const api = routeHostedRun(new FakeApi());
-    await makeModule(api).run(hosted());
+  it('uses the run-status endpoint only for a verdict, and never a result-ingest endpoint', async () => {
+    const api = routeHostedRun(new FakeApi()).on('GET', SUMMARY_PATH, {
+      body: {
+        statusCounts: { total: 1, passed: 1 },
+        criterionSummaries: [{ criterionType: 'exact', criterionPassRateThreshold: null, passed: 1 }],
+      },
+    });
+    await makeModule(api).run(hosted({ criteria: [new Scorer('exact', () => 1)] }));
     expect(api.calls.some((call) => call.path === `${RUN_PATH}/run-1`)).toBe(false);
     expect(api.calls.some((call) => /\/(generation|evaluation)-results$/.test(call.path))).toBe(false);
   });
@@ -592,7 +620,7 @@ describe('aiConfig source', () => {
           criterionType: 'accuracy',
           kind: 'judge',
           judgeKey: 'accuracy',
-          options: { threshold: 0.5 },
+          options: { threshold: 0.5, passRateThreshold: 0.95 },
         },
       ]);
     });
@@ -1328,7 +1356,15 @@ describe('summary polling', () => {
     });
     const result = await makeModule(api).run(hosted());
     expect(api.calls.filter((call) => call.path === SUMMARY_PATH)).toHaveLength(1);
-    expect(result.summary).toEqual({ totalRows: 2, passedRows: 2, failedRows: 0, errorRows: 0, pendingRows: 0 });
+    expect(result.summary).toEqual({
+      totalRows: 2,
+      passedRows: 2,
+      failedRows: 0,
+      errorRows: 0,
+      pendingRows: 0,
+      criteria: [],
+    });
+    expect(result.verdict).toBeNull();
   });
 
   it('reads counts from top-level keys too', async () => {
@@ -1402,5 +1438,176 @@ describe('summary polling', () => {
     expect(result.passed).toBe(passed);
     expect(result.runId).toBe('run-1');
     expect(result.url).toBe(`https://app.launchdarkly.com/projects/${PROJECT}/ai/evaluations/ev-1/runs/run-1`);
+  });
+});
+
+describe('criterion summaries', () => {
+  it('parses object entries in order, defaulting missing fields, and skips the rest', async () => {
+    const api = routeHostedRun(new FakeApi())
+      .on('GET', SUMMARY_PATH, {
+        body: {
+          statusCounts: { total: 1, passed: 1 },
+          criterionSummaries: [
+            {
+              criterionType: 'accuracy',
+              criterionPassRateThreshold: 0.8,
+              passed: 9,
+              failed: 1,
+              error: 0,
+              passRate: 0.9,
+              passRateVerdict: 'pass',
+            },
+            { criterionType: 'exact', failed: 2 },
+            'not an object',
+          ],
+        },
+      })
+      .on('GET', RUN_STATUS_PATH, runBody('COMPLETE', 'pass'));
+    const { summary } = await makeModule(api).run(hosted());
+    expect(summary.criteria).toEqual([
+      {
+        criterionType: 'accuracy',
+        passRateThreshold: 0.8,
+        passedRows: 9,
+        failedRows: 1,
+        errorRows: 0,
+        passRate: 0.9,
+        passRateVerdict: 'pass',
+      },
+      {
+        criterionType: 'exact',
+        passRateThreshold: null,
+        passedRows: 0,
+        failedRows: 2,
+        errorRows: 0,
+        passRate: null,
+        passRateVerdict: null,
+      },
+    ]);
+  });
+
+  it('parses an unknown verdict as null, on the summary and on the run', async () => {
+    VERDICT_POLL_DEFAULTS.timeoutSeconds = 0;
+    try {
+      const api = routeHostedRun(new FakeApi())
+        .on('GET', SUMMARY_PATH, thresholdSummary({ total: 1, passed: 1 }, 'maybe'))
+        .on('GET', RUN_STATUS_PATH, runBody('COMPLETE', 'maybe'));
+      const result = await makeModule(api).run(hosted());
+      expect(result.summary.criteria[0].passRateVerdict).toBeNull();
+      expect(result.verdict).toBeNull();
+    } finally {
+      VERDICT_POLL_DEFAULTS.timeoutSeconds = 30;
+    }
+  });
+});
+
+describe('run verdict', () => {
+  const NINE_OF_TEN = { total: 10, passed: 9, failed: 1 };
+  const runRequests = (api: FakeApi) => api.calls.filter((call) => call.path === RUN_STATUS_PATH);
+  const thresholdCriteria = { criteria: [new Scorer('exact', () => 1, { passRateThreshold: 0.8 })] };
+
+  afterEach(() => {
+    VERDICT_POLL_DEFAULTS.timeoutSeconds = 30;
+  });
+
+  it('has a patchable default deadline of 30 seconds', () => {
+    expect(VERDICT_POLL_DEFAULTS).toEqual({ timeoutSeconds: 30 });
+  });
+
+  it('reads the run after the summary, as the last request', async () => {
+    const api = routeHostedRun(new FakeApi())
+      .on('GET', SUMMARY_PATH, thresholdSummary({ total: 1, passed: 1 }))
+      .on('GET', RUN_STATUS_PATH, runBody('COMPLETE', 'pass'));
+    await makeModule(api).run(hosted(thresholdCriteria));
+    expect(api.sequence.slice(-2)).toEqual([`GET ${SUMMARY_PATH}`, `GET ${RUN_STATUS_PATH}`]);
+  });
+
+  it.each([
+    ['an empty criterionSummaries', []],
+    ['no thresholded criterion', [{ criterionType: 'exact', criterionPassRateThreshold: null, passed: 9, failed: 1 }]],
+  ])('reads no verdict when the summary has %s, whatever the caller set', async (_label, criterionSummaries) => {
+    const api = routeHostedRun(new FakeApi()).on('GET', SUMMARY_PATH, {
+      body: { statusCounts: NINE_OF_TEN, criterionSummaries },
+    });
+    const result = await makeModule(api).run(hosted(thresholdCriteria));
+    expect(runRequests(api)).toHaveLength(0);
+    expect(result.verdict).toBeNull();
+    expect(result.passed).toBe(false);
+  });
+
+  it.each([
+    ['pass', true],
+    ['fail', false],
+  ] as const)('makes passed follow a %s verdict over the row counts', async (verdict, passed) => {
+    const api = routeHostedRun(new FakeApi())
+      .on('GET', SUMMARY_PATH, thresholdSummary(NINE_OF_TEN))
+      .on('GET', RUN_STATUS_PATH, runBody('COMPLETE', verdict));
+    const result = await makeModule(api).run(hosted(thresholdCriteria));
+    expect(result.verdict).toBe(verdict);
+    expect(result.passed).toBe(passed);
+  });
+
+  it('falls back to the row rule with a null verdict', async () => {
+    VERDICT_POLL_DEFAULTS.timeoutSeconds = 0;
+    const api = routeHostedRun(new FakeApi())
+      .on('GET', SUMMARY_PATH, thresholdSummary(NINE_OF_TEN))
+      .on('GET', RUN_STATUS_PATH, runBody('COMPLETE'));
+    const result = await makeModule(api).run(hosted(thresholdCriteria));
+    expect(result.verdict).toBeNull();
+    expect(result.passed).toBe(false);
+  });
+
+  it('waits for a verdict that lags the summary, at the poll interval', async () => {
+    const api = routeHostedRun(new FakeApi())
+      .on('GET', SUMMARY_PATH, thresholdSummary(NINE_OF_TEN))
+      .on('GET', RUN_STATUS_PATH, runBody('EVALUATED'), runBody('COMPLETE', null), runBody('COMPLETE', 'pass'));
+    const sleep = vi.fn(async () => {});
+    const result = await makeModule(api, { sleep }).run(hosted({ ...thresholdCriteria, pollIntervalSeconds: 1.5 }));
+    expect(runRequests(api)).toHaveLength(3);
+    expect(sleep).toHaveBeenCalledWith(1.5);
+    expect(result.verdict).toBe('pass');
+    expect(result.passed).toBe(true);
+  });
+
+  it('stops at the deadline with a warning naming the run, the deadline and the state', async () => {
+    VERDICT_POLL_DEFAULTS.timeoutSeconds = 0;
+    const api = routeHostedRun(new FakeApi())
+      .on('GET', SUMMARY_PATH, thresholdSummary({ total: 1, passed: 1 }))
+      .on('GET', RUN_STATUS_PATH, runBody('COMPLETE'));
+    const result = await makeModule(api).run(hosted(thresholdCriteria));
+    expect(runRequests(api)).toHaveLength(1);
+    expect(result.verdict).toBeNull();
+    expect(result.passed).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/run-1.*within 0 seconds \(state COMPLETE\)/));
+  });
+
+  it.each(['CANCELLED', 'PERMANENT_ERROR', 'TEMPORARY_ERROR'])('stops without a warning on a %s run', async (state) => {
+    const api = routeHostedRun(new FakeApi())
+      .on('GET', SUMMARY_PATH, thresholdSummary({ total: 1, passed: 1 }))
+      .on('GET', RUN_STATUS_PATH, runBody(state));
+    const result = await makeModule(api).run(hosted(thresholdCriteria));
+    expect(runRequests(api)).toHaveLength(1);
+    expect(result.verdict).toBeNull();
+    expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/verdict/));
+  });
+
+  it('returns a result with a null verdict and a warning when the run read fails', async () => {
+    const api = routeHostedRun(new FakeApi())
+      .on('GET', SUMMARY_PATH, thresholdSummary({ total: 1, passed: 1 }))
+      .on('GET', RUN_STATUS_PATH, { status: 403, body: { message: 'forbidden' } });
+    const result = await makeModule(api).run(hosted(thresholdCriteria));
+    expect(runRequests(api)).toHaveLength(1);
+    expect(result.verdict).toBeNull();
+    expect(result.passed).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Could not read the verdict for evaluation run run-1/));
+  });
+
+  it('rejects a run response without its required fields as a failed read', async () => {
+    const api = routeHostedRun(new FakeApi())
+      .on('GET', SUMMARY_PATH, thresholdSummary({ total: 1, passed: 1 }))
+      .on('GET', RUN_STATUS_PATH, { body: { verdict: 'pass' } });
+    const result = await makeModule(api).run(hosted(thresholdCriteria));
+    expect(result.verdict).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Could not read the verdict/));
   });
 });

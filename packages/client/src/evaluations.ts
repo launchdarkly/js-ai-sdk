@@ -36,11 +36,14 @@ import {
   type DatasetRef,
   DEFAULT_CONCURRENCY,
   DEFAULT_FLUSH_BOUND,
+  type EvaluationRunRef,
   EventSink,
   eventContext,
+  expectsVerdict,
   fetchAiConfigMode,
   fetchDataset,
   fetchDatasetRows,
+  fetchEvaluationRun,
   fetchLatestVariation,
   fetchLinkedModelConfig,
   fetchSummary,
@@ -54,8 +57,10 @@ import {
   renderRow,
   SUMMARY_POLL_DEFAULTS,
   summaryTimeoutError,
+  UNJUDGED_RUN_STATES,
   uploadDatasetRows,
   type VariationGeneration,
+  VERDICT_POLL_DEFAULTS,
   variationGeneration,
   variationJudgeKeys,
   variationToolVersions,
@@ -188,6 +193,29 @@ export type DatasetRow = {
   metadata: Record<string, unknown> | null;
 };
 
+/**
+ * LaunchDarkly's ruling on a criterion or a run against its pass rate
+ * threshold. The SDK only reads it; it never computes one.
+ */
+export type EvalVerdict = 'pass' | 'fail';
+
+/**
+ * One criterion's row counts and its pass-rate outcome for a run.
+ *
+ * `passRate` and `passRateVerdict` are set once the run is complete and the
+ * criterion has a `passRateThreshold`. Errored rows count against the pass
+ * rate.
+ */
+export type CriterionSummary = {
+  criterionType: string;
+  passRateThreshold: number | null;
+  passedRows: number;
+  failedRows: number;
+  errorRows: number;
+  passRate: number | null;
+  passRateVerdict: EvalVerdict | null;
+};
+
 /** Row counts for an evaluation run. */
 export type RunSummary = {
   totalRows: number;
@@ -195,16 +223,32 @@ export type RunSummary = {
   failedRows: number;
   errorRows: number;
   pendingRows: number;
+  /**
+   * Each criterion's own counts and pass-rate outcome. Empty when LaunchDarkly
+   * does not report them for this project.
+   */
+  criteria: CriterionSummary[];
 };
 
-/** The result of an evaluation run, derived from its row summary. */
+/** The result of an evaluation run. */
 export type EvalRunResult = {
-  /** True when no row errored or failed. */
+  /**
+   * Follows `verdict` when there is one. Without one, true only when no row
+   * failed, errored, or is still pending.
+   */
   passed: boolean;
   /** The run in the LaunchDarkly UI. */
   url: string;
   runId: string;
   summary: RunSummary;
+  /**
+   * LaunchDarkly's ruling on the whole run: `'fail'` when any criterion missed
+   * its `passRateThreshold`, `'pass'` otherwise. Criteria without a pass rate
+   * threshold do not take part in it. `null` when no criterion set a pass rate
+   * threshold, when LaunchDarkly does not report verdicts for this project, or
+   * when the verdict was not recorded in time.
+   */
+  verdict: EvalVerdict | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -537,6 +581,10 @@ export class EvaluationsModule {
    * `generation` overrides them field by field. When `tools` is omitted the
    * variation's tools are used, so each needs an implementation.
    *
+   * When the run's summary reports a criterion with a pass rate threshold,
+   * `run()` also waits briefly for LaunchDarkly's verdict on the run, returns
+   * it as `result.verdict`, and `result.passed` follows it.
+   *
    * A CI script can exit with `result.passed ? 0 : 1`.
    */
   async run(options: RunOptions): Promise<EvalRunResult> {
@@ -698,14 +746,62 @@ export class EvaluationsModule {
       pollTimeoutSeconds,
       runCriteria.length,
     );
+    const verdict = expectsVerdict(summary) ? await this.pollVerdict(evaluation.id, run.id, pollIntervalSeconds) : null;
     return {
-      passed: summary.errorRows === 0 && summary.failedRows === 0 && summary.pendingRows === 0,
+      // A verdict is LaunchDarkly's ruling against the pass rate thresholds the
+      // caller set, so it decides. Without one, failedRows counts rows whose
+      // criteria were scored and did not meet their threshold, so a gate that
+      // ignores it exits 0 on a run where every row failed its judge.
+      passed:
+        verdict !== null
+          ? verdict === 'pass'
+          : summary.errorRows === 0 && summary.failedRows === 0 && summary.pendingRows === 0,
       url:
         `${this.uiBaseUri}/projects/${segment(this.projectKey)}/ai/evaluations/${segment(evaluation.id)}` +
         `/runs/${segment(run.id)}`,
       runId: run.id,
       summary,
+      verdict,
     };
+  }
+
+  /**
+   * Wait briefly for LaunchDarkly to record the run's verdict.
+   *
+   * Only called when the summary reports a pass rate threshold, so a verdict
+   * is expected. It is recorded just after the run completes, so the first
+   * read can still miss it. Recording is best-effort on the server, so a
+   * verdict that never arrives, or a read that fails, gives `null` and a
+   * warning rather than an error: the rows are already accounted for, and
+   * `passed` falls back to the row counts.
+   */
+  private async pollVerdict(evaluationId: string, runId: string, intervalSeconds: number): Promise<EvalVerdict | null> {
+    const timeoutSeconds = VERDICT_POLL_DEFAULTS.timeoutSeconds;
+    const deadline = performance.now() + timeoutSeconds * 1000;
+    for (;;) {
+      let run: EvaluationRunRef;
+      try {
+        run = await fetchEvaluationRun(this.api, this.projectKey, evaluationId, runId);
+      } catch (err) {
+        if (!(err instanceof EvaluationsError)) throw err;
+        warn(
+          `Could not read the verdict for evaluation run ${runId}: ${errorMessage(err)}. ` +
+            'The result is judged on row counts instead.',
+        );
+        return null;
+      }
+      if (run.verdict !== null) return run.verdict;
+      if (UNJUDGED_RUN_STATES.has(run.state)) return null;
+      const remainingSeconds = (deadline - performance.now()) / 1000;
+      if (remainingSeconds <= 0) {
+        warn(
+          `Evaluation run ${runId} has a pass rate threshold but no verdict was recorded within ` +
+            `${timeoutSeconds} seconds (state ${run.state}). The result is judged on row counts instead.`,
+        );
+        return null;
+      }
+      await this.sleep(Math.min(intervalSeconds, remainingSeconds));
+    }
   }
 
   /**
