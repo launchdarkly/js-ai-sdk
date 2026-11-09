@@ -238,7 +238,11 @@ describe('createClaudeAgentsHandler', () => {
     ['Bedrock', 'us', 'claude-opus-4-5[1m]', 'claude-opus-4-5[1m]'],
     ['Bedrock', undefined, 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
     ['Bedrock', '', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
+    ['Bedrock', ' us ', 'anthropic.claude-opus-5-5', 'us.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us.', 'anthropic.claude-opus-5-5', 'us.anthropic.claude-opus-5-5'],
+    ['Bedrock', ' . ', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
     ['Anthropic', 'us', 'claude-opus-4-5', 'claude-opus-4-5'],
+    ['Anthropic', 'us', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
   ])('sends a %s model with region %j from %s as %s', async (provider, region, name, expected) => {
     const config = { ...baseConfig, model: { name, region }, provider: { name: provider } };
     mockQuery.mockImplementation(makeResultMessage());

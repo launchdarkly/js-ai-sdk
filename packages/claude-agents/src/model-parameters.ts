@@ -78,7 +78,7 @@ function inheritedEnv(): Record<string, string | undefined> {
  */
 export function requestModel(config: AiConfigRep): string {
   const name = config.model.name;
-  const region = config.model.region ?? '';
+  const region = typeof config.model.region === 'string' ? config.model.region.trim().replace(/\.+$/, '') : '';
   if (!region || (config.provider?.name ?? '').toLowerCase() !== 'bedrock') return name;
   if (!name.startsWith('anthropic.')) return name;
   return `${region}.${name}`;
