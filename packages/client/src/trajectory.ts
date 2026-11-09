@@ -24,16 +24,22 @@ export const HANDOFF_TOOL_PREFIX = '__handoff_';
 
 /**
  * The tool keys a config offered the model, in declaration order: the
- * available list of an online trajectory. Leaves out a routed graph node's
- * synthetic handoff tools and native tools, which the provider runs where no
- * wrapper can observe them, so listing them would read as unused.
+ * available list of an online trajectory. Only config tools with an own
+ * function handler are offered, so a declared tool with no handler is left
+ * out. Also leaves out a routed graph node's synthetic handoff tools and
+ * native tools, which the provider runs where no wrapper can observe them, so
+ * listing them would read as unused.
  */
 export function exposedToolKeys(
   config: { tools?: Record<string, unknown> } | undefined,
   tools: ToolMap | undefined,
 ): string[] {
   return Object.keys(config?.tools ?? {}).filter(
-    (key) => !key.startsWith(HANDOFF_TOOL_PREFIX) && !(tools?.[key] instanceof NativeTool),
+    (key) =>
+      !key.startsWith(HANDOFF_TOOL_PREFIX) &&
+      tools !== undefined &&
+      Object.hasOwn(tools, key) &&
+      typeof tools[key] === 'function',
   );
 }
 
