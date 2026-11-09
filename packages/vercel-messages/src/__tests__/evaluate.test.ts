@@ -173,7 +173,7 @@ describe('vercelEvaluate', () => {
     serverMocks.inspectConfig.mockResolvedValue({
       enabled: true,
       config: {
-        model: { name: 'anthropic.claude-sonnet-4-5-20250929-v1:0', region: 'us-west-2' },
+        model: { name: 'anthropic.claude-sonnet-4-5-20250929-v1:0', region: 'us' },
         provider: { name: 'Bedrock' },
       },
       meta,

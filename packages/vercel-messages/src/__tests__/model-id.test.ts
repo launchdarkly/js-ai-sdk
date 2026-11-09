@@ -43,7 +43,6 @@ describe('gatewayModelId', () => {
     ['global.anthropic.claude-sonnet-4-5-20250929-v1:0', 'anthropic/claude-sonnet-4-5-20250929'],
     ['anthropic.claude-haiku-4-5-20251001-v1:0', 'anthropic/claude-haiku-4-5-20251001'],
     ['amazon.nova-pro-v1:0', 'amazon/nova-pro'],
-    ['anthropic.claude-sonnet-4-5-20250929-v1:0:200k', 'anthropic/claude-sonnet-4-5-20250929'],
   ])('maps the full Bedrock id %s to %s', (model, expected) => {
     expect(gatewayModelId(config('Bedrock', model))).toBe(expected);
   });

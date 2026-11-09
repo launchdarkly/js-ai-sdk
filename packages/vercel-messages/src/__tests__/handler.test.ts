@@ -167,7 +167,7 @@ describe('createVercelMessagesHandler', () => {
     const pinned = { gateway: { inferenceRegion: { providers: { bedrock: { scope: 'zone', geoRegion: 'eu' } } } } };
 
     it('sends the Gateway id and a Bedrock-scoped inferenceRegion to generateText', async () => {
-      await createVercelMessagesHandler()(bedrockConfig('eu-central-1') as any, 'hello');
+      await createVercelMessagesHandler()(bedrockConfig('eu') as any, 'hello');
       expect(aiMocks.generateText).toHaveBeenCalledWith(
         expect.objectContaining({ model: 'anthropic/claude-sonnet-4-5-20250929', providerOptions: pinned }),
       );
@@ -181,7 +181,7 @@ describe('createVercelMessagesHandler', () => {
         usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
       });
       await collect(
-        createVercelMessagesHandler().stream?.(bedrockConfig('eu-central-1') as any, 'q', {}, {}) as AsyncIterable<any>,
+        createVercelMessagesHandler().stream?.(bedrockConfig('eu') as any, 'q', {}, {}) as AsyncIterable<any>,
       );
       expect(aiMocks.streamText).toHaveBeenCalledWith(expect.objectContaining({ providerOptions: pinned }));
     });
@@ -192,15 +192,15 @@ describe('createVercelMessagesHandler', () => {
     });
 
     it('fails the run, and its spans, for a region the Gateway cannot express', async () => {
-      await expect(createVercelMessagesHandler()(bedrockConfig('ap-south-1') as any, 'hello')).rejects.toThrow(
-        'Bedrock region "ap-south-1" has no Vercel AI Gateway inference region',
+      await expect(createVercelMessagesHandler()(bedrockConfig('apac') as any, 'hello')).rejects.toThrow(
+        'Bedrock model.region "apac" has no Vercel AI Gateway inference region',
       );
       expect(aiMocks.generateText).not.toHaveBeenCalled();
       expect(spanMocks.root.setStatus).toHaveBeenCalledWith(expect.objectContaining({ code: 2 }));
     });
 
     it('cannot be replaced by providerOptions in model.parameters', async () => {
-      const config = bedrockConfig('us-east-1');
+      const config = bedrockConfig('us');
       await createVercelMessagesHandler()(
         {
           ...config,

@@ -4,27 +4,33 @@ import { providerKey } from './model-id.js';
 
 type JSONObject = { [key: string]: JSONValue | undefined };
 type ProviderOptions = Record<string, JSONObject>;
-type GatewayInferenceRegion = { scope: 'global' } | { scope: 'zone'; geoRegion: 'us' | 'eu' };
-
-const US_REGION = /^us-(?:east|west)-\d+$/;
-const EU_REGION = /^eu-(?:central|west|north|south)-\d+$/;
+type GatewayInferenceRegion = { scope: 'zone'; geoRegion: string };
 
 /**
- * The Gateway `inferenceRegion` for a Bedrock `model.region`. The Gateway pins a geography, not an
- * AWS region, so `eu-central-1` asks for any EU data center. Only the geographies that map
- * one-to-one onto Bedrock's own `us`, `eu` and `global` inference profiles are accepted; GovCloud,
- * Asia Pacific, Canada and the rest throw rather than run somewhere the config did not ask for.
+ * The `geoRegion` values the Gateway accepts for `inferenceRegion: { scope: 'zone' }`
+ * (https://vercel.com/docs/ai-gateway/security-and-compliance/regional-inference).
  */
-function bedrockInferenceRegion(region: string): GatewayInferenceRegion {
-  const value = region.trim().toLowerCase();
-  if (value === 'global') return { scope: 'global' };
-  if (value === 'us' || US_REGION.test(value)) return { scope: 'zone', geoRegion: 'us' };
-  if (value === 'eu' || EU_REGION.test(value)) return { scope: 'zone', geoRegion: 'eu' };
-  throw new Error(
-    `Bedrock region "${region}" has no Vercel AI Gateway inference region this handler supports ` +
-      '("us", "eu", "global", or a us-/eu- AWS region). Inject a direct Bedrock model with ' +
-      'model/modelFactory to call that region.',
-  );
+const GATEWAY_GEO_REGIONS = new Set(['us', 'eu', 'au', 'jp']);
+
+const BEDROCK_PROVIDERS = new Set(['bedrock', 'amazonbedrock']);
+
+/**
+ * The Gateway zone for a Bedrock `model.region`, which holds a cross-region inference-profile
+ * prefix such as `us` or `eu`, not an AWS region code. `global`, or no region, is the Gateway
+ * default and sends nothing: an explicit `global` fails under a team-wide region pin. A prefix the
+ * Gateway has no zone for throws rather than run the request somewhere the config did not ask for.
+ */
+function bedrockInferenceRegion(configured: string): GatewayInferenceRegion | undefined {
+  const region = configured.trim().toLowerCase();
+  if (!region || region === 'global') return undefined;
+  if (!GATEWAY_GEO_REGIONS.has(region)) {
+    throw new Error(
+      `Bedrock model.region "${configured}" has no Vercel AI Gateway inference region. ` +
+        'The Gateway can pin Bedrock to us, eu, au or jp, or leave it global. ' +
+        'Set model.region to one of those, or pass the handler a model that calls Bedrock directly.',
+    );
+  }
+  return { scope: 'zone', geoRegion: region };
 }
 
 function routesThroughGateway(model: unknown): boolean {
@@ -49,10 +55,15 @@ export function gatewayProviderOptions(
   callerOptions?: ProviderOptions,
 ): ProviderOptions | undefined {
   const region = config.model.region;
-  if (!region || providerKey(config.provider?.name ?? '') !== 'bedrock' || !routesThroughGateway(model)) {
+  if (
+    typeof region !== 'string' ||
+    !BEDROCK_PROVIDERS.has(providerKey(config.provider?.name ?? '')) ||
+    !routesThroughGateway(model)
+  ) {
     return callerOptions;
   }
   const bedrock = bedrockInferenceRegion(region);
+  if (!bedrock) return callerOptions;
   const gateway = callerOptions?.gateway ?? {};
   const callerRegion = gateway.inferenceRegion;
   if (callerRegion !== undefined && !isObject(callerRegion)) return callerOptions;

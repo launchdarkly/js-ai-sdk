@@ -48,11 +48,8 @@ const GATEWAY_CREATORS: Record<string, string> = {
 
 export const providerKey = (value: string): string => value.toLowerCase().replaceAll(/[^a-z0-9]/g, '');
 
-/**
- * Bedrock's model version suffix, `-v1:0`, optionally followed by a context-window variant such
- * as `:200k`. No Gateway model id contains a colon, so the suffix never survives into one.
- */
-const BEDROCK_VERSION_SUFFIX = /-v\d+:\d+(?::\d+k)?$/i;
+/** Bedrock's model version suffix, such as `-v1:0`. No Gateway catalog id has one. */
+const BEDROCK_VERSION_SUFFIX = /-v\d+:\d+$/;
 
 /**
  * Every provider offered by LaunchDarkly AI Configs. A null value means the

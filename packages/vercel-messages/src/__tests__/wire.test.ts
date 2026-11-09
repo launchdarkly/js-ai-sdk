@@ -49,7 +49,7 @@ describe('createVercelMessagesHandler, model call (real AI SDK, mock model)', ()
     const config = {
       ...baseConfig,
       provider: { name: 'Bedrock' },
-      model: { name: 'anthropic/claude-sonnet-4.5', region: 'eu-west-1' },
+      model: { name: 'anthropic/claude-sonnet-4.5', region: 'eu' },
     };
     await expect(createVercelMessagesHandler({ model })(config as any, 'hi')).rejects.toThrow();
     expect(model.doGenerateCalls[0].providerOptions).toEqual({
