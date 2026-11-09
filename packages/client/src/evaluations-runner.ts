@@ -61,8 +61,12 @@ export const SUMMARY_POLL_DEFAULTS = { intervalSeconds: 2, timeoutSeconds: 180 }
  */
 export const VERDICT_POLL_DEFAULTS = { timeoutSeconds: 30 };
 
-/** Run states in which LaunchDarkly will never record a verdict. */
-export const UNJUDGED_RUN_STATES: ReadonlySet<string> = new Set(['CANCELLED', 'PERMANENT_ERROR', 'TEMPORARY_ERROR']);
+/**
+ * The states besides `COMPLETE` that LaunchDarkly treats as terminal: a run in
+ * them never completes, so it never gets a verdict. `TEMPORARY_ERROR` is left
+ * out on purpose: it is a legacy state the server can still complete.
+ */
+export const UNJUDGED_RUN_STATES: ReadonlySet<string> = new Set(['CANCELLED', 'PERMANENT_ERROR']);
 
 const HANDLER_ERROR_CODE = 5001;
 

@@ -1579,7 +1579,7 @@ describe('run verdict', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/run-1.*within 0 seconds \(state COMPLETE\)/));
   });
 
-  it.each(['CANCELLED', 'PERMANENT_ERROR', 'TEMPORARY_ERROR'])('stops without a warning on a %s run', async (state) => {
+  it.each(['CANCELLED', 'PERMANENT_ERROR'])('stops without a warning on a %s run', async (state) => {
     const api = routeHostedRun(new FakeApi())
       .on('GET', SUMMARY_PATH, thresholdSummary({ total: 1, passed: 1 }))
       .on('GET', RUN_STATUS_PATH, runBody(state));
@@ -1604,6 +1604,16 @@ describe('run verdict', () => {
     expect(result.passed).toBe(false);
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/run-1 has verdict "maybe"/));
     expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/within \d+ seconds/));
+  });
+
+  it('keeps waiting through TEMPORARY_ERROR, which the server can still complete', async () => {
+    const api = routeHostedRun(new FakeApi())
+      .on('GET', SUMMARY_PATH, thresholdSummary(NINE_OF_TEN))
+      .on('GET', RUN_STATUS_PATH, runBody('TEMPORARY_ERROR'), runBody('COMPLETE', 'pass'));
+    const result = await makeModule(api, { sleep: async () => {} }).run(hosted(thresholdCriteria));
+    expect(runRequests(api)).toHaveLength(2);
+    expect(result.verdict).toBe('pass');
+    expect(result.passed).toBe(true);
   });
 
   it('returns a result with a null verdict and a warning when the run read fails', async () => {
