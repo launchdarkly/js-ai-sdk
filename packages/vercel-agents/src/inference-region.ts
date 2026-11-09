@@ -29,7 +29,7 @@ export function bedrockInferenceRegion(config: AiConfigRep): GatewayInferenceReg
   throw new Error(
     `Bedrock model.region "${config.model.region}" has no Vercel AI Gateway inference region. ` +
       'The Gateway can pin Bedrock to us, eu, au or jp, or leave it global. ' +
-      'Set model.region to one of those, or inject a model/modelFactory that calls Bedrock directly.',
+      'Set model.region to one of those, or pass the handler a model that calls Bedrock directly.',
   );
 }
 

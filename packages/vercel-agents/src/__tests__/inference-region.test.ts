@@ -16,9 +16,11 @@ describe('bedrockInferenceRegion', () => {
     expect(bedrockInferenceRegion(config('Bedrock', region))).toBeUndefined();
   });
 
-  it.each(['apac', 'ca', 'us-gov', 'us-east-1'])('throws for a region the Gateway cannot pin: %s', (region) => {
+  it.each(['apac', 'ca', 'in', 'us-gov', 'us-east-1'])('throws for a region the Gateway cannot pin: %s', (region) => {
     expect(() => bedrockInferenceRegion(config('Bedrock', region))).toThrow(
-      `Bedrock model.region "${region}" has no Vercel AI Gateway inference region`,
+      `Bedrock model.region "${region}" has no Vercel AI Gateway inference region. ` +
+        'The Gateway can pin Bedrock to us, eu, au or jp, or leave it global. ' +
+        'Set model.region to one of those, or pass the handler a model that calls Bedrock directly.',
     );
   });
 
