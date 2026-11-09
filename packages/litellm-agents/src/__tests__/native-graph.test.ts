@@ -258,6 +258,15 @@ describe('toLiteLLMAgents', () => {
     warn.mockRestore();
   });
 
+  it('never gives the SDK a node tool whose name is only an inherited object property', async () => {
+    const definition = graphDefinition();
+    (definition.root as any).config.tools = {
+      constructor: { name: 'constructor', type: 'function', parameters: { type: 'object' } },
+    };
+    await toLiteLLMAgents(Promise.resolve(definition), { client: {} as never, toolHandlers: {} }).invoke('q');
+    expect(agentArgs.flatMap((args) => ((args.tools ?? []) as any[]).map((t) => t.name))).not.toContain('constructor');
+  });
+
   it('forwards structured history to the root run', async () => {
     const history = [
       {

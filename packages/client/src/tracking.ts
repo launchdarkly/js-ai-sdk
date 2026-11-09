@@ -111,7 +111,7 @@ function instrumentTools(
   // One recorder per invocation: invocations run concurrently against one map.
   const recorder = new TrajectoryRecorder();
   const scoped = scopeToolHandlers(config, toolHandlers);
-  if (!scoped) return { tools: {}, recorder };
+  if (!scoped) return { tools: Object.create(null), recorder };
   const recorded = recorder.wrap(scoped, exposedToolKeys(config, scoped));
   return { tools: wrapToolHandlers(recorded, userContext, trackData), recorder };
 }

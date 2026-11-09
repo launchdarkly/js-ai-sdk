@@ -461,7 +461,7 @@ function attachToolSpanHooks(
 
 const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record<string, ToolHandlerFn | NativeTool>) =>
   Object.entries(configTools)
-    .filter(([name]) => isFunctionTool(name, toolHandlers[name]))
+    .filter(([name]) => Object.hasOwn(toolHandlers, name) && isFunctionTool(name, toolHandlers[name]))
     .map(([name, toolConfig]) =>
       tool({
         name,

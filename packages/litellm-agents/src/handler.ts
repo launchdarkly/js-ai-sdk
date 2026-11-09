@@ -243,7 +243,7 @@ function runSettings(configRep: AiConfigRep) {
 
 function buildTools(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn | NativeTool>) {
   return Object.entries(configTools)
-    .filter(([name]) => isFunctionTool(name, handlers[name]))
+    .filter(([name]) => Object.hasOwn(handlers, name) && isFunctionTool(name, handlers[name]))
     .map(([name, definition]) =>
       tool({
         name,

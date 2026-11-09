@@ -43,7 +43,7 @@ function instructionsFor(node: GraphNode, variables: Record<string, unknown>): s
 function buildTools(node: GraphNode, handlers: Record<string, ToolHandlerFn | NativeTool>) {
   if (!node.config.tools) return [];
   return Object.entries(node.config.tools)
-    .filter(([name]) => isFunctionTool(name, handlers[name]))
+    .filter(([name]) => Object.hasOwn(handlers, name) && isFunctionTool(name, handlers[name]))
     .map(([name, definition]) =>
       tool({
         name,

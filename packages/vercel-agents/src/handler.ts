@@ -200,7 +200,9 @@ function buildTools(
   parentSpan: Span,
   captureContent: boolean,
 ): { tools: ToolSet; definitions: ToolDefinitionInput[] } {
-  const available = Object.entries(configTools ?? {}).filter(([name]) => isFunctionTool(name, handlers[name]));
+  const available = Object.entries(configTools ?? {}).filter(
+    ([name]) => Object.hasOwn(handlers, name) && isFunctionTool(name, handlers[name]),
+  );
   return {
     tools: Object.fromEntries(
       available.map(([name, definition]) => [

@@ -343,6 +343,17 @@ describe('createLangChainAgentsHandler', () => {
     expect(agentArgs.tools).toHaveLength(1);
   });
 
+  it('never gives the SDK a tool whose name is only an inherited object property', async () => {
+    mockCreateAgent.mockReturnValue(makeMockAgent());
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: { type: 'object' } } },
+    };
+    await createLangChainAgentsHandler({} as any)(config as any, 'q', {});
+    const agentArgs = mockCreateAgent.mock.calls[0][0];
+    expect(agentArgs.tools.map((t: any) => t.name)).not.toContain('constructor');
+  });
+
   // ── 1.5 Telemetry ───────────────────────────────────────────────────────────
 
   it('sets invoke_agent on the root and gen_ai usage on the chat model span', async () => {

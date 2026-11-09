@@ -603,6 +603,17 @@ describe('toLangGraph', () => {
     expect(names).not.toContain('constructor');
   });
 
+  it('never gives the SDK a node tool whose name is only an inherited object property', async () => {
+    const { ToolNode } = await import('@langchain/langgraph/prebuilt');
+    const root = makeNode('root', 'instr', [], {
+      constructor: { name: 'constructor', type: 'function' as const, parameters: { type: 'object' } },
+    });
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { toolHandlers: {} }).invoke('hi');
+    const names = (ToolNode as any).mock.calls.flatMap(([tools]: any[]) => tools.map((t: any) => t.name));
+    expect(names).not.toContain('constructor');
+  });
+
   // ── NativeTool is skipped ───────────────────────────────────────────────────
 
   it('NativeTool in toolHandlers is never registered as a tool, and warns once per tool key', async () => {
