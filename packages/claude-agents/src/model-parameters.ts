@@ -68,22 +68,19 @@ function inheritedEnv(): Record<string, string | undefined> {
   return env;
 }
 
-// https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
-const CROSS_REGION_PREFIXES = ['global.', 'us.', 'us-gov.', 'eu.', 'apac.', 'au.', 'jp.', 'ca.', 'in.'];
-
 /**
  * The model id `query()` sends. Bedrock variations keep the cross-region inference-profile prefix
- * (`us`, `global`, ...) in `model.region`, but Claude Code passes a Bedrock model id it is given
- * through as-is, so the prefix has to be on the id. ARNs and ids that already carry a prefix are
- * left alone.
+ * (`us`, `global`, ...) in `model.region`, but Claude Code sends a bare `anthropic.*` id through
+ * as-is, so the prefix has to be on the id. Every other name is sent as configured: a prefixed id
+ * or an ARN already names a profile, and Claude Code maps an Anthropic-format id such as
+ * `claude-sonnet-4-5` or an alias such as `sonnet` to a profile itself, where a `us.` in front
+ * would make it no Bedrock model at all.
  */
 export function requestModel(config: AiConfigRep): string {
   const name = config.model.name;
   const region = config.model.region ?? '';
   if (!region || (config.provider?.name ?? '').toLowerCase() !== 'bedrock') return name;
-  if (name.startsWith('arn:')) return name;
-  if (name.startsWith(`${region}.`)) return name;
-  if (CROSS_REGION_PREFIXES.some((prefix) => name.startsWith(prefix))) return name;
+  if (!name.startsWith('anthropic.')) return name;
   return `${region}.${name}`;
 }
 
