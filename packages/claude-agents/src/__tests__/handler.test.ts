@@ -232,7 +232,7 @@ describe('createClaudeAgentsHandler', () => {
       'arn:aws:bedrock:us-east-2:123456789012:application-inference-profile/abc',
       'arn:aws:bedrock:us-east-2:123456789012:application-inference-profile/abc',
     ],
-    ['Bedrock', 'us', 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-5-20250929'],
+    ['Bedrock', 'eu', 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-5-20250929'],
     ['Bedrock', 'global', 'claude-opus-5-5', 'claude-opus-5-5'],
     ['Bedrock', 'us', 'sonnet', 'sonnet'],
     ['Bedrock', 'us', 'claude-opus-4-5[1m]', 'claude-opus-4-5[1m]'],
