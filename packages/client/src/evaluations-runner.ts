@@ -86,7 +86,13 @@ export type DatasetRef = { id?: string; key?: string };
 
 export type EvaluationRef = { id: string; key: string; version: number };
 
-export type EvaluationRunRef = { id: string; evaluationId: string; state: string; verdict: EvalVerdict | null };
+export type EvaluationRunRef = {
+  id: string;
+  evaluationId: string;
+  state: string;
+  verdict: EvalVerdict | null;
+  unrecognizedVerdict: string | null;
+};
 
 /** One generated row. Carries the trajectory forward for the evaluation phase. */
 export type RowResult = {
@@ -398,11 +404,14 @@ export async function createEvaluationRun(
 
 /** Validate a run resource: `id`, `evaluationId` and `state` are required; `verdict` is optional. */
 function runRef(raw: Record<string, unknown>): EvaluationRunRef {
+  const verdict = parseVerdict(raw.verdict);
   return {
     id: requireString(raw, 'id', 'evaluation run'),
     evaluationId: requireString(raw, 'evaluationId', 'evaluation run'),
     state: requireString(raw, 'state', 'evaluation run'),
-    verdict: parseVerdict(raw.verdict),
+    verdict,
+    unrecognizedVerdict:
+      verdict === null && raw.verdict !== undefined && raw.verdict !== null ? JSON.stringify(raw.verdict) : null,
   };
 }
 

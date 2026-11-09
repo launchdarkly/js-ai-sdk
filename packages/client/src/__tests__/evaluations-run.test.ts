@@ -1487,17 +1487,15 @@ describe('criterion summaries', () => {
   });
 
   it('parses an unknown verdict as null, on the summary and on the run', async () => {
-    VERDICT_POLL_DEFAULTS.timeoutSeconds = 0;
-    try {
-      const api = routeHostedRun(new FakeApi())
-        .on('GET', SUMMARY_PATH, thresholdSummary({ total: 1, passed: 1 }, 'maybe'))
-        .on('GET', RUN_STATUS_PATH, runBody('COMPLETE', 'maybe'));
-      const result = await makeModule(api).run(hosted());
-      expect(result.summary.criteria[0].passRateVerdict).toBeNull();
-      expect(result.verdict).toBeNull();
-    } finally {
-      VERDICT_POLL_DEFAULTS.timeoutSeconds = 30;
-    }
+    const api = routeHostedRun(new FakeApi())
+      .on('GET', SUMMARY_PATH, thresholdSummary({ total: 1, passed: 1 }, 'maybe'))
+      .on('GET', RUN_STATUS_PATH, runBody('COMPLETE', 'maybe'));
+    const sleep = async () => {
+      throw new Error('kept waiting after an unrecognised verdict');
+    };
+    const result = await makeModule(api, { sleep }).run(hosted());
+    expect(result.summary.criteria[0].passRateVerdict).toBeNull();
+    expect(result.verdict).toBeNull();
   });
 });
 
@@ -1589,6 +1587,23 @@ describe('run verdict', () => {
     expect(runRequests(api)).toHaveLength(1);
     expect(result.verdict).toBeNull();
     expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/verdict/));
+  });
+
+  it('stops at once on an unrecognised verdict, with a warning naming the value', async () => {
+    // The default deadline stays in place, and any wait between reads fails
+    // the test: a harness that treated the value as missing would keep reading.
+    const sleep = async () => {
+      throw new Error('kept waiting after an unrecognised verdict');
+    };
+    const api = routeHostedRun(new FakeApi())
+      .on('GET', SUMMARY_PATH, thresholdSummary(NINE_OF_TEN))
+      .on('GET', RUN_STATUS_PATH, runBody('COMPLETE', 'maybe'), runBody('COMPLETE', 'maybe'));
+    const result = await makeModule(api, { sleep }).run(hosted(thresholdCriteria));
+    expect(runRequests(api)).toHaveLength(1);
+    expect(result.verdict).toBeNull();
+    expect(result.passed).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/run-1 has verdict "maybe"/));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/within \d+ seconds/));
   });
 
   it('returns a result with a null verdict and a warning when the run read fails', async () => {

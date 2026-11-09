@@ -771,9 +771,9 @@ export class EvaluationsModule {
    * Only called when the summary reports a pass rate threshold, so a verdict
    * is expected. It is recorded just after the run completes, so the first
    * read can still miss it. Recording is best-effort on the server, so a
-   * verdict that never arrives, or a read that fails, gives `null` and a
-   * warning rather than an error: the rows are already accounted for, and
-   * `passed` falls back to the row counts.
+   * verdict that never arrives, one this release does not recognise, or a
+   * read that fails, gives `null` and a warning rather than an error: the
+   * rows are already accounted for, and `passed` falls back to the row counts.
    */
   private async pollVerdict(evaluationId: string, runId: string, intervalSeconds: number): Promise<EvalVerdict | null> {
     const timeoutSeconds = VERDICT_POLL_DEFAULTS.timeoutSeconds;
@@ -791,6 +791,15 @@ export class EvaluationsModule {
         return null;
       }
       if (run.verdict !== null) return run.verdict;
+      if (run.unrecognizedVerdict !== null) {
+        // LaunchDarkly has ruled, with a verdict this release does not know.
+        // It is written once, so waiting longer cannot help.
+        warn(
+          `Evaluation run ${runId} has verdict ${run.unrecognizedVerdict}, which this SDK does not recognise. ` +
+            'The result is judged on row counts instead.',
+        );
+        return null;
+      }
       if (UNJUDGED_RUN_STATES.has(run.state)) return null;
       const remainingSeconds = (deadline - performance.now()) / 1000;
       if (remainingSeconds <= 0) {
