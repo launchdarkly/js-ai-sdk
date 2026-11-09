@@ -177,6 +177,27 @@ describe('createLiteLLMAgentsHandler', () => {
     expect(clientArgs).toHaveLength(0);
   });
 
+  it.each([
+    ['Bedrock', 'us', 'anthropic.claude-opus-5-5', 'us.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'global', 'anthropic.claude-opus-5-5', 'global.anthropic.claude-opus-5-5'],
+    ['bedrock', 'us', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/us.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'eu', 'bedrock/converse/anthropic.claude-opus-5-5', 'bedrock/converse/eu.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'us.anthropic.claude-opus-5-5', 'us.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'bedrock/global.anthropic.claude-opus-5-5', 'bedrock/global.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'us-gov.anthropic.claude-opus-5-5', 'us-gov.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'bedrock/arn:aws:bedrock:us-east-1:1:x', 'bedrock/arn:aws:bedrock:us-east-1:1:x'],
+    ['Bedrock', undefined, 'bedrock/anthropic.claude-opus-5-5', 'bedrock/anthropic.claude-opus-5-5'],
+    ['Bedrock', '', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
+    ['OpenAI', 'us', 'gpt-5', 'gpt-5'],
+    ['Anthropic', 'us', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/anthropic.claude-opus-5-5'],
+  ])('resolves a %s model with region %j from %s to %s', async (provider, region, name, expected) => {
+    mockRun.mockResolvedValue(result());
+    const client = { marker: 'litellm-client' };
+    const config = { ...baseConfig, model: { name, region }, provider: { name: provider } };
+    await createLiteLLMAgentsHandler({ client: client as never })(config as never, 'hello');
+    expect(modelArgs).toEqual([[client, expected]]);
+  });
+
   it('constructs the compatible client with proxy credentials and never api.openai.com', async () => {
     mockRun.mockResolvedValue(result());
     await createLiteLLMAgentsHandler({

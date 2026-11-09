@@ -136,6 +136,19 @@ describe('toLiteLLMAgents', () => {
     expect(JSON.stringify(modelArgs)).not.toContain('gpt-');
   });
 
+  it("prepends each Bedrock node's cross-region prefix to its model id", async () => {
+    const definition = graphDefinition();
+    const root = definition.root as unknown as ReturnType<typeof node>;
+    Object.assign(root.config, {
+      model: { name: 'bedrock/anthropic.claude-opus-5-5', region: 'global' },
+      provider: { name: 'Bedrock' },
+    });
+    const client = { marker: 'proxy' };
+    await toLiteLLMAgents(Promise.resolve(definition), { client: client as never }).invoke('q');
+    expect(modelArgs).toContainEqual([client, 'bedrock/global.anthropic.claude-opus-5-5']);
+    expect(modelArgs).toContainEqual([client, 'gemini/leaf-alias']);
+  });
+
   it('uses one proxy-configured client and never constructs a default OpenAI path', async () => {
     await toLiteLLMAgents(Promise.resolve(graphDefinition()), {
       apiKey: 'proxy-key',

@@ -69,8 +69,25 @@ export function resolveLiteLLMClient(options: LiteLLMAgentsOptions, configRep: A
   });
 }
 
+const CROSS_REGION_PREFIXES = ['global.', 'us.', 'eu.', 'jp.', 'apac.', 'au.', 'us-gov.'];
+const BEDROCK_ROUTE = /^(bedrock\/(?:(?:converse|invoke)\/)?)(.*)$/;
+
+/**
+ * Bedrock variations keep the cross-region inference-profile prefix (`us`, `global`, ...) in
+ * `model.region`, but LiteLLM only reads it from the model id, after any `bedrock/` route.
+ */
+export function requestModel(configRep: AiConfigRep): string {
+  const name = configRep.model.name;
+  const region = configRep.model.region ?? '';
+  if (!region || (configRep.provider?.name ?? '').toLowerCase() !== 'bedrock') return name;
+  const [, route = '', id = name] = BEDROCK_ROUTE.exec(name) ?? [];
+  if (id.startsWith('arn:') || id.startsWith(`${region}.`)) return name;
+  if (CROSS_REGION_PREFIXES.some((prefix) => id.startsWith(prefix))) return name;
+  return `${route}${region}.${id}`;
+}
+
 function modelFor(client: CompatibleClient, configRep: AiConfigRep): Model {
-  return new OpenAIChatCompletionsModel(client, configRep.model.name);
+  return new OpenAIChatCompletionsModel(client, requestModel(configRep));
 }
 
 const servingProvider = (configRep: AiConfigRep) => (configRep.provider?.name || 'litellm').toLowerCase();
