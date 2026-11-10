@@ -46,7 +46,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
-import { buildModelParameterQueryOptions } from './model-parameters.js';
+import { buildModelParameterQueryOptions, requestModel } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TOOL_MCP_NAME = 'tool-mcp';
@@ -963,7 +963,7 @@ function buildQueryOptions(
     prompt,
     options: {
       ...modelParameters,
-      model: config.model.name,
+      model: requestModel(config),
       tools: [...nativeToolNames, ...extraBuiltins],
       allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
       mcpServers: toolMCP ? { [TOOL_MCP_NAME]: toolMCP } : undefined,
