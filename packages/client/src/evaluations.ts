@@ -56,6 +56,7 @@ import {
   summaryTimeoutError,
   uploadDatasetRows,
   type VariationGeneration,
+  validateOfflineEvaluationKey,
   variationGeneration,
   variationJudgeKeys,
   variationToolVersions,
@@ -167,7 +168,9 @@ export type RunOptions = {
   /**
    * Stable key for the offline evaluation this run reconciles. Reuse the same
    * string across CI calls so trends share one evaluation identity; each
-   * `run()` still creates a new run under that evaluation.
+   * `run()` still creates a new run under that evaluation. Must match
+   * `^[a-z0-9][a-z0-9._-]*$` and be at most 128 characters (validated before
+   * any network I/O).
    */
   key: string;
   /** A hosted dataset key, or the rows of an inline dataset. */
@@ -551,6 +554,7 @@ export class EvaluationsModule {
 
     // ---- Local validation: no network I/O. ----
     if (typeof key !== 'string' || !key.trim()) throw new EvaluationsError('key must not be blank');
+    validateOfflineEvaluationKey(key);
     const inlineRows = validateDataset(dataset);
     const pool = validateHandlerPool(options);
     if (!Number.isInteger(concurrency) || concurrency < 1) {

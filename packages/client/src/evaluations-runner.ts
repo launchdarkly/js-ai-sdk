@@ -337,17 +337,38 @@ export async function fetchDatasetRows(
 }
 
 /**
+ * Server create-key rule for offline evaluations: `^[a-z0-9][a-z0-9._-]*$`,
+ * at most 128 characters. Validated before any management-API request so a
+ * bad key never becomes a path segment (including `..`) after other I/O.
+ */
+export const OFFLINE_EVALUATION_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+export const OFFLINE_EVALUATION_KEY_MAX_LENGTH = 128;
+
+/** Throw {@link EvaluationsError} unless `key` matches the server create rule. */
+export function validateOfflineEvaluationKey(key: string): void {
+  if (!OFFLINE_EVALUATION_KEY_PATTERN.test(key) || key.length > OFFLINE_EVALUATION_KEY_MAX_LENGTH) {
+    throw new EvaluationsError(
+      `key must match ${OFFLINE_EVALUATION_KEY_PATTERN.source} and be at most ${OFFLINE_EVALUATION_KEY_MAX_LENGTH} characters, got ${JSON.stringify(key)}`,
+    );
+  }
+}
+
+/**
  * Mutable config fields shared by create (POST) and reconcile (PATCH) on
  * `offline-evaluations`. Mode selects the handler only and is never sent.
+ *
+ * Pass `includeIdentity: true` on create so the body carries `key` + `name`
+ * (name defaults to the key). PATCH omits both: the path already names the
+ * evaluation, and sending `name: key` would reset a renamed evaluation.
  */
 export function evaluationConfigBody(
   key: string,
   generation: ResolvedGeneration,
   tools: readonly EvalTool[],
   criteria: readonly Criterion[] = [],
+  options: { includeIdentity?: boolean } = {},
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
-    name: key,
     generationProvider: generation.provider,
     generationModel: generation.model,
     // Always send parameters/promptSnippets — including {} — so a PATCH snapshot
@@ -355,6 +376,10 @@ export function evaluationConfigBody(
     parameters: generation.parameters ?? {},
     promptSnippets: generation.promptSnippets ?? {},
   };
+  if (options.includeIdentity) {
+    body.key = key;
+    body.name = key;
+  }
   if (generation.instructions !== undefined) {
     body.messages = [{ role: 'system', content: generation.instructions }];
   } else {
@@ -388,7 +413,8 @@ function evaluationRefFrom(raw: Record<string, unknown>, fallbackKey: string): E
  * Resolve a stable evaluation by key on `…/offline-evaluations`:
  * GET → POST (create-only on miss) or always PATCH the full desired snapshot
  * when the evaluation already exists. The server decides whether anything
- * changed. No PUT. A POST 409 race re-GETs and continues as the 200 path.
+ * changed. No PUT. A POST 409 race re-GETs and continues as the update path.
+ * A PATCH 409 (optimistic lock) re-GETs and retries the PATCH once.
  */
 export async function ensureEvaluation(
   api: LDApiClient,
@@ -398,7 +424,9 @@ export async function ensureEvaluation(
   tools: readonly EvalTool[],
   criteria: readonly Criterion[] = [],
 ): Promise<EvaluationRef> {
-  const desired = evaluationConfigBody(key, generation, tools, criteria);
+  const createBody = evaluationConfigBody(key, generation, tools, criteria, { includeIdentity: true });
+  // Omit name on PATCH so a renamed evaluation keeps its display name.
+  const patchBody = evaluationConfigBody(key, generation, tools, criteria);
   const collection = `projects/${segment(projectKey)}/offline-evaluations`;
   const byKey = `${collection}/${segment(key)}`;
 
@@ -412,19 +440,53 @@ export async function ensureEvaluation(
 
   if (missing) {
     try {
-      const created = requireObject(await api.post(collection, { key, ...desired }), 'evaluation');
+      const created = requireObject(await api.post(collection, createBody), 'evaluation');
       return evaluationRefFrom(created, key);
     } catch (err) {
       if (!(err instanceof LDApiError) || err.status !== 409) throw err;
-      // Lost the create race — another caller minted the key; continue as GET 200.
-      requireObject(await api.get(byKey), 'evaluation');
+      // Lost the create race — another caller minted the key; continue as update.
+      try {
+        requireObject(await api.get(byKey), 'evaluation');
+      } catch (regetErr) {
+        if (regetErr instanceof LDApiError && regetErr.status === 404) {
+          throw new EvaluationsError(
+            `LaunchDarkly offline evaluation '${key}' reported a key conflict but could not be re-fetched`,
+            { cause: regetErr },
+          );
+        }
+        throw regetErr;
+      }
     }
   }
 
-  // Full-snapshot PATCH is idempotent: replaying the same body is a server
-  // no-op when nothing changed, so transient 5xx may be retried.
-  const patched = requireObject(await api.patch(byKey, desired, { idempotent: true }), 'evaluation');
-  return evaluationRefFrom(patched, key);
+  // Do not mark PATCH idempotent: a timed-out success that retries can overwrite
+  // a newer concurrent snapshot for the same key. Handle 409 explicitly below.
+  try {
+    const patched = requireObject(await api.patch(byKey, patchBody), 'evaluation');
+    return evaluationRefFrom(patched, key);
+  } catch (err) {
+    if (!(err instanceof LDApiError) || err.status !== 409) throw err;
+    try {
+      requireObject(await api.get(byKey), 'evaluation');
+    } catch (regetErr) {
+      throw new EvaluationsError(
+        `LaunchDarkly offline evaluation '${key}' reported a concurrent update but could not be re-fetched`,
+        { cause: regetErr },
+      );
+    }
+    try {
+      const patched = requireObject(await api.patch(byKey, patchBody), 'evaluation');
+      return evaluationRefFrom(patched, key);
+    } catch (retryErr) {
+      if (retryErr instanceof LDApiError && retryErr.status === 409) {
+        throw new EvaluationsError(
+          `LaunchDarkly offline evaluation '${key}' could not be updated after a concurrent modification`,
+          { cause: retryErr },
+        );
+      }
+      throw retryErr;
+    }
+  }
 }
 
 export async function createEvaluationRun(

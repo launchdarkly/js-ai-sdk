@@ -691,7 +691,7 @@ An evaluation from code runs a dataset through your own code and reports the res
 3. **evaluates**: scores each generated output against your criteria, LaunchDarkly AI Judges and local scorer functions, if you pass any;
 4. waits for LaunchDarkly to account for every row, and returns the outcome.
 
-Reuse the same `key` across CI runs so trends and history stay attached to one evaluation. Every reuse PATCHes the full desired snapshot in place (the server no-ops when nothing changed) and may bump `version`; each `run()` still starts a new run.
+Reuse the same `key` across CI runs so trends and history stay attached to one evaluation. Keys must match `^[a-z0-9][a-z0-9._-]*$` and be at most 128 characters (checked before any network I/O). Every reuse PATCHes the full desired config snapshot in place — without rewriting `name`, so a renamed evaluation keeps its display name — and the server no-ops when nothing changed; each `run()` still starts a new run.
 
 Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row and on the run; the SDK reports scores and never computes a verdict itself.
 
