@@ -208,12 +208,12 @@ export type EvalVerdict = 'pass' | 'fail';
  */
 export type CriterionSummary = {
   criterionType: string;
-  passRateThreshold: number | null;
+  passRateThreshold?: number | null;
   passedRows: number;
   failedRows: number;
   errorRows: number;
-  passRate: number | null;
-  passRateVerdict: EvalVerdict | null;
+  passRate?: number | null;
+  passRateVerdict?: EvalVerdict | null;
 };
 
 /** Row counts for an evaluation run. */
@@ -225,9 +225,10 @@ export type RunSummary = {
   pendingRows: number;
   /**
    * Each criterion's own counts and pass-rate outcome. Empty when LaunchDarkly
-   * does not report them for this project.
+   * does not report them for this project. Optional so a hand-built summary
+   * need not set it; the SDK always does.
    */
-  criteria: CriterionSummary[];
+  criteria?: CriterionSummary[];
 };
 
 /** The result of an evaluation run. */
@@ -246,9 +247,10 @@ export type EvalRunResult = {
    * its `passRateThreshold`, `'pass'` otherwise. Criteria without a pass rate
    * threshold do not take part in it. `null` when no criterion set a pass rate
    * threshold, when LaunchDarkly does not report verdicts for this project, or
-   * when the verdict was not recorded in time.
+   * when the verdict was not recorded in time. Optional so a hand-built
+   * result need not set it; the SDK always does.
    */
-  verdict: EvalVerdict | null;
+  verdict?: EvalVerdict | null;
 };
 
 // ---------------------------------------------------------------------------

@@ -542,7 +542,7 @@ export function parseSummary(data: unknown): RunSummary {
  * serve verdicts for this project.
  */
 export const expectsVerdict = (summary: RunSummary): boolean =>
-  summary.criteria.some((criterion) => criterion.passRateThreshold !== null);
+  (summary.criteria ?? []).some((criterion) => criterion.passRateThreshold != null);
 
 export const accountedRows = (summary: RunSummary): number =>
   summary.passedRows + summary.failedRows + summary.errorRows;

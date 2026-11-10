@@ -201,12 +201,12 @@ export type Criterion = Judge | Scorer;
 // @public
 export type CriterionSummary = {
     criterionType: string;
-    passRateThreshold: number | null;
+    passRateThreshold?: number | null;
     passedRows: number;
     failedRows: number;
     errorRows: number;
-    passRate: number | null;
-    passRateVerdict: EvalVerdict | null;
+    passRate?: number | null;
+    passRateVerdict?: EvalVerdict | null;
 };
 
 // @public
@@ -232,7 +232,7 @@ export type EvalRunResult = {
     url: string;
     runId: string;
     summary: RunSummary;
-    verdict: EvalVerdict | null;
+    verdict?: EvalVerdict | null;
 };
 
 // @public
@@ -873,7 +873,7 @@ export type RunSummary = {
     failedRows: number;
     errorRows: number;
     pendingRows: number;
-    criteria: CriterionSummary[];
+    criteria?: CriterionSummary[];
 };
 
 // @public
