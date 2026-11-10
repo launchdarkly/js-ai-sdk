@@ -7,7 +7,7 @@
 
 import { createHash } from 'node:crypto';
 import type { Span } from '@opentelemetry/api';
-import type { DatasetRow, RunSummary } from './evaluations.js';
+import type { CriterionSummary, DatasetRow, EvalVerdict, RunSummary } from './evaluations.js';
 import {
   EvaluationsError,
   errorMessage,
@@ -55,6 +55,19 @@ export const DEFAULT_CONCURRENCY = 10;
  */
 export const SUMMARY_POLL_DEFAULTS = { intervalSeconds: 2, timeoutSeconds: 180 };
 
+/**
+ * How long, in seconds, to wait for a run's verdict after its summary is
+ * terminal. Measured from the first run read. Mutable so tests can shorten it.
+ */
+export const VERDICT_POLL_DEFAULTS = { timeoutSeconds: 30 };
+
+/**
+ * The states besides `COMPLETE` that LaunchDarkly treats as terminal: a run in
+ * them never completes, so it never gets a verdict. `TEMPORARY_ERROR` is left
+ * out on purpose: it is a legacy state the server can still complete.
+ */
+export const UNJUDGED_RUN_STATES: ReadonlySet<string> = new Set(['CANCELLED', 'PERMANENT_ERROR']);
+
 const HANDLER_ERROR_CODE = 5001;
 
 /** Generation settings after validation, with the mode already normalized for handler selection. */
@@ -77,7 +90,13 @@ export type DatasetRef = { id?: string; key?: string };
 
 export type EvaluationRef = { id: string; key: string; version: number };
 
-export type EvaluationRunRef = { id: string; evaluationId: string; state: string };
+export type EvaluationRunRef = {
+  id: string;
+  evaluationId: string;
+  state: string;
+  verdict: EvalVerdict | null;
+  unrecognizedVerdict: string | null;
+};
 
 /** One generated row. Carries the trajectory forward for the evaluation phase. */
 export type RowResult = {
@@ -384,15 +403,34 @@ export async function createEvaluationRun(
     await api.post(`projects/${segment(projectKey)}/evaluations/${segment(evaluationId)}/runs`, body),
     'evaluation run',
   );
+  return runRef(raw);
+}
+
+/** Validate a run resource: `id`, `evaluationId` and `state` are required; `verdict` is optional. */
+function runRef(raw: Record<string, unknown>): EvaluationRunRef {
+  const verdict = parseVerdict(raw.verdict);
   return {
     id: requireString(raw, 'id', 'evaluation run'),
     evaluationId: requireString(raw, 'evaluationId', 'evaluation run'),
     state: requireString(raw, 'state', 'evaluation run'),
+    verdict,
+    unrecognizedVerdict:
+      verdict === null && raw.verdict !== undefined && raw.verdict !== null ? JSON.stringify(raw.verdict) : null,
   };
 }
 
 const runPath = (projectKey: string, evaluationId: string, runId: string) =>
   `projects/${segment(projectKey)}/evaluations/${segment(evaluationId)}/runs/${segment(runId)}`;
+
+/** Read a run, for its verdict. */
+export async function fetchEvaluationRun(
+  api: LDApiClient,
+  projectKey: string,
+  evaluationId: string,
+  runId: string,
+): Promise<EvaluationRunRef> {
+  return runRef(requireObject(await api.get(runPath(projectKey, evaluationId, runId)), 'evaluation run'));
+}
 
 /**
  * Upload an inline dataset's raw rows to its run, in batches, one at a time.
@@ -451,18 +489,60 @@ function count(counts: Record<string, unknown>, ...keys: string[]): number {
   return 0;
 }
 
-/** Parse row counts. The summary endpoint returns no run state, so terminality comes from the counts alone. */
+/**
+ * A known verdict, or `null` for an absent or unrecognised one. LaunchDarkly
+ * may add verdicts later; one this release does not know is treated as no
+ * verdict rather than guessed at as a pass or a fail.
+ */
+export function parseVerdict(value: unknown): EvalVerdict | null {
+  return value === 'pass' || value === 'fail' ? value : null;
+}
+
+function optionalNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function parseCriterionSummary(raw: Record<string, unknown>): CriterionSummary {
+  return {
+    criterionType: typeof raw.criterionType === 'string' ? raw.criterionType : '',
+    passRateThreshold: optionalNumber(raw.criterionPassRateThreshold),
+    passedRows: count(raw, 'passed'),
+    failedRows: count(raw, 'failed'),
+    errorRows: count(raw, 'error'),
+    passRate: optionalNumber(raw.passRate),
+    passRateVerdict: parseVerdict(raw.passRateVerdict),
+  };
+}
+
+/**
+ * Parse row counts and criterion summaries. The summary endpoint returns no
+ * run state, so terminality comes from the row counts alone.
+ */
 export function parseSummary(data: unknown): RunSummary {
   const raw = isPlainObject(data) ? data : {};
   const counts = isPlainObject(raw.statusCounts) ? raw.statusCounts : raw;
+  const criteria = Array.isArray(raw.criterionSummaries)
+    ? raw.criterionSummaries.filter(isPlainObject).map(parseCriterionSummary)
+    : [];
   return {
     totalRows: count(counts, 'total', 'totalRows', 'total_rows'),
     passedRows: count(counts, 'passed', 'passedRows', 'passed_rows'),
     failedRows: count(counts, 'failed', 'failedRows', 'failed_rows'),
     errorRows: count(counts, 'error', 'errorRows', 'error_rows'),
     pendingRows: count(counts, 'pending', 'pendingRows', 'pending_rows'),
+    criteria,
   };
 }
+
+/**
+ * Whether LaunchDarkly will rule on this run against a pass rate: true when
+ * the summary reports at least one criterion with a pass rate threshold. The
+ * thresholds come from the run's stored evaluation, not from the criteria this
+ * process passed in, and an empty list is how LaunchDarkly says it does not
+ * serve verdicts for this project.
+ */
+export const expectsVerdict = (summary: RunSummary): boolean =>
+  (summary.criteria ?? []).some((criterion) => criterion.passRateThreshold != null);
 
 export const accountedRows = (summary: RunSummary): number =>
   summary.passedRows + summary.failedRows + summary.errorRows;
