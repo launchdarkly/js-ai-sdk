@@ -585,7 +585,7 @@ describe('offline-evaluations reconcile', () => {
     expect(api.calls.filter((call) => call.method === 'PATCH')).toHaveLength(1);
   });
 
-  // Pins Jeff review: only HTTP 404 on by-key GET means "missing".
+  // Pins Jeff review: non-404 by-key GET is rethrown, not treated as missing.
   it('rethrows a non-404 error on the by-key GET instead of treating it as missing', async () => {
     const api = new FakeApi()
       .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
