@@ -518,6 +518,13 @@ describe('createLiteLLMAgentsHandler', () => {
     await createLiteLLMAgentsHandler({ client: {} as never })(cfg as never, 'q');
     expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', expected);
     expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.system', 'litellm');
+    const provider = runnerArgs[0].modelProvider as { getModel: () => Promise<{ getResponse: Function }> };
+    const model = await provider.getModel();
+    await model.getResponse({ input: 'q', systemInstructions: 'help', tools: [] });
+    const chat = mockSpans.find(({ name }) => name === `chat ${cfg.model.name}`);
+    expect(chat).toBeDefined();
+    expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', expected);
+    expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.system', 'litellm');
   });
 
   it('emits execute_tool children from Agents SDK lifecycle hooks', async () => {
