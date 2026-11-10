@@ -585,6 +585,47 @@ describe('offline-evaluations reconcile', () => {
     expect(api.calls.filter((call) => call.method === 'PATCH')).toHaveLength(1);
   });
 
+  it('rethrows a non-404 error on the by-key GET instead of treating it as missing', async () => {
+    const api = new FakeApi()
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}/rows`, {
+        body: { items: [datasetRow(0)], totalCount: 1 },
+      })
+      .on('GET', EVALUATION_BY_KEY_PATH, { status: 403, body: 'forbidden' });
+    await expect(makeModule(api).run(hosted())).rejects.toMatchObject({ status: 403 });
+    expect(api.calls.some((call) => call.method === 'POST' && call.path === EVALUATION_PATH)).toBe(false);
+    expect(api.calls.some((call) => call.method === 'PATCH')).toBe(false);
+  });
+
+  it('wraps a failed re-GET after a PATCH 409 in EvaluationsError', async () => {
+    const api = new FakeApi()
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}/rows`, {
+        body: { items: [datasetRow(0)], totalCount: 1 },
+      })
+      .on(
+        'GET',
+        EVALUATION_BY_KEY_PATH,
+        { body: { id: 'ev-1', version: 1, key: 'eval-key' } },
+        { status: 403, body: 'forbidden' },
+      )
+      .on('PATCH', EVALUATION_BY_KEY_PATH, { status: 409, body: 'version conflict' });
+    const err = await makeModule(api)
+      .run(hosted())
+      .then(
+        () => {
+          throw new Error('expected EvaluationsError');
+        },
+        (caught: unknown) => caught,
+      );
+    expect(err).toMatchObject({
+      name: 'EvaluationsError',
+      message: expect.stringMatching(/reported a concurrent update but could not be re-fetched/),
+    });
+    expect((err as { cause?: unknown }).cause).toMatchObject({ status: 403 });
+    expect(api.calls.filter((call) => call.method === 'PATCH')).toHaveLength(1);
+  });
+
   it('never issues a PUT', async () => {
     const api = routeHostedRun(new FakeApi());
     await makeModule(api).run(hosted());
@@ -598,6 +639,9 @@ describe('offline evaluation key validation', () => {
     ['support qa', /must match/],
     ['support:qa', /must match/],
     ['..', /must match/],
+    ['-leading', /must match/],
+    ['.leading', /must match/],
+    ['_leading', /must match/],
     [`a${'x'.repeat(128)}`, /at most 128/],
   ])('rejects %j before any network I/O', async (key, pattern) => {
     const api = new FakeApi();
@@ -605,8 +649,7 @@ describe('offline evaluation key validation', () => {
     expect(api.calls).toEqual([]);
   });
 
-  it('accepts keys with dots, underscores and hyphens', async () => {
-    const key = 'support_qa.v1-prod';
+  it.each(['support_qa.v1-prod', 'a.b_c-1'])('accepts %j', async (key) => {
     const byKey = `projects/${PROJECT}/offline-evaluations/${key}`;
     const api = new FakeApi()
       .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
