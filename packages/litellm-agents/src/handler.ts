@@ -73,7 +73,11 @@ function modelFor(client: CompatibleClient, configRep: AiConfigRep): Model {
   return new OpenAIChatCompletionsModel(client, configRep.model.name);
 }
 
-const servingProvider = (configRep: AiConfigRep) => (configRep.provider?.name || 'litellm').toLowerCase();
+/** The configured provider, lower-cased, with Bedrock as its semconv value `aws.bedrock`. */
+const servingProvider = (configRep: AiConfigRep) => {
+  const provider = (configRep.provider?.name || 'litellm').toLowerCase();
+  return provider === 'bedrock' ? 'aws.bedrock' : provider;
+};
 
 function setIdentity(span: Span, configRep: AiConfigRep): void {
   setModelIdentityAttributes(span, servingProvider(configRep), configRep.model.name, 'litellm');

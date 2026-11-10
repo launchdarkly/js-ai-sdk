@@ -586,6 +586,24 @@ describe('createVercelMessagesHandler', () => {
     expect(aiMocks.generateText.mock.calls[0][0]).not.toHaveProperty('experimental_telemetry');
   });
 
+  it.each([
+    ['Bedrock', 'aws.bedrock'],
+    ['bedrock', 'aws.bedrock'],
+    ['Azure', 'azure'],
+  ] as const)('writes provider %s as %s on both keys of the root and chat spans', async (providerName, expected) => {
+    const cfg = {
+      ...baseConfig,
+      model: { ...baseConfig.model, name: 'anthropic/claude-sonnet-4' },
+      provider: { name: providerName },
+    };
+    await createVercelMessagesHandler()(cfg as any, 'q');
+    const chat = spanMocks.children.find(({ name }) => name === `chat ${cfg.model.name}`)?.span;
+    for (const span of [spanMocks.root, chat]) {
+      expect(span?.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', expected);
+      expect(span?.setAttribute).toHaveBeenCalledWith('gen_ai.system', expected);
+    }
+  });
+
   it('pre-wires the convenience function through config()', async () => {
     const invoke = vi.fn().mockResolvedValue({ response: 'ok', usage: {} });
     serverMocks.config.mockReturnValue({ invoke });

@@ -98,6 +98,21 @@ describe('vercelEvaluate', () => {
     expect(serverMocks.inspectConfig).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['Bedrock', 'aws.bedrock'],
+    ['bedrock', 'aws.bedrock'],
+    ['Azure', 'azure'],
+  ] as const)('writes provider %s as %s on both keys of the evaluate span', async (providerName, expected) => {
+    serverMocks.inspectConfig.mockResolvedValue({
+      enabled: true,
+      config: { ...config, provider: { name: providerName } },
+      meta,
+    });
+    await vercelEvaluate('flag', 'state', context, { questions });
+    expect(spanMocks.root.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', expected);
+    expect(spanMocks.root.setAttribute).toHaveBeenCalledWith('gen_ai.system', expected);
+  });
+
   it('passes the gateway model id unchanged', async () => {
     const result = await vercelEvaluate('refund-classifier', 'issued a refund', context, { questions });
     expect(serverMocks.inspectConfig).toHaveBeenCalledWith('refund-classifier', context);

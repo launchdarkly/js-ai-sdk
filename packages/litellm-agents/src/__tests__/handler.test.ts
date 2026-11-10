@@ -508,6 +508,18 @@ describe('createLiteLLMAgentsHandler', () => {
     expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', 'litellm');
   });
 
+  it.each([
+    ['Bedrock', 'aws.bedrock'],
+    ['bedrock', 'aws.bedrock'],
+    ['Azure', 'azure'],
+  ] as const)('writes gen_ai.provider.name for provider %s as %s', async (providerName, expected) => {
+    mockRun.mockResolvedValue(result('ok'));
+    const cfg = { ...baseConfig, provider: { name: providerName } };
+    await createLiteLLMAgentsHandler({ client: {} as never })(cfg as never, 'q');
+    expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', expected);
+    expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.system', 'litellm');
+  });
+
   it('emits execute_tool children from Agents SDK lifecycle hooks', async () => {
     mockRun.mockImplementation(async () => {
       const details = { toolCall: { arguments: '{"q":"x"}', callId: 'call-1', name: 'search' } };

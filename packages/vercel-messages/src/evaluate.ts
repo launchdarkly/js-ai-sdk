@@ -60,8 +60,10 @@ function normalizeUsage(usage: unknown): { input: number; output: number; total:
   return { input, output, total: numberOrZero(raw.totalTokens ?? raw.total_tokens) || input + output };
 }
 
+/** The configured provider, lower-cased, with Bedrock as its semconv value `aws.bedrock`. */
 function servingProvider(config: AiConfigRep): string {
-  return (config.provider?.name || 'unknown').toLowerCase();
+  const provider = (config.provider?.name || 'unknown').toLowerCase();
+  return provider === 'bedrock' ? 'aws.bedrock' : provider;
 }
 
 function assertQuestions(

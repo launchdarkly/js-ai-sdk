@@ -84,8 +84,10 @@ function returnedUsage(usage: Usage): Record<string, number> {
   };
 }
 
+/** The configured provider, lower-cased, with Bedrock as its semconv value `aws.bedrock`. */
 function servingProvider(config: AiConfigRep): string {
-  return (config.provider?.name || 'unknown').toLowerCase();
+  const provider = (config.provider?.name || 'unknown').toLowerCase();
+  return provider === 'bedrock' ? 'aws.bedrock' : provider;
 }
 
 async function resolveModel(config: AiConfigRep, options: VercelMessagesOptions): Promise<LanguageModel | string> {
