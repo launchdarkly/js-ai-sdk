@@ -7,9 +7,9 @@
 #   + Name    joining the public surface; may be exported or not
 
 - addCachedTokensToInput
-+ AIConfig
+AIConfig
 AiConfigRep
-+ allSkills  usage=client.allSkills
+allSkills  usage=client.allSkills
 - anyMultimodal
 - buildJudgeTasks  usage=client.buildJudgeTasks
 - camelizeModelParameters
@@ -22,9 +22,9 @@ ConfigArgs
 + ConfigInstance  # type-only export
 - configInternal  # internal: plumbing for the handler packages; moves to the internal entry point
 ConfigMessage
-+ configSkills  usage=client.configSkills
+configSkills  usage=client.configSkills
 - ConfigTurn
-+ configure
+configure
 ContentBlock
 ContentCaptureOptions
 - contentToText
@@ -32,28 +32,30 @@ ConversationIdSpanProcessor
 createHandler  usage=client.createHandler
 - createHandlerInternal  # internal: plumbing for the handler packages; moves to the internal entry point
 - createRunUsage
-+ createSkill
-+ createSkillOutcome
-+ createSkillReference
-+ createSkillSource
-+ Criterion
-+ DatasetRow
+createSkill
+createSkillOutcome
+createSkillReference
+createSkillSource
+Criterion
++ CriterionSummary
+DatasetRow
 - effectiveCaptureContent  # internal: plumbing for the handler packages; moves to the internal entry point
 - endSpanOnce
-+ EvalRunResult
-+ EvalTool
-+ EvaluationsError
-+ EvaluationsModule
+EvalRunResult
+EvalTool
+EvaluationsError
+EvaluationsModule
++ EvalVerdict
 - FDv2Mode  # deprecated alias of LaunchDarklySkillStoreMode
 - FDv2SkillStore  # deprecated alias of LaunchDarklySkillStore
 - FDv2SkillStoreOptions  # deprecated alias of LaunchDarklySkillStoreOptions
-+ GenerationConfig
-+ GenerationMode
-+ GenerationOverrides
+GenerationConfig
+GenerationMode
+GenerationOverrides
 getClient
-+ getSkill  usage=client.getSkill
-+ getSkillResult  usage=client.getSkillResult
-+ getSkills  usage=client.getSkills
+getSkill  usage=client.getSkill
+getSkillResult  usage=client.getSkillResult
+getSkills  usage=client.getSkills
 globalRegistry
 graph  usage=client.graph.invoke,client.graph.stream
 GraphArgs
@@ -74,17 +76,17 @@ HandlerStreamEvent
 ImageContentBlock
 initClient
 + InitClientOptions
-+ initEvaluations  usage=client.initEvaluations
-+ InitEvaluationsOptions
-+ InlineDatasetRow
-+ InMemorySkillStore
+initEvaluations  usage=client.initEvaluations
+InitEvaluationsOptions
+InlineDatasetRow
+InMemorySkillStore
 + InputTokenDetails
 inspectConfig  usage=client.inspectConfig
 - inspectConfigInternal  # internal: plumbing for the handler packages; moves to the internal entry point
 InspectConfigResult
 - isContentBlocks
 - isFunctionTool
-+ Judge
+Judge
 - JudgeCallResult  # renamed to JudgeResult
 + JudgeResult  # rename of JudgeCallResult
 JudgeRunResult
@@ -93,9 +95,9 @@ JudgeTask
 - langChainFinishReasons
 - langChainSpanMessages
 - langChainSpanUsage
-+ LaunchDarklySkillStore  # renamed from FDv2SkillStore
-+ LaunchDarklySkillStoreMode  # renamed from FDv2Mode
-+ LaunchDarklySkillStoreOptions  # renamed from FDv2SkillStoreOptions
+LaunchDarklySkillStore  # renamed from FDv2SkillStore
+LaunchDarklySkillStoreMode  # renamed from FDv2Mode
+LaunchDarklySkillStoreOptions  # renamed from FDv2SkillStoreOptions
 LDClientInterface
 LDContext
 - LDMultiKindContext
@@ -105,8 +107,8 @@ LDVariationMeta
 - makeGraphTrackData
 - makeNodeTrackData
 - makeRunTrackData
-+ MANIFEST_FILENAME
-+ MANIFEST_VERSION
+MANIFEST_FILENAME
+MANIFEST_VERSION
 Message
 MessageContent
 - NATIVE_TOOL_KEY
@@ -114,7 +116,7 @@ NativeTool
 - normalizeModelParameters
 - noteAiInvocation  # internal: plumbing for the handler packages; moves to the internal entry point
 - omitModelStamps
-+ OnUnavailable
+OnUnavailable
 - parseJSONWithPossibleFences
 parseTemplate
 - pickForwardedModelParameters
@@ -122,10 +124,10 @@ ProviderGraphResponse
 ProviderHandler
 ProviderResponse
 - ProviderSetupFn
-+ RawSkillObject
-+ ReconcileAction
-+ ReconcileActionKind
-+ ReconcileReport
+RawSkillObject
+ReconcileAction
+ReconcileActionKind
+ReconcileReport
 - registerAiSdkPackage
 Registry
 - RegistryInput  # internal: alias of Registry; ConfigArgs.registry and GraphOptions.registry take Registry
@@ -134,39 +136,39 @@ resolveGraph  usage=client.resolveGraph
 - RouteResult
 runJudge  usage=client.runJudge
 - RunNodeOptions
-+ RunOptions
-+ RunSummary
+RunOptions
+RunSummary
 - RunUsage
-+ Scorer
-+ SDKOptions
+Scorer
+SDKOptions
 - setConversationIdIfAbsent
 - setInputContentAttributes
 - setLdSpanAttributes
 - setModelIdentityAttributes
 - setOutputContentAttributes
-+ setSkillStore
+setSkillStore
 - setToolCallContentAttributes
 - setToolDefinitionAttributes
 - setUsageSpanAttributes
 shutdown
 - shutdownTelemetry  # internal: not needed to init, configure, execute or read results
-+ Skill
-+ SKILL_FILENAME
-+ SkillOutcome
-+ SkillOutcomeReason
-+ SkillReference
-+ skillRefs  usage=client.skillRefs
+Skill
+SKILL_FILENAME
+SkillOutcome
+SkillOutcomeReason
+SkillReference
+skillRefs  usage=client.skillRefs
 - skillRefsInternal  # internal: plumbing for the handler packages; moves to the internal entry point
-+ SKILLS_DEFAULT_BASE_URI
-+ SKILLS_DEFAULT_DEBOUNCE_MS
-+ SKILLS_DEFAULT_STREAM_URI
-+ SkillSource
-+ SkillStore
-+ SkillWatcher
+SKILLS_DEFAULT_BASE_URI
+SKILLS_DEFAULT_DEBOUNCE_MS
+SKILLS_DEFAULT_STREAM_URI
+SkillSource
+SkillStore
+SkillWatcher
 - SpanMessage
 - SpanMessagePart
 - SpanUsage
-+ StoreDiagnostics
+StoreDiagnostics
 StreamEvent
 + StreamHandlerFn
 TextContentBlock
@@ -181,9 +183,9 @@ TrackData
 - TraverseVisitor
 - validateMaxRetries  # internal: plumbing for the handler packages; moves to the internal entry point
 - waitForTelemetry  # internal: not needed to init, configure, execute or read results
-+ watchSkills  usage=client.watchSkills
-+ WatchSkillsOptions
+watchSkills  usage=client.watchSkills
+WatchSkillsOptions
 withConversationId
-+ writeSkills  usage=client.writeSkills
+writeSkills  usage=client.writeSkills
 - writeSkillsInternal  # internal: plumbing for the handler packages; moves to the internal entry point
-+ WriteSkillsOptions
+WriteSkillsOptions

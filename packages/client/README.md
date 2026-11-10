@@ -835,11 +835,11 @@ await evals.run({
 | | `Judge` | `Scorer` |
 |---|---|---|
 | `threshold`: score a row must reach | default `0.5` | default `1.0` |
-| `passRateThreshold`: share of rows that must pass | optional, unset by default | optional, unset by default |
+| `passRateThreshold`: share of rows that must pass | default `0.95` | default `0.95` |
 | Direction | Set on the judge's AI Config in LaunchDarkly | `successDirection`, default `'higher_is_better'`. Use `'lower_is_better'` for a scorer that counts something unwanted |
 | Other | `groundTruthContext`: what to grade against, when it is not the row's expected output | `fn(row, output)` may be async and must return a number from 0 to 1. Booleans are not accepted: return `1` or `0` |
 
-Thresholds must be finite numbers from 0 to 1. Judge keys and scorer names must be unique within a run, compared without case.
+Thresholds must be finite numbers from 0 to 1. A run where only 95% of rows pass can still pass under the default `passRateThreshold`. To require every row to pass, as releases before the default did, set `passRateThreshold: 1.0` on every criterion. Errored rows count against the pass rate, so the run then fails unless every row passes every criterion. Judge keys and scorer names must be unique within a run, compared without case.
 
 Judges are resolved through flag delivery once per run, before anything is created. A judge that does not exist or is turned off, a judge no handler in the pool can run, or a judge whose prompt does not match its handler's mode fails the run straight away, with every such judge named in one error. After that, a failure is recorded against its row instead of thrown: an unparseable judge reply, a score that is not a number from 0 to 1, or a judge or scorer that throws each becomes an `ERROR` result. A row whose generation failed is not scored.
 
@@ -873,7 +873,7 @@ At most 50 calls per row are listed, and each argument list or result is cut at 
 
 Each generated row sends one `$ld:ai:offline-evals:generation` event, and each `(row, criterion)` pair one `$ld:ai:offline-evals:criterion` event. Events carry the run and row identity, the output or error, usage, timings and a stable `eventId`. They do not repeat the row's input, expected output, variables or metadata, which the dataset already holds. Events are flushed in batches of at most 500 and before the run is polled. No feature flag gates them.
 
-`run()` then polls the run summary every `pollIntervalSeconds` (default 2) until every row is accounted for, for up to `pollTimeoutSeconds` (default 180). Raise both for large datasets. The result has `passed`, `url`, `runId` and `summary` (`totalRows`, `passedRows`, `failedRows`, `errorRows`, `pendingRows`). `passed` is true only when no row errored or failed.
+`run()` then polls the run summary every `pollIntervalSeconds` (default 2) until every row is accounted for, for up to `pollTimeoutSeconds` (default 180). Raise both for large datasets. The result has `passed`, `url`, `runId`, `summary` (`totalRows`, `passedRows`, `failedRows`, `errorRows`, `pendingRows`, and `criteria`: each criterion's counts and pass-rate outcome where LaunchDarkly reports them) and `verdict`. When the summary reports a criterion with a pass rate threshold, `run()` then waits up to 30 seconds for LaunchDarkly's verdict on the run and returns it as `verdict` (`'pass'` or `'fail'`), and `passed` follows it. The run fails when any criterion's pass rate, with errored rows counted against it, is below its threshold. If no verdict arrives, or LaunchDarkly returns a verdict this release does not recognise, `verdict` is `null`, a warning is logged, and `passed` is true only when no row errored or failed. An unrecognised verdict ends the wait at once, because LaunchDarkly records a run's verdict only once.
 
 A timeout almost always means LaunchDarkly did not receive some events, not that it is slow. The error says whether no rows arrived at all, which points at the event transport or a key and token from different projects, or only some did. Pass `logEvents: true` to `initEvaluations()` to log each event's `emittedAt` and `eventId`, so you can compare when the SDK sent an event with when LaunchDarkly received it.
 

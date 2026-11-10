@@ -26,7 +26,7 @@ import {
   hostQueryOptions,
   partitionTools,
 } from './handler.js';
-import { buildModelParameterQueryOptions } from './model-parameters.js';
+import { buildModelParameterQueryOptions, requestModel } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 const TOOL_MCP_NAME = 'tool-mcp';
@@ -128,7 +128,7 @@ const runQuery = async (
       // The node's allowlisted model.parameters (maxTurns, thinking, effort, ...), spread first so
       // every handler-owned option below wins.
       ...buildModelParameterQueryOptions(node.config.model.parameters),
-      model: node.config.model.name,
+      model: requestModel(node.config),
       tools: nativeToolNames.length > 0 ? nativeToolNames : [],
       allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
       mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,

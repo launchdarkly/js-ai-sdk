@@ -187,8 +187,10 @@ export {
 } from './conversation.js';
 export type {
   AIConfig,
+  CriterionSummary,
   DatasetRow,
   EvalRunResult,
+  EvalVerdict,
   GenerationConfig,
   GenerationMode,
   GenerationOverrides,
