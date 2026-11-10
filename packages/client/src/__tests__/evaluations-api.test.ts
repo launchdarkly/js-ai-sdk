@@ -105,6 +105,16 @@ describe('management API client: retries', () => {
     expect(api.calls).toHaveLength(1);
   });
 
+  it('does not retry a 5xx for a PATCH unless marked idempotent', async () => {
+    const plain = new FakeApi().on('PATCH', 'a', { status: 503 }, { body: { ok: 1 } });
+    await expect(client(plain).ld.patch('a', {})).rejects.toMatchObject({ status: 503 });
+    expect(plain.calls).toHaveLength(1);
+
+    const idempotent = new FakeApi().on('PATCH', 'a', { status: 503 }, { body: { ok: 1 } });
+    await expect(client(idempotent).ld.patch('a', {}, { idempotent: true })).resolves.toEqual({ ok: 1 });
+    expect(idempotent.calls).toHaveLength(2);
+  });
+
   it('does not retry a transport failure for a POST', async () => {
     const api = new FakeApi().on('POST', 'a', new Error('timeout'), { body: {} });
     await expect(client(api).ld.post('a', {})).rejects.toThrow(/timeout/);

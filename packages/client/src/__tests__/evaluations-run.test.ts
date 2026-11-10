@@ -292,9 +292,9 @@ describe('evaluation create body', () => {
 
   it.each([
     ['the response key', { key: 'from-key', name: 'from-name', label: 'from-label' }, 'from-key'],
-    ['the response name when there is no key', { name: 'from-name', label: 'from-label' }, 'from-name'],
-    ['the response label when there is no key or name', { label: 'from-label' }, 'from-label'],
-    ['the caller key when the response has none of those', {}, 'eval-key'],
+    ['the caller key when response key is missing', { name: 'from-name', label: 'from-label' }, 'eval-key'],
+    ['the caller key when response key is null', { key: null, name: 'Renamed QA' }, 'eval-key'],
+    ['the caller key when the response has no key fields', {}, 'eval-key'],
   ])('takes evaluationKey from %s', async (_name, fields, expected) => {
     const api = routeHostedRun(new FakeApi()).on('POST', EVALUATION_PATH, {
       status: 201,
@@ -306,6 +306,13 @@ describe('evaluation create body', () => {
 
   it('requires a version in the response', async () => {
     const api = routeHostedRun(new FakeApi()).on('POST', EVALUATION_PATH, { body: { id: 'ev-1' } });
+    await expect(makeModule(api).run(hosted())).rejects.toThrow(/'version'/);
+  });
+
+  it('rejects a boolean version', async () => {
+    const api = routeHostedRun(new FakeApi()).on('POST', EVALUATION_PATH, {
+      body: { id: 'ev-1', version: true, key: 'eval-key' },
+    });
     await expect(makeModule(api).run(hosted())).rejects.toThrow(/'version'/);
   });
 
@@ -529,6 +536,25 @@ describe('offline-evaluations reconcile', () => {
       })
       .on('PATCH', EVALUATION_BY_KEY_PATH, { status: 409, body: 'version conflict' });
     await expect(makeModule(api).run(hosted())).rejects.toThrow(/could not be updated after a concurrent modification/);
+  });
+
+  it('does not retry a reconcile PATCH after a 5xx', async () => {
+    const api = new FakeApi()
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
+      .on('GET', `projects/${PROJECT}/datasets/${DATASET}/rows`, {
+        body: { items: [datasetRow(0)], totalCount: 1 },
+      })
+      .on('GET', EVALUATION_BY_KEY_PATH, {
+        body: { id: 'ev-1', version: 1, key: 'eval-key', name: 'Renamed QA' },
+      })
+      .on(
+        'PATCH',
+        EVALUATION_BY_KEY_PATH,
+        { status: 503, body: 'unavailable' },
+        { body: { id: 'ev-1', version: 2, key: 'eval-key', name: 'Renamed QA' } },
+      );
+    await expect(makeModule(api).run(hosted())).rejects.toMatchObject({ status: 503 });
+    expect(api.calls.filter((call) => call.method === 'PATCH')).toHaveLength(1);
   });
 
   it('never issues a PUT', async () => {

@@ -395,17 +395,15 @@ export function evaluationConfigBody(
 function evaluationRefFrom(raw: Record<string, unknown>, fallbackKey: string): EvaluationRef {
   const id = requireString(raw, 'id', 'evaluation');
   // The only source for evaluationVersion on every event, so it is required.
+  // Number.isInteger rejects bool (unlike Python's isinstance(True, int)).
   if (!Number.isInteger(raw.version)) {
     throw new EvaluationsError("LaunchDarkly evaluation response is missing integer field 'version'");
   }
-  const responseKey =
-    typeof raw.key === 'string' && raw.key
-      ? raw.key
-      : typeof raw.name === 'string'
-        ? raw.name
-        : typeof raw.label === 'string'
-          ? raw.label
-          : fallbackKey;
+  // Prefer a non-empty response `key`. Do not fall through to `name` / `label`:
+  // PATCH omits `name` so a UI rename can diverge from the stable key, and
+  // `evaluationKey` on events must stay that key. An explicit JSON `null` for
+  // `key` therefore uses the caller's key.
+  const responseKey = typeof raw.key === 'string' && raw.key ? raw.key : fallbackKey;
   return { id, key: responseKey, version: raw.version as number };
 }
 
