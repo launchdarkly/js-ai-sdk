@@ -65,8 +65,7 @@ function numberOrZero(value: unknown): number {
  *
  * `gen_ai.provider.name` names who served the request, and its semconv enum has no `langchain`
  * member — LangChain is the framework, not the provider. Empty or missing names fall back to
- * `openai`, and Bedrock is written `aws.bedrock`, its semconv value and what the Bedrock
- * handlers write. `gen_ai.system` keeps the `langchain` value the handler shipped, so existing
+ * `openai`, and Bedrock is written `aws.bedrock`, its semconv value. `gen_ai.system` keeps the `langchain` value the handler shipped, so existing
  * dashboards do not break.
  */
 function servingProvider(config: AiConfigRep): string {
