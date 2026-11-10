@@ -177,6 +177,52 @@ describe('createLiteLLMAgentsHandler', () => {
     expect(clientArgs).toHaveLength(0);
   });
 
+  it.each([
+    ['Bedrock', 'us', 'anthropic.claude-opus-5-5', 'us.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'global', 'anthropic.claude-opus-5-5', 'global.anthropic.claude-opus-5-5'],
+    ['bedrock', 'us', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/us.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'eu', 'bedrock/converse/anthropic.claude-opus-5-5', 'bedrock/converse/eu.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'us.anthropic.claude-opus-5-5', 'us.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'ca', 'anthropic.claude-opus-5-5', 'ca.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'in', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/in.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'ca.anthropic.claude-opus-5-5', 'ca.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'bedrock/in.anthropic.claude-opus-5-5', 'bedrock/in.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'sa', 'bedrock/sa.anthropic.claude-opus-5-5', 'bedrock/sa.anthropic.claude-opus-5-5'],
+    [
+      'Bedrock',
+      'us',
+      'bedrock/llama/meta.llama3-3-70b-instruct-v1:0',
+      'bedrock/llama/us.meta.llama3-3-70b-instruct-v1:0',
+    ],
+    ['Bedrock', 'us', 'bedrock/deepseek_r1/deepseek.r1-v1:0', 'bedrock/deepseek_r1/us.deepseek.r1-v1:0'],
+    ['Bedrock', 'us', 'bedrock/qwen3/eu.qwen.qwen3-32b-v1:0', 'bedrock/qwen3/eu.qwen.qwen3-32b-v1:0'],
+    [
+      'Bedrock',
+      'us',
+      'bedrock/invoke/arn:aws:bedrock:us-east-1:1:x/y',
+      'bedrock/invoke/arn:aws:bedrock:us-east-1:1:x/y',
+    ],
+    ['Bedrock', 'us', 'bedrock/global.anthropic.claude-opus-5-5', 'bedrock/global.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'us-gov.anthropic.claude-opus-5-5', 'us-gov.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'bedrock/arn:aws:bedrock:us-east-1:1:x', 'bedrock/arn:aws:bedrock:us-east-1:1:x'],
+    ['Bedrock', undefined, 'bedrock/anthropic.claude-opus-5-5', 'bedrock/anthropic.claude-opus-5-5'],
+    ['Bedrock', '', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
+    ['OpenAI', 'us', 'gpt-5', 'gpt-5'],
+    ['Anthropic', 'us', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/us.anthropic.claude-opus-5-5'],
+    ['LiteLLM', 'us', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/us.anthropic.claude-opus-5-5'],
+    ['LiteLLM', 'us', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'anthropic/claude-sonnet-4', 'anthropic/claude-sonnet-4'],
+    ['Bedrock', ' us ', 'anthropic.claude-opus-5-5', 'us.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us.', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/us.anthropic.claude-opus-5-5'],
+    ['Bedrock', ' ', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
+  ])('resolves a %s model with region %j from %s to %s', async (provider, region, name, expected) => {
+    mockRun.mockResolvedValue(result());
+    const client = { marker: 'litellm-client' };
+    const config = { ...baseConfig, model: { name, region }, provider: { name: provider } };
+    await createLiteLLMAgentsHandler({ client: client as never })(config as never, 'hello');
+    expect(modelArgs).toEqual([[client, expected]]);
+  });
+
   it('constructs the compatible client with proxy credentials and never api.openai.com', async () => {
     mockRun.mockResolvedValue(result());
     await createLiteLLMAgentsHandler({
@@ -539,6 +585,25 @@ describe('createLiteLLMAgentsHandler', () => {
     expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', 'anthropic');
     expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 2);
     expect(chat?.span.end).toHaveBeenCalledOnce();
+  });
+
+  it('reports the prefixed Bedrock model id on the root and chat spans', async () => {
+    mockRun.mockResolvedValue(result());
+    const config = {
+      ...baseConfig,
+      model: { name: 'anthropic.claude-opus-5-5', region: 'global' },
+      provider: { name: 'Bedrock' },
+    };
+    await createLiteLLMAgentsHandler({ client: {} as never })(config as never, 'q');
+    const provider = runnerArgs[0].modelProvider as { getModel: () => Promise<{ getResponse: Function }> };
+    const model = await provider.getModel();
+    await model.getResponse({ input: 'q', systemInstructions: 'help', tools: [] });
+    const id = 'global.anthropic.claude-opus-5-5';
+    expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.request.model', id);
+    expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.response.model', id);
+    const chat = mockSpans.find(({ name }) => name === `chat ${id}`);
+    expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.request.model', id);
+    expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.response.model', id);
   });
 
   it('captures prompt and completion only when enabled', async () => {

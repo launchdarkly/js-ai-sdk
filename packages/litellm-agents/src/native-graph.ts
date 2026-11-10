@@ -21,7 +21,7 @@ import {
 import { Agent, handoff, type Model, OpenAIChatCompletionsModel, Runner, tool } from '@openai/agents';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import OpenAI from 'openai';
-import { agentRunSettings, type LiteLLMAgentsOptions } from './handler.js';
+import { agentRunSettings, type LiteLLMAgentsOptions, requestModel } from './handler.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 type AgentConfig = ConstructorParameters<typeof Agent>[0];
@@ -67,7 +67,7 @@ function resolveClient(options: LiteLLMNativeGraphOptions, root: GraphNode): Ope
 }
 
 function modelFor(client: OpenAI, node: GraphNode) {
-  return new OpenAIChatCompletionsModel(client, node.config.model.name);
+  return new OpenAIChatCompletionsModel(client, requestModel(node.config));
 }
 
 function userParts(content: MessageContent) {
