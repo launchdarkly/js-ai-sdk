@@ -208,7 +208,13 @@ describe('createLiteLLMAgentsHandler', () => {
     ['Bedrock', undefined, 'bedrock/anthropic.claude-opus-5-5', 'bedrock/anthropic.claude-opus-5-5'],
     ['Bedrock', '', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
     ['OpenAI', 'us', 'gpt-5', 'gpt-5'],
-    ['Anthropic', 'us', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/anthropic.claude-opus-5-5'],
+    ['Anthropic', 'us', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/us.anthropic.claude-opus-5-5'],
+    ['LiteLLM', 'us', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/us.anthropic.claude-opus-5-5'],
+    ['LiteLLM', 'us', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us', 'anthropic/claude-sonnet-4', 'anthropic/claude-sonnet-4'],
+    ['Bedrock', ' us ', 'anthropic.claude-opus-5-5', 'us.anthropic.claude-opus-5-5'],
+    ['Bedrock', 'us.', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/us.anthropic.claude-opus-5-5'],
+    ['Bedrock', ' ', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
   ])('resolves a %s model with region %j from %s to %s', async (provider, region, name, expected) => {
     mockRun.mockResolvedValue(result());
     const client = { marker: 'litellm-client' };
@@ -579,6 +585,25 @@ describe('createLiteLLMAgentsHandler', () => {
     expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', 'anthropic');
     expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 2);
     expect(chat?.span.end).toHaveBeenCalledOnce();
+  });
+
+  it('reports the prefixed Bedrock model id on the root and chat spans', async () => {
+    mockRun.mockResolvedValue(result());
+    const config = {
+      ...baseConfig,
+      model: { name: 'anthropic.claude-opus-5-5', region: 'global' },
+      provider: { name: 'Bedrock' },
+    };
+    await createLiteLLMAgentsHandler({ client: {} as never })(config as never, 'q');
+    const provider = runnerArgs[0].modelProvider as { getModel: () => Promise<{ getResponse: Function }> };
+    const model = await provider.getModel();
+    await model.getResponse({ input: 'q', systemInstructions: 'help', tools: [] });
+    const id = 'global.anthropic.claude-opus-5-5';
+    expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.request.model', id);
+    expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.response.model', id);
+    const chat = mockSpans.find(({ name }) => name === `chat ${id}`);
+    expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.request.model', id);
+    expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.response.model', id);
   });
 
   it('captures prompt and completion only when enabled', async () => {

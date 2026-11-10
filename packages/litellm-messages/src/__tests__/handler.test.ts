@@ -287,7 +287,13 @@ describe('createLiteLLMMessagesHandler', () => {
       ['Bedrock', undefined, 'bedrock/anthropic.claude-opus-5-5', 'bedrock/anthropic.claude-opus-5-5'],
       ['Bedrock', '', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
       ['OpenAI', 'us', 'gpt-5', 'gpt-5'],
-      ['Anthropic', 'us', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/anthropic.claude-opus-5-5'],
+      ['Anthropic', 'us', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/us.anthropic.claude-opus-5-5'],
+      ['LiteLLM', 'us', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/us.anthropic.claude-opus-5-5'],
+      ['LiteLLM', 'us', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
+      ['Bedrock', 'us', 'anthropic/claude-sonnet-4', 'anthropic/claude-sonnet-4'],
+      ['Bedrock', ' us ', 'anthropic.claude-opus-5-5', 'us.anthropic.claude-opus-5-5'],
+      ['Bedrock', 'us.', 'bedrock/anthropic.claude-opus-5-5', 'bedrock/us.anthropic.claude-opus-5-5'],
+      ['Bedrock', ' ', 'anthropic.claude-opus-5-5', 'anthropic.claude-opus-5-5'],
     ])('resolves a %s model with region %j from %s to %s', async (provider, region, name, expected) => {
       const create = vi.fn().mockResolvedValue(completion());
       const config = { ...baseConfig, model: { name, region }, provider: { name: provider } };
@@ -745,6 +751,24 @@ describe('createLiteLLMMessagesHandler', () => {
       const chat = mockSpans.find(({ name }) => name.startsWith('chat '));
       expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.request.model', 'anthropic/claude-sonnet-4');
       expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 8);
+    });
+
+    it('reports the prefixed Bedrock model id on the root and chat spans', async () => {
+      const create = vi.fn().mockResolvedValue(completion());
+      const config = {
+        ...baseConfig,
+        model: { name: 'bedrock/anthropic.claude-opus-5-5', region: 'us' },
+        provider: { name: 'Bedrock' },
+      };
+      await createLiteLLMMessagesHandler({ client: { chat: { completions: { create } } } as never })(
+        config as never,
+        'q',
+      );
+      const model = 'bedrock/us.anthropic.claude-opus-5-5';
+      expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.request.model', model);
+      expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.response.model', model);
+      const chat = mockSpans.find(({ name }) => name === `chat ${model}`);
+      expect(chat?.span.setAttribute).toHaveBeenCalledWith('gen_ai.request.model', model);
     });
 
     it('defaults gen_ai.provider.name to litellm when the config names no provider', async () => {
