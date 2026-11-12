@@ -400,6 +400,9 @@ describe('offline-evaluations reconcile', () => {
     });
     expect(patch?.body).not.toHaveProperty('name');
     expect(patch?.body).not.toHaveProperty('key');
+    expect(patch?.body).not.toHaveProperty('version');
+    // Reconcile PATCH is not optimistic-lock preconditioned; the server tip-write conflict is a 409.
+    expect(Object.keys(patch?.headers ?? {}).some((name) => name.toLowerCase() === 'if-match')).toBe(false);
     expect(api.calls.some((call) => call.method === 'POST' && call.path === EVALUATION_PATH)).toBe(false);
     expect(generationEvents()[0].data.evaluationVersion).toBe(3);
   });
@@ -549,6 +552,8 @@ describe('offline-evaluations reconcile', () => {
     expect(patches).toHaveLength(2);
     for (const patch of patches) {
       expect(patch.body).not.toHaveProperty('name');
+      expect(patch.body).not.toHaveProperty('version');
+      expect(Object.keys(patch.headers).some((name) => name.toLowerCase() === 'if-match')).toBe(false);
     }
     expect(generationEvents()[0].data.evaluationVersion).toBe(3);
   });
@@ -585,7 +590,6 @@ describe('offline-evaluations reconcile', () => {
     expect(api.calls.filter((call) => call.method === 'PATCH')).toHaveLength(1);
   });
 
-  // Pins Jeff review: non-404 by-key GET is rethrown, not treated as missing.
   it('rethrows a non-404 error on the by-key GET instead of treating it as missing', async () => {
     const api = new FakeApi()
       .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
