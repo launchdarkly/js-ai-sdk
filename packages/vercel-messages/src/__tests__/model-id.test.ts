@@ -36,6 +36,25 @@ describe('gatewayModelId', () => {
     expect(gatewayModelId(config('Bedrock', 'us.anthropic.claude-sonnet-4'))).toBe('anthropic/claude-sonnet-4');
   });
 
+  it.each([
+    ['anthropic.claude-sonnet-4-5-20250929-v1:0', 'anthropic/claude-sonnet-4-5-20250929'],
+    ['us.anthropic.claude-sonnet-4-5-20250929-v1:0', 'anthropic/claude-sonnet-4-5-20250929'],
+    ['eu.anthropic.claude-sonnet-4-5-20250929-v1:0', 'anthropic/claude-sonnet-4-5-20250929'],
+    ['global.anthropic.claude-sonnet-4-5-20250929-v1:0', 'anthropic/claude-sonnet-4-5-20250929'],
+    ['anthropic.claude-haiku-4-5-20251001-v1:0', 'anthropic/claude-haiku-4-5-20251001'],
+    ['amazon.nova-pro-v1:0', 'amazon/nova-pro'],
+  ])('maps the full Bedrock id %s to %s', (model, expected) => {
+    expect(gatewayModelId(config('Bedrock', model))).toBe(expected);
+  });
+
+  it('keeps a version that is part of the model name', () => {
+    expect(gatewayModelId(config('Bedrock', 'amazon.titan-embed-text-v2'))).toBe('amazon/titan-embed-text-v2');
+  });
+
+  it('leaves an explicit Gateway id alone even when it ends like a Bedrock version', () => {
+    expect(gatewayModelId(config('Bedrock', 'anthropic/claude-sonnet-4.5'))).toBe('anthropic/claude-sonnet-4.5');
+  });
+
   it('fails locally when a multi-model host has no identifiable creator', () => {
     expect(() => gatewayModelId(config('Databricks', 'custom-deployment'))).toThrow(
       'hosts models from multiple creators',

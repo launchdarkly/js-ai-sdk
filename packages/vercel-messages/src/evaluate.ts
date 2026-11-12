@@ -18,6 +18,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { type Experimental_EvaluationModel, type Experimental_EvaluationQuestion, experimental_evaluate } from 'ai';
+import { gatewayProviderOptions } from './inference-region.js';
 import { gatewayModelId } from './model-id.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
@@ -109,6 +110,7 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
   const captureContent = effectiveCaptureContent(options.captureContent);
   const trackData = makeRunTrackData({ configKey, config, meta });
   const model = await resolveModel(config, options);
+  const providerOptions = gatewayProviderOptions(config, model, options.providerOptions);
   const startTime = Date.now();
 
   return trace.getTracer(TRACER_NAME).startActiveSpan('evaluate', async (span) => {
@@ -130,7 +132,7 @@ export async function vercelEvaluate<const QUESTIONS extends Record<string, Expe
         ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
         ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
         ...(options.headers ? { headers: options.headers } : {}),
-        ...(options.providerOptions ? { providerOptions: options.providerOptions } : {}),
+        ...(providerOptions ? { providerOptions } : {}),
       });
       const usage = normalizeUsage(result.usage);
       setOutputContentAttributes(span, captureContent, [textMessage('assistant', JSON.stringify(result.answers))]);

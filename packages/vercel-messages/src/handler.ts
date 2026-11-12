@@ -39,6 +39,7 @@ import {
   type ToolSet,
   tool,
 } from 'ai';
+import { gatewayProviderOptions } from './inference-region.js';
 import { gatewayModelId } from './model-id.js';
 import { buildModelParameterOptions } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
@@ -307,10 +308,13 @@ function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}
             toolDefinitions: definitions,
           });
           const output = requestOutput(configRep.outputFormat);
+          const model = await resolveModel(configRep, options);
+          const providerOptions = gatewayProviderOptions(configRep, model);
           const result = await generateText({
             ...buildModelParameterOptions(configRep.model.parameters),
             ...retryOptions(options),
-            model: await resolveModel(configRep, options),
+            model,
+            ...(providerOptions ? { providerOptions } : {}),
             messages,
             ...(system ? { system } : {}),
             ...(Object.keys(tools).length > 0 ? { tools, stopWhen: stepCountIs(MAX_STEPS) } : {}),
@@ -358,10 +362,13 @@ function createVercelMessagesHandlerInternal(options: VercelMessagesOptions = {}
           toolDefinitions: definitions,
         });
         chatSpan = startChatSpan(configRep, rootSpan);
+        const model = await resolveModel(configRep, options);
+        const providerOptions = gatewayProviderOptions(configRep, model);
         const result = streamText({
           ...buildModelParameterOptions(configRep.model.parameters),
           ...retryOptions(options),
-          model: await resolveModel(configRep, options),
+          model,
+          ...(providerOptions ? { providerOptions } : {}),
           messages,
           ...(system ? { system } : {}),
           ...(Object.keys(tools).length > 0 ? { tools, stopWhen: stepCountIs(MAX_STEPS) } : {}),
