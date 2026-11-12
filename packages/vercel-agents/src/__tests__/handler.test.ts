@@ -434,6 +434,24 @@ describe('createVercelAgentsHandler', () => {
     expect(result.usage).toEqual({ input_tokens: 9, output_tokens: 5, total_tokens: 14 });
   });
 
+  it.each([
+    ['Bedrock', 'aws.bedrock'],
+    ['bedrock', 'aws.bedrock'],
+    ['Azure', 'azure'],
+  ] as const)('writes provider %s as %s on both keys of the root and chat spans', async (providerName, expected) => {
+    const cfg = {
+      ...baseConfig,
+      model: { ...baseConfig.model, name: 'openai/gpt-5' },
+      provider: { name: providerName },
+    };
+    await createVercelAgentsHandler()(cfg as any, 'q');
+    const chat = spanMocks.children.find(({ name }) => name === `chat ${cfg.model.name}`)?.span;
+    for (const span of [spanMocks.root, chat]) {
+      expect(span?.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', expected);
+      expect(span?.setAttribute).toHaveBeenCalledWith('gen_ai.system', expected);
+    }
+  });
+
   it('uses evaluated provider telemetry, preserves the gateway model id, and disables runtime telemetry', async () => {
     await createVercelAgentsHandler()(baseConfig as any, 'q');
     const chat = spanMocks.children.find(({ name }) => name === `chat ${baseConfig.model.name}`)?.span;

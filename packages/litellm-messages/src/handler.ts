@@ -114,7 +114,11 @@ function failSpan(span: Span, error: unknown): void {
   span.end();
 }
 
-const servingProvider = (configRep: AiConfigRep) => (configRep.provider?.name || 'litellm').toLowerCase();
+/** The configured provider, lower-cased, with Bedrock as its semconv value `aws.bedrock`. */
+const servingProvider = (configRep: AiConfigRep) => {
+  const provider = (configRep.provider?.name || 'litellm').toLowerCase();
+  return provider === 'bedrock' ? 'aws.bedrock' : provider;
+};
 
 // https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
 const CROSS_REGION_PREFIXES = ['global.', 'us.', 'us-gov.', 'eu.', 'apac.', 'au.', 'jp.', 'ca.', 'in.'];

@@ -781,6 +781,22 @@ describe('createLiteLLMMessagesHandler', () => {
       expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', 'litellm');
     });
 
+    it.each([
+      ['Bedrock', 'aws.bedrock'],
+      ['bedrock', 'aws.bedrock'],
+      ['Azure', 'azure'],
+    ] as const)('writes gen_ai.provider.name for provider %s as %s', async (providerName, expected) => {
+      const create = vi.fn().mockResolvedValue(completion('ok'));
+      const cfg = { ...baseConfig, provider: { name: providerName } };
+      await createLiteLLMMessagesHandler({ client: { chat: { completions: { create } } } as never })(cfg as never, 'q');
+      expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', expected);
+      expect(mockRootSpan.setAttribute).toHaveBeenCalledWith('gen_ai.system', 'litellm');
+      const chats = mockSpans.filter(({ name }) => name === `chat ${cfg.model.name}`);
+      expect(chats).toHaveLength(1);
+      expect(chats[0].span.setAttribute).toHaveBeenCalledWith('gen_ai.provider.name', expected);
+      expect(chats[0].span.setAttribute).toHaveBeenCalledWith('gen_ai.system', 'litellm');
+    });
+
     describe('content capture resolves at run time', () => {
       const make = (options: { captureContent?: boolean } = {}) =>
         createLiteLLMMessagesHandler({
