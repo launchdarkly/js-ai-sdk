@@ -399,6 +399,16 @@ describe('createLiteLLMAgentsHandler', () => {
     warn.mockRestore();
   });
 
+  it('never gives the SDK a tool whose name is only an inherited object property', async () => {
+    mockRun.mockResolvedValue(result());
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function' as const, parameters: { type: 'object' } } },
+    };
+    await createLiteLLMAgentsHandler({ client: {} as never })(config as any, 'q', {});
+    expect(((agentArgs[0].tools ?? []) as any[]).map((t) => t.name)).not.toContain('constructor');
+  });
+
   it('maps instructions, tools, structured history, and output format to the Agents SDK', async () => {
     mockRun.mockResolvedValue(result({ answer: 'yes' }));
     const search = vi.fn();

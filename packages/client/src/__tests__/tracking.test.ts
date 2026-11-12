@@ -433,6 +433,21 @@ describe('executeAndTrack', () => {
     });
     expect(Object.keys(handler.mock.calls[0][2])).toEqual(['safe']);
   });
+
+  it('passes a tool map with no inherited properties when the caller gives no tool handlers', async () => {
+    const handler = makeHandler('ok');
+    await executeAndTrack({
+      configKey: 'f',
+      config: {
+        ...execConfig,
+        tools: { constructor: { name: 'constructor', type: 'function', parameters: {} } },
+      } as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+    });
+    expect(handler.mock.calls[0][2].constructor).toBeUndefined();
+  });
 });
 
 // ─── executeAndStream ────────────────────────────────────────────────────────
