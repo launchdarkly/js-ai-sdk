@@ -1521,16 +1521,30 @@ describe('model source', () => {
     });
   });
 
-  it('camelCase model.parameters keys still pass through unchanged into the default constructor', async () => {
-    vi.mocked(ChatOpenAI).mockImplementation(function MockChatOpenAI() {
-      return makeMockLLM('default-openai') as any;
-    });
-    const cfg = {
-      ...baseConfig,
-      model: { name: 'gpt-4o', parameters: { temperature: 0.2, maxTokens: 512 } },
+  // The input keys are the snake_case ones: a camelCase spelling of a table key is dropped like any
+  // other unknown key, and only the snake_case key reaches the constructor (under its camelCase name).
+  it.each([
+    ['maxTokens', 'max_tokens', 5, 'OpenAI', 'gpt-4o'],
+    ['topP', 'top_p', 0.5, 'OpenAI', 'gpt-4o'],
+    ['topK', 'top_k', 5, 'Anthropic', 'claude-sonnet-4-5'],
+    ['frequencyPenalty', 'frequency_penalty', 0.5, 'OpenAI', 'gpt-4o'],
+    ['presencePenalty', 'presence_penalty', 0.5, 'OpenAI', 'gpt-4o'],
+    ['stopSequences', 'stop_sequences', ['END'], 'OpenAI', 'gpt-4o'],
+  ] as const)('forwards %s only from its snake_case key %s', async (camel, snake, value, provider, name) => {
+    const ctor = provider === 'Anthropic' ? ChatAnthropic : ChatOpenAI;
+    vi.mocked(ctor).mockImplementation(function MockChatModel() {
+      return makeMockLLM('default') as any;
+    } as any);
+    const constructorArgs = async (parameters: Record<string, unknown>) => {
+      vi.mocked(ctor).mockClear();
+      await createLangChainMessagesHandler()(
+        { ...baseConfig, provider: { name: provider }, model: { name, parameters } } as any,
+        'q',
+      );
+      return vi.mocked(ctor).mock.calls[0][0];
     };
-    await createLangChainMessagesHandler()(cfg as any, 'q');
-    expect(ChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
+    expect(await constructorArgs({ [camel]: value })).not.toHaveProperty(camel);
+    expect(await constructorArgs({ [snake]: value })).toHaveProperty(camel, value);
   });
 
   it.each([
