@@ -202,6 +202,22 @@ describe('toVercelAgents', () => {
     expect(leafSettings).not.toHaveProperty('max_completion_tokens');
   });
 
+  it("pins a Bedrock node's model.region on that node's Gateway call only", async () => {
+    const graph = makeGraph();
+    const leaf = graph.getNode('leaf')!;
+    leaf.config.provider = { name: 'Bedrock' };
+    leaf.config.model = { name: 'eu.anthropic.claude-sonnet-4-5-20250929-v1:0', region: 'eu' } as any;
+    await toVercelAgents(Promise.resolve(graph as any)).invoke('hi');
+    const rootSettings = aiMocks.agentArguments.find((options) => options.model === 'openai/root-model');
+    const leafSettings = aiMocks.agentArguments.find(
+      (options) => options.model === 'anthropic/claude-sonnet-4-5-20250929',
+    );
+    expect(leafSettings.providerOptions).toEqual({
+      gateway: { inferenceRegion: { providers: { bedrock: { scope: 'zone', geoRegion: 'eu' } } } },
+    });
+    expect(rootSettings).not.toHaveProperty('providerOptions');
+  });
+
   it('never forwards credentials, endpoints, headers or host settings from any node', async () => {
     const graph = makeGraph();
     (graph.root.config.model as any).parameters = { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 };
