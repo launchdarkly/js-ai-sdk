@@ -176,12 +176,19 @@ export async function fetchAiConfigMode(
   );
 }
 
-/** The latest version of an AI Config variation, as the management API stores it. */
+/**
+ * One version of an AI Config variation, as the management API stores it.
+ *
+ * Omit `pinnedVersion` to take the newest version. Pass it to take that
+ * version even when a newer one exists: a served `_ldMeta.version` is a valid
+ * run when it is not the newest, and this does not warn.
+ */
 export async function fetchLatestVariation(
   api: LDApiClient,
   projectKey: string,
   configKey: string,
   variationKey: string,
+  pinnedVersion?: number,
 ): Promise<Record<string, unknown>> {
   const description = `AI Config variation '${configKey}'/'${variationKey}'`;
   const raw = await getOr404(
@@ -194,12 +201,17 @@ export async function fetchLatestVariation(
       ),
     () => `LaunchDarkly ${description} was not found in project '${projectKey}'`,
   );
-  // The endpoint returns every version of the variation; evaluate the latest.
+  // The endpoint returns every version of the variation.
   const versions = (Array.isArray(raw.items) ? raw.items : []).filter(
     (item): item is Record<string, unknown> => isPlainObject(item) && Number.isInteger(item.version),
   );
   if (!versions.length) throw new EvaluationsError(`LaunchDarkly ${description} has no versions`);
-  return versions.reduce((latest, item) => ((item.version as number) > (latest.version as number) ? item : latest));
+  if (pinnedVersion === undefined) {
+    return versions.reduce((latest, item) => ((item.version as number) > (latest.version as number) ? item : latest));
+  }
+  const pinned = versions.find((item) => item.version === pinnedVersion);
+  if (!pinned) throw new EvaluationsError(`LaunchDarkly ${description} has no version ${pinnedVersion}`);
+  return pinned;
 }
 
 /** The model config a variation links, or `undefined` when it links none. */
@@ -372,6 +384,13 @@ export function validateOfflineEvaluationKey(key: string): void {
   }
 }
 
+/** The AI Config variation a run is linked to. `variationVersion` is that variation's version, not the evaluation's. */
+export type AiConfigLink = {
+  configKey: string;
+  variationKey: string;
+  variationVersion: number;
+};
+
 /**
  * Mutable config fields shared by create (POST) and reconcile (PATCH) on
  * `offline-evaluations`. Mode selects the handler only and is never sent.
@@ -379,13 +398,16 @@ export function validateOfflineEvaluationKey(key: string): void {
  * Pass `includeIdentity: true` on create so the body carries `key` + `name`
  * (name defaults to the key). PATCH omits both: the path already names the
  * evaluation, and sending `name: key` would reset a renamed evaluation.
+ *
+ * Pass `link` on both. Inline generation overrides change the content and
+ * still resend the link, which is what keeps a linked evaluation linked.
  */
 export function evaluationConfigBody(
   key: string,
   generation: ResolvedGeneration,
   tools: readonly EvalTool[],
   criteria: readonly Criterion[] = [],
-  options: { includeIdentity?: boolean } = {},
+  options: { includeIdentity?: boolean; link?: AiConfigLink } = {},
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     generationProvider: generation.provider,
@@ -408,6 +430,11 @@ export function evaluationConfigBody(
   // ingest still expects results for when a prior version listed them.
   body.tools = createBodyTools(tools);
   body.criteria = criteria.map(criterionWire);
+  if (options.link) {
+    body.configKey = options.link.configKey;
+    body.variationKey = options.link.variationKey;
+    body.variationVersion = options.link.variationVersion;
+  }
   return body;
 }
 
@@ -440,10 +467,11 @@ export async function ensureEvaluation(
   generation: ResolvedGeneration,
   tools: readonly EvalTool[],
   criteria: readonly Criterion[] = [],
+  link?: AiConfigLink,
 ): Promise<EvaluationRef> {
-  const createBody = evaluationConfigBody(key, generation, tools, criteria, { includeIdentity: true });
-  // Omit name on PATCH so a renamed evaluation keeps its display name.
-  const patchBody = evaluationConfigBody(key, generation, tools, criteria);
+  const createBody = evaluationConfigBody(key, generation, tools, criteria, { includeIdentity: true, link });
+  // Omit name on PATCH so a renamed evaluation keeps its display name. Resend the link.
+  const patchBody = evaluationConfigBody(key, generation, tools, criteria, { link });
   const collection = `projects/${segment(projectKey)}/offline-evaluations`;
   const byKey = `${collection}/${segment(key)}`;
 

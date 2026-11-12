@@ -29,6 +29,7 @@ import {
 } from './evaluations-api.js';
 import { type Criterion, Judge, validateCriteria } from './evaluations-criteria.js';
 import {
+  type AiConfigLink,
   buildHandlerConfig,
   cancelEvaluationRun,
   createEvaluationRun,
@@ -75,7 +76,7 @@ import {
   toolHandlerMap,
   validateTools,
 } from './evaluations-tools.js';
-import { flushTracerProvider, getClient, initClient } from './lifecycle.js';
+import { flushTracerProvider, getClient, initClient, inspectConfig } from './lifecycle.js';
 import { findHandler, registrationKey } from './registry.js';
 import { reportUsage } from './sdk-usage.js';
 import type { ConfigMessage, LDClientInterface, ProviderHandler } from './types.js';
@@ -143,12 +144,21 @@ export type GenerationConfig = {
 /** Overrides layered over an AI Config variation. The AI Config supplies the mode. */
 export type GenerationOverrides = Partial<Omit<GenerationConfig, 'mode'>>;
 
-/** Identifies an existing AI Config variation to seed a run from. */
+/**
+ * Identifies an existing AI Config to seed a run from.
+ *
+ * Omit `variation` to use the variation served to
+ * `{ kind: "evaluation", key: <the evaluation key> }`. Name it to use the
+ * latest version of that variation.
+ */
 export type AIConfig = {
   /** The AI Config key. */
   key: string;
-  /** The variation key. */
-  variation: string;
+  /**
+   * The variation key. Omit it to use the served variation. A blank string is
+   * an error; it does not mean "served".
+   */
+  variation?: string;
 };
 
 /**
@@ -523,6 +533,41 @@ const warn = (message: string) => console.warn(`[LaunchDarkly] ${message}`);
 // biome-ignore lint/suspicious/noConsole: opt-in event log, enabled by the caller with `logEvents`
 const info = (message: string) => console.info(`[LaunchDarkly] ${message}`);
 
+/**
+ * The variation and version served for this evaluation.
+ *
+ * The context is always `{ kind: "evaluation", key: <evaluation key> }`.
+ * The caller passes no context, and the project key is not a fallback.
+ * A missing `_ldMeta.version` is an error here, before any management-API
+ * write. It is not defaulted.
+ */
+async function resolveServedVariation(
+  configKey: string,
+  evaluationKey: string,
+): Promise<{ variationKey: string; version: number }> {
+  const inspected = await inspectConfig(configKey, { kind: 'evaluation', key: evaluationKey });
+  const disabled = inspected.meta?.enabled === false;
+  if (!inspected.enabled || inspected.config === null || inspected.meta === null) {
+    throw new EvaluationsError(
+      disabled
+        ? `AI Config '${configKey}' is disabled for evaluation '${evaluationKey}'`
+        : `AI Config '${configKey}' was not delivered for evaluation '${evaluationKey}'`,
+    );
+  }
+  const { variationKey, version } = inspected.meta;
+  if (typeof variationKey !== 'string' || !variationKey.trim()) {
+    throw new EvaluationsError(
+      `AI Config '${configKey}' was served for evaluation '${evaluationKey}' without a variation key`,
+    );
+  }
+  if (!Number.isInteger(version)) {
+    throw new EvaluationsError(
+      `AI Config '${configKey}' variation '${variationKey}' was served for evaluation '${evaluationKey}' without a version`,
+    );
+  }
+  return { variationKey, version: version as number };
+}
+
 // ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
@@ -585,10 +630,15 @@ export class EvaluationsModule {
    * argument is checked before any network I/O, and every check before any
    * record is created.
    *
-   * Pass `aiConfig` to start from an existing AI Config variation. Its model,
-   * provider, parameters, prompt and output format become the defaults, and
-   * `generation` overrides them field by field. When `tools` is omitted the
-   * variation's tools are used, so each needs an implementation.
+   * Pass `aiConfig` to start from an existing AI Config. Its model, provider,
+   * parameters, prompt and output format are the base, and `generation`
+   * overrides replace that base for the run. The run stays linked to the
+   * variation either way. When `variation` is omitted, the base is the
+   * variation served to `{ kind: "evaluation", key: <this run's key> }`, at
+   * that value's `_ldMeta.version`. A disabled config, a config that is not
+   * delivered, or a served value with no version is an error before the
+   * evaluation is written. When `tools` is omitted the variation's tools are
+   * used, so each needs an implementation.
    *
    * When the run's summary reports a criterion with a pass rate threshold,
    * `run()` also waits briefly for LaunchDarkly's verdict on the run, returns
@@ -634,10 +684,12 @@ export class EvaluationsModule {
       checkPrompt(settings, mode, `the selected handler ${formatProvidesFor([handler])}`);
       generation = { ...withoutMode(settings), provider, model, mode };
     } else {
-      for (const field of ['key', 'variation'] as const) {
-        if (typeof aiConfig?.[field] !== 'string' || !aiConfig[field].trim()) {
-          throw new EvaluationsError(`aiConfig.${field} must not be blank`);
-        }
+      if (typeof aiConfig?.key !== 'string' || !aiConfig.key.trim()) {
+        throw new EvaluationsError('aiConfig.key must not be blank');
+      }
+      // A missing variation is served, below. A present blank one is not.
+      if (aiConfig.variation !== undefined && (typeof aiConfig.variation !== 'string' || !aiConfig.variation.trim())) {
+        throw new EvaluationsError('aiConfig.variation must not be blank');
       }
       if (generationArg && 'mode' in generationArg) {
         throw new EvaluationsError(
@@ -651,13 +703,15 @@ export class EvaluationsModule {
     // ---- The event client, before any management API request. ----
     const client = await this.resolveClient();
     let variationJudges: string[] = [];
+    let link: AiConfigLink | undefined;
 
     // ---- AI Config reads, each check as soon as its input arrives. ----
     if (aiConfig !== undefined) {
-      const resolved = await this.resolveAiConfig(aiConfig, generationArg ?? {}, pool, tools, runTools);
+      const resolved = await this.resolveAiConfig(key, aiConfig, generationArg ?? {}, pool, tools, runTools);
       generation = resolved.generation;
       handler = resolved.handler;
       variationJudges = resolved.judgeKeys;
+      link = resolved.link;
     }
     if (!generation || !handler) throw new EvaluationsError('generation could not be resolved');
 
@@ -681,7 +735,7 @@ export class EvaluationsModule {
       datasetRef = {};
       rows = inlineRows.map((row) => renderRow(row.rowIdx, row));
     }
-    const evaluation = await ensureEvaluation(this.api, this.projectKey, key, generation, runTools, runCriteria);
+    const evaluation = await ensureEvaluation(this.api, this.projectKey, key, generation, runTools, runCriteria, link);
     const run = await createEvaluationRun(this.api, this.projectKey, evaluation.id, datasetRef.id);
     if (inlineRows !== undefined) {
       // Every batch must land before the first event: the run starts with a
@@ -828,13 +882,20 @@ export class EvaluationsModule {
    * check as soon as the read that supplies its input returns.
    */
   private async resolveAiConfig(
+    evaluationKey: string,
     aiConfig: AIConfig,
     overrides: Record<string, unknown>,
     pool: readonly ProviderHandler[],
     toolsArg: readonly EvalTool[] | undefined,
     runTools: readonly EvalTool[],
-  ): Promise<{ generation: ResolvedGeneration; handler: ProviderHandler; judgeKeys: string[] }> {
-    const label = `'${aiConfig.key}'/'${aiConfig.variation}'`;
+  ): Promise<{ generation: ResolvedGeneration; handler: ProviderHandler; judgeKeys: string[]; link: AiConfigLink }> {
+    // Flag delivery only, and only when the caller did not name a variation.
+    // A missing served version errors here, before any management-API write.
+    const served =
+      aiConfig.variation === undefined ? await resolveServedVariation(aiConfig.key, evaluationKey) : undefined;
+    const variationKey = served?.variationKey ?? aiConfig.variation;
+    if (variationKey === undefined) throw new EvaluationsError('aiConfig.variation must not be blank');
+    const label = `'${aiConfig.key}'/'${variationKey}'`;
 
     const configMode = await fetchAiConfigMode(this.api, this.projectKey, aiConfig.key);
     const mode = normalizeMode(configMode);
@@ -845,7 +906,17 @@ export class EvaluationsModule {
       );
     }
 
-    const variation = await fetchLatestVariation(this.api, this.projectKey, aiConfig.key, aiConfig.variation);
+    const variation = await fetchLatestVariation(
+      this.api,
+      this.projectKey,
+      aiConfig.key,
+      variationKey,
+      served?.version,
+    );
+    const variationVersion = served?.version ?? variation.version;
+    if (!Number.isInteger(variationVersion)) {
+      throw new EvaluationsError(`AI Config variation ${label} is missing a version`);
+    }
     // The prompt does not depend on the model config, so it is checked before that read.
     const prompt = mergeGeneration(variationGeneration(variation, undefined, mode), overrides);
     checkPromptExclusive(prompt);
@@ -858,13 +929,7 @@ export class EvaluationsModule {
       );
     }
 
-    const modelConfig = await fetchLinkedModelConfig(
-      this.api,
-      this.projectKey,
-      aiConfig.key,
-      aiConfig.variation,
-      variation,
-    );
+    const modelConfig = await fetchLinkedModelConfig(this.api, this.projectKey, aiConfig.key, variationKey, variation);
     const merged = mergeGeneration(variationGeneration(variation, modelConfig, mode), overrides);
     const { provider, model } = requireProviderAndModel(merged);
     const handler = requireCoverage(pool, provider, mode);
@@ -893,6 +958,7 @@ export class EvaluationsModule {
       handler,
       // The variation's judges are the default criteria.
       judgeKeys: variationJudgeKeys(variation),
+      link: { configKey: aiConfig.key, variationKey, variationVersion: variationVersion as number },
     };
   }
 

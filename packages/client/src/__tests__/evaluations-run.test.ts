@@ -35,7 +35,12 @@ import {
   stubHandler,
 } from './evaluations-fakes.js';
 
-const lifecycle = vi.hoisted(() => ({ client: undefined as unknown, init: vi.fn(), resolve: vi.fn() }));
+const lifecycle = vi.hoisted(() => ({
+  client: undefined as unknown,
+  init: vi.fn(),
+  resolve: vi.fn(),
+  inspect: vi.fn(),
+}));
 
 vi.mock('../lifecycle.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lifecycle.js')>()),
@@ -46,6 +51,9 @@ vi.mock('../lifecycle.js', async (importOriginal) => ({
   initClient: (...args: unknown[]) => lifecycle.init(...args),
   // The judge resolution seam: flag delivery, stubbed.
   extractVariation: (...args: unknown[]) => lifecycle.resolve(...args),
+  // Served-variation resolution. Default is "not delivered" so a run that
+  // omits aiConfig.variation fails closed unless the test serves one.
+  inspectConfig: (...args: unknown[]) => lifecycle.inspect(...args),
 }));
 
 let client: StubClient;
@@ -57,6 +65,8 @@ beforeEach(() => {
   lifecycle.init.mockReset();
   lifecycle.resolve.mockReset();
   lifecycle.resolve.mockImplementation(async () => servedJudge());
+  lifecycle.inspect.mockReset();
+  lifecycle.inspect.mockResolvedValue({ enabled: false, config: null, meta: null });
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -770,6 +780,165 @@ describe('aiConfig source', () => {
     expect(config.model).toEqual({ name: 'gpt-4o', parameters: { max_tokens: 100, temperature: 0.1 } });
     expect(config.messages).toEqual([{ role: 'user', content: 'new {{input}}' }]);
     expect(JSON.stringify(config)).not.toContain('old');
+    expect(lifecycle.inspect).not.toHaveBeenCalled();
+  });
+
+  const posted = (api: FakeApi) =>
+    api.calls.find((call) => call.method === 'POST' && call.path === EVALUATION_PATH)?.body as Record<string, unknown>;
+
+  it('sends the latest variation version on create when variation is named', async () => {
+    const api = routeAi(new FakeApi(), 'completion', {
+      messages: [{ role: 'user', content: 'new' }],
+    });
+    await makeModule(api).run(aiRun());
+    expect(lifecycle.inspect).not.toHaveBeenCalled();
+    expect(posted(api)).toMatchObject({
+      configKey: 'support',
+      variationKey: 'v1',
+      variationVersion: 2,
+    });
+  });
+
+  it('keeps the link when generation overrides replace the variation content', async () => {
+    const api = routeAi(new FakeApi(), 'completion', {
+      messages: [{ role: 'user', content: 'from the variation' }],
+    });
+    await makeModule(api).run(
+      aiRun({ generation: { model: 'gpt-5.5', messages: [{ role: 'user', content: 'override' }] } }),
+    );
+    expect(posted(api)).toMatchObject({
+      generationModel: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'override' }],
+      configKey: 'support',
+      variationKey: 'v1',
+      variationVersion: 2,
+    });
+  });
+
+  it('resends the link on PATCH and still omits the evaluation key and name', async () => {
+    const api = routeAi(new FakeApi(), 'completion', {
+      messages: [{ role: 'user', content: 'new' }],
+    })
+      .on('GET', EVALUATION_BY_KEY_PATH, { body: { id: 'ev-1', version: 4, key: 'eval-key' } })
+      .on('PATCH', EVALUATION_BY_KEY_PATH, { body: { id: 'ev-1', version: 5, key: 'eval-key' } });
+    await makeModule(api).run(aiRun());
+    const patch = api.calls.find((call) => call.method === 'PATCH')?.body as Record<string, unknown>;
+    expect(patch).toMatchObject({ configKey: 'support', variationKey: 'v1', variationVersion: 2 });
+    expect(patch).not.toHaveProperty('key');
+    expect(patch).not.toHaveProperty('name');
+    expect(api.calls.some((call) => call.method === 'POST' && call.path === EVALUATION_PATH)).toBe(false);
+  });
+
+  describe('served variation', () => {
+    const servedMeta = (meta: Record<string, unknown> = {}) => ({
+      enabled: true,
+      config: { model: { name: 'ignored-flag-payload' } },
+      meta: { enabled: true, variationKey: 'v1', version: 7, ...meta },
+    });
+
+    const servedVersions = {
+      body: {
+        items: [
+          {
+            version: 9,
+            modelConfigKey: 'OpenAI.gpt-4o',
+            messages: [{ role: 'user', content: 'newest' }],
+          },
+          {
+            version: 7,
+            modelConfigKey: 'OpenAI.gpt-4o',
+            modelConfigVersion: 3,
+            model: { parameters: { temperature: 0.2 } },
+            messages: [{ role: 'user', content: 'served {{input}}' }],
+          },
+        ],
+      },
+    };
+
+    function routeServed(api: FakeApi = new FakeApi()) {
+      return routeAi(api, 'completion', {}).on('GET', VARIATION, servedVersions);
+    }
+
+    it('uses the served version, not the newest, and keeps the run URL', async () => {
+      lifecycle.inspect.mockResolvedValue(servedMeta());
+      const api = routeServed();
+      const handler = stubHandler();
+      const result = await makeModule(api).run(aiRun({ handler, aiConfig: { key: 'support' } }));
+      expect(lifecycle.inspect).toHaveBeenCalledTimes(1);
+      expect(lifecycle.inspect).toHaveBeenCalledWith('support', { kind: 'evaluation', key: 'eval-key' });
+      expect(configSeen(handler).messages).toEqual([{ role: 'user', content: 'served {{input}}' }]);
+      expect(posted(api)).toMatchObject({
+        messages: [{ role: 'user', content: 'served {{input}}' }],
+        configKey: 'support',
+        variationKey: 'v1',
+        variationVersion: 7,
+      });
+      expect(JSON.stringify(posted(api))).not.toContain('newest');
+      expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).not.toMatch(/version/);
+      expect(result.url).toBe(`https://app.launchdarkly.com/projects/${PROJECT}/ai/evaluations/ev-1/runs/run-1`);
+    });
+
+    it('replaces the served model with a generation override and still sends the link', async () => {
+      lifecycle.inspect.mockResolvedValue(servedMeta());
+      const api = routeServed();
+      await makeModule(api).run(aiRun({ aiConfig: { key: 'support' }, generation: { model: 'gpt-5.5' } }));
+      expect(posted(api)).toMatchObject({
+        generationModel: 'gpt-5.5',
+        messages: [{ role: 'user', content: 'served {{input}}' }],
+        configKey: 'support',
+        variationKey: 'v1',
+        variationVersion: 7,
+      });
+    });
+
+    it('errors before any write when the served version is not in the variation', async () => {
+      lifecycle.inspect.mockResolvedValue(servedMeta());
+      const api = routeAi(new FakeApi(), 'completion', {});
+      await expect(makeModule(api).run(aiRun({ aiConfig: { key: 'support' } }))).rejects.toThrow(/has no version 7/);
+      expect(api.calls.some((call) => call.method === 'POST' || call.method === 'PATCH')).toBe(false);
+    });
+
+    it.each([
+      [
+        'is disabled',
+        { enabled: false, config: null, meta: { enabled: false, variationKey: 'v1', version: 7 } },
+        /is disabled/,
+      ],
+      ['was not delivered', { enabled: false, config: null, meta: null }, /was not delivered/],
+      [
+        'could not be read',
+        { enabled: true, config: null, meta: { enabled: true, variationKey: 'v1', version: 7 } },
+        /was not delivered/,
+      ],
+      [
+        'has no variation key',
+        { enabled: true, config: {}, meta: { enabled: true, version: 7 } },
+        /without a variation key/,
+      ],
+      [
+        'has no version',
+        { enabled: true, config: {}, meta: { enabled: true, variationKey: 'v1' } },
+        /without a version/,
+      ],
+    ])('errors before any request when the served config %s', async (_name, inspected, message) => {
+      lifecycle.inspect.mockResolvedValue(inspected);
+      const api = new FakeApi();
+      await expect(makeModule(api).run(aiRun({ aiConfig: { key: 'support' } }))).rejects.toThrow(message);
+      expect(api.calls).toEqual([]);
+      expect(lifecycle.inspect).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('rejects a blank variation and a blank evaluation key before inspectConfig', async () => {
+    const api = new FakeApi();
+    await expect(makeModule(api).run(aiRun({ aiConfig: { key: 'support', variation: ' ' } }))).rejects.toThrow(
+      /aiConfig.variation must not be blank/,
+    );
+    await expect(makeModule(api).run(aiRun({ key: '  ', aiConfig: { key: 'support' } }))).rejects.toThrow(
+      /key must not be blank/,
+    );
+    expect(api.calls).toEqual([]);
+    expect(lifecycle.inspect).not.toHaveBeenCalled();
   });
 
   it("resolves the variation's prompt snippets, with overrides merged over them by key", async () => {
