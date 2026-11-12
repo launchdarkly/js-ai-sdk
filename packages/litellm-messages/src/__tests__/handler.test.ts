@@ -546,6 +546,37 @@ describe('createLiteLLMMessagesHandler', () => {
       expect(handlers.host_shell).not.toHaveBeenCalled();
     });
 
+    it('rejects a tool registered nowhere on invoke', async () => {
+      const create = vi.fn().mockResolvedValueOnce(toolCompletion([{ arguments: '{}', id: 'c1', name: 'ghost' }]));
+      await expect(
+        client(create)({ ...baseConfig, tools: { safe_lookup: tool('safe_lookup') } } as never, 'q', {
+          safe_lookup: vi.fn(),
+        }),
+      ).rejects.toThrow(/ghost/);
+    });
+
+    it('rejects a tool registered nowhere on stream', async () => {
+      const create = vi.fn().mockResolvedValueOnce(
+        stream([
+          {
+            choices: [
+              { delta: { tool_calls: [{ function: { arguments: '{}', name: 'ghost' }, id: 'c1', index: 0 }] } },
+            ],
+          },
+        ]),
+      );
+      await expect(
+        collect(
+          client(create).stream?.(
+            { ...baseConfig, tools: { safe_lookup: tool('safe_lookup') } } as never,
+            'q',
+            { safe_lookup: vi.fn() },
+            {},
+          ) as AsyncIterable<unknown>,
+        ),
+      ).rejects.toThrow(/ghost/);
+    });
+
     it('rejects a registered tool when config.tools is absent on invoke', async () => {
       const create = vi.fn().mockResolvedValueOnce(toolCompletion([{ arguments: '{}', id: 'c1', name: 'host_shell' }]));
       const hostShell = vi.fn();

@@ -241,6 +241,16 @@ describe('toOpenAIAgents', () => {
     expect(mockTool.mock.calls.map(([options]: any[]) => options.name)).toEqual(['search']);
   });
 
+  it('never gives the SDK a registered tool the node does not attach', async () => {
+    const graph = makeTwoNodeGraph();
+    (graph.root.config as any).tools = { safe: { name: 'safe', type: 'function', parameters: { type: 'object' } } };
+    const privileged = vi.fn();
+    await toOpenAIAgents(Promise.resolve(graph), { toolHandlers: { safe: vi.fn(), privileged } }).invoke('hi');
+    const names = mockAgentConstructor.mock.calls.flatMap(([args]) => (args.tools ?? []).map((t: any) => t.name));
+    expect(names).toEqual(['safe']);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
   it('creates one Agent per node in a two-node graph', async () => {
     await toOpenAIAgents(Promise.resolve(makeTwoNodeGraph())).invoke('hi');
     expect(mockAgentConstructor).toHaveBeenCalledTimes(2);

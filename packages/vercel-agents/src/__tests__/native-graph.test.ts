@@ -284,6 +284,22 @@ describe('toVercelAgents', () => {
     warn.mockRestore();
   });
 
+  it('never gives the SDK a registered tool the node does not attach', async () => {
+    const graph = makeGraph();
+    (graph.getNode('leaf') as any).config.tools = {
+      safe: { name: 'safe', type: 'function', parameters: { type: 'object' } },
+    };
+    const privileged = vi.fn();
+    await toVercelAgents(Promise.resolve(graph as any), {
+      toolHandlers: { safe: vi.fn(), privileged },
+    } as any).invoke('hi');
+    const names = aiMocks.agentArguments.flatMap((args) =>
+      Object.keys(args.tools ?? {}).filter((key) => !key.startsWith('transfer_to_')),
+    );
+    expect(names).toEqual(['safe']);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
   it('starts at the graph root and applies caller history only to its first invocation', async () => {
     const history = [
       { role: 'user' as const, content: 'Earlier question' },

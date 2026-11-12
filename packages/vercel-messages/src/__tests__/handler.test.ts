@@ -439,6 +439,30 @@ describe('createVercelMessagesHandler', () => {
     expect(request.stopWhen).toEqual({ type: 'step-count', steps: 10 });
   });
 
+  it.each([
+    'invoke',
+    'stream',
+  ])('never gives the SDK a registered handler the config does not attach (%s)', async (path) => {
+    aiMocks.generateText.mockResolvedValue(generation('ok'));
+    aiMocks.streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield 'ok';
+      })(),
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    });
+    const config = { ...baseConfig, tools: { safe: { name: 'safe', type: 'function', parameters: {} } } };
+    const handlers = { safe: vi.fn(), privileged: vi.fn() };
+    const handler = createVercelMessagesHandler();
+    if (path === 'invoke') {
+      await handler(config as any, 'q', handlers);
+    } else {
+      await collect(handler.stream?.(config as any, 'q', handlers, {}) as AsyncIterable<any>);
+    }
+    const request = (path === 'invoke' ? aiMocks.generateText : aiMocks.streamText).mock.calls[0][0];
+    expect(Object.keys(request.tools)).toEqual(['safe']);
+    expect(handlers.privileged).not.toHaveBeenCalled();
+  });
+
   it('uses Output.object for blocking structured output and serializes the result', async () => {
     aiMocks.generateText.mockResolvedValue({
       ...generation('', 3, 2),

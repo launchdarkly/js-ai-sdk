@@ -1321,6 +1321,17 @@ describe('graph() multi-edge routing text', () => {
       expect(handoffResults).toEqual([handoffResult('agent-b')]);
     });
 
+    it('never hands a node a registered tool that it does not attach', async () => {
+      setupRouterGraph(true);
+      const privileged = vi.fn();
+      const { handler, routedCalls } = makeRecordingRouterHandler();
+      await run(graph('graph-flag', { handlers: [handler], toolHandlers: { lookup_case: vi.fn(), privileged } }));
+
+      expect(routedCalls).toHaveLength(1);
+      expect(routedCalls[0].handlerNames.sort()).toEqual(['__handoff_agent_a', '__handoff_agent_b', 'lookup_case']);
+      expect(privileged).not.toHaveBeenCalled();
+    });
+
     it('gives a node with no tools the pinned suffix and handoff result', async () => {
       setupRouterGraph(false);
       const { handler, routedCalls, handoffResults } = makeRecordingRouterHandler();

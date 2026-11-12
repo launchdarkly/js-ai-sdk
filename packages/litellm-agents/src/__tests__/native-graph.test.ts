@@ -271,6 +271,20 @@ describe('toLiteLLMAgents', () => {
     warn.mockRestore();
   });
 
+  it('never gives the SDK a registered tool the node does not attach', async () => {
+    const definition = graphDefinition();
+    (definition.root as any).config.tools = {
+      safe: { name: 'safe', type: 'function', parameters: { type: 'object' } },
+    };
+    const privileged = vi.fn();
+    await toLiteLLMAgents(Promise.resolve(definition), {
+      client: {} as never,
+      toolHandlers: { safe: vi.fn(), privileged },
+    }).invoke('q');
+    expect(agentArgs.flatMap((args) => ((args.tools ?? []) as any[]).map((t) => t.name))).toEqual(['safe']);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
   it('forwards structured history to the root run', async () => {
     const history = [
       {
