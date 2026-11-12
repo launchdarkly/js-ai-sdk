@@ -201,13 +201,13 @@ describe('toLangGraph', () => {
     expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
   });
 
-  it('leaves camelCase model.parameters keys unchanged for the default ChatOpenAI constructor', async () => {
+  it('drops a camelCase model.parameters key for the default ChatOpenAI constructor', async () => {
     const root = makeNode('root', '', []);
     root.config.model.parameters = { temperature: 0.2, maxTokens: 512 };
     const def = makeGraphDef([root], {}, 'root');
     MockChatOpenAI.mockClear();
     await toLangGraph(Promise.resolve(def)).invoke('hi');
-    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, model: 'gpt-4o' });
   });
 
   it('never passes credentials or connection settings to the default ChatOpenAI constructor', async () => {
