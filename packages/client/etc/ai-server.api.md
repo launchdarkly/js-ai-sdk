@@ -13,7 +13,7 @@ export function addCachedTokensToInput(rawUsage: Record<string, unknown>): SpanU
 // @public
 export type AIConfig = {
     key: string;
-    variation: string;
+    variation?: string;
 };
 
 // @public (undocumented)

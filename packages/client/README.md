@@ -758,7 +758,9 @@ A handler is called once per row as `handler(config, input, toolHandlers, variab
 
 #### Starting from an AI Config
 
-Pass `aiConfig` instead of a full `generation` to evaluate a variation you already have. Its model, provider, parameters, prompt and output format become the defaults, read from the latest version of the variation. `generation` can then override single fields; `parameters` merge key by key. The AI Config supplies the mode, so `generation.mode` is not allowed here.
+Pass `aiConfig` instead of a full `generation` to evaluate an AI Config. Its model, provider, parameters, prompt and output format are the base. `generation` overrides replace that base for this run (`parameters` still merge key by key) and the run stays linked to the variation. The AI Config supplies the mode, so `generation.mode` is not allowed here.
+
+Name `variation` to read the latest version of that variation. Omit it to use the variation served to `{ kind: "evaluation", key: <the evaluation key> }`, at that value's `_ldMeta.version`. A disabled config, a config that is not delivered, or a served value with no version is an error before the evaluation is written. The URL `run()` returns is still the run URL.
 
 ```ts
 await evals.run({
@@ -767,6 +769,14 @@ await evals.run({
   handler: createOpenAIMessagesHandler(),
   aiConfig: { key: 'support-agent', variation: 'candidate' },
   generation: { parameters: { temperature: 0.2 } },
+});
+
+await evals.run({
+  key: 'support-qa',
+  dataset: 'support-golden',
+  handler: createOpenAIMessagesHandler(),
+  aiConfig: { key: 'support-agent' },
+  generation: { model: 'gpt-5.5' },
 });
 ```
 
