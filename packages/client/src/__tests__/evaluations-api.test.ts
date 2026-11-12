@@ -26,12 +26,13 @@ describe('management API client: request shape', () => {
   });
 
   it('sends the raw token, Accept, LD-API-Version and a user agent, and Content-Type only with a body', async () => {
-    const api = new FakeApi().on('GET', 'a', { body: {} }).on('POST', 'b', { body: {} });
+    const api = new FakeApi().on('GET', 'a', { body: {} }).on('POST', 'b', { body: {} }).on('PATCH', 'c', { body: {} });
     const { ld } = client(api);
     await ld.get('a');
     await ld.post('b', { x: 1 });
-    const [get, post] = api.calls;
-    for (const call of [get, post]) {
+    await ld.patch('c', { y: 2 });
+    const [get, post, patch] = api.calls;
+    for (const call of [get, post, patch]) {
       expect(call.headers.Authorization).toBe('api-token');
       expect(call.headers.Accept).toBe('application/json');
       expect(call.headers['LD-API-Version']).toMatch(/^(\d{8}|beta)$/);
@@ -40,6 +41,8 @@ describe('management API client: request shape', () => {
     expect(get.headers['Content-Type']).toBeUndefined();
     expect(post.headers['Content-Type']).toBe('application/json');
     expect(post.body).toEqual({ x: 1 });
+    expect(patch.headers['Content-Type']).toBe('application/json');
+    expect(patch.body).toEqual({ y: 2 });
   });
 
   it('defaults to app.launchdarkly.com', async () => {
@@ -100,6 +103,16 @@ describe('management API client: retries', () => {
     const api = new FakeApi().on('POST', 'a', { status: 503 }, { status: 201, body: {} });
     await expect(client(api).ld.post('a', {})).rejects.toBeInstanceOf(LDApiError);
     expect(api.calls).toHaveLength(1);
+  });
+
+  it('does not retry a 5xx for a PATCH unless marked idempotent', async () => {
+    const plain = new FakeApi().on('PATCH', 'a', { status: 503 }, { body: { ok: 1 } });
+    await expect(client(plain).ld.patch('a', {})).rejects.toMatchObject({ status: 503 });
+    expect(plain.calls).toHaveLength(1);
+
+    const idempotent = new FakeApi().on('PATCH', 'a', { status: 503 }, { body: { ok: 1 } });
+    await expect(client(idempotent).ld.patch('a', {}, { idempotent: true })).resolves.toEqual({ ok: 1 });
+    expect(idempotent.calls).toHaveLength(2);
   });
 
   it('does not retry a transport failure for a POST', async () => {
