@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.1.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-1.0.0...@launchdarkly/ai-server-1.1.0) (2026-11-12)
+
+
+### Experimental
+
+* **shadow-requests:** add experimental shadowConfig wrapper ([#195](https://github.com/launchdarkly/js-ai-sdk/issues/195)) ([4b08a98](https://github.com/launchdarkly/js-ai-sdk/commit/4b08a98275cdac9d57e06ef44007fd80395d05d3))
+
+
+### Features
+
+* add maxRetries to the messages handler factories ([#165](https://github.com/launchdarkly/js-ai-sdk/issues/165)) ([e2e7135](https://github.com/launchdarkly/js-ai-sdk/commit/e2e7135ab1ec76986850856f140a3bacad38356d))
+* **evaluations:** `Judge` and `Scorer` default `passRateThreshold` to 0.95 again, so a run where some rows fail can now pass; set it to 1.0 to require every row to pass ([04202a3](https://github.com/launchdarkly/js-ai-sdk/commit/04202a320ea942de2d316dca6e586c3c848220b4))
+* **evaluations:** return tool errors to the model and mark eval spans for viewers ([#203](https://github.com/launchdarkly/js-ai-sdk/issues/203)) ([954fc69](https://github.com/launchdarkly/js-ai-sdk/commit/954fc69599c6ded72f35c24b729e3e32a57086aa))
+* **evaluations:** return verdicts for evaluations from code ([04202a3](https://github.com/launchdarkly/js-ai-sdk/commit/04202a320ea942de2d316dca6e586c3c848220b4))
+
+
+### Bug Fixes
+
+* **lifecycle:** claim the in-flight init before a passed client's telemetry setup ([#207](https://github.com/launchdarkly/js-ai-sdk/issues/207)) ([054148c](https://github.com/launchdarkly/js-ai-sdk/commit/054148ce55019f1a2d86190a07dd815d218baa6b))
+* **tools:** resolve tool handlers by own name only ([#212](https://github.com/launchdarkly/js-ai-sdk/issues/212)) ([01bcb7c](https://github.com/launchdarkly/js-ai-sdk/commit/01bcb7c791ea67800c076492d3f3b4ecba88f34e))
+
 ## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-0.5.0...@launchdarkly/ai-server-1.0.0) (2026-10-30)
 
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-vercel-agents-1.0.0...@launchdarkly/ai-vercel-agents-1.0.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **tools:** resolve tool handlers by own name only ([#212](https://github.com/launchdarkly/js-ai-sdk/issues/212)) ([01bcb7c](https://github.com/launchdarkly/js-ai-sdk/commit/01bcb7c791ea67800c076492d3f3b4ecba88f34e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^1.0.0 to ^1.1.0
+
 ## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-vercel-agents-0.3.0...@launchdarkly/ai-vercel-agents-1.0.0) (2026-10-30)
 
 
