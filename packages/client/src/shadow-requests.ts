@@ -1,7 +1,7 @@
 /**
  * Shadow requests: run another variation of an AI Config on the same input as
  * the served one, track it on the normal `$ld:ai:*` events with
- * `isShadow: true`, and discard its answer. LaunchDarkly sends the shadows in
+ * `isShadow: true`, score it with its own judges, and discard its answer. LaunchDarkly sends the shadows in
  * the served variation as `shadowConfiguration`, keyed by the targeting rule
  * or `fallthrough`.
  */
@@ -9,8 +9,9 @@ import { createHash } from 'node:crypto';
 
 import { context as otelContext } from '@opentelemetry/api';
 
-import { configFromVariation } from './client.js';
+import { configFromVariation, resolveOutputFormatResponse } from './client.js';
 import { currentConversationId, withExactConversationId } from './conversation.js';
+import { runJudges } from './judges.js';
 import { fetchVariation, parseVariation as parseServedVariation } from './lifecycle.js';
 import { findHandler, resolveHandlers } from './registry.js';
 import { reportUsage } from './sdk-usage.js';
@@ -36,9 +37,9 @@ const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 const NO_USAGE: TokenUsage = { total: 0, input: 0, output: 0 };
 
 /**
- * Everything needed to run and track one sampled shadow, with no flag
- * evaluation. Plain data, so it survives `structuredClone`. Run it with
- * {@link runShadow}.
+ * Everything needed to run and track one sampled shadow. Running it evaluates
+ * no flag except the shadow's judges. Plain data, so it survives
+ * `structuredClone`. Run it with {@link runShadow}.
  */
 export type ShadowTask = {
   configKey: string;
@@ -68,6 +69,8 @@ export type ShadowResult = {
   usage: TokenUsage;
   trackData: TrackData & ShadowTask['trackData'];
   error?: string;
+  /** The shadow's own judge scores, present only when at least one of its judges ran. */
+  judgeResults?: ProviderResponse['judgeResults'];
 };
 
 export type ShadowConfigArgs = ConfigArgs & {
@@ -309,9 +312,45 @@ async function execute(task: ShadowTask, handlers: ProviderHandler[]): Promise<S
         featureFlagEvent: false,
       }),
     );
-    return { usage: result.usage, trackData: { ...result.trackData, ...task.trackData } };
+    trackData = { ...result.trackData, ...task.trackData };
+    const judgeResults = await judge(task, handler, handlers, result, trackData);
+    return { usage: result.usage, trackData, ...(judgeResults && { judgeResults }) };
   } catch (err) {
     return { usage: NO_USAGE, trackData, error: errorText(err) };
+  }
+}
+
+/**
+ * Scores the shadow's response with the shadow's own judges, as `config().invoke()` scores the
+ * served one. The judge events carry the shadow's track data, so they land under the shadow
+ * variation. A judge failure is logged and never becomes the shadow's error.
+ */
+async function judge(
+  task: ShadowTask,
+  handler: ProviderHandler,
+  handlers: ProviderHandler[],
+  result: { response: unknown; trajectory: string },
+  trackData: ShadowResult['trackData'],
+): Promise<ShadowResult['judgeResults']> {
+  try {
+    const response = resolveOutputFormatResponse(result.response, task.config.outputFormat);
+    const judgeResults = await withExactConversationId(task.conversationId, () =>
+      runJudges({
+        config: task.config,
+        userContext: task.context,
+        handler,
+        handlers,
+        userInput: task.userInput,
+        llmResponse: typeof response === 'string' ? response : JSON.stringify(response),
+        baseTrackData: trackData,
+        trajectory: result.trajectory,
+      }),
+    );
+    return Object.keys(judgeResults).length > 0 ? judgeResults : undefined;
+  } catch (err) {
+    // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; a failed judge must be visible
+    console.warn(`[LaunchDarkly] The judges of shadow request ${task.shadowRequestId} failed.`, err);
+    return undefined;
   }
 }
 
@@ -381,8 +420,8 @@ function parseVariation(value: unknown): { config: AiConfigRep; meta: VariationM
   if (!variation || meta?.enabled !== true) {
     return undefined;
   }
-  // B never gets tools or judges, so they are dropped before validation.
-  const { _ldMeta, tools: _tools, judgeConfiguration: _judges, shadowConfiguration: _shadows, ...config } = variation;
+  // B never gets tools, so they are dropped before validation. Its judges stay: they score B's response.
+  const { _ldMeta, tools: _tools, shadowConfiguration: _shadows, ...config } = variation;
   const parsed = parseAiConfig(config);
   return parsed.success ? { config: parsed.data, meta: meta as VariationMeta } : undefined;
 }
