@@ -782,29 +782,29 @@
     p-queue "^6.6.2"
     zod "^3.25.76 || ^4"
 
-"@langchain/langgraph-checkpoint@^1.0.4", "@langchain/langgraph-checkpoint@^1.1.1":
-  version "1.1.1"
-  resolved "https://registry.yarnpkg.com/@langchain/langgraph-checkpoint/-/langgraph-checkpoint-1.1.1.tgz#335c47b67904da94104cdc214ca997dcca2eda2d"
-  integrity sha512-gHqhO6e2dyZ7TTfyaFy25yjcRsavURc9XMGT4q+LUBTc0hT4JxKe3qvrMX2OFTzW8W/0kjV59haHmSRFZIGkvg==
+"@langchain/langgraph-checkpoint@^1.0.4", "@langchain/langgraph-checkpoint@^1.2.2":
+  version "1.2.2"
+  resolved "https://registry.yarnpkg.com/@langchain/langgraph-checkpoint/-/langgraph-checkpoint-1.2.2.tgz#cbfdf0d461385769665e26f70e41f1291ed1d37e"
+  integrity sha512-KL3nzi7I61ll5nANCQe5RoJ5SqTFrE+si9IK6k7IIj9OrPkIKT/Dz0w8CyJF+K7OEuJfA33HvPrZqfzzW1DXDA==
 
-"@langchain/langgraph-sdk@~1.9.22":
-  version "1.9.22"
-  resolved "https://registry.yarnpkg.com/@langchain/langgraph-sdk/-/langgraph-sdk-1.9.22.tgz#6739f915aac517ca331edf8e802775219b9df354"
-  integrity sha512-DBKs9R2SGivlGqK/ZRTOUu39Q7Z+yRrG4PoTYLIWn7pqrLNhyZ4yZI/tEEEi/J0inpCuKfg/eydSwnRmPV/q3w==
+"@langchain/langgraph-sdk@~1.14.0":
+  version "1.14.0"
+  resolved "https://registry.yarnpkg.com/@langchain/langgraph-sdk/-/langgraph-sdk-1.14.0.tgz#91937223999c9792a5fbffe21e43d614b54712c3"
+  integrity sha512-kALAXngTeqqsE3jCPnWxMEDWQ+0xmUQ9iqojtKJE6niCedwzM7PUctepdK+T73iI1wpzJw7YvqqZlKzA6kFX9A==
   dependencies:
-    "@langchain/protocol" "^0.0.16"
+    "@langchain/protocol" "^0.0.21"
     "@types/json-schema" "^7.0.15"
     p-queue "^9.0.1"
     p-retry "^7.1.1"
 
-"@langchain/langgraph@^1.0.0", "@langchain/langgraph@^1.3.4":
-  version "1.4.2"
-  resolved "https://registry.yarnpkg.com/@langchain/langgraph/-/langgraph-1.4.2.tgz#f156976c159ca0e331b1a1110ee35d88810e562c"
-  integrity sha512-ivhYwbEKW4i/x2JfHcrTrToEE9EXZnwr4dPj7GC5974xEYeLgHYzii3GAYo1kgU5A0ZAd7rIxTpMOfcbycxliQ==
+"@langchain/langgraph@^1.3.4", "@langchain/langgraph@^1.7.1":
+  version "1.7.1"
+  resolved "https://registry.yarnpkg.com/@langchain/langgraph/-/langgraph-1.7.1.tgz#093da4a7c92448a031c18efd0f1f26f4dc7a6d5d"
+  integrity sha512-2ehh+TAaSWEKhtU2lM6qzpdWwBOxMk540NuAuFhvIYxwCXjU9cBeus3JqOv9yieoCjQu1sV802WsF6EoL3zfHw==
   dependencies:
-    "@langchain/langgraph-checkpoint" "^1.1.1"
-    "@langchain/langgraph-sdk" "~1.9.22"
-    "@langchain/protocol" "^0.0.16"
+    "@langchain/langgraph-checkpoint" "^1.2.2"
+    "@langchain/langgraph-sdk" "~1.14.0"
+    "@langchain/protocol" "^0.0.21"
     "@standard-schema/spec" "1.1.0"
 
 "@langchain/openai@^1.4.7":
@@ -816,10 +816,10 @@
     openai "^6.37.0"
     zod "^3.25.76 || ^4"
 
-"@langchain/protocol@^0.0.16":
-  version "0.0.16"
-  resolved "https://registry.yarnpkg.com/@langchain/protocol/-/protocol-0.0.16.tgz#68b63d58feaf4f0acf77405cb8fb16f9c3f09b60"
-  integrity sha512-ws+J7MaHyhO5dG7f0vdyHQiUn9hoCnki0f3crJPa4MCTGzcRC39jYSCghyrGtBPYQnZbUQiGyRVpW3z3M8IpJg==
+"@langchain/protocol@^0.0.21":
+  version "0.0.21"
+  resolved "https://registry.yarnpkg.com/@langchain/protocol/-/protocol-0.0.21.tgz#4fcef13beaa97969db6bf918eb1a4e20ca392f9c"
+  integrity sha512-HJS8Cd5GJ437MIrCnbrPHx0FJcluyOk5HdZzD081ap4SBzfWpAj/6AtI7fqpNSMo6VZEoEdaN9fIts8R0XR1AQ==
 
 "@launchdarkly/akamai-edgeworker-sdk-common@^2.0.47":
   version "2.0.49"
