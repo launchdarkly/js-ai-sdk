@@ -99,11 +99,11 @@ The public contract is shared with the Python and Go SDKs. Everything else is wr
 
 ### What never varies
 
-Public behaviour, defaults, telemetry, wire payloads, usage IDs and error *conditions*. A name is the contract's camelCase name.
+Public behaviour, defaults, telemetry (span names, attributes, events), wire payloads, usage IDs and error *conditions* (what fails, and before or after which I/O). A name is the contract's camelCase name.
 
 ### Errors
 
-A feature whose callers need to tell its failures apart exports an `Error` subclass that sets `name` (`EvaluationsError`, `TypesafeQuestionError`). Other code throws `Error`, `TypeError` or `RangeError`. Pass `{ cause }` when wrapping a caught error. An async API rejects its promise and never throws synchronously. Catch an error only to handle it, to wrap it, or to keep an optional step (telemetry, usage reporting) from failing the call, and say why in a comment on the `catch`.
+A feature whose callers need to tell its failures apart exports an `Error` subclass that sets `name` (`EvaluationsError`, `TypesafeQuestionError`). Other code throws `Error`, `TypeError` or `RangeError`. Pass `{ cause }` when wrapping a caught error. An async API rejects its promise and never throws synchronously. Catch an error only to handle it, to wrap it, to return a fallback the contract defines, or to keep an optional step (telemetry, usage reporting, cleanup) from failing the call.
 
 ### Layout
 
@@ -111,7 +111,7 @@ Public names are exported from the package's `index.ts`. Experimental names are 
 
 ### Naming
 
-camelCase values and functions, PascalCase types and classes. No TypeScript `enum`: use a union of string literals. Public data shapes are `type` aliases. Use `interface` for a shape that is extended or implemented (`ContentCaptureOptions`, `LDClientInterface`). `private` and `readonly` do not exist at runtime, so freeze objects that must not change (`Object.freeze`).
+camelCase values and functions, PascalCase types and classes. No TypeScript `enum`: use a union of string literals. Most public data shapes are `type` aliases, and new ones should be. Use `interface` for a shape that is extended or implemented (`ContentCaptureOptions`, `LDClientInterface`). `private` and `readonly` do not exist at runtime, so freeze objects that must not change (`Object.freeze`).
 
 ### Concurrency
 
@@ -119,11 +119,11 @@ camelCase values and functions, PascalCase types and classes. No TypeScript `enu
 
 ### Options
 
-Required inputs are positional. Optional settings go in one options object, the last parameter. A duration names its unit in a suffix, `Ms` or `Seconds` (`debounceMs`, `timeoutSeconds`). Use the contract's unit, and seconds where the LaunchDarkly server SDK uses seconds (`waitForInitialization({ timeoutSeconds })`). Optional fields are `?:`, not `| undefined`.
+A public function takes its required inputs positionally and its optional settings in one options object, the last parameter. A duration uses the contract's unit and names it in a suffix, `Ms` or `Seconds` (`debounceMs`, `timeoutSeconds`). `writeSkills`' `timeout` (seconds) is a contract name without a suffix, not a pattern to copy. Optional fields are `?:`, not `| undefined`.
 
 ### Testing
 
-Vitest, under `src/__tests__/`, with no network. Write `it('does …')` so the test reads as a sentence. `describe` groups the tests for one function or behaviour. Mocks called with `new` use class syntax (see Biome Pitfalls).
+Vitest, under `src/__tests__/`. No test touches the external network or a LaunchDarkly endpoint. A fake server binds to loopback on an ephemeral port and is closed in teardown (`skills-fdv2.test.ts`). Write `it('does …')` so the test reads as a sentence. `describe` groups the tests for one function or behaviour. Mocks called with `new` use class syntax (see Biome Pitfalls).
 
 ### Docs
 
@@ -131,7 +131,7 @@ TSDoc on every public export, `@deprecated` on deprecated ones. Some older expor
 
 ### Dependencies
 
-Avoid them: weigh size, maintenance, security, platform support and conflicts with the application's own dependencies. A provider SDK is a dependency only of its own handler package.
+Avoid them: weigh size, maintenance, security, platform support and conflicts with the application's own dependencies. A provider SDK is a dependency only of the handler packages that call it (`openai` for the OpenAI and LiteLLM handlers), never of `@launchdarkly/ai-server`.
 
 ### References
 
