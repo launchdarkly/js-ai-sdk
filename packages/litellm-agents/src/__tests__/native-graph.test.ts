@@ -136,6 +136,19 @@ describe('toLiteLLMAgents', () => {
     expect(JSON.stringify(modelArgs)).not.toContain('gpt-');
   });
 
+  it("prepends each Bedrock node's cross-region prefix to its model id", async () => {
+    const definition = graphDefinition();
+    const root = definition.root as unknown as ReturnType<typeof node>;
+    Object.assign(root.config, {
+      model: { name: 'bedrock/anthropic.claude-opus-5-5', region: 'global' },
+      provider: { name: 'Bedrock' },
+    });
+    const client = { marker: 'proxy' };
+    await toLiteLLMAgents(Promise.resolve(definition), { client: client as never }).invoke('q');
+    expect(modelArgs).toContainEqual([client, 'bedrock/global.anthropic.claude-opus-5-5']);
+    expect(modelArgs).toContainEqual([client, 'gemini/leaf-alias']);
+  });
+
   it('uses one proxy-configured client and never constructs a default OpenAI path', async () => {
     await toLiteLLMAgents(Promise.resolve(graphDefinition()), {
       apiKey: 'proxy-key',
@@ -256,6 +269,15 @@ describe('toLiteLLMAgents', () => {
     expect(mockTool.mock.calls.map(([options]: any[]) => options.name)).toEqual(['fetch', 'fetch']);
     expect(warn.mock.calls.filter(([message]) => String(message).includes('"search"'))).toHaveLength(1);
     warn.mockRestore();
+  });
+
+  it('never gives the SDK a node tool whose name is only an inherited object property', async () => {
+    const definition = graphDefinition();
+    (definition.root as any).config.tools = {
+      constructor: { name: 'constructor', type: 'function', parameters: { type: 'object' } },
+    };
+    await toLiteLLMAgents(Promise.resolve(definition), { client: {} as never, toolHandlers: {} }).invoke('q');
+    expect(agentArgs.flatMap((args) => ((args.tools ?? []) as any[]).map((t) => t.name))).not.toContain('constructor');
   });
 
   it('forwards structured history to the root run', async () => {
