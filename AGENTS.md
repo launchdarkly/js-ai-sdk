@@ -107,7 +107,7 @@ A feature whose callers need to tell its failures apart exports an `Error` subcl
 
 ### Layout
 
-Public names are exported from the package's `index.ts`. Experimental names are exported only from the `/experimental` subpath. Files are kebab-case, grouped by feature (`evaluations-tools.ts`). No deep imports across packages. API Extractor reports record the surface.
+Public names are exported from the package's `index.ts`. Experimental names are exported only from the `/experimental` subpath. Files are kebab-case, grouped by feature (`evaluations-tools.ts`). Shipped code never deep-imports another package; tests may import shared helpers from `client/src/__tests__`. API Extractor reports record the surface.
 
 ### Naming
 
@@ -119,7 +119,7 @@ camelCase values and functions, PascalCase types and classes. No TypeScript `enu
 
 ### Options
 
-A public function takes its required inputs positionally and its optional settings in one options object, the last parameter. A duration uses the contract's unit and names it in a suffix, `Ms` or `Seconds` (`debounceMs`, `timeoutSeconds`). `writeSkills`' `timeout` (seconds) is a contract name without a suffix, not a pattern to copy. Optional fields are `?:`, not `| undefined`.
+A public function takes its required inputs positionally and its optional settings in one options object, the last parameter. A function whose inputs are all one config or init shape takes that single object instead (`config(args)`, `createSkill(init)`). A duration uses the contract's unit and names it in a suffix, `Ms` or `Seconds` (`debounceMs`, `timeoutSeconds`). `writeSkills`' `timeout` (seconds) is a contract name without a suffix, not a pattern to copy. Optional fields are `?:`, not `| undefined`.
 
 ### Testing
 
