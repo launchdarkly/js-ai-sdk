@@ -686,10 +686,12 @@ Import every name in this section from `@launchdarkly/ai-server` (or `@launchdar
 
 An evaluation from code runs a dataset through your own code and reports the results to LaunchDarkly. One `run()` call:
 
-1. creates a new evaluation and run in your project;
+1. reconciles a **stable evaluation** by `key` on `…/offline-evaluations`, then creates a new run;
 2. **generates**: calls your handler once per dataset row;
 3. **evaluates**: scores each generated output against your criteria, LaunchDarkly AI Judges and local scorer functions, if you pass any;
 4. waits for LaunchDarkly to account for every row, and returns the outcome.
+
+Reuse the same `key` across CI runs so trends and history stay attached to one evaluation. Keys must match `^[a-z0-9][a-z0-9._-]*$` and be at most 128 characters (checked before any network I/O). On first use the SDK GETs by key and POSTs create with `key` + `name` on a miss; every reuse PATCHes the full desired config snapshot in place — without rewriting `name`, so a renamed evaluation keeps its display name — and the server no-ops when nothing changed (never PUT). Each `run()` still starts a new run.
 
 Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row and on the run; the SDK reports scores and never computes a verdict itself.
 
@@ -703,7 +705,7 @@ import { initEvaluations } from '@launchdarkly/ai-server';
 const evals = initEvaluations({ projectKey: 'my-project' });
 
 const result = await evals.run({
-  key: `support-qa-${Date.now()}`, // every run creates a new evaluation, so keep keys unique
+  key: 'support-qa', // stable identity across CI; SDK reconciles via offline-evaluations
   dataset: 'support-golden', // the key of a dataset in LaunchDarkly
   handler: createOpenAIMessagesHandler(),
   generation: {
@@ -760,7 +762,7 @@ Pass `aiConfig` instead of a full `generation` to evaluate a variation you alrea
 
 ```ts
 await evals.run({
-  key: `support-qa-${Date.now()}`,
+  key: 'support-qa',
   dataset: 'support-golden',
   handler: createOpenAIMessagesHandler(),
   aiConfig: { key: 'support-agent', variation: 'candidate' },
@@ -776,7 +778,7 @@ Pass an array of rows as `dataset` instead of a dataset key. Each row has a non-
 
 ```ts
 await evals.run({
-  key: `support-qa-${Date.now()}`,
+  key: 'support-qa',
   dataset: [
     { input: 'How do I reset my password?', expectedOutput: 'Use the reset link.' },
     { input: 'Where is order {{order_id}}?', variables: { order_id: 'A-17' } },
@@ -820,7 +822,7 @@ import { createClaudeMessagesHandler } from '@launchdarkly/ai-claude-messages';
 import { Judge, Scorer } from '@launchdarkly/ai-server';
 
 await evals.run({
-  key: `support-qa-${Date.now()}`,
+  key: 'support-qa',
   dataset: 'support-golden',
   // The judge is served by Anthropic, so the pool has a handler for it too.
   handlers: [createOpenAIMessagesHandler(), createClaudeMessagesHandler()],
