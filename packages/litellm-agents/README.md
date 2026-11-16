@@ -1,7 +1,5 @@
 # `@launchdarkly/ai-litellm-agents`
 
-**Experimental.** This package stays on 0.x until the Python and JavaScript LiteLLM integrations match.
-
 LiteLLM integration for `@launchdarkly/ai-server` using the OpenAI Agents SDK.
 Every evaluated model is explicitly bound to an OpenAI-compatible client owned
 by the caller, so requests cannot fall back to the default OpenAI endpoint.

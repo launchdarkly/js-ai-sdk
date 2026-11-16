@@ -49,7 +49,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/trajectory.ts` | Tool-call trajectory capture and rendering — `TrajectoryRecorder` (one per online invocation in `tracking.ts`, one per evaluation row offline), `exposedToolKeys`, and `renderTrajectory`, the text a judge reads in `message_history`. `HANDOFF_TOOL_PREFIX` is defined here once and used by `tracking.ts` and `graph.ts` |
 | `src/safe-fs.ts` | Symlink-refusing filesystem primitives. Knows nothing about skills; owns the single interceptable rename and unlink call sites |
 | `src/index.ts` | Public barrel — the package root, and the only surface handler packages import from |
-| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. No feature is experimental now, so it exports no name |
+| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Exports shadow requests, the one experimental feature now |
 
 The Agent Skills module dependencies run **one way only**:
 
@@ -342,13 +342,19 @@ export {
 
 Published as `@launchdarkly/ai-server/experimental` (a subpath in `package.json` `exports`, built
 alongside the root by `tsup.config.ts`). Names here may change in a minor release and are **absent
-from the package root**. No feature is experimental now. Agent Skills and Evaluations from Code
+from the package root**. Shadow requests is the one experimental feature now. Agent Skills and Evaluations from Code
 were promoted to core and are exported from the root only.
 `@launchdarkly/ai-node/experimental` re-exports this entry point. Generated from
 `src/experimental.ts` the same way as the block above.
 
 ```ts
-export {};
+export {
+  runShadow,
+  type ShadowConfigArgs,
+  type ShadowResult,
+  type ShadowTask,
+  shadowConfig,
+} from './shadow-requests.js';
 ```
 
 The stage rules, which every change here must keep:

@@ -1,7 +1,5 @@
 # `@launchdarkly/ai-litellm-messages`
 
-**Experimental.** This package stays on 0.x until the Python and JavaScript LiteLLM integrations match.
-
 LiteLLM messages integration for `@launchdarkly/ai-server`. It uses the OpenAI
 chat-completions client while requiring a user-owned OpenAI-compatible LiteLLM
 proxy. Evaluated LaunchDarkly model names are passed through unchanged.
