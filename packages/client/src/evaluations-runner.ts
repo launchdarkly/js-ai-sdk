@@ -401,6 +401,10 @@ export type AiConfigLink = {
  *
  * Pass `link` on both. Inline generation overrides change the content and
  * still resend the link, which is what keeps a linked evaluation linked.
+ * With no link, both bodies send the three fields as null. A patch that
+ * omits `configKey` leaves a previous link in place, and the server rejects
+ * a content change on a linked evaluation unless `configKey` is sent. Null
+ * unlinks it.
  */
 export function evaluationConfigBody(
   key: string,
@@ -434,6 +438,10 @@ export function evaluationConfigBody(
     body.configKey = options.link.configKey;
     body.variationKey = options.link.variationKey;
     body.variationVersion = options.link.variationVersion;
+  } else {
+    body.configKey = null;
+    body.variationKey = null;
+    body.variationVersion = null;
   }
   return body;
 }

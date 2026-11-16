@@ -758,7 +758,7 @@ A handler is called once per row as `handler(config, input, toolHandlers, variab
 
 #### Starting from an AI Config
 
-Pass `aiConfig` instead of a full `generation` to evaluate an AI Config. Its model, provider, parameters, prompt and output format are the base. `generation` overrides replace that base for this run (`parameters` still merge key by key) and the run stays linked to the variation. The AI Config supplies the mode, so `generation.mode` is not allowed here.
+Pass `aiConfig` instead of a full `generation` to evaluate an AI Config. Its model, provider, parameters, prompt and output format are the base. `generation` overrides replace that base for this run (`parameters` still merge key by key) and the run stays linked to the variation. A later `run()` of the same key without `aiConfig` clears that link. The AI Config supplies the mode, so `generation.mode` is not allowed here.
 
 Name `variation` to read the latest version of that variation. Omit it to use the variation served to `{ kind: "evaluation", key: <the evaluation key> }`, at that value's `_ldMeta.version`. A disabled config, a config that is not delivered, or a served value with no version is an error before the evaluation is written. The URL `run()` returns is still the run URL.
 

@@ -304,6 +304,9 @@ describe('evaluation create body', () => {
       promptSnippets: { tone: 'a calm tone' },
       tools: [],
       criteria: [],
+      configKey: null,
+      variationKey: null,
+      variationVersion: null,
     });
   });
 
@@ -407,6 +410,9 @@ describe('offline-evaluations reconcile', () => {
       messages: [{ role: 'user', content: '{{input}}' }],
       tools: [],
       criteria: [],
+      configKey: null,
+      variationKey: null,
+      variationVersion: null,
     });
     expect(patch?.body).not.toHaveProperty('name');
     expect(patch?.body).not.toHaveProperty('key');
