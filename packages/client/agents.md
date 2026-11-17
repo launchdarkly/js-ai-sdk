@@ -374,7 +374,7 @@ The stage rules, which every change here must keep:
   commit both reports.
 - **Promotion to core** (done for Agent Skills and Evaluations from Code, before 1.0) moves the feature's names from
   `src/experimental.ts` to `src/index.ts` with the same spelling, and removes them from the
-  experimental entry point; this is a breaking change (`!` in the PR title). Also remove the
+  experimental entry point; this is a breaking change to the experimental entry point. Before 1.0 it took `!` in the PR title; at 1.x follow the root `AGENTS.md` rule for breaking experimental changes (no `!`). Also remove the
   feature's rows from `changelog-sections` in `release-please-config.json`, and update both API
   reports. A test asserts the skills and evaluations names are in the root report and not in the
   experimental one.

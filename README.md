@@ -98,7 +98,7 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 
 ### Versioning
 
-Each package has its own version, and release-please releases a package only when it changes, so the packages are not all at the same version. They all share major version 1: each package depends on `@launchdarkly/ai-server` within that major (`^1.1.0` today), and a breaking change is a new major for the package it changes. Names exported from `@launchdarkly/ai-server/experimental` are the exception: they may change in a minor release.
+Each package has its own version, and release-please releases a package when its own code changes. Its `node-workspace` plugin also releases every package that depends on a package being released and updates its range on it. So the packages are not all at the same version. They all share major version 1: each handler package and `@launchdarkly/ai-node` depend on `@launchdarkly/ai-server` within that major (`^1.1.0` today), and a breaking change is a new major for the package it changes. Names exported from `@launchdarkly/ai-server/experimental` are the exception: they may change in a minor release.
 
 
 <!-- experimental-features:start (generated; do not edit by hand) -->
