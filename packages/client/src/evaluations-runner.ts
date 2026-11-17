@@ -476,8 +476,8 @@ export async function ensureEvaluation(
     }
   }
 
-  // Marked idempotent: the server applies the same full snapshot at most once, so a
-  // replay after a 5xx or timeout is a no-op. A 409 is not retried by the client; it
+  // The server applies only what changed, so replaying the same snapshot is a no-op;
+  // a changed snapshot overwrites by design. A 409 is not retried by the client; it
   // is handled below.
   try {
     const patched = requireObject(await api.patch(byKey, patchBody, { idempotent: true }), 'evaluation');
