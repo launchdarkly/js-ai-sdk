@@ -476,10 +476,11 @@ export async function ensureEvaluation(
     }
   }
 
-  // Do not mark PATCH idempotent: a timed-out success that retries can overwrite
-  // a newer concurrent snapshot for the same key. Handle 409 explicitly below.
+  // Marked idempotent: the server applies the same full snapshot at most once, so a
+  // replay after a 5xx or timeout is a no-op. A 409 is not retried by the client; it
+  // is handled below.
   try {
-    const patched = requireObject(await api.patch(byKey, patchBody), 'evaluation');
+    const patched = requireObject(await api.patch(byKey, patchBody, { idempotent: true }), 'evaluation');
     return evaluationRefFrom(patched, key);
   } catch (err) {
     if (!(err instanceof LDApiError) || err.status !== 409) throw err;
@@ -492,7 +493,7 @@ export async function ensureEvaluation(
       );
     }
     try {
-      const patched = requireObject(await api.patch(byKey, patchBody), 'evaluation');
+      const patched = requireObject(await api.patch(byKey, patchBody, { idempotent: true }), 'evaluation');
       return evaluationRefFrom(patched, key);
     } catch (retryErr) {
       if (retryErr instanceof LDApiError && retryErr.status === 409) {

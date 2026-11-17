@@ -571,7 +571,10 @@ describe('offline-evaluations reconcile', () => {
     await expect(makeModule(api).run(hosted())).rejects.toThrow(/could not be updated after a concurrent modification/);
   });
 
-  it('does not retry a reconcile PATCH after a 5xx', async () => {
+  it.each([
+    ['a 5xx', { status: 503, body: 'unavailable' }],
+    ['a transport failure', new Error('timeout')],
+  ] as const)('retries a reconcile PATCH after %s', async (_label, failure) => {
     const api = new FakeApi()
       .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
       .on('GET', `projects/${PROJECT}/datasets/${DATASET}/rows`, {
@@ -580,14 +583,16 @@ describe('offline-evaluations reconcile', () => {
       .on('GET', EVALUATION_BY_KEY_PATH, {
         body: { id: 'ev-1', version: 1, key: 'eval-key', name: 'Renamed QA' },
       })
-      .on(
-        'PATCH',
-        EVALUATION_BY_KEY_PATH,
-        { status: 503, body: 'unavailable' },
-        { body: { id: 'ev-1', version: 2, key: 'eval-key', name: 'Renamed QA' } },
-      );
-    await expect(makeModule(api).run(hosted())).rejects.toMatchObject({ status: 503 });
-    expect(api.calls.filter((call) => call.method === 'PATCH')).toHaveLength(1);
+      .on('PATCH', EVALUATION_BY_KEY_PATH, failure, {
+        body: { id: 'ev-1', version: 2, key: 'eval-key', name: 'Renamed QA' },
+      })
+      .on('POST', RUN_PATH, { status: 201, body: { id: 'run-1', evaluationId: 'ev-1', state: 'PENDING' } })
+      .on('GET', SUMMARY_PATH, { body: { statusCounts: { total: 1, passed: 1 } } });
+    await makeModule(api).run(hosted());
+    const patches = api.calls.filter((call) => call.method === 'PATCH');
+    expect(patches).toHaveLength(2);
+    expect(patches[1].body).toEqual(patches[0].body);
+    expect(generationEvents()[0].data.evaluationVersion).toBe(2);
   });
 
   it('rethrows a non-404 error on the by-key GET instead of treating it as missing', async () => {
