@@ -216,6 +216,12 @@ export type Skill = {
   readonly name: string | null;
   /** Description from LaunchDarkly metadata; never parsed from the content. */
   readonly description: string | null;
+  /**
+   * The tool definitions this skill version pins, in the order the author set;
+   * empty when it has none. Frozen. Not covered by `contentHash`, and never
+   * written to disk by `writeSkills`.
+   */
+  readonly tools: ReadonlyArray<Tool>;
 };
 
 /**
@@ -301,6 +307,7 @@ export type RawSkillObject = {
   contentHash?: unknown;
   name?: unknown;
   description?: unknown;
+  tools?: unknown;
   [field: string]: unknown;
 };
 
@@ -423,6 +430,7 @@ export function createSkill(init: {
   contentHash: string;
   name?: string | null;
   description?: string | null;
+  tools?: ReadonlyArray<Tool>;
 }): Skill {
   // Only the wrapper is frozen (a TypedArray can't be); `content` shares the
   // caller's bytes.
@@ -433,6 +441,7 @@ export function createSkill(init: {
     contentHash: init.contentHash,
     name: init.name ?? null,
     description: init.description ?? null,
+    tools: Object.freeze([...(init.tools ?? [])]),
   });
 }
 
@@ -500,7 +509,8 @@ export function isValidSkillVersion(version: unknown): version is number {
   return typeof version === 'number' && Number.isInteger(version) && version >= 1;
 }
 
-function parseTool(raw: unknown, key: string): string | null {
+/** Why `raw` is not a valid tool definition, or `null`; `key` names it in the message. */
+export function parseTool(raw: unknown, key: string): string | null {
   if (!isObject(raw)) return `tools.${key} must be an object`;
   if (typeof raw.name !== 'string') return `tools.${key}.name must be a string`;
   if (raw.type !== 'function') return `tools.${key}.type must be "function"`;

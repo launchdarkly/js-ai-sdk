@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { SpanStatusCode } from '@opentelemetry/api';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -71,6 +72,8 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
     ...actual,
     trace: {
       ...actual.trace,
+      // initClient() registers a tracer provider; the spread above drops TraceAPI's prototype methods.
+      setGlobalTracerProvider: vi.fn(),
       getTracer: vi.fn(() => ({
         startActiveSpan: telemetryMocks.startActiveSpan.mockImplementation((_name: string, fn: Function) =>
           fn(telemetryMocks.span),
@@ -80,7 +83,15 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
   };
 });
 
-import { NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
+import {
+  InMemorySkillStore,
+  initClient,
+  NATIVE_TOOL_KEY,
+  NativeTool,
+  resolveGraph,
+  setSkillStore,
+  shutdown,
+} from '@launchdarkly/ai-server';
 import { toVercelAgents } from '../native-graph.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -466,5 +477,63 @@ describe('toVercelAgents', () => {
     };
     await expect(toVercelAgents(Promise.resolve(makeGraph() as any)).invoke('hi')).rejects.toThrow('cancelled');
     expect(telemetryMocks.span.end).toHaveBeenCalledOnce();
+  });
+
+  it("offers a node's skill tools after its own, and not to a node that does not attach the skill", async () => {
+    const own = { name: 'own', type: 'function', parameters: { type: 'object' } };
+    const weather = { name: 'get-weather', type: 'function', parameters: { type: 'object' } };
+    const body = 'Use the weather.';
+    setSkillStore(
+      new InMemorySkillStore({
+        weather: {
+          key: 'weather',
+          version: 1,
+          content: body,
+          contentHash: createHash('sha256').update(body).digest('hex'),
+          tools: [weather],
+        },
+      }),
+    );
+    const variations: Record<string, unknown> = {
+      'skill-graph': { root: 'root', edges: { root: [{ key: 'child' }] } },
+      root: {
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'Root instructions',
+        tools: { own },
+        skills: [{ key: 'weather', version: 1 }],
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1 },
+      },
+      child: {
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'Child instructions',
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1 },
+      },
+    };
+    await initClient({
+      variation: async (k: string) => variations[k],
+      track: () => {},
+      flush: async () => {},
+      close: async () => {},
+    } as any);
+    try {
+      const def = await resolveGraph('skill-graph', { context });
+      await toVercelAgents(Promise.resolve(def), {
+        toolHandlers: { own: vi.fn(), 'get-weather': vi.fn() },
+      } as any).invoke('hi');
+    } finally {
+      // Drops the client and the skill store, so later tests start clean.
+      await shutdown();
+    }
+
+    expect(aiMocks.agentArguments.map((args) => args.instructions)).toEqual([
+      'Root instructions',
+      'Child instructions',
+    ]);
+    const toolsOf = (instructions: string) =>
+      Object.keys(aiMocks.agentArguments.find((args) => args.instructions === instructions)?.tools ?? {});
+    expect(toolsOf('Root instructions')).toEqual(['own', 'get-weather', 'transfer_to_child']);
+    expect(toolsOf('Child instructions')).toEqual([]);
   });
 });

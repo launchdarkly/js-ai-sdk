@@ -411,6 +411,8 @@ On macOS and Windows, write permission on the managed root **and its ancestors**
 
 **Skill content is opaque to the SDK.** `Skill.content` is a `Uint8Array` of the exact bytes that were hashed, and the SDK never parses or decodes it. There is no frontmatter accessor or YAML dependency; decode and parse the bytes yourself with a parser you trust.
 
+**A skill can carry tools.** `Skill.tools` is the frozen, ordered list of tool definitions the skill version pins (the same shape as a variation's `config.tools`), empty when it has none. When the client resolves an AI Config whose variation attaches skills, and a skill store is configured, it offers each skill's tools after the variation's own `config.tools`, in the variation's `skills` order, so every handler and native graph adapter sees them and `toolHandlers` is scoped to them like any other config tool. An exact duplicate is skipped. If a variation and a skill define the same tool key differently (the server rejects that at save, so only older data can), the variation's definition is offered and a warning is logged. A malformed tool (a `tools` that is not an array, or an entry with no string `name` or no object `parameters`) is dropped with a warning naming the skill and the tool; the skill itself is still returned. Limits: tools are not covered by `contentHash`, which hashes only the markdown, and `writeSkills` writes no tools to disk or to the manifest, since a tool on disk is not callable without a handler. A handler called directly with a config you built yourself gets only that config's `tools`.
+
 **No LaunchDarkly telemetry is emitted for skills.** Signals go through an internal no-op emitter, and no LD context is involved. The exception is `configSkills`: calling it sends one `$ld:ai:sdk:usage` event, and each read of its source is a real `variation` evaluation, which records an evaluation event in the base SDK just as `inspectConfig` does.
 
 #### Receiving skills from LaunchDarkly
@@ -544,6 +546,8 @@ A fixed list, `skillRefs(config)` included, is for a set that does not change fo
 #### Observability: integrity failures are logged for your SIEM
 
 A skill that fails integrity verification is **withheld**: the accessor returns `null`, `writeSkills` reports an `error` action, and no unverified byte reaches your agent. Each failure also writes one machine-parseable line to `console.error`:
+
+Integrity verification covers the markdown `content` only. A skill's `tools` have no hash in this release: they are protected by the transport (TLS), not by a hash you can check on disk, and bad tool data drops only that tool, with a warning and no integrity record.
 
 ```text
 [LaunchDarkly] ld.skills.integrity_failure {"action":"withheld","event":"ld.skills.integrity_failure","expected_hash":"5f2b...","language":"typescript","observed_hash":"9c14...","reason":"content hash mismatch","reason_code":"hash_mismatch","skill_key":"pdf-extraction","version":2}
@@ -936,7 +940,7 @@ All types are re-exported from this package. Handler packages import them from h
 | `ProviderGraphResponse` | The value returned by `graph(...).invoke()`: `{ response, usage, judgeResults? }` |
 | `GraphStreamEvent` | Events yielded by `graph(...).stream()`: `node_start` / `chunk` / `node_done` / `handoff` / `done` |
 | `GraphTopology` | The parsed graph flag shape (`root` + `edges`) |
-| `Skill` | A verified skill document: `key`, `version`, `content` (`Uint8Array` — the verified verbatim bytes), `contentHash`, `name`, `description` |
+| `Skill` | A verified skill document: `key`, `version`, `content` (`Uint8Array` — the verified verbatim bytes), `contentHash`, `name`, `description`, `tools` (frozen, ordered tool definitions; empty when none) |
 | `SkillReference` | A version-pinned pointer to a skill: `{ key, version }` |
 | `SkillSource` | A requested set read when it is needed: `{ refs, configKeys }`, built with `createSkillSource` or `configSkills` |
 | `SkillOutcome` | What `getSkillResult()` resolves to: `{ skill, reason, detail }`. `skill` is non-null exactly when `reason` is `'ok'` |

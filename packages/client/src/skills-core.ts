@@ -12,8 +12,8 @@
 
 import { createHash } from 'node:crypto';
 import { registerShutdownHook } from './shutdown-hooks.js';
-import type { RawSkillObject, Skill, SkillOutcomeReason, SkillReference, SkillStore } from './types.js';
-import { createSkill, isValidSkillKey, isValidSkillVersion } from './types.js';
+import type { RawSkillObject, Skill, SkillOutcomeReason, SkillReference, SkillStore, Tool } from './types.js';
+import { createSkill, isValidSkillKey, isValidSkillVersion, parseTool } from './types.js';
 
 /**
  * The kind the SDK passes to `SkillStore.getObject` and `SkillStore.allObjects`.
@@ -106,13 +106,15 @@ const SKILLS_STATE_KEY = Symbol.for('@launchdarkly/ai-server:skills');
 type SkillsState = {
   store: SkillStore | null;
   emitter: TelemetryEmitter | null;
+  /** Skill-tool warnings already logged, so a skill read on every call warns once. */
+  warned: Set<string>;
 };
 
 function state(): SkillsState {
   const g = globalThis as Record<symbol, SkillsState | undefined>;
   let current = g[SKILLS_STATE_KEY];
   if (!current) {
-    current = { store: null, emitter: null };
+    current = { store: null, emitter: null, warned: new Set() };
     g[SKILLS_STATE_KEY] = current;
   }
   return current;
@@ -136,6 +138,7 @@ export function clearState(): void {
   const current = state();
   current.store = null;
   current.emitter = null;
+  current.warned.clear();
 }
 
 // Registered on load, so `shutdown()` clears this state without `lifecycle.ts`
@@ -172,6 +175,15 @@ export function storeIsInitialized(store: SkillStore): boolean {
     );
     return false;
   }
+}
+
+/** Logs `message` as a warning the first time `id` is seen in this process. */
+export function warnOnce(id: string, message: string): void {
+  const { warned } = state();
+  if (warned.has(id)) return;
+  warned.add(id);
+  // biome-ignore lint/suspicious/noConsole: this package has no logger abstraction; dropped skill tools must be visible
+  console.warn(`[LaunchDarkly] ${message}`);
 }
 
 /**
@@ -396,6 +408,70 @@ export function verifiedBytes(
   return { encoded, contentHash: observedHash };
 }
 
+/** How a skill tool is named in a warning: its name, shape-checked, or its index. */
+function describeTool(raw: unknown, index: number): string {
+  const name = typeof raw === 'object' && raw !== null ? (raw as { name?: unknown }).name : undefined;
+  return typeof name === 'string' && name.length <= 256 ? JSON.stringify(name) : `tools[${index}]`;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === 'object' && value !== null) {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/**
+ * The valid tools of a skill envelope, frozen copies in envelope order.
+ *
+ * Bad tool data drops only that tool, with a warning. It is not an integrity
+ * failure: `contentHash` covers the markdown only.
+ */
+function skillTools(key: string, version: number, raw: unknown): ReadonlyArray<Tool> {
+  if (raw === undefined) return Object.freeze([]);
+  const label = `skill '${key}' version ${version}`;
+  if (!Array.isArray(raw)) {
+    warnOnce(
+      `tools:${key}:${version}`,
+      `The tools field of ${label} is not an array, so none of its tools are offered.`,
+    );
+    return Object.freeze([]);
+  }
+  const tools: Tool[] = [];
+  for (const [index, entry] of raw.entries()) {
+    const problem = parseTool(entry, String(index));
+    if (problem !== null) {
+      const reason = problem.replace(`tools.${index}`, `tools[${index}]`);
+      warnOnce(
+        `tool:${key}:${version}:${index}`,
+        `Tool ${describeTool(entry, index)} of ${label} was dropped: ${reason}.`,
+      );
+      continue;
+    }
+    const { name } = entry as Tool;
+    if (tools.some((kept) => kept.name === name)) {
+      warnOnce(
+        `tool:${key}:${version}:${index}`,
+        `Tool ${describeTool(entry, index)} of ${label} was dropped: an earlier entry has the same name.`,
+      );
+      continue;
+    }
+    let copy: Tool;
+    try {
+      copy = structuredClone(entry as Tool);
+    } catch {
+      warnOnce(
+        `tool:${key}:${version}:${index}`,
+        `Tool ${describeTool(entry, index)} of ${label} was dropped: it is not plain data.`,
+      );
+      continue;
+    }
+    tools.push(deepFreeze(copy));
+  }
+  return Object.freeze(tools);
+}
+
 /**
  * Turns one untrusted raw store object into a `Skill`, or returns `null`.
  *
@@ -444,6 +520,7 @@ export function verifyRawSkill(raw: unknown): Skill | null {
     contentHash: verified.contentHash,
     name: typeof candidate.name === 'string' ? candidate.name : null,
     description: typeof candidate.description === 'string' ? candidate.description : null,
+    tools: skillTools(key, version, candidate.tools),
   });
 }
 

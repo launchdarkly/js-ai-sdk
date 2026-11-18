@@ -11,6 +11,7 @@ import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
 import { resetSdkOptions } from './sdk-options.js';
 import { flushSdkUsage, reportUsage, resetSdkUsage } from './sdk-usage.js';
 import { runShutdownHooks } from './shutdown-hooks.js';
+import { withSkillTools } from './skills-tools.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
 import { parseAiConfig } from './types.js';
 
@@ -718,7 +719,11 @@ export function parseVariation(
   }
 
   // `value` is the variation exactly as the SDK returned it, before parsing. It is written to the
-  // `feature_flag` span event as `feature_flag.result.value`.
-  // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
-  return { config: parsed.data, meta: (variation as any)._ldMeta as VariationMeta, value: variation };
+  // `feature_flag` span event as `feature_flag.result.value`, so it never carries skill tools.
+  return {
+    config: withSkillTools(parsed.data, key),
+    // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
+    meta: (variation as any)._ldMeta as VariationMeta,
+    value: variation,
+  };
 }

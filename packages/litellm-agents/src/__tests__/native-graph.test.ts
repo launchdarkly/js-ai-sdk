@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { agentArgs, clientArgs, handoffs, modelArgs, mockRun, mockTool, mockTrack, runnerArgs, runnerListeners } =
@@ -56,7 +57,17 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => ({
   getClient: () => ({ track: mockTrack }),
 }));
 
-import { type GraphDefinition, type GraphNode, NATIVE_TOOL_KEY, NativeTool } from '@launchdarkly/ai-server';
+import {
+  type GraphDefinition,
+  type GraphNode,
+  InMemorySkillStore,
+  initClient,
+  NATIVE_TOOL_KEY,
+  NativeTool,
+  resolveGraph,
+  setSkillStore,
+  shutdown,
+} from '@launchdarkly/ai-server';
 import { toLiteLLMAgents } from '../native-graph.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -398,5 +409,62 @@ describe('toLiteLLMAgents', () => {
       await toLiteLLMAgents(Promise.resolve(graphDefinition()), { client: {} as never }).invoke('q');
       expect(mockTrack).not.toHaveBeenCalled();
     });
+  });
+
+  it("offers a node's skill tools after its own, and not to a node that does not attach the skill", async () => {
+    const own = { name: 'own', type: 'function', parameters: { type: 'object' } };
+    const weather = { name: 'get-weather', type: 'function', parameters: { type: 'object' } };
+    const body = 'Use the weather.';
+    setSkillStore(
+      new InMemorySkillStore({
+        weather: {
+          key: 'weather',
+          version: 1,
+          content: body,
+          contentHash: createHash('sha256').update(body).digest('hex'),
+          tools: [weather],
+        },
+      }),
+    );
+    const variations: Record<string, unknown> = {
+      'skill-graph': { root: 'root', edges: { root: [{ key: 'child' }] } },
+      root: {
+        model: { name: 'anthropic/root-alias' },
+        provider: { name: 'LiteLLM' },
+        instructions: 'x',
+        tools: { own },
+        skills: [{ key: 'weather', version: 1 }],
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1 },
+      },
+      child: {
+        model: { name: 'gemini/child-alias' },
+        provider: { name: 'LiteLLM' },
+        instructions: 'x',
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1 },
+      },
+    };
+    await initClient({
+      variation: async (k: string) => variations[k],
+      track: () => {},
+      flush: async () => {},
+      close: async () => {},
+    } as any);
+    try {
+      const def = await resolveGraph('skill-graph', { context: { kind: 'user', key: 'u1' } });
+      await toLiteLLMAgents(Promise.resolve(def), {
+        client: {} as never,
+        toolHandlers: { own: vi.fn(), 'get-weather': vi.fn() },
+      }).invoke('hi');
+    } finally {
+      // Drops the client and the skill store, so later tests start clean.
+      await shutdown();
+    }
+
+    const argsOf = (name: string) => agentArgs.find((args) => args.name === name);
+    const toolsOf = (name: string) => ((argsOf(name)?.tools ?? []) as Array<{ name: string }>).map((t) => t.name);
+    expect(agentArgs.map((args) => args.name)).toEqual(['child', 'root']);
+    expect(toolsOf('root')).toEqual(['own', 'get-weather']);
+    expect(toolsOf('child')).toEqual([]);
+    expect(argsOf('root')?.handoffs).toHaveLength(1);
   });
 });

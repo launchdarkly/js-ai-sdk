@@ -758,16 +758,20 @@ export const partitionTools = (
   const nativeToolAliases = new Map<string, string>();
   const userConfigTools: Record<string, Tool> = {};
 
-  for (const [ldName, stub] of Object.entries(toolHandlers)) {
-    // Only tools attached to the active variation are enabled (SEC-9507).
-    if (!configTools || !Object.hasOwn(configTools, ldName)) continue;
+  // Walks the config's tools, so the model sees them in config order (variation tools, then skill
+  // tools), whatever order the caller's handler map has. Only tools attached to the active variation
+  // are enabled (SEC-9507).
+  const offered = configTools ?? {};
+  for (const ldName of Object.keys(offered)) {
+    if (!Object.hasOwn(toolHandlers, ldName)) continue;
+    const stub = toolHandlers[ldName];
     const nativeTool = (stub as unknown as Record<symbol, unknown>)[NATIVE_TOOL_KEY] as NativeTool | undefined;
     if (nativeTool) {
       // Carrying NATIVE_TOOL_KEY makes it the wrapper's callable stub, not the NativeTool.
       nativeToolMap.set(nativeTool.toolName, stub as ToolHandlerFn);
       nativeToolAliases.set(ldName, nativeTool.toolName);
     } else {
-      userConfigTools[ldName] = configTools[ldName];
+      userConfigTools[ldName] = offered[ldName];
     }
   }
 
