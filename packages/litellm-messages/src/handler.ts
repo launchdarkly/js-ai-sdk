@@ -120,12 +120,46 @@ const servingProvider = (configRep: AiConfigRep) => {
   return provider === 'bedrock' ? 'aws.bedrock' : provider;
 };
 
+// https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
+const CROSS_REGION_PREFIXES = ['global.', 'us.', 'us-gov.', 'eu.', 'apac.', 'au.', 'jp.', 'ca.', 'in.'];
+
+/**
+ * Prepends `region`, the cross-region inference-profile prefix (`us`, `global`, ...) that AI
+ * Config variations store in `model.region`, once to a Bedrock `modelId`. An id that already
+ * carries a known prefix or `region`, and an ARN, is returned unchanged.
+ */
+function bedrockModelId(modelId: string, region: unknown): string {
+  const prefix = typeof region === 'string' ? region.trim().replace(/\.+$/, '') : '';
+  if (!prefix || !modelId || modelId.startsWith(`${prefix}.`) || modelId.startsWith('arn:')) return modelId;
+  if (CROSS_REGION_PREFIXES.some((known) => modelId.startsWith(known))) return modelId;
+  return `${prefix}.${modelId}`;
+}
+
+/**
+ * The LiteLLM `model` for a variation. A `bedrock/` name gets the Bedrock prefix on its last
+ * segment, whatever the provider, so every `bedrock/<route>/` form works. A bare name gets it only
+ * when the provider is Bedrock. Any other name, and any name containing an ARN, is sent as configured.
+ */
+function requestModel(configRep: AiConfigRep): string {
+  const { name, region } = configRep.model;
+  if (typeof name !== 'string') return name;
+  if (name.startsWith('bedrock/')) {
+    if (name.includes('arn:')) return name;
+    const cut = name.lastIndexOf('/');
+    return `${name.slice(0, cut)}/${bedrockModelId(name.slice(cut + 1), region)}`;
+  }
+  if ((configRep.provider?.name ?? '').toLowerCase() === 'bedrock' && !name.includes('/')) {
+    return bedrockModelId(name, region);
+  }
+  return name;
+}
+
 function setIdentity(span: Span, configRep: AiConfigRep): void {
-  setModelIdentityAttributes(span, servingProvider(configRep), configRep.model.name, 'litellm');
+  setModelIdentityAttributes(span, servingProvider(configRep), requestModel(configRep), 'litellm');
 }
 
 function startModelSpan(configRep: AiConfigRep, parentContext: Context): Span {
-  const span = trace.getTracer(TRACER_NAME).startSpan(`chat ${configRep.model.name}`, undefined, parentContext);
+  const span = trace.getTracer(TRACER_NAME).startSpan(`chat ${requestModel(configRep)}`, undefined, parentContext);
   span.setAttribute('gen_ai.operation.name', 'chat');
   setIdentity(span, configRep);
   return span;
@@ -280,7 +314,7 @@ function ownedRequest(
   }
   return {
     ...parameters,
-    model: configRep.model.name,
+    model: requestModel(configRep),
     messages,
     ...(tools.length ? { tools } : {}),
     ...(configRep.outputFormat && !stream
@@ -354,7 +388,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
               throw error;
             }
             addUsage(usage, response.usage);
-            chatSpan.setAttribute('gen_ai.response.model', response.model ?? configRep.model.name);
+            chatSpan.setAttribute('gen_ai.response.model', response.model ?? requestModel(configRep));
             setUsageSpanAttributes(chatSpan, {
               input: toUsage(response.usage).input_tokens,
               output: toUsage(response.usage).output_tokens,
@@ -400,7 +434,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
           }
 
           setOutputContentAttributes(span, captureContent, [textMessage('assistant', output)]);
-          span.setAttribute('gen_ai.response.model', configRep.model.name);
+          span.setAttribute('gen_ai.response.model', requestModel(configRep));
           setUsageSpanAttributes(span, {
             input: usage.input_tokens,
             output: usage.output_tokens,
@@ -471,7 +505,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
             }
           }
 
-          activeModelSpan.setAttribute('gen_ai.response.model', configRep.model.name);
+          activeModelSpan.setAttribute('gen_ai.response.model', requestModel(configRep));
           setOutputContentAttributes(activeModelSpan, captureContent, [textMessage('assistant', turnContent)]);
           setUsageSpanAttributes(activeModelSpan, {
             input: turnUsage.input_tokens,
@@ -518,7 +552,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
 
         completed = true;
         setOutputContentAttributes(span, captureContent, [textMessage('assistant', output)]);
-        span.setAttribute('gen_ai.response.model', configRep.model.name);
+        span.setAttribute('gen_ai.response.model', requestModel(configRep));
         setUsageSpanAttributes(span, {
           input: usage.input_tokens,
           output: usage.output_tokens,

@@ -55,6 +55,18 @@ describe('returnToolErrors', () => {
     expect(await (tools.later as Fn)()).toBe('done');
     expect(tools.search).toBe(native);
   });
+
+  it('keeps a tool keyed __proto__, answers its error and lists it as available', () => {
+    const recorder = new TrajectoryRecorder();
+    const tools = returnToolErrors(recorder.wrap(Object.fromEntries([['__proto__', noStation]])));
+
+    expect(Object.hasOwn(tools, '__proto__')).toBe(true);
+    const result = (tools.__proto__ as unknown as Fn)({ city: 'Reykjavik' });
+
+    expect(result).toBe("Error: TypeError: No weather station for 'Reykjavik'");
+    expect(recorder.available).toContain('__proto__');
+    expect(recorder.calls.map((call) => call.key)).toEqual(['__proto__']);
+  });
 });
 
 describe('toolErrorResult', () => {

@@ -284,6 +284,15 @@ describe('toVercelAgents', () => {
     warn.mockRestore();
   });
 
+  it('never gives the SDK a node tool whose name is only an inherited object property', async () => {
+    const graph = makeGraph();
+    (graph.getNode('leaf') as any).config.tools = {
+      constructor: { name: 'constructor', type: 'function', parameters: { type: 'object' } },
+    };
+    await toVercelAgents(Promise.resolve(graph as any), { toolHandlers: {} } as any).invoke('hi');
+    expect(aiMocks.agentArguments.flatMap((args) => Object.keys(args.tools ?? {}))).not.toContain('constructor');
+  });
+
   it('starts at the graph root and applies caller history only to its first invocation', async () => {
     const history = [
       { role: 'user' as const, content: 'Earlier question' },

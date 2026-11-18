@@ -491,7 +491,7 @@ describe('run() argument validation', () => {
     it('accepts a prompt with neither field in both modes', async () => {
       const messages = routeHostedRun(new FakeApi());
       await makeModule(messages).run(base({ generation: completion({ messages: undefined }), pollIntervalSeconds: 0 }));
-      expect(messages.sequence).toContain('POST projects/proj/evaluations');
+      expect(messages.sequence).toContain('POST projects/proj/offline-evaluations');
       const agent = routeHostedRun(new FakeApi());
       await makeModule(agent).run(
         base({
@@ -500,7 +500,7 @@ describe('run() argument validation', () => {
           pollIntervalSeconds: 0,
         }),
       );
-      expect(agent.sequence).toContain('POST projects/proj/evaluations');
+      expect(agent.sequence).toContain('POST projects/proj/offline-evaluations');
     });
   });
 
