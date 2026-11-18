@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.1.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-litellm-messages-1.0.0...@launchdarkly/ai-litellm-messages-1.1.0) (2026-11-12)
+
+
+### Features
+
+* add maxRetries to the messages handler factories ([#165](https://github.com/launchdarkly/js-ai-sdk/issues/165)) ([e2e7135](https://github.com/launchdarkly/js-ai-sdk/commit/e2e7135ab1ec76986850856f140a3bacad38356d))
+
+
+### Bug Fixes
+
+* **litellm:** apply Bedrock cross-region inference-profile prefix from model.region ([#213](https://github.com/launchdarkly/js-ai-sdk/issues/213)) ([cf1696e](https://github.com/launchdarkly/js-ai-sdk/commit/cf1696e5a782abb48c34bf156b0d298d3887d3c6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^1.0.0 to ^1.1.0
+
 ## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-litellm-messages-0.2.0...@launchdarkly/ai-litellm-messages-1.0.0) (2026-10-30)
 
 

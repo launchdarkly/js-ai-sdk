@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-messages-1.0.0...@launchdarkly/ai-claude-messages-1.1.0) (2026-11-12)
+
+
+### Features
+
+* add maxRetries to the messages handler factories ([#165](https://github.com/launchdarkly/js-ai-sdk/issues/165)) ([e2e7135](https://github.com/launchdarkly/js-ai-sdk/commit/e2e7135ab1ec76986850856f140a3bacad38356d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^1.0.0 to ^1.1.0
+
 ## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-messages-0.5.0...@launchdarkly/ai-claude-messages-1.0.0) (2026-10-30)
 
 

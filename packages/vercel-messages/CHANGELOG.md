@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.1.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-vercel-messages-1.0.0...@launchdarkly/ai-vercel-messages-1.1.0) (2026-11-12)
+
+
+### Features
+
+* add maxRetries to the messages handler factories ([#165](https://github.com/launchdarkly/js-ai-sdk/issues/165)) ([e2e7135](https://github.com/launchdarkly/js-ai-sdk/commit/e2e7135ab1ec76986850856f140a3bacad38356d))
+
+
+### Bug Fixes
+
+* **tools:** resolve tool handlers by own name only ([#212](https://github.com/launchdarkly/js-ai-sdk/issues/212)) ([01bcb7c](https://github.com/launchdarkly/js-ai-sdk/commit/01bcb7c791ea67800c076492d3f3b4ecba88f34e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^1.0.0 to ^1.1.0
+
 ## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-vercel-messages-0.3.0...@launchdarkly/ai-vercel-messages-1.0.0) (2026-10-30)
 
 
