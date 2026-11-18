@@ -146,10 +146,10 @@ describe('criteria on the create body', () => {
     ]);
   });
 
-  it('omits criteria from the body when the run has none', async () => {
+  it('sends an empty criteria list when the run has none so PATCH can clear pins', async () => {
     const api = routeHostedRun(new FakeApi());
     await makeModule(api).run(run({ criteria: [] }));
-    expect('criteria' in createBody(api)).toBe(false);
+    expect(createBody(api).criteria).toEqual([]);
     expect(criterionEvents()).toEqual([]);
   });
 });

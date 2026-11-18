@@ -31,13 +31,13 @@ import { type Criterion, Judge, validateCriteria } from './evaluations-criteria.
 import {
   buildHandlerConfig,
   cancelEvaluationRun,
-  createEvaluation,
   createEvaluationRun,
   type DatasetRef,
   DEFAULT_CONCURRENCY,
   DEFAULT_FLUSH_BOUND,
   type EvaluationRunRef,
   EventSink,
+  ensureEvaluation,
   eventContext,
   expectsVerdict,
   fetchAiConfigMode,
@@ -61,6 +61,7 @@ import {
   uploadDatasetRows,
   type VariationGeneration,
   VERDICT_POLL_DEFAULTS,
+  validateOfflineEvaluationKey,
   variationGeneration,
   variationJudgeKeys,
   variationToolVersions,
@@ -169,7 +170,13 @@ export type InlineDatasetRow = {
  * or `aiConfig` with optional `generation` overrides.
  */
 export type RunOptions = {
-  /** Key for the evaluation this run creates. Must be unique per run. */
+  /**
+   * Stable key for the offline evaluation this run reconciles. Reuse the same
+   * string across CI calls so trends share one evaluation identity; each
+   * `run()` still creates a new run under that evaluation. Must match
+   * `^[a-z0-9][a-z0-9._-]*$` and be at most 128 characters (validated before
+   * any network I/O).
+   */
   key: string;
   /** A hosted dataset key, or the rows of an inline dataset. */
   dataset: string | readonly InlineDatasetRow[];
@@ -597,6 +604,7 @@ export class EvaluationsModule {
 
     // ---- Local validation: no network I/O. ----
     if (typeof key !== 'string' || !key.trim()) throw new EvaluationsError('key must not be blank');
+    validateOfflineEvaluationKey(key);
     const inlineRows = validateDataset(dataset);
     const pool = validateHandlerPool(options);
     if (!Number.isInteger(concurrency) || concurrency < 1) {
@@ -673,7 +681,7 @@ export class EvaluationsModule {
       datasetRef = {};
       rows = inlineRows.map((row) => renderRow(row.rowIdx, row));
     }
-    const evaluation = await createEvaluation(this.api, this.projectKey, key, generation, runTools, runCriteria);
+    const evaluation = await ensureEvaluation(this.api, this.projectKey, key, generation, runTools, runCriteria);
     const run = await createEvaluationRun(this.api, this.projectKey, evaluation.id, datasetRef.id);
     if (inlineRows !== undefined) {
       // Every batch must land before the first event: the run starts with a
