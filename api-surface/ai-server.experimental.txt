@@ -25,6 +25,6 @@
 - RunSummary
 - Scorer
 + shadowConfig  usage=experimental.shadowConfig
-+ ShadowConfigArgs  # type-only export
-+ ShadowResult  # type-only export
-+ ShadowTask  # type-only export
++ ShadowConfigArgs
++ ShadowResult
++ ShadowTask

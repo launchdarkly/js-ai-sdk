@@ -96,7 +96,7 @@ const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
 // ---------------------------------------------------------------------------
 
 describe('criteria on the create body', () => {
-  it('pins a judge left on its defaults, with its row threshold and no success direction', async () => {
+  it('pins a judge left on its defaults, with both thresholds and no success direction', async () => {
     const api = routeHostedRun(new FakeApi());
     await makeModule(api).run(run());
     expect(createBody(api).criteria).toEqual([
@@ -104,8 +104,19 @@ describe('criteria on the create body', () => {
         criterionType: 'accuracy',
         kind: 'judge',
         judgeKey: 'accuracy',
-        options: { threshold: 0.5 },
+        options: { threshold: 0.5, passRateThreshold: 0.95 },
       },
+    ]);
+  });
+
+  it('sends a supplied pass rate threshold in place of the default', async () => {
+    const api = routeHostedRun(new FakeApi());
+    await makeModule(api).run(
+      run({ criteria: [new Judge('accuracy', { passRateThreshold: 0.8 }), new Scorer('exact', () => 1)] }),
+    );
+    expect(createBody(api).criteria.map((c: { options: unknown }) => c.options)).toEqual([
+      { threshold: 0.5, passRateThreshold: 0.8 },
+      { threshold: 1.0, passRateThreshold: 0.95 },
     ]);
   });
 
@@ -124,21 +135,21 @@ describe('criteria on the create body', () => {
         criterionType: 'typos',
         kind: 'scorer',
         successDirection: 'lower_is_better',
-        options: { threshold: 0.2 },
+        options: { threshold: 0.2, passRateThreshold: 0.95 },
       },
       {
         criterionType: 'accuracy',
         kind: 'judge',
         judgeKey: 'accuracy',
-        options: { threshold: 0.5, groundTruthContext: 'The policy is {{policy}}' },
+        options: { threshold: 0.5, passRateThreshold: 0.95, groundTruthContext: 'The policy is {{policy}}' },
       },
     ]);
   });
 
-  it('omits criteria from the body when the run has none', async () => {
+  it('sends an empty criteria list when the run has none so PATCH can clear pins', async () => {
     const api = routeHostedRun(new FakeApi());
     await makeModule(api).run(run({ criteria: [] }));
-    expect('criteria' in createBody(api)).toBe(false);
+    expect(createBody(api).criteria).toEqual([]);
     expect(criterionEvents()).toEqual([]);
   });
 });

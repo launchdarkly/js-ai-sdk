@@ -463,6 +463,16 @@ describe('createVercelMessagesHandler', () => {
     expect(handlers.privileged).not.toHaveBeenCalled();
   });
 
+  it('never offers a tool whose name is only an inherited object property', async () => {
+    aiMocks.generateText.mockResolvedValue(generation('ok'));
+    const config = {
+      ...baseConfig,
+      tools: { constructor: { name: 'constructor', type: 'function', parameters: { type: 'object' } } },
+    };
+    await createVercelMessagesHandler()(config as any, 'q', {});
+    expect(Object.keys(aiMocks.generateText.mock.calls[0][0].tools ?? {})).not.toContain('constructor');
+  });
+
   it('uses Output.object for blocking structured output and serializes the result', async () => {
     aiMocks.generateText.mockResolvedValue({
       ...generation('', 3, 2),

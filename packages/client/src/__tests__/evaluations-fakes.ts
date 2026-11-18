@@ -115,8 +115,13 @@ export function stubHandler(
 
 export const PROJECT = 'proj';
 export const DATASET = 'ds';
-export const EVALUATION_PATH = `projects/${PROJECT}/evaluations`;
-export const RUN_PATH = `${EVALUATION_PATH}/ev-1/runs`;
+export const EVAL_KEY = 'eval-key';
+/** Keyed offline-evaluations collection (create). */
+export const EVALUATION_PATH = `projects/${PROJECT}/offline-evaluations`;
+/** GET/PATCH by key. */
+export const EVALUATION_BY_KEY_PATH = `${EVALUATION_PATH}/${EVAL_KEY}`;
+/** Runs stay on the legacy evaluations id path until nested offline-evaluations runs ship. */
+export const RUN_PATH = `projects/${PROJECT}/evaluations/ev-1/runs`;
 export const SUMMARY_PATH = `${RUN_PATH}/run-1/summary`;
 
 export const datasetRow = (rowIndex: number, extra: Record<string, unknown> = {}) => ({
@@ -131,20 +136,26 @@ export const terminalSummary = (total: number) => ({
   body: { statusCounts: { total, passed: total, failed: 0, error: 0, pending: 0 } },
 });
 
+/** First-mint path: GET by key 404 → POST create. */
+function routeEvaluationCreate(api: FakeApi): FakeApi {
+  return api.on('GET', EVALUATION_BY_KEY_PATH, { status: 404 }).on('POST', EVALUATION_PATH, {
+    status: 201,
+    body: { id: 'ev-1', version: 3, key: EVAL_KEY, name: EVAL_KEY },
+  });
+}
+
 /** Routes for a hosted run with `rows` on one page. */
 export function routeHostedRun(api: FakeApi, rows: unknown[] = [datasetRow(0)]): FakeApi {
-  return api
+  return routeEvaluationCreate(api)
     .on('GET', `projects/${PROJECT}/datasets/${DATASET}`, { body: { id: 'ds-id', key: DATASET } })
     .on('GET', `projects/${PROJECT}/datasets/${DATASET}/rows`, { body: { items: rows, totalCount: rows.length } })
-    .on('POST', EVALUATION_PATH, { status: 201, body: { id: 'ev-1', version: 3, name: 'eval-key' } })
     .on('POST', RUN_PATH, { status: 201, body: { id: 'run-1', evaluationId: 'ev-1', state: 'PENDING' } })
     .on('GET', SUMMARY_PATH, terminalSummary(rows.length));
 }
 
 /** Routes for an inline run with `rowCount` rows. */
 export function routeInlineRun(api: FakeApi, rowCount: number): FakeApi {
-  return api
-    .on('POST', EVALUATION_PATH, { status: 201, body: { id: 'ev-1', version: 3, name: 'eval-key' } })
+  return routeEvaluationCreate(api)
     .on('POST', RUN_PATH, { status: 201, body: { id: 'run-1', evaluationId: 'ev-1', state: 'PENDING' } })
     .on('POST', `${RUN_PATH}/run-1/dataset-rows`, { body: {} })
     .on('POST', `${RUN_PATH}/run-1/cancel`, { body: {} })

@@ -162,6 +162,29 @@ describe('toClaudeAgents', () => {
     expect(leafOptions).not.toHaveProperty('max_turns');
   });
 
+  it("leaves an Anthropic node's model id unprefixed whatever its region", async () => {
+    const def = makeGraphDef();
+    (def.root!.config.model as any).region = 'us';
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+    expect(mockQuery.mock.calls[0][0].options.model).toBe('claude-opus-4-5');
+  });
+
+  it('hands a Bedrock node to runNode with its config unchanged', async () => {
+    const def = makeGraphDef();
+    def.root!.config = {
+      ...def.root!.config,
+      model: { name: 'anthropic.claude-opus-5-5', region: 'us' },
+      provider: { name: 'Bedrock' },
+    };
+    vi.mocked(def.runNode).mockResolvedValue({ response: 'ok', usage: { input: 1, output: 1, total: 2 } } as any);
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(vi.mocked(def.runNode).mock.calls[0][0].config.model).toEqual({
+      name: 'anthropic.claude-opus-5-5',
+      region: 'us',
+    });
+  });
+
   // Each node's max_tokens reaches its CLI as
   // CLAUDE_CODE_MAX_OUTPUT_TOKENS, and thinking is off unless that node's config asks for it.
   it("sets each node's output limit and disables thinking unless the node enables it", async () => {
