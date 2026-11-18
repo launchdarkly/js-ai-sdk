@@ -63,7 +63,8 @@ const resolveJudge = async (
   userContext: LDContext,
 ): Promise<{ config: AiConfigRep; meta: VariationMeta; value: unknown } | null> => {
   try {
-    return await extractVariation(key, userContext);
+    // Judges are never offered tools, so their skills are not read for any.
+    return await extractVariation(key, userContext, { skillTools: false });
   } catch (err) {
     // biome-ignore lint/suspicious/noConsole: judges are non-fatal; say why one was skipped
     console.error(`Judge '${key}' skipped:`, err instanceof Error ? err.message : err);

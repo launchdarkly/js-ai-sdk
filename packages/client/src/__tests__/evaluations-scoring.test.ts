@@ -163,7 +163,11 @@ describe('judge resolution', () => {
     const api = routeHostedRun(new FakeApi(), [datasetRow(0), datasetRow(1), datasetRow(2)]);
     await makeModule(api).run(run());
     expect(lifecycle.resolve).toHaveBeenCalledOnce();
-    expect(lifecycle.resolve).toHaveBeenCalledWith('accuracy', { kind: 'evaluation', key: PROJECT });
+    expect(lifecycle.resolve).toHaveBeenCalledWith(
+      'accuracy',
+      { kind: 'evaluation', key: PROJECT },
+      { skillTools: false },
+    );
   });
 
   it.each([

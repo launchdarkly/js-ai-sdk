@@ -671,12 +671,16 @@ export async function inspectConfigInternal(key: string, context: LDContext): Pr
   }
 }
 
+/** `skillTools: false` skips the skill-tool merge, for configs that are never offered tools (judges). */
+export type ParseVariationOptions = { skillTools?: boolean };
+
 export const extractVariation = async (
   key: string,
   userContext: LDContext,
+  options: ParseVariationOptions = {},
 ): Promise<{ config: AiConfigRep; meta: VariationMeta; value: unknown }> => {
   const { value } = await fetchVariation(key, userContext);
-  return parseVariation(key, value);
+  return parseVariation(key, value, options);
 };
 
 type DetailClient = LDClientInterface & {
@@ -708,6 +712,7 @@ export async function fetchVariation(
 export function parseVariation(
   key: string,
   variation: unknown,
+  { skillTools = true }: ParseVariationOptions = {},
 ): { config: AiConfigRep; meta: VariationMeta; value: unknown } {
   // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
   if (!(variation as any)?._ldMeta?.enabled) {
@@ -721,7 +726,7 @@ export function parseVariation(
   // `value` is the variation exactly as the SDK returned it, before parsing. It is written to the
   // `feature_flag` span event as `feature_flag.result.value`, so it never carries skill tools.
   return {
-    config: withSkillTools(parsed.data, key),
+    config: skillTools ? withSkillTools(parsed.data, key) : parsed.data,
     // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
     meta: (variation as any)._ldMeta as VariationMeta,
     value: variation,
