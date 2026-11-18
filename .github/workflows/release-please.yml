@@ -108,7 +108,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-client-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -133,7 +133,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-ai-node-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -158,7 +158,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-ai-otel-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -183,7 +183,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-claude-agents-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -208,7 +208,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-claude-messages-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -233,7 +233,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-openai-agents-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -258,7 +258,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-openai-messages-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -283,7 +283,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-langchain-agents-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -308,7 +308,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-langchain-messages-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -333,7 +333,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-vercel-agents-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -358,7 +358,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-vercel-messages-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -383,7 +383,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-typesafe-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -408,7 +408,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-litellm-agents-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -433,7 +433,7 @@ jobs:
       attestations: write
     if: ${{ needs.release-please.outputs.package-litellm-messages-released == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -458,7 +458,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/ci
       - uses: ./.github/actions/build
         with:
@@ -507,7 +507,7 @@ jobs:
       CANARY_STAGE: c${{ github.run_id }}-${{ github.run_attempt }}
       SLS_TELEMETRY_DISABLED: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
