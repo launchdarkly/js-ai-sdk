@@ -22,7 +22,7 @@ jobs:
           fetch-depth: 0 # the base commit and every release tag
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
 
