@@ -38,7 +38,7 @@ import { verifyRawSkill } from '../skills-core.js';
 import { writeSkills } from '../skills-fs.js';
 import { withSkillTools } from '../skills-tools.js';
 import type { AiConfigRep, LDClientInterface, RawSkillObject, Tool } from '../types.js';
-import { createSkill } from '../types.js';
+import { createSkill, NATIVE_TOOL_KEY, NativeTool } from '../types.js';
 import { createHandler } from '../utils.js';
 
 const BODY = '---\nname: PDF\n---\nExtract the text.\n';
@@ -117,6 +117,7 @@ describe('verifyRawSkill reads tools', () => {
   it.each([
     ['an object', { a: tool('a') }],
     ['a string', 'get-weather'],
+    ['a number', 7],
     ['null', null],
   ])('drops a tools field that is %s with a warning, and still returns the skill', (_label, tools) => {
     const skill = verifyRawSkill(envelope('pdf', 3, tools));
@@ -536,6 +537,19 @@ describe('config().invoke with skill tools', () => {
     const events = (ld.track as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0]);
     expect(events).toContain('$ld:ai:tool_call');
     expect(JSON.stringify((ld.track as ReturnType<typeof vi.fn>).mock.calls)).not.toMatch(/client\.getSkill/);
+  });
+
+  it('passes a NativeTool registered under a skill tool key as a native tool, not a function', async () => {
+    await initClient(client(variation));
+    _setStore(new InMemorySkillStore({ pdf: envelope('pdf', 3, [tool('search')]) }));
+    const webSearch = new NativeTool(Symbol('web-search'), 'WebSearch');
+    let received: unknown;
+    const handler = createHandler(['OpenAI', 'agent'], async (_cfg, _input, toolHandlers = {}) => {
+      received = toolHandlers.search;
+      return { output: 'ok', usage: {} };
+    });
+    await config({ key: 'support-agent', handler, toolHandlers: { search: webSearch } }).invoke('hi', ctx);
+    expect((received as Record<symbol, unknown>)[NATIVE_TOOL_KEY]).toBe(webSearch);
   });
 
   it('inspectConfig still returns only the variation tools', async () => {

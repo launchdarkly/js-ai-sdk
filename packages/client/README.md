@@ -545,9 +545,9 @@ A fixed list, `skillRefs(config)` included, is for a set that does not change fo
 
 #### Observability: integrity failures are logged for your SIEM
 
-A skill that fails integrity verification is **withheld**: the accessor returns `null`, `writeSkills` reports an `error` action, and no unverified byte reaches your agent. Each failure also writes one machine-parseable line to `console.error`:
-
 Integrity verification covers the markdown `content` only. A skill's `tools` have no hash in this release: they are protected by the transport (TLS), not by a hash you can check on disk, and bad tool data drops only that tool, with a warning and no integrity record.
+
+A skill that fails integrity verification is **withheld**: the accessor returns `null`, `writeSkills` reports an `error` action, and no unverified byte reaches your agent. Each failure also writes one machine-parseable line to `console.error`:
 
 ```text
 [LaunchDarkly] ld.skills.integrity_failure {"action":"withheld","event":"ld.skills.integrity_failure","expected_hash":"5f2b...","language":"typescript","observed_hash":"9c14...","reason":"content hash mismatch","reason_code":"hash_mismatch","skill_key":"pdf-extraction","version":2}
