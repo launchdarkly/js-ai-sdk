@@ -23,6 +23,7 @@ vi.mock('dotenv/config', () => ({}));
 
 import { config } from '../client.js';
 import { resolveGraph } from '../graph.js';
+import { runJudges } from '../judges.js';
 import { extractVariation, initClient, inspectConfig, shutdown } from '../lifecycle.js';
 import {
   _clearState,
@@ -153,8 +154,26 @@ describe('verifyRawSkill reads tools', () => {
       ['b', 'b tool'],
     ]);
     expect(warned()).toEqual([
-      expect.stringMatching(/Tool "a" of skill 'pdf' version 3 was dropped: an earlier entry/),
+      expect.stringMatching(/Tool tools\[2\] "a" of skill 'pdf' version 3 was dropped: an earlier entry/),
     ]);
+  });
+
+  it.each([
+    ['a newline', 'bad\nname'],
+    ['257 characters', 'x'.repeat(257)],
+  ])('names a tool whose name has %s by position only', (_label, name) => {
+    verifyRawSkill(envelope('pdf', 3, [tool('a'), { type: 'function', name }]));
+    expect(warned()).toEqual([
+      expect.stringMatching(/^\[LaunchDarkly\] Tool tools\[1\] of skill 'pdf' version 3 was dropped/),
+    ]);
+  });
+
+  it('does not quote an unsafe name in a conflict warning', () => {
+    const name = 'we\nather';
+    _setStore(new InMemorySkillStore({ a: envelope('a', 1, [tool(name, 'skill')]) }));
+    withSkillTools(baseConfig({ tools: { [name]: tool(name, 'variation') }, skills: [{ key: 'a', version: 1 }] }), 'c');
+    expect(warned()).toEqual([expect.stringMatching(/tool with a name that cannot be shown/)]);
+    expect(warned()[0]).not.toContain('\n');
   });
 
   it('never puts parameters or description in a drop warning', () => {
@@ -439,6 +458,24 @@ describe('withSkillTools', () => {
     expect(warnings).toHaveBeenCalledTimes(2);
   });
 
+  it('a miss before the store initializes warns without using up the warning for a real absence', () => {
+    const store = new InMemorySkillStore();
+    let ready = false;
+    Object.assign(store, { isInitialized: () => ready });
+    _setStore(store);
+    const cfg = baseConfig({ skills: [{ key: 'gone', version: 1 }] });
+    withSkillTools(cfg, 'c');
+    ready = true;
+    withSkillTools(cfg, 'c');
+    withSkillTools(cfg, 'c');
+    expect(warned()).toEqual([
+      expect.stringMatching(/Skill 'gone' version 1 adds no tools.*has not finished initializing/),
+      expect.stringMatching(
+        /Skill 'gone' version 1 adds no tools.*is not available from the configured skill store\.$/,
+      ),
+    ]);
+  });
+
   it('warns once per process for a skill that cannot be read, across runs and configs', () => {
     _setStore(new InMemorySkillStore());
     const cfg = baseConfig({ skills: [{ key: 'gone', version: 1 }] });
@@ -565,6 +602,64 @@ describe('config().invoke with skill tools', () => {
     const { config: cfg, value } = await extractVariation('support-agent', ctx);
     expect(Object.keys(cfg.tools ?? {})).toEqual(['own', 'extract']);
     expect(Object.keys((value as { tools: object }).tools)).toEqual(['own']);
+  });
+});
+
+describe('judge configs with skills', () => {
+  const ctx = { kind: 'user' as const, key: 'user-1' };
+  const judgeVariation = {
+    _ldMeta: { enabled: true, variationKey: 'j1', version: 1, mode: 'judge' },
+    model: { name: 'gpt-4o' },
+    provider: { name: 'OpenAI' },
+    instructions: 'Score it.',
+    skills: [{ key: 'judge-skill', version: 1 }],
+  };
+
+  afterEach(async () => {
+    await shutdown();
+  });
+
+  async function setUp() {
+    await initClient({
+      variation: vi.fn().mockResolvedValue(judgeVariation),
+      track: vi.fn(),
+      flush: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    const store = new InMemorySkillStore({ 'judge-skill': envelope('judge-skill', 1, [tool('t')]) });
+    const getObject = vi.spyOn(store, 'getObject');
+    _setStore(store);
+    return getObject;
+  }
+
+  it('a judge run reads no skill for tools', async () => {
+    const getObject = await setUp();
+    const handler = createHandler(['OpenAI', 'messages'], async (cfg) => {
+      expect(cfg.tools).toBeUndefined();
+      return { output: '{"score": 1, "reasoning": "ok"}', usage: {} };
+    });
+    await runJudges({
+      config: baseConfig({ judgeConfiguration: { judges: [{ key: 'judge-cfg', samplingRate: 1 }] } }),
+      userContext: ctx,
+      handler,
+      llmResponse: 'answer',
+      baseTrackData: {
+        runId: 'r',
+        configKey: 'c',
+        variationKey: 'v',
+        version: 1,
+        modelName: 'gpt-4o',
+        providerName: 'OpenAI',
+      },
+    });
+    expect(getObject).not.toHaveBeenCalled();
+  });
+
+  it('extractVariation with skillTools: false reads no store and keeps only the variation tools', async () => {
+    const getObject = await setUp();
+    const { config: cfg } = await extractVariation('judge-cfg', ctx, { skillTools: false });
+    expect(cfg.tools).toBeUndefined();
+    expect(getObject).not.toHaveBeenCalled();
   });
 });
 

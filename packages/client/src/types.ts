@@ -218,8 +218,9 @@ export type Skill = {
   readonly description: string | null;
   /**
    * The tool definitions this skill version pins, in the order the author set;
-   * empty when it has none. Frozen. Not covered by `contentHash`, and never
-   * written to disk by `writeSkills`.
+   * empty when it has none. Frozen, and each accessor call returns fresh copies,
+   * so nothing a caller does reaches the store. Not covered by `contentHash`, and
+   * never written to disk by `writeSkills`.
    */
   readonly tools: ReadonlyArray<Tool>;
 };

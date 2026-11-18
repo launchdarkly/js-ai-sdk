@@ -351,7 +351,7 @@ A node in a resolved agent graph: an evaluated agent config plus its outgoing ed
 | Field | Type | Description |
 |---|---|---|
 | `key` | string | The node's config key. |
-| `config` | `AiConfigRep` | Evaluated agent config for this node. |
+| `config` | `AiConfigRep` | Evaluated agent config for this node. Its `tools` include the tools of the skills the node's variation attaches, which is how native graph adapters offer them; `inspectConfig` returns only the variation's own tools. |
 | `meta` | `VariationMeta` | Variation metadata for this node. |
 | `edges` | `GraphEdge[]` | Outgoing edges from this node. |
 | `isTerminal()` | `() => boolean` | Returns `true` when the node has no outgoing edges. |

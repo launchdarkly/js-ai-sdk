@@ -408,10 +408,18 @@ export function verifiedBytes(
   return { encoded, contentHash: observedHash };
 }
 
-/** How a skill tool is named in a warning: its name, shape-checked, or its index. */
+/** A tool name safe to quote in a log line; anything else is named by position only. */
+const LOGGABLE_TOOL_NAME = /^[A-Za-z0-9._-]{1,256}$/;
+
+/** `"name"`, or `null` when the name fails the shape check. */
+export function loggableToolName(name: unknown): string | null {
+  return typeof name === 'string' && LOGGABLE_TOOL_NAME.test(name) ? JSON.stringify(name) : null;
+}
+
+/** How a skill tool is named in a warning: its position, plus its name when that passes the shape check. */
 function describeTool(raw: unknown, index: number): string {
-  const name = typeof raw === 'object' && raw !== null ? (raw as { name?: unknown }).name : undefined;
-  return typeof name === 'string' && name.length <= 256 ? JSON.stringify(name) : `tools[${index}]`;
+  const name = loggableToolName(typeof raw === 'object' && raw !== null ? (raw as { name?: unknown }).name : undefined);
+  return name === null ? `tools[${index}]` : `tools[${index}] ${name}`;
 }
 
 function deepFreeze<T>(value: T): T {

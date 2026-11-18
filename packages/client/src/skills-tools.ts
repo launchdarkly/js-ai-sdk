@@ -5,7 +5,7 @@
 
 import { isDeepStrictEqual } from 'node:util';
 import { skillRefsInternal } from './skills.js';
-import { getStore, resolveFromStore, warnOnce } from './skills-core.js';
+import { getStore, loggableToolName, resolveFromStore, storeIsInitialized, warnOnce } from './skills-core.js';
 import type { AiConfigRep, SkillReference, Tool } from './types.js';
 
 const DEFINITION_FIELDS = ['type', 'name', 'description', 'parameters', 'customParameters'] as const;
@@ -51,9 +51,12 @@ export function withSkillTools(config: AiConfigRep, configKey: string): AiConfig
   for (const ref of refs) {
     const { skill, error } = resolveFromStore(store, ref.key, ref.version);
     if (!skill) {
+      // A miss before the store has its data warns under its own key, so it does not use up the warning for a real absence.
+      const ready = storeIsInitialized(store);
       warnOnce(
-        `unreadable:${ref.key}:${ref.version}`,
-        `Skill '${ref.key}' version ${ref.version} adds no tools to AI Config '${configKey}': ${error}.`,
+        `${ready ? 'unreadable' : 'unready'}:${ref.key}:${ref.version}`,
+        `Skill '${ref.key}' version ${ref.version} adds no tools to AI Config '${configKey}': ${error}` +
+          `${ready ? '' : ' (the skill store has not finished initializing)'}.`,
       );
       continue;
     }
@@ -75,7 +78,7 @@ export function withSkillTools(config: AiConfigRep, configKey: string): AiConfig
       const where = held.startsWith('AI Config') ? '' : `, both attached to AI Config '${configKey}',`;
       warnOnce(
         `conflict:${configKey}:${skill.key}:${skill.version}:${tool.name}`,
-        `${capitalize(held)} and ${label}${where} both define tool ${JSON.stringify(tool.name)} differently; ` +
+        `${capitalize(held)} and ${label}${where} both define tool ${loggableToolName(tool.name) ?? 'with a name that cannot be shown'} differently; ` +
           `the definition from ${held} is offered.`,
       );
     }
