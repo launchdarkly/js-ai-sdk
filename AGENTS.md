@@ -115,7 +115,7 @@ camelCase values and functions, PascalCase types and classes. No TypeScript `enu
 
 ### Concurrency
 
-`async`/`await` and `Promise`. Streams are async generators (`AsyncGenerator`) and release what they hold in `finally`. A process-wide singleton lives on a `Symbol.for(...)` slot on `globalThis`, because one package can load more than once.
+`async`/`await` and `Promise`. Streams are async generators (`AsyncGenerator`) and release what they hold in `finally`. State that must survive the package loading twice (dual ESM/CJS or duplicate installs) lives on a `Symbol.for(...)` slot on `globalThis` (the client singleton in `lifecycle.ts`, the hooks in `shutdown-hooks.ts`). Other module state is a plain module-level value (`globalRegistry`).
 
 ### Options
 
