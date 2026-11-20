@@ -48,11 +48,12 @@ const TRACER_NAME = '@launchdarkly/ai-langchain-agents';
  *
  * `gen_ai.provider.name` names who served the request, and its semconv enum has no `langchain`
  * member — LangChain is the framework, not the provider. Empty or missing names fall back to
- * `openai`. `gen_ai.system` keeps the `langchain` value the handler shipped, so existing
+ * `openai`, and Bedrock is written `aws.bedrock`, its semconv value. `gen_ai.system` keeps the `langchain` value the handler shipped, so existing
  * dashboards do not break.
  */
 function servingProvider(config: AiConfigRep): string {
-  return (config.provider?.name || 'openai').toLowerCase();
+  const provider = (config.provider?.name || 'openai').toLowerCase();
+  return provider === 'bedrock' ? 'aws.bedrock' : provider;
 }
 
 function resolvedModelName(config: AiConfigRep, fallbackName = ''): string {

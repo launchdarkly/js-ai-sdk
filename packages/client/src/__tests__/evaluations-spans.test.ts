@@ -23,6 +23,7 @@ import {
   conversationIdForEvaluationRow,
   LD_EVALUATION_RUN_ID,
   LD_EVALUATION_RUN_ROW_INDEX,
+  setConfigModelIdentity,
   withEvaluationRow,
 } from '../evaluations-spans.js';
 import { EvalTool, Judge, type RunOptions, Scorer } from '../index.js';
@@ -735,5 +736,20 @@ describe('tracer flush', () => {
   it('reaches the provider behind the global proxy', async () => {
     await flushTracerProvider();
     expect(provider.forceFlush).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('setConfigModelIdentity', () => {
+  it.each([
+    ['OpenAI', 'openai'],
+    ['Bedrock', 'aws.bedrock'],
+    ['bedrock', 'aws.bedrock'],
+    ['', ''],
+  ] as const)('writes provider %s as %s', (providerName, expected) => {
+    const attrs: Record<string, unknown> = {};
+    const span = { setAttribute: (key: string, value: unknown) => (attrs[key] = value) } as unknown as Span;
+    setConfigModelIdentity(span, { provider: { name: providerName }, model: { name: 'm' } } as any);
+    expect(attrs['gen_ai.provider.name']).toBe(expected);
+    expect(attrs['gen_ai.system']).toBe(expected);
   });
 });

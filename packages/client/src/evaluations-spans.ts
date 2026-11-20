@@ -203,9 +203,11 @@ export async function traceHandlerCall<T>(
   });
 }
 
+/** The configured provider, lower-cased, with Bedrock as its semconv value `aws.bedrock`. */
 const providerName = (config: AiConfigRep): string => {
   const name = (config.provider as { name?: unknown } | undefined)?.name;
-  return typeof name === 'string' ? name.toLowerCase() : '';
+  const provider = typeof name === 'string' ? name.toLowerCase() : '';
+  return provider === 'bedrock' ? 'aws.bedrock' : provider;
 };
 
 const modelName = (config: AiConfigRep): string => {
