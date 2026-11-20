@@ -20,7 +20,7 @@ import { config } from '../client.js';
 import { currentConversationId, withConversationId } from '../conversation.js';
 import { runShadow, type ShadowTask, shadowConfig } from '../experimental.js';
 import { fetchVariation, initClient, shutdown } from '../lifecycle.js';
-import { inSample, waitForShadowsForTesting } from '../shadow-requests.js';
+import { inSample, shadowEventKey, waitForShadowsForTesting } from '../shadow-requests.js';
 import type { LDClientInterface, LDContext, Message, ProviderHandler, StreamEvent } from '../types.js';
 import { NO_FEATURE_FLAG_EVENT_KEY, SPAN_ATTRIBUTES_KEY, setLdSpanAttributes } from '../utils.js';
 
@@ -320,7 +320,7 @@ describe('shadowConfig', () => {
     const { response } = await invoke(client, { b: recorder('ShadowProvider', 'x', { rejects: true }) });
     expect(response.response).toBe('primary answer');
     expect(primaryEvents(client).map((e) => e[0])).toContain('$ld:ai:generation:success');
-    expect(shadowEvents(client).map((e) => e[0])).toContain('$ld:ai:generation:error');
+    expect(shadowEvents(client).map((e) => e[0])).toContain('$ld:ai-shadow:generation:error');
   });
 
   it('tracks a timeout once and ignores the late result', async () => {
@@ -328,9 +328,9 @@ describe('shadowConfig', () => {
     await invoke(client, { shadowTimeoutMs: 20, b: recorder('ShadowProvider', 'late', { sleepMs: 100 }) });
     await new Promise((r) => setTimeout(r, 150));
     const names = shadowEvents(client).map((e) => e[0]);
-    expect(count(names, '$ld:ai:generation:error')).toBe(1);
-    expect(count(names, '$ld:ai:duration:total')).toBe(1);
-    expect(names).not.toContain('$ld:ai:generation:success');
+    expect(count(names, '$ld:ai-shadow:generation:error')).toBe(1);
+    expect(count(names, '$ld:ai-shadow:duration:total')).toBe(1);
+    expect(names).not.toContain('$ld:ai-shadow:generation:success');
   });
 
   it('reports experimental.shadowConfig and not client.config', async () => {
@@ -618,7 +618,10 @@ describe('onTask', () => {
     await new Promise((r) => setTimeout(r, 150));
     expect(result.error).toBe('timeout');
     expect(result.trackData).toMatchObject({ configKey: 'flag', variationKey: 'b' });
-    expect(shadowEvents(client).map((e) => e[0])).toEqual(['$ld:ai:duration:total', '$ld:ai:generation:error']);
+    expect(shadowEvents(client).map((e) => e[0])).toEqual([
+      '$ld:ai-shadow:duration:total',
+      '$ld:ai-shadow:generation:error',
+    ]);
   });
 
   it('carries the conversation id on the task and runs under it', async () => {
@@ -663,7 +666,11 @@ describe('shadow events and spans', () => {
     const client = makeClient(variationA());
     const { response } = await invoke(client);
     const names = shadowEvents(client).map((e) => e[0]);
-    for (const name of ['$ld:ai:duration:total', '$ld:ai:generation:success', '$ld:ai:tokens:total']) {
+    for (const name of [
+      '$ld:ai-shadow:duration:total',
+      '$ld:ai-shadow:generation:success',
+      '$ld:ai-shadow:tokens:total',
+    ]) {
       expect(names).toContain(name);
     }
     expect(shadowEvents(client)[0][1]).toMatchObject({
@@ -784,7 +791,7 @@ describe('failure edges', () => {
     expect(
       count(
         shadowEvents(client).map((e) => e[0]),
-        '$ld:ai:generation:error',
+        '$ld:ai-shadow:generation:error',
       ),
     ).toBe(1);
   });
@@ -906,7 +913,9 @@ async function judgedTask(client: FakeClient): Promise<ShadowTask> {
   return tasks[0];
 }
 
-const scoreEvents = (client: FakeClient) => events(client).filter((e) => e[0] === 'quality');
+/** The served judge's score is on `quality`, the shadow judge's on `$ld:ai-shadow:quality`. */
+const scoreEvents = (client: FakeClient) =>
+  events(client).filter((e) => e[0] === 'quality' || e[0] === '$ld:ai-shadow:quality');
 
 async function invokeJudged(
   client: FakeClient,
@@ -1078,7 +1087,7 @@ describe('judges on a shadow', () => {
     expect(result.judgeResults).toBeDefined();
     expect(Object.keys(result.judgeResults ?? {})).toEqual([TONE_JUDGE_KEY]);
     expect(result.judgeResults?.[TONE_JUDGE_KEY]).toMatchObject({ score: 0.6, response: 'calm' });
-    const toneEvents = events(client).filter((e) => e[0] === 'tone');
+    const toneEvents = events(client).filter((e) => e[0] === '$ld:ai-shadow:tone');
     expect(toneEvents).toHaveLength(1);
     expect(toneEvents[0][1]).toMatchObject({ isShadow: true, variationKey: 'b', judgeConfigKey: TONE_JUDGE_KEY });
     expect(toneEvents[0][2]).toBe(0.6);
@@ -1193,6 +1202,171 @@ describe('judges on a shadow', () => {
     expect(structuredClone(tasks[0])).toEqual(tasks[0]);
     await runShadow(tasks[0], [recorder('ShadowProvider', 'shadow answer').handler, judgeRecorder().handler]);
     expect(strip(shadowEvents(deferredClient))).toEqual(background);
-    expect(background.some(([name]) => name === 'quality')).toBe(true);
+    expect(background.some(([name]) => name === '$ld:ai-shadow:quality')).toBe(true);
+  });
+});
+
+describe('shadow event keys', () => {
+  const SHADOW_PREFIX = '$ld:ai-shadow:';
+  type Outcome = 'success' | 'failure' | 'timeout';
+  const OUTCOMES: Outcome[] = ['success', 'failure', 'timeout'];
+  const sorted = (names: string[]) => [...names].sort();
+  const servedVariation = () => withJudge(variationA(undefined, { b: withJudge(variationB()) }));
+
+  function shadowHandler(outcome: Outcome) {
+    if (outcome === 'success') {
+      return recorder('ShadowProvider', 'shadow answer');
+    }
+    return outcome === 'failure'
+      ? recorder('ShadowProvider', 'x', { rejects: true })
+      : recorder('ShadowProvider', 'late', { sleepMs: 100 });
+  }
+
+  /** The keys `config().invoke()` sends when `variation` is served, for the same outcome. */
+  async function configKeys(variation: Record<string, unknown>, provider: string, fails: boolean): Promise<string[]> {
+    await shutdown();
+    const client = await use(judgingClient(variation));
+    const handler = recorder(provider, 'answer', { rejects: fails });
+    await config({ key: 'flag', handler: [handler.handler, judgeRecorder().handler] })
+      .invoke('question', CONTEXT)
+      .catch(() => undefined);
+    await shutdown();
+    return events(client).map((e) => e[0]);
+  }
+
+  /** Runs one shadow with one judge on A and on B, and returns every event and the ones the shadow run sent. */
+  async function runOnce(mode: 'background' | 'deferred', outcome: Outcome) {
+    const client = await use(judgingClient(servedVariation()));
+    const a = recorder('TestProvider', 'primary answer');
+    const b = shadowHandler(outcome);
+    const judge = judgeRecorder();
+    const tasks: ShadowTask[] = [];
+    await shadowConfig({
+      key: 'flag',
+      handler: [a.handler, b.handler, judge.handler],
+      shadowTimeoutMs: outcome === 'timeout' ? 20 : undefined,
+      ...(mode === 'deferred' && { onTask: (task: ShadowTask) => tasks.push(task) }),
+    }).invoke('question', CONTEXT);
+    await waitForShadowsForTesting();
+    const before = client.track.mock.calls.length;
+    if (mode === 'deferred') {
+      expect(tasks).toHaveLength(1);
+      await runShadow(tasks[0], [b.handler, judge.handler]);
+    }
+    if (outcome === 'timeout') {
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    return { client, deferredCalls: client.track.mock.calls.slice(before) };
+  }
+
+  it('maps every key into the shadow namespace', () => {
+    expect(shadowEventKey('$ld:ai:tokens:input')).toBe('$ld:ai-shadow:tokens:input');
+    expect(shadowEventKey('$ld:ai:generation:error')).toBe('$ld:ai-shadow:generation:error');
+    expect(shadowEventKey('$ld:ai:judge:relevance')).toBe('$ld:ai-shadow:judge:relevance');
+    expect(shadowEventKey('my-relevance')).toBe('$ld:ai-shadow:my-relevance');
+    expect(shadowEventKey('$ld:ai-shadow:tokens:input')).toBe('$ld:ai-shadow:tokens:input');
+    expect(shadowEventKey('$ld:ai-shadow:my-relevance')).toBe('$ld:ai-shadow:my-relevance');
+  });
+
+  describe.each(['background', 'deferred'] as const)('%s', (mode) => {
+    it.each(OUTCOMES)('sends every shadow event under $ld:ai-shadow: on %s', async (outcome) => {
+      const fails = outcome !== 'success';
+      const expectedShadow = (await configKeys(withJudge(variationB()), 'ShadowProvider', fails)).map(shadowEventKey);
+      const expectedServed = await configKeys(servedVariation(), 'TestProvider', false);
+
+      const { client, deferredCalls } = await runOnce(mode, outcome);
+      const shadow = shadowEvents(client).map((e) => e[0]);
+      const served = primaryEvents(client).map((e) => e[0]);
+
+      expect(shadow.length).toBeGreaterThan(0);
+      for (const name of shadow) {
+        expect(name.startsWith(SHADOW_PREFIX)).toBe(true);
+        expect(name.startsWith('$ld:ai:')).toBe(false);
+      }
+      expect(sorted(shadow)).toEqual(sorted(expectedShadow));
+      expect(sorted(served)).toEqual(sorted(expectedServed));
+      expect(served.some((name) => name.startsWith(SHADOW_PREFIX))).toBe(false);
+
+      if (mode === 'deferred') {
+        // runShadow's own usage event stays on $ld:ai:sdk:usage; everything else it sends is shadow traffic.
+        for (const [name, , data] of deferredCalls) {
+          if (name === '$ld:ai:sdk:usage') {
+            expect(data?.helper).toBe('experimental.runShadow');
+          } else {
+            expect(name.startsWith(SHADOW_PREFIX)).toBe(true);
+          }
+        }
+      }
+      expect(usageHelpers(client)).toContain('experimental.shadowConfig');
+    });
+  });
+
+  it("sends a shadow judge's own model-call events under $ld:ai-shadow: with the shadow fields", async () => {
+    const { client } = await runOnce('background', 'success');
+    const judgeCalls = events(client).filter((e) => e[1].configKey === JUDGE_KEY);
+    const shadowCalls = judgeCalls.filter((e) => e[0].startsWith(SHADOW_PREFIX));
+    const servedCalls = judgeCalls.filter((e) => !e[0].startsWith(SHADOW_PREFIX));
+
+    expect(sorted(shadowCalls.map((e) => e[0]))).toEqual(
+      sorted([
+        '$ld:ai-shadow:duration:total',
+        '$ld:ai-shadow:generation:success',
+        '$ld:ai-shadow:tokens:total',
+        '$ld:ai-shadow:tokens:input',
+        '$ld:ai-shadow:tokens:output',
+      ]),
+    );
+    const shadowRunId = shadowCalls[0][1].runId;
+    for (const [, data] of shadowCalls) {
+      expect(data).toMatchObject({
+        configKey: JUDGE_KEY,
+        variationKey: 'judge-v',
+        isShadow: true,
+        primaryVariationKey: 'a',
+        shadowRequestId: 'shadow-1',
+        ownerKind: 'member',
+        ownerId: 'member-1',
+      });
+      // The judge call keeps its own run id, as on the served call.
+      expect(data.runId).toBe(shadowRunId);
+    }
+    const shadowRun = shadowEvents(client).find(
+      (e) => e[0] === '$ld:ai-shadow:generation:success' && e[1].configKey === 'flag',
+    );
+    expect(shadowRunId).not.toBe(shadowRun?.[1].runId);
+
+    expect(sorted(servedCalls.map((e) => e[0]))).toEqual(
+      sorted([
+        '$ld:ai:duration:total',
+        '$ld:ai:generation:success',
+        '$ld:ai:tokens:total',
+        '$ld:ai:tokens:input',
+        '$ld:ai:tokens:output',
+      ]),
+    );
+    for (const [, data] of servedCalls) {
+      for (const field of SHADOW_FIELDS) {
+        expect(data).not.toHaveProperty(field);
+      }
+    }
+  });
+
+  it.each([
+    ['quality', '$ld:ai-shadow:quality'],
+    ['$ld:ai:judge:relevance', '$ld:ai-shadow:judge:relevance'],
+    ['$ld:ai-shadow:relevance', '$ld:ai-shadow:relevance'],
+  ])('sends the judge metric key %s as %s on a shadow, and unchanged on the served call', async (metricKey, shadowKey) => {
+    const value = servedVariation();
+    const client = makeClient(value);
+    client.variation.mockImplementation(async (key: string) =>
+      key === JUDGE_KEY ? { ...judgeVariation(), evaluationMetricKey: metricKey } : value,
+    );
+    await invokeJudged(client);
+    const scores = events(client).filter((e) => e[1].judgeConfigKey === JUDGE_KEY);
+    const shadow = scores.filter((e) => e[1].isShadow);
+    const served = scores.filter((e) => !e[1].isShadow);
+    expect(shadow.map((e) => e[0])).toEqual([shadowKey]);
+    expect(shadow[0][1]).toMatchObject({ variationKey: 'b', primaryVariationKey: 'a' });
+    expect(served.map((e) => e[0])).toEqual([metricKey]);
   });
 });
