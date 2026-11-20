@@ -502,6 +502,19 @@ describe('createOpenAIAgentsHandler', () => {
     expect(agentArgs.tools ?? []).toHaveLength(0);
   });
 
+  it('never gives the SDK a registered tool the config does not attach', async () => {
+    mockRun.mockResolvedValue(mockRunResult());
+    const privileged = vi.fn();
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: { type: 'object' } } },
+    };
+    await createOpenAIAgentsHandler()(config as any, 'q', { safe: vi.fn(), privileged });
+    const agentArgs = mockAgentConstructor.mock.calls[0][0];
+    expect(agentArgs.tools.map((t: any) => t.name)).toEqual(['safe']);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
   it('never gives the SDK a tool whose name is only an inherited object property', async () => {
     mockRun.mockResolvedValue(mockRunResult());
     const config = {
