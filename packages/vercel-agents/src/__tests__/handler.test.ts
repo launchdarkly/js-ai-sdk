@@ -163,6 +163,40 @@ describe('createVercelAgentsHandler', () => {
     expect(aiMocks.agentArguments[0].model).toBe('openai/gpt-5.6-sol');
   });
 
+  it('maps a full Bedrock id and pins its model.region to Bedrock on the Gateway', async () => {
+    await createVercelAgentsHandler()(
+      {
+        ...baseConfig,
+        model: { name: 'anthropic.claude-sonnet-4-5-20250929-v1:0', region: 'us' },
+        provider: { name: 'Bedrock' },
+      } as any,
+      'hello',
+    );
+    expect(aiMocks.agentArguments[0]).toMatchObject({
+      model: 'anthropic/claude-sonnet-4-5-20250929',
+      providerOptions: { gateway: { inferenceRegion: { providers: { bedrock: { scope: 'zone', geoRegion: 'us' } } } } },
+    });
+  });
+
+  it('sends no providerOptions when there is no region to pin', async () => {
+    await createVercelAgentsHandler()(baseConfig as any, 'hello');
+    expect(aiMocks.agentArguments[0]).not.toHaveProperty('providerOptions');
+  });
+
+  it('fails the run for a Bedrock region the Gateway cannot pin', async () => {
+    await expect(
+      createVercelAgentsHandler()(
+        {
+          ...baseConfig,
+          model: { name: 'anthropic.claude-sonnet-4-5-20250929-v1:0', region: 'apac' },
+          provider: { name: 'Bedrock' },
+        } as any,
+        'hello',
+      ),
+    ).rejects.toThrow('has no Vercel AI Gateway inference region');
+    expect(aiMocks.agentArguments).toHaveLength(0);
+  });
+
   it('passes the gateway model name unchanged and supports model instances', async () => {
     const model = { modelId: 'injected' };
     await createVercelAgentsHandler({ model } as any)(baseConfig as any, 'hello');

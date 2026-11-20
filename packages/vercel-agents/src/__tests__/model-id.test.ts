@@ -32,4 +32,22 @@ describe('gatewayModelId', () => {
     expect(gatewayModelId(config('Bedrock', 'amazon/nova-pro'))).toBe('amazon/nova-pro');
     expect(gatewayModelId(config('Bedrock', 'us.anthropic.claude-sonnet-4'))).toBe('anthropic/claude-sonnet-4');
   });
+
+  // Each expected id resolves in https://ai-gateway.vercel.sh/v1/models/<id>.
+  it.each([
+    ['anthropic.claude-sonnet-4-5-20250929-v1:0', 'anthropic/claude-sonnet-4-5-20250929'],
+    ['us.anthropic.claude-sonnet-4-5-20250929-v1:0', 'anthropic/claude-sonnet-4-5-20250929'],
+    ['eu.anthropic.claude-sonnet-4-5-20250929-v1:0', 'anthropic/claude-sonnet-4-5-20250929'],
+    ['global.anthropic.claude-haiku-4-5-20251001-v1:0', 'anthropic/claude-haiku-4-5-20251001'],
+    ['apac.anthropic.claude-sonnet-4-5-20250929-v1:0', 'anthropic/claude-sonnet-4-5-20250929'],
+    ['amazon.nova-pro-v1:0', 'amazon/nova-pro'],
+  ])('drops the Bedrock profile prefix and version suffix from %s', (model, expected) => {
+    expect(gatewayModelId(config('Bedrock', model))).toBe(expected);
+  });
+
+  it('keeps an explicit creator/model id untouched', () => {
+    expect(gatewayModelId(config('Bedrock', 'anthropic/claude-sonnet-4-5-v1:0'))).toBe(
+      'anthropic/claude-sonnet-4-5-v1:0',
+    );
+  });
 });
