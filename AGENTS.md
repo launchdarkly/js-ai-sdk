@@ -93,6 +93,50 @@ Review these conversions in test assertions — `handler.stream?.(args)` returns
 
 Biome organises imports alphabetically within each group. Vitest's `vi.mock` calls are **hoisted to the top of the file** regardless of source order. If mock setup depends on import order, rely on `vi.hoisted()` rather than declaration order.
 
+## Language idioms
+
+The public contract is shared with the Python and Go SDKs. Everything else is written the way a TypeScript developer expects: see the [TypeScript Handbook](https://www.typescriptlang.org/docs/handbook/intro.html). `biome.json` and `tsconfig.json` are the enforced subset. Emitted JavaScript should read as if it were written by hand. Do not port another SDK's shape into TypeScript. If the contract and an idiom conflict, the contract wins: raise the conflict.
+
+### What never varies
+
+Public behaviour, defaults, telemetry (span names, attributes, events), wire payloads, usage IDs and error *conditions* (what fails, and before or after which I/O). A name is the contract's camelCase name.
+
+### Errors
+
+A feature whose callers need to tell its failures apart exports an `Error` subclass that sets `name` (`EvaluationsError`, `TypesafeQuestionError`). Other code throws `Error`, `TypeError` or `RangeError`. Pass `{ cause }` when wrapping a caught error. An async API rejects its promise and never throws synchronously. Catch an error only to handle it, to wrap it, to return a fallback the contract defines, or to keep an optional step (telemetry, usage reporting, cleanup) from failing the call.
+
+### Layout
+
+Public names are exported from the package's `index.ts`. Experimental names are exported only from the `/experimental` subpath. Files are kebab-case, grouped by feature (`evaluations-tools.ts`). Shipped code never deep-imports another package; tests may import shared helpers from `client/src/__tests__`. API Extractor reports record the surface.
+
+### Naming
+
+camelCase values and functions, PascalCase types and classes. No TypeScript `enum`: use a union of string literals. Most public data shapes are `type` aliases, and new ones should be. Use `interface` for a shape that is extended or implemented (`ContentCaptureOptions`, `LDClientInterface`). `private` and `readonly` do not exist at runtime, so freeze objects that must not change (`Object.freeze`).
+
+### Concurrency
+
+`async`/`await` and `Promise`. Streams are async generators (`AsyncGenerator`) and release what they hold in `finally`. State that must survive the package loading twice (dual ESM/CJS or duplicate installs) lives on a `Symbol.for(...)` slot on `globalThis` (the client singleton in `lifecycle.ts`, the hooks in `shutdown-hooks.ts`). Other module state is a plain module-level value (`globalRegistry`).
+
+### Options
+
+A public function takes its required inputs positionally and its optional settings in one options object, the last parameter. A function whose inputs are all one config or init shape takes that single object instead (`config(args)`, `createSkill(init)`). A duration uses the contract's unit and names it in a suffix, `Ms` or `Seconds` (`debounceMs`, `timeoutSeconds`). `writeSkills`' `timeout` (seconds) is a contract name without a suffix, not a pattern to copy. Optional fields are `?:`, not `| undefined`.
+
+### Testing
+
+Vitest, under `src/__tests__/`. No test touches the external network or a LaunchDarkly endpoint. A fake server binds to loopback on an ephemeral port and is closed in teardown (`skills-fdv2.test.ts`). Write `it('does …')` so the test reads as a sentence. `describe` groups the tests for one function or behaviour. Mocks called with `new` use class syntax (see Biome Pitfalls).
+
+### Docs
+
+TSDoc on every public export, `@deprecated` on deprecated ones. Some older exports have none: add it when you change one. Reuse the other SDKs' wording for the same concept.
+
+### Dependencies
+
+Avoid them: weigh size, maintenance, security, platform support and conflicts with the application's own dependencies. A provider SDK is a dependency only of the handler packages that call it (`openai` for the OpenAI and LiteLLM handlers), never of `@launchdarkly/ai-server`.
+
+### References
+
+`make code-check` (Biome), `make lint-packages` (Sherif), `make typecheck`, `make test`, `yarn api:check`.
+
 
 ## PR Titles and the Changelog
 
