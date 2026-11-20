@@ -1,2 +1,2 @@
 export const LD_AI_PACKAGE_NAME = '@launchdarkly/ai-typesafe';
-export const LD_AI_PACKAGE_VERSION = '1.0.1'; // x-release-please-version
+export const LD_AI_PACKAGE_VERSION = '1.0.2'; // x-release-please-version
