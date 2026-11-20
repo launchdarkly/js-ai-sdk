@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-1.1.0...@launchdarkly/ai-server-1.2.0) (2026-11-20)
+
+
+### Experimental
+
+* **shadow-requests:** run judges on shadow responses ([#244](https://github.com/launchdarkly/js-ai-sdk/issues/244)) ([9ac08cc](https://github.com/launchdarkly/js-ai-sdk/commit/9ac08cc0f1e58ca1581c34765116cc3716fe5c21))
+
+
+### Features
+
+* **evaluations:** reconcile offline evaluations by key ([#206](https://github.com/launchdarkly/js-ai-sdk/issues/206)) ([0841a50](https://github.com/launchdarkly/js-ai-sdk/commit/0841a507631ba97e140c16eba68fb2dfde10fc9b))
+
+
+### Bug Fixes
+
+* **evaluations:** retry the reconcile PATCH on transient failures ([#248](https://github.com/launchdarkly/js-ai-sdk/issues/248)) ([554bedc](https://github.com/launchdarkly/js-ai-sdk/commit/554bedc1b7cf3da9538e1b6945164b5cdbbb1249))
+
 ## [1.1.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-server-1.0.0...@launchdarkly/ai-server-1.1.0) (2026-11-12)
 
 

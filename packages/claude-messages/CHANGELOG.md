@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-messages-1.1.0...@launchdarkly/ai-claude-messages-1.1.1) (2026-11-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^1.1.0 to ^1.2.0
+
 ## [1.1.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-messages-1.0.0...@launchdarkly/ai-claude-messages-1.1.0) (2026-11-12)
 
 
