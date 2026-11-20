@@ -13,6 +13,7 @@ vi.mock('../lifecycle.js', () => ({
 
 import { getClient } from '../lifecycle.js';
 import { configure, resetSdkOptions } from '../sdk-options.js';
+import { shadowEventKey } from '../shadow-requests.js';
 import {
   executeAndStream,
   executeAndTrack,
@@ -70,6 +71,29 @@ describe('wrapToolHandlers', () => {
       expect.objectContaining({ toolKey: 'myTool' }),
       1,
     );
+  });
+
+  it('sends tool_call through mapEventKey, so a shadow sends $ld:ai-shadow:tool_call', () => {
+    const wrapped = wrapToolHandlers(
+      { myTool: vi.fn(), webSearch: new NativeTool(Symbol('native'), 'WebSearch') },
+      mockContext,
+      mockTrackData,
+      shadowEventKey,
+    );
+    wrapped.myTool();
+    wrapped.webSearch();
+    expect(mockTrack.mock.calls.map((c) => c[0])).toEqual(['$ld:ai-shadow:tool_call', '$ld:ai-shadow:tool_call']);
+  });
+
+  it('sends $ld:ai:tool_call unmapped by default', () => {
+    const wrapped = wrapToolHandlers(
+      { myTool: vi.fn(), webSearch: new NativeTool(Symbol('native'), 'WebSearch') },
+      mockContext,
+      mockTrackData,
+    );
+    wrapped.myTool();
+    wrapped.webSearch();
+    expect(mockTrack.mock.calls.map((c) => c[0])).toEqual(['$ld:ai:tool_call', '$ld:ai:tool_call']);
   });
 
   it('includes trackData fields in the tool_call event', () => {

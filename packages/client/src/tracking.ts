@@ -46,6 +46,8 @@ export const wrapToolHandlers = (
   toolHandlers: Record<string, ToolHandlerFn | NativeTool> | undefined,
   userContext: LDContext,
   trackData: TrackData,
+  /** Maps the `$ld:ai:tool_call` key before it is tracked. Identity by default. */
+  mapEventKey: (key: string) => string = (key) => key,
 ): Record<string, ToolHandlerFn> => {
   if (!toolHandlers) return Object.create(null);
   // Null prototype: a config tool named `toString` or `constructor` resolves to no handler.
@@ -55,7 +57,7 @@ export const wrapToolHandlers = (
       Object.entries(toolHandlers).map(([name, fn]) => {
         if (fn instanceof NativeTool) {
           const stub = () => {
-            getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolKey: name }, 1);
+            getClient().track(mapEventKey('$ld:ai:tool_call'), userContext, { ...trackData, toolKey: name }, 1);
           };
           (stub as unknown as Record<symbol, unknown>)[NATIVE_TOOL_KEY] = fn;
           return [name, stub];
@@ -66,7 +68,7 @@ export const wrapToolHandlers = (
             // Synthetic handoff tools (graph routing) are not real tool calls;
             // they must not pollute `$ld:ai:tool_call` metrics.
             if (!name.startsWith(HANDOFF_TOOL_PREFIX)) {
-              getClient().track('$ld:ai:tool_call', userContext, { ...trackData, toolKey: name }, 1);
+              getClient().track(mapEventKey('$ld:ai:tool_call'), userContext, { ...trackData, toolKey: name }, 1);
             }
             return (fn as (...args: unknown[]) => unknown)(...args);
           },
@@ -107,13 +109,14 @@ function instrumentTools(
   toolHandlers: Record<string, ToolHandlerFn | NativeTool> | undefined,
   userContext: LDContext,
   trackData: TrackData,
+  mapEventKey?: (key: string) => string,
 ): { tools: Record<string, ToolHandlerFn>; recorder: TrajectoryRecorder } {
   // One recorder per invocation: invocations run concurrently against one map.
   const recorder = new TrajectoryRecorder();
   const scoped = scopeToolHandlers(config, toolHandlers);
   if (!scoped) return { tools: Object.create(null), recorder };
   const recorded = recorder.wrap(scoped, exposedToolKeys(config, scoped));
-  return { tools: wrapToolHandlers(recorded, userContext, trackData), recorder };
+  return { tools: wrapToolHandlers(recorded, userContext, trackData, mapEventKey), recorder };
 }
 
 /**
@@ -298,7 +301,7 @@ export const executeAndTrack = async ({
   spanAttributes?: Record<string, string | boolean>;
   /** `false` keeps the `feature_flag` event off the handler's root span. */
   featureFlagEvent?: boolean;
-  /** Maps each generation, duration and token event key before it is tracked. Identity by default. */
+  /** Maps each generation, duration, token and tool-call event key before it is tracked. Identity by default. */
   mapEventKey?: (key: string) => string;
 }): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData; trajectory: string }> => {
   const trackData = {
@@ -307,7 +310,13 @@ export const executeAndTrack = async ({
     ...extraTrackData,
   };
 
-  const { tools: trackedToolHandlers, recorder } = instrumentTools(config, toolHandlers, userContext, trackData);
+  const { tools: trackedToolHandlers, recorder } = instrumentTools(
+    config,
+    toolHandlers,
+    userContext,
+    trackData,
+    mapEventKey,
+  );
   const mergedVariables = {
     ...handlerVariables(variables, userContext, trackData, handler, evaluatedValue),
     ...(spanAttributes && { [SPAN_ATTRIBUTES_KEY]: spanAttributes }),
