@@ -24,7 +24,7 @@ vi.mock('dotenv/config', () => ({}));
 import { config } from '../client.js';
 import { resolveGraph } from '../graph.js';
 import { runJudges } from '../judges.js';
-import { extractVariation, initClient, inspectConfig, shutdown } from '../lifecycle.js';
+import { extractVariation, initClient, inspectConfig, parseVariation, shutdown } from '../lifecycle.js';
 import {
   _clearState,
   _setEmitterForTesting,
@@ -321,14 +321,35 @@ describe('withSkillTools', () => {
     expect(JSON.parse(JSON.stringify(once))).toEqual(once);
   });
 
-  it('marks a config it returns unchanged, so a later call reads no skill', () => {
+  it('returns a marked copy when it adds nothing, and never marks the config it is given', () => {
     const store = new InMemorySkillStore({ plain: envelope('plain', 1) });
     _setStore(store);
     const read = vi.spyOn(store, 'getObject');
     const cfg = baseConfig({ skills: [{ key: 'plain', version: 1 }] });
-    expect(withSkillTools(cfg, 'c')).toBe(cfg);
-    expect(withSkillTools(cfg, 'c')).toBe(cfg);
+    const once = withSkillTools(cfg, 'c');
+    expect(once).not.toBe(cfg);
+    expect(once).toEqual(cfg);
+    expect(withSkillTools(once, 'c')).toBe(once);
     expect(read).toHaveBeenCalledTimes(1);
+    // The input is unmarked, so it is merged again.
+    withSkillTools(cfg, 'c');
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('merges a variation object the SDK reuses, after a run that found the skill missing', () => {
+    // parseVariation passes the SDK's variation object through by identity, and an SDK may return the same one each run.
+    const variation = {
+      _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'agent' },
+      model: { name: 'gpt-4o' },
+      provider: { name: 'OpenAI' },
+      instructions: 'x',
+      skills: [{ key: 'pdf', version: 1 }],
+    };
+    const store = new InMemorySkillStore();
+    _setStore(store);
+    expect(parseVariation('c', variation).config.tools).toBeUndefined();
+    _setStore(new InMemorySkillStore({ pdf: envelope('pdf', 1, [tool('extract')]) }));
+    expect(Object.keys(parseVariation('c', variation).config.tools ?? {})).toEqual(['extract']);
   });
 
   it("keeps the variation's definition when a skill defines the same tool differently, with a warning", () => {
@@ -397,7 +418,7 @@ describe('withSkillTools', () => {
     ['a skill with no tools', baseConfig({ tools: { own: tool('own') }, skills: [{ key: 'plain', version: 1 }] })],
   ])('returns the config unchanged for %s', (_label, cfg) => {
     _setStore(new InMemorySkillStore({ plain: envelope('plain', 1) }));
-    expect(withSkillTools(cfg, 'c')).toBe(cfg);
+    expect(withSkillTools(cfg, 'c')).toEqual(cfg);
   });
 
   it('returns the config unchanged when no skill store is configured', () => {

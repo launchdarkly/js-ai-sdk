@@ -6,7 +6,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { skillRefsInternal } from './skills.js';
 import { getStore, loggableToolName, resolveFromStore, storeIsInitialized, warnOnce } from './skills-core.js';
-import type { AiConfigRep, SkillReference, Tool } from './types.js';
+import type { AiConfigRep, SkillReference, SkillStore, Tool } from './types.js';
 
 const DEFINITION_FIELDS = ['type', 'name', 'description', 'parameters', 'customParameters'] as const;
 
@@ -27,11 +27,11 @@ function isMerged(config: AiConfigRep): boolean {
   return Object.hasOwn(config, SKILL_TOOLS_MERGED);
 }
 
-function markMerged(config: AiConfigRep): AiConfigRep {
-  if (Object.isExtensible(config) && !isMerged(config)) {
-    Object.defineProperty(config, SKILL_TOOLS_MERGED, { value: true });
-  }
-  return config;
+/** A marked copy. Never marks `config` itself: it can be the SDK's own variation object, shared across runs. */
+function markedCopy(config: AiConfigRep): AiConfigRep {
+  const copy = { ...config };
+  Object.defineProperty(copy, SKILL_TOOLS_MERGED, { value: true });
+  return copy;
 }
 
 function capitalize(text: string): string {
@@ -46,24 +46,24 @@ function capitalize(text: string): string {
  * earlier one (the variation's first) is offered. The server rejects both at
  * save, so only older data reaches this.
  *
- * The result is marked as merged, and a marked config is returned unchanged,
- * with no store read and no warning, so a merge never runs twice.
+ * Once the merge has read the store, the result is a new, marked config, and
+ * a marked config is returned unchanged, with no store read and no warning, so
+ * a merge never runs twice. The config it is given is never marked or changed:
+ * it can be the SDK's own variation object, and a run before the store has the
+ * skill must not stop a later run from merging. With no `skills` field or no
+ * skill store, nothing is read and `config` itself is returned.
  *
- * Returns `config` itself when nothing is added: no skill store, no or
- * malformed `skills`, or no skill with tools. A skill that cannot be read adds
- * nothing and warns once. Reads go through core retrieval, not `getSkills`, so a
- * run reports no skills usage.
+ * A skill that cannot be read adds nothing and warns once. Reads go through
+ * core retrieval, not `getSkills`, so a run reports no skills usage.
  */
 export function withSkillTools(config: AiConfigRep, configKey: string): AiConfigRep {
-  if (isMerged(config)) return config;
-  return markMerged(mergeSkillTools(config, configKey));
-}
-
-function mergeSkillTools(config: AiConfigRep, configKey: string): AiConfigRep {
-  if (config.skills === undefined) return config;
+  if (isMerged(config) || config.skills === undefined) return config;
   const store = getStore();
   if (store === null) return config;
+  return markedCopy(mergeSkillTools(config, configKey, store));
+}
 
+function mergeSkillTools(config: AiConfigRep, configKey: string, store: SkillStore): AiConfigRep {
   let refs: SkillReference[];
   try {
     refs = skillRefsInternal(config);
