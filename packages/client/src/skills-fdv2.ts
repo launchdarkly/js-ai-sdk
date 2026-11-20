@@ -123,7 +123,7 @@ const INTENT_TRANSFER_NONE = 'none';
  * Envelope fields copied verbatim. Never coerced or defaulted: filling in a
  * missing field would forge what verification checks.
  */
-const ENVELOPE_FIELDS = ['contentType', 'content', 'contentHash', 'name', 'description'] as const;
+const ENVELOPE_FIELDS = ['contentType', 'content', 'contentHash', 'name', 'description', 'tools'] as const;
 
 /**
  * The payload id inside a transfer's selector, `(p:<id>:<version>)`. Used when

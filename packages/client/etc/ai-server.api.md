@@ -174,6 +174,7 @@ export function createSkill(init: {
     contentHash: string;
     name?: string | null;
     description?: string | null;
+    tools?: ReadonlyArray<Tool>;
 }): Skill;
 
 // @public
@@ -773,6 +774,7 @@ export type RawSkillObject = {
     contentHash?: unknown;
     name?: unknown;
     description?: unknown;
+    tools?: unknown;
     [field: string]: unknown;
 };
 
@@ -953,6 +955,7 @@ export type Skill = {
     readonly contentHash: string;
     readonly name: string | null;
     readonly description: string | null;
+    readonly tools: ReadonlyArray<Tool>;
 };
 
 // @public
@@ -1179,7 +1182,7 @@ export type WriteSkillsOptions = {
 //
 // temp/dts/evaluations.d.ts:48:5 - (ae-forgotten-export) The symbol "Transport" needs to be exported by the entry point index.d.ts
 // temp/dts/skills-fdv2.d.ts:460:5 - (ae-forgotten-export) The symbol "Requester" needs to be exported by the entry point index.d.ts
-// temp/dts/types.d.ts:425:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
+// temp/dts/types.d.ts:436:5 - (ae-forgotten-export) The symbol "parseGraphTopology" needs to be exported by the entry point index.d.ts
 // temp/dts/utils.d.ts:44:5 - (ae-forgotten-export) The symbol "StreamHandlerInput" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)

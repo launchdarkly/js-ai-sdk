@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { GraphDefinition, GraphEdge, GraphNode } from '@launchdarkly/ai-server';
 import { propagation, SpanStatusCode, type TextMapPropagator } from '@opentelemetry/api';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,6 +31,8 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
     ...actual,
     trace: {
       ...actual.trace,
+      // initClient() registers a tracer provider; the spread above drops TraceAPI's prototype methods.
+      setGlobalTracerProvider: vi.fn(),
       getTracer: vi.fn().mockReturnValue({
         startActiveSpan: vi
           .fn()
@@ -58,7 +61,14 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
-import { NativeTool } from '@launchdarkly/ai-server';
+import {
+  InMemorySkillStore,
+  initClient,
+  NativeTool,
+  resolveGraph,
+  setSkillStore,
+  shutdown,
+} from '@launchdarkly/ai-server';
 import { toClaudeAgents } from '../native-graph.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -761,5 +771,69 @@ describe('toClaudeAgents', () => {
     expect(eventNames).toContain('$ld:ai:tokens:total');
     expect(eventNames).toContain('$ld:ai:tokens:input');
     expect(eventNames).toContain('$ld:ai:tokens:output');
+  });
+
+  it("offers a node's skill tools after its own, and not to a node that does not attach the skill", async () => {
+    const own = { name: 'own', type: 'function', parameters: { type: 'object' } };
+    const weather = { name: 'get-weather', type: 'function', parameters: { type: 'object' } };
+    const body = 'Use the weather.';
+    setSkillStore(
+      new InMemorySkillStore({
+        weather: {
+          key: 'weather',
+          version: 1,
+          content: body,
+          contentHash: createHash('sha256').update(body).digest('hex'),
+          tools: [weather],
+        },
+      }),
+    );
+    const variations: Record<string, unknown> = {
+      'skill-graph': { root: 'root', edges: { root: [{ key: 'child' }] } },
+      root: {
+        model: { name: 'claude-opus-4-5' },
+        provider: { name: 'Anthropic' },
+        instructions: 'x',
+        tools: { own },
+        skills: [{ key: 'weather', version: 1 }],
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'agent' },
+      },
+      child: {
+        model: { name: 'claude-opus-4-5' },
+        provider: { name: 'Anthropic' },
+        instructions: 'x',
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'agent' },
+      },
+    };
+    await initClient({
+      variation: async (k: string) => variations[k],
+      track: () => {},
+      flush: async () => {},
+      close: async () => {},
+    } as any);
+    try {
+      const def = await resolveGraph('skill-graph', { context: { kind: 'user', key: 'u1' } });
+      await toClaudeAgents(Promise.resolve(def), { toolHandlers: { 'get-weather': vi.fn(), own: vi.fn() } }).invoke(
+        'hi',
+      );
+      // The child only runs when the root calls its sub-agent tool.
+      const childExecutor = mockTool.mock.calls.find((c) => c[0] === 'child')?.[3] as (args: {
+        input: string;
+      }) => Promise<unknown>;
+      await childExecutor({ input: 'sub task' });
+    } finally {
+      // Drops the client and the skill store, so later tests start clean.
+      await shutdown();
+    }
+
+    const [rootQuery, childQuery] = mockQuery.mock.calls.map((c) => c[0].options);
+    expect(rootQuery.allowedTools).toEqual([
+      'mcp__tool-mcp__own',
+      'mcp__tool-mcp__get-weather',
+      'mcp__subagents__child',
+    ]);
+    expect(Object.keys(rootQuery.mcpServers)).toEqual(['tool-mcp', 'subagents']);
+    expect(childQuery.allowedTools).toBeUndefined();
+    expect(childQuery.mcpServers).toBeUndefined();
   });
 });

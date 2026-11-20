@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { SpanStatusCode } from '@opentelemetry/api';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -78,7 +79,15 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
-import { initClient, NATIVE_TOOL_KEY, NativeTool, resolveGraph } from '@launchdarkly/ai-server';
+import {
+  InMemorySkillStore,
+  initClient,
+  NATIVE_TOOL_KEY,
+  NativeTool,
+  resolveGraph,
+  setSkillStore,
+  shutdown,
+} from '@launchdarkly/ai-server';
 import { toOpenAIAgents } from '../native-graph.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -609,6 +618,61 @@ describe('toOpenAIAgents', () => {
     } as any);
     return resolveGraph(key, { context: ldContext });
   };
+
+  it("offers a node's skill tools after its own, and not to a node that does not attach the skill", async () => {
+    const own = { name: 'own', type: 'function', parameters: { type: 'object' } };
+    const weather = { name: 'get-weather', type: 'function', parameters: { type: 'object' } };
+    const body = 'Use the weather.';
+    setSkillStore(
+      new InMemorySkillStore({
+        weather: {
+          key: 'weather',
+          version: 1,
+          content: body,
+          contentHash: createHash('sha256').update(body).digest('hex'),
+          tools: [weather],
+        },
+      }),
+    );
+    const variations: Record<string, unknown> = {
+      'skill-graph': { root: 'root', edges: { root: [{ key: 'child' }] } },
+      root: {
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'x',
+        tools: { own },
+        skills: [{ key: 'weather', version: 1 }],
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1 },
+      },
+      child: {
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'x',
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1 },
+      },
+    };
+    await initClient({
+      variation: async (k: string) => variations[k],
+      track: () => {},
+      flush: async () => {},
+      close: async () => {},
+    } as any);
+    try {
+      const def = await resolveGraph('skill-graph', { context: ldContext });
+      await toOpenAIAgents(Promise.resolve(def), { toolHandlers: { own: vi.fn(), 'get-weather': vi.fn() } }).invoke(
+        'hi',
+      );
+    } finally {
+      // Drops the client and the skill store, so later tests start clean.
+      await shutdown();
+    }
+
+    const toolsOf = (name: string) =>
+      (mockAgentConstructor.mock.calls.find(([args]) => args.name === name)?.[0].tools ?? []).map((t: any) => t.name);
+    expect(toolsOf('root')).toEqual(['own', 'get-weather']);
+    expect(toolsOf('child')).toEqual([]);
+    expect(mockAgentConstructor.mock.calls.find(([args]) => args.name === 'root')?.[0].handoffs).toHaveLength(1);
+  });
 
   it('builds a graph of uneven depth with the real reverseTraverse', async () => {
     const def = await resolveRealGraph('uneven-graph');
