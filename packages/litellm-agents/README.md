@@ -43,5 +43,11 @@ proxy needs no key. Internally, unauthenticated proxies receive a non-secret
 placeholder rather than an unrelated provider credential. Explicit `baseURL`
 and `apiKey` options override the environment.
 
+For a Bedrock variation (a `bedrock/` model name, or a bare name with provider
+Bedrock), `model.region` (for example `us` or `global`) is prepended once to the
+Bedrock model id, so `anthropic.claude-…` is sent as the cross-region inference
+profile `us.anthropic.claude-…`. An id that already has a cross-region prefix, and
+an ARN, are sent unchanged. This needs 1.0.1 or later.
+
 Because this is a wildcard agent handler, do not register it together with
 another `['*', 'agent']` handler such as LangChain in the same registry.
