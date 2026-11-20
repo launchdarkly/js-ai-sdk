@@ -547,7 +547,7 @@ The handler is responsible for translating `AiConfigRep` fields into the prompt 
 
 ### Tool Handling
 
-The client has already added the tools of the variation's skills to `config.tools` (after the variation's own, in `skills` order, skipping exact duplicates; the variation's definition wins a conflicting key), so handlers treat that one map as the allowlist and need no skill-specific code.
+The client has already added the tools of the variation's skills to `config.tools` (after the variation's own, in `skills` order, skipping exact duplicates between skills; the variation's definition wins a key it shares with a skill, with a warning), so handlers treat that one map as the allowlist and need no skill-specific code.
 
 If `config.tools` is present, the handler must:
 

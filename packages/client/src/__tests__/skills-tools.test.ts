@@ -285,14 +285,50 @@ describe('withSkillTools', () => {
     expect(warnings).not.toHaveBeenCalled();
   });
 
-  it('skips a skill tool identical to a variation tool, without a warning', () => {
+  it('offers a skill tool identical to a variation tool once, with a warning', () => {
     _setStore(new InMemorySkillStore({ a: envelope('a', 1, [tool('same')]) }));
     const merged = withSkillTools(
-      baseConfig({ tools: { same: tool('same') }, skills: [{ key: 'a', version: 1 }] }),
+      baseConfig({ tools: { same: tool('same', 'the variation copy') }, skills: [{ key: 'a', version: 1 }] }),
       'c',
     );
     expect(Object.keys(merged.tools ?? {})).toEqual(['same']);
+    expect(merged.tools?.same.description).toBe('the variation copy');
+    // The server forbids any key a variation shares with its skills, so even an identical one warns.
+    _setStore(new InMemorySkillStore({ a: envelope('a', 2, [tool('same', 'the variation copy')]) }));
+    withSkillTools(
+      baseConfig({ tools: { same: tool('same', 'the variation copy') }, skills: [{ key: 'a', version: 2 }] }),
+      'c',
+    );
+    expect(warned()).toEqual([
+      expect.stringMatching(/AI Config 'c' and skill 'a' version 1 both define tool "same"; /),
+      expect.stringMatching(/AI Config 'c' and skill 'a' version 2 both define tool "same"; /),
+    ]);
+  });
+
+  it('returns a config it has already merged unchanged, reading no skill and warning nothing', () => {
+    const store = new InMemorySkillStore({ a: envelope('a', 1, [tool('t')]) });
+    _setStore(store);
+    const read = vi.spyOn(store, 'getObject');
+    const once = withSkillTools(baseConfig({ tools: { own: tool('own') }, skills: [{ key: 'a', version: 1 }] }), 'c');
+    expect(read).toHaveBeenCalledTimes(1);
+    const twice = withSkillTools(once, 'c');
+    expect(twice).toBe(once);
+    expect(Object.keys(twice.tools ?? {})).toEqual(['own', 't']);
+    expect(read).toHaveBeenCalledTimes(1);
     expect(warnings).not.toHaveBeenCalled();
+    // The mark is not public: it is not a key, not serialized and not compared.
+    expect(Object.keys(once)).not.toContain('launchdarkly.skillToolsMerged');
+    expect(JSON.parse(JSON.stringify(once))).toEqual(once);
+  });
+
+  it('marks a config it returns unchanged, so a later call reads no skill', () => {
+    const store = new InMemorySkillStore({ plain: envelope('plain', 1) });
+    _setStore(store);
+    const read = vi.spyOn(store, 'getObject');
+    const cfg = baseConfig({ skills: [{ key: 'plain', version: 1 }] });
+    expect(withSkillTools(cfg, 'c')).toBe(cfg);
+    expect(withSkillTools(cfg, 'c')).toBe(cfg);
+    expect(read).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the variation's definition when a skill defines the same tool differently, with a warning", () => {
@@ -408,15 +444,16 @@ describe('withSkillTools', () => {
     ],
   ])('a skill that is %s adds no tools, warns once, and the others still add theirs', (_reason, makeStore, why) => {
     _setStore(makeStore());
-    const cfg = baseConfig({
-      tools: { own: tool('own') },
-      skills: [
-        { key: 'bad', version: 1 },
-        { key: 'ok', version: 1 },
-      ],
-    });
-    expect(Object.keys(withSkillTools(cfg, 'c').tools ?? {})).toEqual(['own', 'ok']);
-    withSkillTools(cfg, 'c');
+    const cfg = () =>
+      baseConfig({
+        tools: { own: tool('own') },
+        skills: [
+          { key: 'bad', version: 1 },
+          { key: 'ok', version: 1 },
+        ],
+      });
+    expect(Object.keys(withSkillTools(cfg(), 'c').tools ?? {})).toEqual(['own', 'ok']);
+    withSkillTools(cfg(), 'c');
     const messages = warned().filter((m) => /skill 'bad' version 1 adds no tools/i.test(m));
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatch(why);
@@ -463,11 +500,12 @@ describe('withSkillTools', () => {
     let ready = false;
     Object.assign(store, { isInitialized: () => ready });
     _setStore(store);
-    const cfg = baseConfig({ skills: [{ key: 'gone', version: 1 }] });
-    withSkillTools(cfg, 'c');
+    // Each run parses its own config, which withSkillTools has not marked yet.
+    const run = () => withSkillTools(baseConfig({ skills: [{ key: 'gone', version: 1 }] }), 'c');
+    run();
     ready = true;
-    withSkillTools(cfg, 'c');
-    withSkillTools(cfg, 'c');
+    run();
+    run();
     expect(warned()).toEqual([
       expect.stringMatching(/Skill 'gone' version 1 adds no tools.*has not finished initializing/),
       expect.stringMatching(
@@ -478,17 +516,18 @@ describe('withSkillTools', () => {
 
   it('warns once per process for a skill that cannot be read, across runs and configs', () => {
     _setStore(new InMemorySkillStore());
-    const cfg = baseConfig({ skills: [{ key: 'gone', version: 1 }] });
-    withSkillTools(cfg, 'one');
-    withSkillTools(cfg, 'two');
+    const cfg = () => baseConfig({ skills: [{ key: 'gone', version: 1 }] });
+    withSkillTools(cfg(), 'one');
+    withSkillTools(cfg(), 'two');
     expect(warnings).toHaveBeenCalledTimes(1);
   });
 
   it('warns once per process for the same conflict', () => {
     _setStore(new InMemorySkillStore({ a: envelope('a', 4, [tool('weather', 'skill')]) }));
-    const cfg = baseConfig({ tools: { weather: tool('weather', 'variation') }, skills: [{ key: 'a', version: 4 }] });
-    withSkillTools(cfg, 'c');
-    withSkillTools(cfg, 'c');
+    const cfg = () =>
+      baseConfig({ tools: { weather: tool('weather', 'variation') }, skills: [{ key: 'a', version: 4 }] });
+    withSkillTools(cfg(), 'c');
+    withSkillTools(cfg(), 'c');
     expect(warnings).toHaveBeenCalledTimes(1);
   });
 });
@@ -687,6 +726,36 @@ describe('resolveGraph with skill tools', () => {
 
     const def = await resolveGraph('my-graph', { context: { kind: 'user', key: 'u' } });
     expect(Object.keys(def.getNode('triage')?.config.tools ?? {})).toEqual(['extract']);
+  });
+
+  it('gives each node a merged config, so merging it again reads no skill and warns nothing', async () => {
+    const node = {
+      _ldMeta: { enabled: true, variationKey: 'v1', version: 1, mode: 'agent' },
+      model: { name: 'gpt-4o' },
+      provider: { name: 'OpenAI' },
+      instructions: 'Route.',
+      tools: { own: tool('own') },
+      skills: [{ key: 'pdf', version: 3 }],
+    };
+    const variations: Record<string, unknown> = { 'my-graph': { root: 'triage', edges: {} }, triage: node };
+    await initClient({
+      variation: vi.fn(async (key: string) => variations[key]),
+      track: vi.fn(),
+      flush: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    const store = new InMemorySkillStore({ pdf: envelope('pdf', 3, [tool('extract')]) });
+    _setStore(store);
+    const read = vi.spyOn(store, 'getObject');
+
+    const def = await resolveGraph('my-graph', { context: { kind: 'user', key: 'u' } });
+    const merged = def.getNode('triage')?.config as AiConfigRep;
+    expect(read).toHaveBeenCalledTimes(1);
+    // A second pass would otherwise read 'extract' as a key the variation shares with the skill, and warn.
+    expect(withSkillTools(merged, 'triage')).toBe(merged);
+    expect(Object.keys(merged.tools ?? {})).toEqual(['own', 'extract']);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(warnings).not.toHaveBeenCalled();
   });
 });
 
