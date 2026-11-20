@@ -274,6 +274,7 @@ export const executeAndTrack = async ({
   extraTrackData,
   spanAttributes,
   featureFlagEvent = true,
+  mapEventKey = (key) => key,
 }: {
   configKey: string;
   config: AiConfigRep;
@@ -297,6 +298,8 @@ export const executeAndTrack = async ({
   spanAttributes?: Record<string, string | boolean>;
   /** `false` keeps the `feature_flag` event off the handler's root span. */
   featureFlagEvent?: boolean;
+  /** Maps each generation, duration and token event key before it is tracked. Identity by default. */
+  mapEventKey?: (key: string) => string;
 }): Promise<{ usage: TokenUsage; response: unknown; trackData: TrackData; trajectory: string }> => {
   const trackData = {
     ...makeRunTrackData({ configKey, config, meta, graphKey }),
@@ -311,6 +314,7 @@ export const executeAndTrack = async ({
     ...(!featureFlagEvent && { [NO_FEATURE_FLAG_EVENT_KEY]: true }),
   };
 
+  const track = (key: string, value: number) => getClient().track(mapEventKey(key), userContext, trackData, value);
   const startTime = Date.now();
   let response: Awaited<ReturnType<ProviderHandler>>;
 
@@ -318,19 +322,19 @@ export const executeAndTrack = async ({
     noteAiInvocation();
     response = await handler(config, userInput, trackedToolHandlers, mergedVariables, history);
   } catch (err) {
-    getClient().track('$ld:ai:duration:total', userContext, trackData, Date.now() - startTime);
-    getClient().track('$ld:ai:generation:error', userContext, trackData, 1);
+    track('$ld:ai:duration:total', Date.now() - startTime);
+    track('$ld:ai:generation:error', 1);
     throw err;
   }
 
-  getClient().track('$ld:ai:duration:total', userContext, trackData, Date.now() - startTime);
-  getClient().track('$ld:ai:generation:success', userContext, trackData, 1);
+  track('$ld:ai:duration:total', Date.now() - startTime);
+  track('$ld:ai:generation:success', 1);
 
   const usage = response.usage ? parseUsage(response.usage) : { total: 0, input: 0, output: 0 };
 
-  if (usage.total > 0) getClient().track('$ld:ai:tokens:total', userContext, trackData, usage.total);
-  if (usage.input > 0) getClient().track('$ld:ai:tokens:input', userContext, trackData, usage.input);
-  if (usage.output > 0) getClient().track('$ld:ai:tokens:output', userContext, trackData, usage.output);
+  if (usage.total > 0) track('$ld:ai:tokens:total', usage.total);
+  if (usage.input > 0) track('$ld:ai:tokens:input', usage.input);
+  if (usage.output > 0) track('$ld:ai:tokens:output', usage.output);
 
   const rawOutput = response.output;
   return {

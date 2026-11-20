@@ -1,7 +1,7 @@
 /**
  * Shadow requests: run another variation of an AI Config on the same input as
- * the served one, track it on the normal `$ld:ai:*` events with
- * `isShadow: true`, score it with its own judges, and discard its answer.
+ * the served one, track it on `$ld:ai-shadow:*` events with `isShadow: true`,
+ * score it with its own judges, and discard its answer.
  * LaunchDarkly sends the shadows in the served variation as
  * `shadowConfiguration`, keyed by the targeting rule or `fallthrough`.
  */
@@ -35,6 +35,8 @@ import { contextIdentityFromLdContext, normalizeMode } from './utils.js';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 const NO_USAGE: TokenUsage = { total: 0, input: 0, output: 0 };
+const AI_EVENT_PREFIX = '$ld:ai:';
+const SHADOW_EVENT_PREFIX = '$ld:ai-shadow:';
 
 /**
  * Everything needed to run and track one sampled shadow. Running it evaluates
@@ -205,6 +207,19 @@ export async function waitForShadowsForTesting(): Promise<void> {
   }
 }
 
+/**
+ * @internal The key a shadow sends in place of `key`. Shadow traffic stays out of `$ld:ai:`, so
+ * nothing that reads AI events counts it by accident: `$ld:ai:<rest>` becomes
+ * `$ld:ai-shadow:<rest>`, any other key (a custom judge metric) is prefixed, and a key already under
+ * `$ld:ai-shadow:` is kept.
+ */
+export function shadowEventKey(key: string): string {
+  if (key.startsWith(SHADOW_EVENT_PREFIX)) {
+    return key;
+  }
+  return SHADOW_EVENT_PREFIX + (key.startsWith(AI_EVENT_PREFIX) ? key.slice(AI_EVENT_PREFIX.length) : key);
+}
+
 /** @internal Sticky per context: the same shadow id and context always give the same answer. */
 export function inSample(shadowId: string, context: LDContext, samplingRate: number): boolean {
   const identity = contextIdentityFromLdContext(context);
@@ -310,10 +325,11 @@ async function execute(task: ShadowTask, handlers: ProviderHandler[]): Promise<S
         extraTrackData,
         spanAttributes: task.spanAttributes,
         featureFlagEvent: false,
+        mapEventKey: shadowEventKey,
       }),
     );
     trackData = { ...result.trackData, ...task.trackData };
-    const judgeResults = await judge(task, handler, handlers, result, trackData);
+    const judgeResults = await judge(task, handler, handlers, result, trackData, extraTrackData);
     return { usage: result.usage, trackData, ...(judgeResults && { judgeResults }) };
   } catch (err) {
     return { usage: NO_USAGE, trackData, error: errorText(err) };
@@ -322,9 +338,11 @@ async function execute(task: ShadowTask, handlers: ProviderHandler[]): Promise<S
 
 /**
  * Scores the shadow's response with the shadow's own judges, as `config().invoke()` scores the
- * served one. The judge events carry the shadow's track data, so they land under the shadow
- * variation. Each judge runs on its own: one that fails is logged, never becomes the shadow's
- * error, and leaves the other judges' scores in place. Judges resolve on the live client only, so
+ * served one. Every judge event is sent under its `$ld:ai-shadow:` key. The scores carry the
+ * shadow's track data, so they land under the shadow variation, and each judge's own model-call
+ * events carry the judge config's track data plus the five shadow fields. Each judge runs on its
+ * own: one that fails is logged, never becomes the shadow's error, and leaves the other judges'
+ * scores in place. Judges resolve on the live client only, so
  * a `shutdown()` that lands after B's call skips them rather than starting a new client.
  */
 async function judge(
@@ -333,6 +351,7 @@ async function judge(
   handlers: ProviderHandler[],
   result: { response: unknown; trajectory: string },
   trackData: ShadowResult['trackData'],
+  shadowFields: Omit<ShadowTask['trackData'], 'runId'>,
 ): Promise<ShadowResult['judgeResults']> {
   if (!task.config.judgeConfiguration?.judges?.length) {
     return undefined;
@@ -356,6 +375,8 @@ async function judge(
         trajectory: result.trajectory,
         logJudgeErrors: true,
         existingClientOnly: true,
+        mapEventKey: shadowEventKey,
+        judgeCallTrackData: shadowFields,
       }),
     );
     return Object.keys(judgeResults).length > 0 ? judgeResults : undefined;
