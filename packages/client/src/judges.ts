@@ -61,10 +61,11 @@ function selectJudgeExecution(
 const resolveJudge = async (
   key: string,
   userContext: LDContext,
+  existingClientOnly = false,
 ): Promise<{ config: AiConfigRep; meta: VariationMeta; value: unknown } | null> => {
   try {
     // Judges are never offered tools, so their skills are not read for any.
-    return await extractVariation(key, userContext, { skillTools: false });
+    return await extractVariation(key, userContext, { skillTools: false, existingClientOnly });
   } catch (err) {
     // biome-ignore lint/suspicious/noConsole: judges are non-fatal; say why one was skipped
     console.error(`Judge '${key}' skipped:`, err instanceof Error ? err.message : err);
@@ -153,6 +154,8 @@ export const runJudges = async ({
   toolHandlers: _toolHandlers,
   graphKey,
   trajectory,
+  logJudgeErrors = false,
+  existingClientOnly = false,
 }: {
   config: AiConfigRep;
   userContext: LDContext;
@@ -166,6 +169,13 @@ export const runJudges = async ({
   baseTrackData: TrackData;
   toolHandlers?: Record<string, ToolHandlerFn | NativeTool>;
   graphKey?: string;
+  /**
+   * Run each judge on its own: a judge whose provider call fails is logged and skipped, and the
+   * other judges still run and keep their results. Off by default, so a failure rejects.
+   */
+  logJudgeErrors?: boolean;
+  /** Resolve judges on the live client only, and skip them when there is none, rather than start one. */
+  existingClientOnly?: boolean;
 }): Promise<NonNullable<ProviderResponse['judgeResults']>> => {
   const judgeResults: NonNullable<ProviderResponse['judgeResults']> = {};
 
@@ -178,7 +188,7 @@ export const runJudges = async ({
   for (const judge of judges) {
     if (Math.random() >= judge.samplingRate) continue;
 
-    const resolved = await resolveJudge(judge.key, userContext);
+    const resolved = await resolveJudge(judge.key, userContext, existingClientOnly);
     if (!resolved) continue;
     const { config: judgeConfig, meta: judgeMeta, value: judgeValue } = resolved;
 
@@ -226,8 +236,9 @@ export const runJudges = async ({
 
     // `executeAndTrack` stays outside the `try`, as it was before judge evaluations existed: a
     // provider/auth/network failure must reject out of `runJudges` rather than be swallowed and
-    // logged as a parse failure. Only parsing and recording are caught.
-    await withJudgeTarget(baseTrackData, () =>
+    // logged as a parse failure. Only parsing and recording are caught. With `logJudgeErrors`,
+    // that rejection is logged here instead, and the loop moves on to the next judge.
+    const scored = withJudgeTarget(baseTrackData, () =>
       withJudgeEvaluation(judge.key, async (recordEvaluation) => {
         const { usage, response: rawJudgeResponse } = await executeAndTrack({
           configKey: judge.key,
@@ -300,6 +311,16 @@ export const runJudges = async ({
         }
       }),
     );
+    if (!logJudgeErrors) {
+      await scored;
+      continue;
+    }
+    try {
+      await scored;
+    } catch (err) {
+      // biome-ignore lint/suspicious/noConsole: judges are non-fatal here; say why one was skipped
+      console.error(`Judge '${judge.key}' failed:`, err instanceof Error ? err.message : err);
+    }
   }
 
   return judgeResults;

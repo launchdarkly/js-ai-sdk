@@ -50,7 +50,6 @@ function variationB() {
     provider: { name: 'ShadowProvider' },
     instructions: 'Shadow.',
     tools: { search: { name: 'search', type: 'function', parameters: {} } },
-    judgeConfiguration: { judges: [{ key: 'j', samplingRate: 1 }] },
   };
 }
 
@@ -304,7 +303,7 @@ describe('shadowConfig', () => {
     expect(call.history).toEqual(history);
     expect(call.variables.topic).toBe('x');
     expect(call.config.instructions).toBe('Shadow.');
-    for (const key of ['_ldMeta', 'tools', 'judgeConfiguration', 'shadowConfiguration']) {
+    for (const key of ['_ldMeta', 'tools', 'shadowConfiguration']) {
       expect(call.config).not.toHaveProperty(key);
     }
     expect(call.tools).toEqual({});
@@ -833,5 +832,367 @@ describe('failure edges', () => {
     const { b: shadow } = await invoke(makeClient(variationA(undefined, { b })));
     expect(shadow.calls).toHaveLength(1);
     expect(shadow.calls[0].config).not.toHaveProperty('tools');
+  });
+});
+
+const JUDGE_KEY = 'quality-judge';
+
+function judgeVariation() {
+  return {
+    _ldMeta: { enabled: true, variationKey: 'judge-v', version: 1, mode: 'messages' },
+    model: { name: 'judge-model' },
+    provider: { name: 'JudgeProvider' },
+    instructions: 'Score the response.',
+    evaluationMetricKey: 'quality',
+  };
+}
+
+function withJudge(variation: Record<string, unknown>, samplingRate = 1): Record<string, unknown> {
+  return { ...variation, judgeConfiguration: { judges: [{ key: JUDGE_KEY, samplingRate }] } };
+}
+
+/** A client that serves the judge variation for the judge key and `value` for every other key. */
+function judgingClient(value: Record<string, unknown>): FakeClient {
+  const client = makeClient(value);
+  client.variation.mockImplementation(async (key: string) => (key === JUDGE_KEY ? judgeVariation() : value));
+  return client;
+}
+
+function judgeRecorder(
+  output = '{"score":0.8,"reasoning":"fine"}',
+  opts: { rejects?: boolean; sleepMs?: number } = {},
+) {
+  return recorder('JudgeProvider', output, opts);
+}
+
+const TONE_JUDGE_KEY = 'tone-judge';
+
+/** Like {@link judgingClient}, with a second judge on its own provider and metric. */
+function twoJudgeClient(): FakeClient {
+  const value = {
+    ...variationA(undefined, {
+      b: {
+        ...variationB(),
+        judgeConfiguration: {
+          judges: [
+            { key: JUDGE_KEY, samplingRate: 1 },
+            { key: TONE_JUDGE_KEY, samplingRate: 1 },
+          ],
+        },
+      },
+    }),
+  };
+  const tone = {
+    ...judgeVariation(),
+    _ldMeta: { enabled: true, variationKey: 'tone-v', version: 1, mode: 'messages' },
+    provider: { name: 'ToneProvider' },
+    evaluationMetricKey: 'tone',
+  };
+  const client = makeClient(value);
+  client.variation.mockImplementation(async (key: string) =>
+    key === JUDGE_KEY ? judgeVariation() : key === TONE_JUDGE_KEY ? tone : value,
+  );
+  return client;
+}
+
+async function judgedTask(client: FakeClient): Promise<ShadowTask> {
+  const tasks: ShadowTask[] = [];
+  await use(client);
+  await shadowConfig({
+    key: 'flag',
+    handler: [recorder('TestProvider').handler, recorder('ShadowProvider').handler],
+    onTask: (task) => tasks.push(task),
+  }).invoke('question', CONTEXT);
+  return tasks[0];
+}
+
+const scoreEvents = (client: FakeClient) => events(client).filter((e) => e[0] === 'quality');
+
+async function invokeJudged(
+  client: FakeClient,
+  opts: { b?: ReturnType<typeof recorder>; judge?: ReturnType<typeof recorder>; skipJudges?: boolean } = {},
+) {
+  await use(client);
+  const a = recorder('TestProvider', 'primary answer');
+  const b = opts.b ?? recorder('ShadowProvider', 'shadow answer');
+  const judge = opts.judge ?? judgeRecorder();
+  const response = await shadowConfig({
+    key: 'flag',
+    handler: [a.handler, b.handler, judge.handler],
+    skipJudges: opts.skipJudges,
+  }).invoke('question', CONTEXT);
+  await waitForShadowsForTesting();
+  return { response, a, b, judge };
+}
+
+describe('judges on a shadow', () => {
+  it("runs the shadow's judge on the shadow's response", async () => {
+    const client = judgingClient(variationA(undefined, { b: withJudge(variationB()) }));
+    const { judge } = await invokeJudged(client);
+    expect(judge.calls).toHaveLength(1);
+    expect(judge.calls[0].input).toBe('shadow answer');
+    expect(judge.calls[0].variables.response_to_evaluate).toBe('shadow answer');
+    expect(judge.calls[0].variables.input).toBe('question');
+  });
+
+  it('gives the shadow handler its judgeConfiguration, as config() gives the served handler', async () => {
+    const client = judgingClient(variationA(undefined, { b: withJudge(variationB()) }));
+    const { b } = await invokeJudged(client);
+    expect(b.calls[0].config.judgeConfiguration).toEqual({ judges: [{ key: JUDGE_KEY, samplingRate: 1 }] });
+  });
+
+  it('returns the served response before the shadow judge runs', async () => {
+    const client = judgingClient(variationA(undefined, { b: withJudge(variationB()) }));
+    await use(client);
+    const judge = judgeRecorder();
+    const response = await shadowConfig({
+      key: 'flag',
+      handler: [recorder('TestProvider', 'primary answer').handler, recorder('ShadowProvider').handler, judge.handler],
+    }).invoke('question', CONTEXT);
+    expect(response.response).toBe('primary answer');
+    expect(judge.calls).toHaveLength(0);
+    await waitForShadowsForTesting();
+    expect(judge.calls).toHaveLength(1);
+  });
+
+  it.each([
+    [0, 0],
+    [1, 1],
+  ])('applies the judge sampling rate %s', async (rate, expected) => {
+    const client = judgingClient(variationA(undefined, { b: withJudge(variationB(), rate) }));
+    const { judge } = await invokeJudged(client);
+    expect(judge.calls).toHaveLength(expected);
+  });
+
+  it('tracks the score under the shadow variation, marked as shadow', async () => {
+    const client = judgingClient(withJudge(variationA(undefined, { b: withJudge(variationB()) })));
+    await invokeJudged(client);
+    const scores = scoreEvents(client);
+    expect(scores).toHaveLength(2);
+    const shadow = scores.find((e) => e[1].isShadow);
+    const served = scores.find((e) => !e[1].isShadow);
+    expect(shadow?.[1]).toMatchObject({
+      isShadow: true,
+      variationKey: 'b',
+      primaryVariationKey: 'a',
+      shadowRequestId: 'shadow-1',
+      ownerKind: 'member',
+      ownerId: 'member-1',
+      judgeConfigKey: JUDGE_KEY,
+    });
+    expect(shadow?.[2]).toBe(0.8);
+    expect(shadow?.[1].runId).toBe(served?.[1].runId);
+    expect(served?.[1].variationKey).toBe('a');
+    for (const field of SHADOW_FIELDS) {
+      expect(served?.[1]).not.toHaveProperty(field);
+    }
+  });
+
+  it('returns the judge results on the shadow result, and none when no judge ran', async () => {
+    const tasks: ShadowTask[] = [];
+    const client = judgingClient(variationA(undefined, { b: withJudge(variationB()) }));
+    await use(client);
+    const judge = judgeRecorder();
+    await shadowConfig({
+      key: 'flag',
+      handler: [recorder('TestProvider').handler, recorder('ShadowProvider').handler, judge.handler],
+      onTask: (task) => tasks.push(task),
+    }).invoke('question', CONTEXT);
+    const handlers = [recorder('ShadowProvider', 'shadow answer').handler, judge.handler];
+    const result = await runShadow(tasks[0], handlers);
+    expect(result.judgeResults?.[JUDGE_KEY]).toMatchObject({ score: 0.8, response: 'fine' });
+
+    const unjudged = await runShadow(
+      { ...tasks[0], config: { ...tasks[0].config, judgeConfiguration: undefined } },
+      handlers,
+    );
+    expect(unjudged.error).toBeUndefined();
+    expect(unjudged).not.toHaveProperty('judgeResults');
+  });
+
+  it('runs no judge when the shadow fails or times out', async () => {
+    const failing = judgingClient(variationA(undefined, { b: withJudge(variationB()) }));
+    const { judge } = await invokeJudged(failing, { b: recorder('ShadowProvider', 'x', { rejects: true }) });
+    expect(judge.calls).toHaveLength(0);
+    expect(scoreEvents(failing)).toEqual([]);
+
+    await shutdown();
+    const tasks: ShadowTask[] = [];
+    const slow = judgingClient(variationA(undefined, { b: withJudge(variationB()) }));
+    await use(slow);
+    const slowJudge = judgeRecorder();
+    await shadowConfig({
+      key: 'flag',
+      handler: [recorder('TestProvider').handler, recorder('ShadowProvider').handler],
+      shadowTimeoutMs: 5,
+      onTask: (task) => tasks.push(task),
+    }).invoke('question', CONTEXT);
+    const result = await runShadow(tasks[0], [
+      recorder('ShadowProvider', 'late', { sleepMs: 50 }).handler,
+      slowJudge.handler,
+    ]);
+    expect(result.error).toBe('timeout');
+    expect(result).not.toHaveProperty('judgeResults');
+    expect(slowJudge.calls).toHaveLength(0);
+  });
+
+  it('keeps a judge failure out of the shadow result', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    for (const judge of [judgeRecorder('x', { rejects: true }), judgeRecorder('not a verdict')]) {
+      error.mockClear();
+      await shutdown();
+      const tasks: ShadowTask[] = [];
+      const client = judgingClient(variationA(undefined, { b: withJudge(variationB()) }));
+      await use(client);
+      await shadowConfig({
+        key: 'flag',
+        handler: [recorder('TestProvider').handler, recorder('ShadowProvider').handler],
+        onTask: (task) => tasks.push(task),
+      }).invoke('question', CONTEXT);
+      const result = await runShadow(tasks[0], [recorder('ShadowProvider', 'shadow answer').handler, judge.handler]);
+      expect(result.error).toBeUndefined();
+      expect(result.usage.total).toBe(5);
+      expect(judge.calls).toHaveLength(1);
+      expect(scoreEvents(client)).toEqual([]);
+      expect(error).toHaveBeenCalled();
+    }
+    warn.mockRestore();
+    error.mockRestore();
+  });
+
+  it('keeps the other judges scoring when one judge fails', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const client = twoJudgeClient();
+    const task = await judgedTask(client);
+    const failing = judgeRecorder('x', { rejects: true });
+    const tone = recorder('ToneProvider', '{"score":0.6,"reasoning":"calm"}');
+    const result = await runShadow(task, [
+      recorder('ShadowProvider', 'shadow answer').handler,
+      failing.handler,
+      tone.handler,
+    ]);
+    expect(result.error).toBeUndefined();
+    expect(failing.calls).toHaveLength(1);
+    expect(tone.calls).toHaveLength(1);
+    expect(result.judgeResults).toBeDefined();
+    expect(Object.keys(result.judgeResults ?? {})).toEqual([TONE_JUDGE_KEY]);
+    expect(result.judgeResults?.[TONE_JUDGE_KEY]).toMatchObject({ score: 0.6, response: 'calm' });
+    const toneEvents = events(client).filter((e) => e[0] === 'tone');
+    expect(toneEvents).toHaveLength(1);
+    expect(toneEvents[0][1]).toMatchObject({ isShadow: true, variationKey: 'b', judgeConfigKey: TONE_JUDGE_KEY });
+    expect(toneEvents[0][2]).toBe(0.6);
+    expect(error).toHaveBeenCalledWith(`Judge '${JUDGE_KEY}' failed:`, expect.anything());
+    error.mockRestore();
+  });
+
+  it('runs the judges outside shadowTimeoutMs', async () => {
+    const tasks: ShadowTask[] = [];
+    const client = judgingClient(variationA(undefined, { b: withJudge(variationB()) }));
+    await use(client);
+    await shadowConfig({
+      key: 'flag',
+      handler: [recorder('TestProvider').handler, recorder('ShadowProvider').handler],
+      shadowTimeoutMs: 20,
+      onTask: (task) => tasks.push(task),
+    }).invoke('question', CONTEXT);
+    const slowJudge = judgeRecorder(undefined, { sleepMs: 60 });
+    const result = await runShadow(tasks[0], [recorder('ShadowProvider', 'shadow answer').handler, slowJudge.handler]);
+    expect(result.error).toBeUndefined();
+    expect(result.judgeResults?.[JUDGE_KEY]).toMatchObject({ score: 0.8 });
+    expect(scoreEvents(client)).toHaveLength(1);
+  });
+
+  it('never starts a client to resolve the shadow judges after shutdown()', async () => {
+    vi.stubEnv('LD_SDK_KEY', 'sdk-key');
+    mockLdInit.mockClear();
+    mockLdInit.mockReturnValue({
+      ...makeClient(variationA()),
+      waitForInitialization: vi.fn().mockResolvedValue(undefined),
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const task = await judgedTask(twoJudgeClient());
+      // The first judge's call is in flight when shutdown() lands, so the second judge resolves after it.
+      const first = recorder('JudgeProvider', '{"score":0.8,"reasoning":"fine"}', { sleepMs: 5 });
+      const firstHandler = (async (...args: Parameters<ProviderHandler>) => {
+        await shutdown();
+        return first.handler(...args);
+      }) as ProviderHandler;
+      firstHandler.providesFor = first.handler.providesFor;
+      const tone = recorder('ToneProvider', '{"score":0.6,"reasoning":"calm"}');
+      const result = await runShadow(task, [
+        recorder('ShadowProvider', 'shadow answer').handler,
+        firstHandler,
+        tone.handler,
+      ]);
+      expect(result.error).toBeUndefined();
+      expect(tone.calls).toHaveLength(0);
+      expect(mockLdInit).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+      vi.unstubAllEnvs();
+      mockLdInit.mockReset();
+    }
+  });
+
+  it('runs the shadow judge under the task conversation id', async () => {
+    const task = await withConversationId('conv-1', () =>
+      judgedTask(judgingClient(variationA(undefined, { b: withJudge(variationB()) }))),
+    );
+    const judge = judgeRecorder();
+    await withConversationId('worker-conversation', () =>
+      runShadow(task, [recorder('ShadowProvider', 'shadow answer').handler, judge.handler]),
+    );
+    expect(judge.calls).toHaveLength(1);
+    expect(judge.calls[0].conversationId).toBe('conv-1');
+  });
+
+  it('runs no shadow judge when the shadow has no matching handler', async () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const client = judgingClient(variationA(undefined, { b: withJudge(variationB()) }));
+    await use(client);
+    const judge = judgeRecorder();
+    await shadowConfig({
+      key: 'flag',
+      handler: [recorder('TestProvider', 'primary answer').handler, judge.handler],
+    }).invoke('question', CONTEXT);
+    await waitForShadowsForTesting();
+    expect(judge.calls).toHaveLength(0);
+    expect(scoreEvents(client)).toEqual([]);
+    expect(shadowEvents(client)).toEqual([]);
+    debug.mockRestore();
+  });
+
+  it('runs the shadow judges when skipJudges hands the served judges back', async () => {
+    const client = judgingClient(withJudge(variationA(undefined, { b: withJudge(variationB()) })));
+    const { response, judge } = await invokeJudged(client, { skipJudges: true });
+    expect(response.judgeTasks).toHaveLength(1);
+    expect(judge.calls).toHaveLength(1);
+    expect(judge.calls[0].input).toBe('shadow answer');
+    expect(scoreEvents(client).map((e) => e[1].isShadow)).toEqual([true]);
+  });
+
+  it('emits the same judge events in the background and deferred', async () => {
+    const strip = (es: Event[]) => es.map(([name, { runId: _r, ...data }, value]) => [name, data, value]);
+    const backgroundClient = judgingClient(variationA(undefined, { b: withJudge(variationB()) }));
+    await invokeJudged(backgroundClient);
+    const background = strip(shadowEvents(backgroundClient));
+
+    await shutdown();
+    const tasks: ShadowTask[] = [];
+    const deferredClient = judgingClient(variationA(undefined, { b: withJudge(variationB()) }));
+    await use(deferredClient);
+    await shadowConfig({
+      key: 'flag',
+      handler: [recorder('TestProvider', 'primary answer').handler, recorder('ShadowProvider').handler],
+      onTask: (task) => tasks.push(task),
+    }).invoke('question', CONTEXT);
+    expect(structuredClone(tasks[0])).toEqual(tasks[0]);
+    await runShadow(tasks[0], [recorder('ShadowProvider', 'shadow answer').handler, judgeRecorder().handler]);
+    expect(strip(shadowEvents(deferredClient))).toEqual(background);
+    expect(background.some(([name]) => name === 'quality')).toBe(true);
   });
 });

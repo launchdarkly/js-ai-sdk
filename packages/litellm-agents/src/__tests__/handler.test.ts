@@ -399,6 +399,18 @@ describe('createLiteLLMAgentsHandler', () => {
     warn.mockRestore();
   });
 
+  it('never gives the SDK a registered tool the config does not attach', async () => {
+    mockRun.mockResolvedValue(result());
+    const privileged = vi.fn();
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: { type: 'object' } } },
+    };
+    await createLiteLLMAgentsHandler({ client: {} as never })(config as any, 'q', { safe: vi.fn(), privileged });
+    expect((agentArgs[0].tools as any[]).map((t) => t.name)).toEqual(['safe']);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
   it('never gives the SDK a tool whose name is only an inherited object property', async () => {
     mockRun.mockResolvedValue(result());
     const config = {

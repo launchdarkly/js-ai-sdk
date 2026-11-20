@@ -343,6 +343,19 @@ describe('createLangChainAgentsHandler', () => {
     expect(agentArgs.tools).toHaveLength(1);
   });
 
+  it('never gives the SDK a registered tool the config does not attach', async () => {
+    mockCreateAgent.mockReturnValue(makeMockAgent());
+    const privileged = vi.fn();
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: { type: 'object' } } },
+    };
+    await createLangChainAgentsHandler({} as any)(config as any, 'q', { safe: vi.fn(), privileged });
+    const agentArgs = mockCreateAgent.mock.calls[0][0];
+    expect(agentArgs.tools.map((t: any) => t.name)).toEqual(['safe']);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
   it('never gives the SDK a tool whose name is only an inherited object property', async () => {
     mockCreateAgent.mockReturnValue(makeMockAgent());
     const config = {
@@ -1136,18 +1149,30 @@ describe('model source', () => {
     expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: constructed }));
   });
 
-  it('camelCase model.parameters keys still pass through unchanged into the default constructor', async () => {
-    const constructed = { tag: 'default-openai-camel' };
-    MockChatOpenAI.mockImplementation(function MockChatOpenAI() {
-      return constructed;
+  // The input keys are the snake_case ones: a camelCase spelling of a table key is dropped like any
+  // other unknown key, and only the snake_case key reaches the constructor (under its camelCase name).
+  it.each([
+    ['maxTokens', 'max_tokens', 5, 'OpenAI', 'gpt-4o'],
+    ['topP', 'top_p', 0.5, 'OpenAI', 'gpt-4o'],
+    ['topK', 'top_k', 5, 'Anthropic', 'claude-sonnet-4-5'],
+    ['frequencyPenalty', 'frequency_penalty', 0.5, 'OpenAI', 'gpt-4o'],
+    ['presencePenalty', 'presence_penalty', 0.5, 'OpenAI', 'gpt-4o'],
+    ['stopSequences', 'stop_sequences', ['END'], 'OpenAI', 'gpt-4o'],
+  ] as const)('forwards %s only from its snake_case key %s', async (camel, snake, value, provider, name) => {
+    const ctor = provider === 'Anthropic' ? MockChatAnthropic : MockChatOpenAI;
+    ctor.mockImplementation(function MockChatModel() {
+      return {};
     });
-    const cfg = {
-      model: { name: 'gpt-4o', parameters: { temperature: 0.2, maxTokens: 512 } },
-      provider: { name: 'LangChain' },
-      instructions: 'Be helpful.',
+    const constructorArgs = async (parameters: Record<string, unknown>) => {
+      ctor.mockClear();
+      await createLangChainAgentsHandler()(
+        { model: { name, parameters }, provider: { name: provider }, instructions: 'Be helpful.' } as any,
+        'q',
+      );
+      return ctor.mock.calls[0][0];
     };
-    await createLangChainAgentsHandler()(cfg as any, 'q');
-    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
+    expect(await constructorArgs({ [camel]: value })).not.toHaveProperty(camel);
+    expect(await constructorArgs({ [snake]: value })).toHaveProperty(camel, value);
   });
 
   it.each([

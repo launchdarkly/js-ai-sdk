@@ -1115,6 +1115,27 @@ describe('createLangChainMessagesHandler', () => {
     expect(stream).toHaveBeenCalledOnce();
   });
 
+  it('rejects a tool registered nowhere during streaming', async () => {
+    const stream = vi.fn().mockReturnValue(
+      (async function* () {
+        yield new AIMessage({
+          content: '',
+          tool_calls: [{ name: 'unknownTool', args: {}, id: 'tc1' }],
+          usage_metadata: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        });
+      })(),
+    );
+    const llm = { invoke: vi.fn(), stream, bindTools: vi.fn().mockReturnThis() };
+    const config = {
+      ...baseConfig,
+      tools: { safe: { name: 'safe', type: 'function' as const, parameters: {} } },
+    };
+
+    await expect(
+      collectStream(createLangChainMessagesHandler(llm as any).stream?.(config as any, 'q', { safe: vi.fn() }, {})),
+    ).rejects.toThrow(/unknownTool/);
+  });
+
   it('rejects a returned tool during streaming when the active config has no tools', async () => {
     const dangerous = vi.fn();
     const stream = vi.fn().mockReturnValue(
@@ -1521,16 +1542,30 @@ describe('model source', () => {
     });
   });
 
-  it('camelCase model.parameters keys still pass through unchanged into the default constructor', async () => {
-    vi.mocked(ChatOpenAI).mockImplementation(function MockChatOpenAI() {
-      return makeMockLLM('default-openai') as any;
-    });
-    const cfg = {
-      ...baseConfig,
-      model: { name: 'gpt-4o', parameters: { temperature: 0.2, maxTokens: 512 } },
+  // The input keys are the snake_case ones: a camelCase spelling of a table key is dropped like any
+  // other unknown key, and only the snake_case key reaches the constructor (under its camelCase name).
+  it.each([
+    ['maxTokens', 'max_tokens', 5, 'OpenAI', 'gpt-4o'],
+    ['topP', 'top_p', 0.5, 'OpenAI', 'gpt-4o'],
+    ['topK', 'top_k', 5, 'Anthropic', 'claude-sonnet-4-5'],
+    ['frequencyPenalty', 'frequency_penalty', 0.5, 'OpenAI', 'gpt-4o'],
+    ['presencePenalty', 'presence_penalty', 0.5, 'OpenAI', 'gpt-4o'],
+    ['stopSequences', 'stop_sequences', ['END'], 'OpenAI', 'gpt-4o'],
+  ] as const)('forwards %s only from its snake_case key %s', async (camel, snake, value, provider, name) => {
+    const ctor = provider === 'Anthropic' ? ChatAnthropic : ChatOpenAI;
+    vi.mocked(ctor).mockImplementation(function MockChatModel() {
+      return makeMockLLM('default') as any;
+    } as any);
+    const constructorArgs = async (parameters: Record<string, unknown>) => {
+      vi.mocked(ctor).mockClear();
+      await createLangChainMessagesHandler()(
+        { ...baseConfig, provider: { name: provider }, model: { name, parameters } } as any,
+        'q',
+      );
+      return vi.mocked(ctor).mock.calls[0][0];
     };
-    await createLangChainMessagesHandler()(cfg as any, 'q');
-    expect(ChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
+    expect(await constructorArgs({ [camel]: value })).not.toHaveProperty(camel);
+    expect(await constructorArgs({ [snake]: value })).toHaveProperty(camel, value);
   });
 
   it.each([
@@ -1550,6 +1585,40 @@ describe('model source', () => {
     const args = vi.mocked(ctor()).mock.calls.at(-1)![0] as Record<string, unknown>;
     expect(args.temperature).toBe(0.3);
     expectNoNeverForwardedValue(args);
+  });
+
+  it.each([
+    ['OpenAI', 'gpt-4o', () => ChatOpenAI],
+    ['Anthropic', 'claude-sonnet-4-5', () => ChatAnthropic],
+    ['Bedrock', 'anthropic.claude-sonnet-4-5', () => ChatBedrockConverse],
+  ] as const)('passes the same settings to the default %s constructor on invoke and stream', async (provider, name, ctor) => {
+    vi.mocked(ctor()).mockClear();
+    vi.mocked(ctor()).mockImplementation(function MockChatModel() {
+      return {
+        ...makeMockLLM('default'),
+        stream: vi.fn().mockReturnValue(
+          (async function* () {
+            yield new AIMessage({ content: 'streamed' });
+          })(),
+        ),
+      } as any;
+    } as any);
+    const cfg = {
+      ...baseConfig,
+      provider: { name: provider },
+      model: { name, parameters: { ...NEVER_FORWARDED_PARAMETERS, temperature: 0.3 } },
+    };
+    await createLangChainMessagesHandler()(cfg as any, 'q');
+    for await (const _e of createLangChainMessagesHandler().stream?.(cfg as any, 'q', {}, {}) ?? []) {
+      // drain
+    }
+    const calls = vi.mocked(ctor()).mock.calls.map(([args]) => args as Record<string, unknown>);
+    expect(calls).toHaveLength(2);
+    for (const args of calls) {
+      expect(args.temperature).toBe(0.3);
+      expectNoNeverForwardedValue(args);
+    }
+    expect(calls[1]).toEqual(calls[0]);
   });
 
   it('spreads model.parameters into the default Anthropic constructor', async () => {

@@ -173,9 +173,10 @@ const NESTED_SHAPE_CHECKS: Record<LangChainModelClass, Record<string, (value: un
 
 /**
  * `config.model.parameters` as constructor fields for one LangChain chat model class: camelized
- * (`top_p` becomes `topP`; nested values are left alone, and snake_case wins when both spellings
- * are set), then narrowed to that class's allowlist. Unknown keys and malformed nested values are
- * dropped.
+ * (`top_p` becomes `topP`; nested values are left alone), then narrowed to that class's allowlist.
+ * The input keys are the snake_case ones: a key with an uppercase letter, such as a camelCase
+ * `maxTokens`, is dropped before camelizing, like any other key not in the table. Unknown keys and
+ * malformed nested values are dropped.
  *
  * Renames before the allowlist is applied:
  * - `ChatOpenAI` reads its service tier as `service_tier`, so a camelized `serviceTier` is
@@ -190,7 +191,10 @@ export function modelConstructorParameters(
   parameters: AiConfigRep['model']['parameters'] | unknown,
   modelClass: LangChainModelClass,
 ): Record<string, unknown> {
-  const camelized = camelizeModelParameters(normalizeModelParameters(parameters));
+  const snakeCase = Object.fromEntries(
+    Object.entries(normalizeModelParameters(parameters)).filter(([key]) => key === key.toLowerCase()),
+  );
+  const camelized = camelizeModelParameters(snakeCase);
   if (modelClass === 'openai' && camelized.serviceTier !== undefined) {
     camelized.service_tier = camelized.serviceTier;
     delete camelized.serviceTier;

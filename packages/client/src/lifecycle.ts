@@ -677,11 +677,16 @@ export type ParseVariationOptions = { skillTools?: boolean };
 export const extractVariation = async (
   key: string,
   userContext: LDContext,
-  options: ParseVariationOptions = {},
+  { existingClientOnly = false, ...options }: ParseVariationOptions & { existingClientOnly?: boolean } = {},
 ): Promise<{ config: AiConfigRep; meta: VariationMeta; value: unknown }> => {
-  const { value } = await fetchVariation(key, userContext);
+  const { value } = await fetchVariation(key, userContext, { existingClientOnly });
   return parseVariation(key, value, options);
 };
+
+/** @internal The live client, or `undefined` when none is set. Never starts one. */
+export function existingClient(): LDClientInterface | undefined {
+  return getSingleton().client ?? undefined;
+}
 
 type DetailClient = LDClientInterface & {
   variationDetail?: (
@@ -693,14 +698,19 @@ type DetailClient = LDClientInterface & {
 
 /**
  * @internal The raw variation value, and its evaluation reason when `withReason` is set and the
- * client has `variationDetail`.
+ * client has `variationDetail`. With `existingClientOnly`, it uses the live client and rejects
+ * when there is none, rather than starting one.
  */
 export async function fetchVariation(
   key: string,
   userContext: LDContext,
-  { withReason = false }: { withReason?: boolean } = {},
+  { withReason = false, existingClientOnly = false }: { withReason?: boolean; existingClientOnly?: boolean } = {},
 ): Promise<{ value: unknown; reason?: unknown }> {
-  await initClient();
+  if (existingClientOnly) {
+    if (!existingClient()) throw new Error('No live LaunchDarkly client.');
+  } else {
+    await initClient();
+  }
   const client = getClient() as DetailClient;
   if (withReason && client.variationDetail) {
     return client.variationDetail(key, userContext, { enabled: false });
