@@ -190,7 +190,7 @@ function finishChatSpan(span: Span, usage: Usage): void {
 
 function toolDefinitions(configTools: Record<string, Tool>, handlers: Record<string, ToolHandlerFn | NativeTool>) {
   return Object.entries(configTools)
-    .filter(([name]) => isFunctionTool(name, handlers[name]))
+    .filter(([name]) => Object.hasOwn(handlers, name) && isFunctionTool(name, handlers[name]))
     .map(([name, definition]) => ({ name, definition }));
 }
 

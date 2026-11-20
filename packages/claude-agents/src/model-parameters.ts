@@ -68,6 +68,22 @@ function inheritedEnv(): Record<string, string | undefined> {
   return env;
 }
 
+/**
+ * The model id `query()` sends. Bedrock variations keep the cross-region inference-profile prefix
+ * (`us`, `global`, ...) in `model.region`, but Claude Code sends a bare `anthropic.*` id through
+ * as-is, so the prefix has to be on the id. Every other name is sent as configured: a prefixed id
+ * or an ARN already names a profile, and Claude Code maps an Anthropic-format id such as
+ * `claude-sonnet-4-5` or an alias such as `sonnet` to a profile itself, where a `us.` in front
+ * would make it no Bedrock model at all.
+ */
+export function requestModel(config: AiConfigRep): string {
+  const name = config.model.name;
+  const region = typeof config.model.region === 'string' ? config.model.region.trim().replace(/\.+$/, '') : '';
+  if (!region || (config.provider?.name ?? '').toLowerCase() !== 'bedrock') return name;
+  if (!name.startsWith('anthropic.')) return name;
+  return `${region}.${name}`;
+}
+
 type ThinkingType = NonNullable<Options['thinking']>['type'];
 
 /** The `thinking` types the Claude Agent SDK knows (`ThinkingConfig`). */

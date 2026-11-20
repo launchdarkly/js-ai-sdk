@@ -162,6 +162,29 @@ describe('toClaudeAgents', () => {
     expect(leafOptions).not.toHaveProperty('max_turns');
   });
 
+  it("leaves an Anthropic node's model id unprefixed whatever its region", async () => {
+    const def = makeGraphDef();
+    (def.root!.config.model as any).region = 'us';
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+    expect(mockQuery.mock.calls[0][0].options.model).toBe('claude-opus-4-5');
+  });
+
+  it('hands a Bedrock node to runNode with its config unchanged', async () => {
+    const def = makeGraphDef();
+    def.root!.config = {
+      ...def.root!.config,
+      model: { name: 'anthropic.claude-opus-5-5', region: 'us' },
+      provider: { name: 'Bedrock' },
+    };
+    vi.mocked(def.runNode).mockResolvedValue({ response: 'ok', usage: { input: 1, output: 1, total: 2 } } as any);
+    await toClaudeAgents(Promise.resolve(def)).invoke('hi');
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(vi.mocked(def.runNode).mock.calls[0][0].config.model).toEqual({
+      name: 'anthropic.claude-opus-5-5',
+      region: 'us',
+    });
+  });
+
   // Each node's max_tokens reaches its CLI as
   // CLAUDE_CODE_MAX_OUTPUT_TOKENS, and thinking is off unless that node's config asks for it.
   it("sets each node's output limit and disables thinking unless the node enables it", async () => {
@@ -620,6 +643,24 @@ describe('toClaudeAgents', () => {
       expect.objectContaining({ toolKey: 'web-search' }),
       1,
     );
+  });
+
+  it('does not send a registered native tool that the node does not attach', async () => {
+    const root = makeNode('root', [makeEdge('root', 'leaf')]);
+    root.config.tools = { read: { name: 'read', type: 'function', parameters: {} } };
+    const def = makeGraphDef({ root });
+    const sent: unknown[] = [];
+    mockQuery.mockImplementation(async function* (queryArgs: { options?: { tools?: unknown } }) {
+      sent.push(queryArgs.options?.tools);
+      yield { type: 'result', subtype: 'success', result: 'ok', usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+
+    await toClaudeAgents(Promise.resolve(def), {
+      context: { kind: 'user', key: 'user-1' },
+      toolHandlers: { read: new NativeTool(Symbol('read'), 'Read'), bash: new NativeTool(Symbol('bash'), 'Bash') },
+    }).invoke('hello');
+
+    expect(sent).toEqual([['Read']]);
   });
 
   // ── root === null guard ──────────────────────────────────────────────────────

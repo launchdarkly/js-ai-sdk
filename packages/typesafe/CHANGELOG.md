@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-typesafe-1.0.0...@launchdarkly/ai-typesafe-1.0.1) (2026-11-12)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^1.0.0 to ^1.1.0
+
 ## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-typesafe-0.2.0...@launchdarkly/ai-typesafe-1.0.0) (2026-10-30)
 
 

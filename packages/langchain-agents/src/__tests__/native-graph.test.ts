@@ -201,13 +201,13 @@ describe('toLangGraph', () => {
     expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
   });
 
-  it('leaves camelCase model.parameters keys unchanged for the default ChatOpenAI constructor', async () => {
+  it('drops a camelCase model.parameters key for the default ChatOpenAI constructor', async () => {
     const root = makeNode('root', '', []);
     root.config.model.parameters = { temperature: 0.2, maxTokens: 512 };
     const def = makeGraphDef([root], {}, 'root');
     MockChatOpenAI.mockClear();
     await toLangGraph(Promise.resolve(def)).invoke('hi');
-    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, maxTokens: 512, model: 'gpt-4o' });
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, model: 'gpt-4o' });
   });
 
   it('never passes credentials or connection settings to the default ChatOpenAI constructor', async () => {
@@ -600,6 +600,30 @@ describe('toLangGraph', () => {
     const names = (tool as ReturnType<typeof vi.fn>).mock.calls.map((c: any[]) => c[1]?.name);
     expect(names).toContain('search');
     expect(names).not.toContain('missing');
+    expect(names).not.toContain('constructor');
+  });
+
+  it('never gives the SDK a registered tool the node does not attach', async () => {
+    const { ToolNode } = await import('@langchain/langgraph/prebuilt');
+    const root = makeNode('root', 'instr', [], {
+      safe: { name: 'safe', type: 'function' as const, parameters: { type: 'object' } },
+    });
+    const def = makeGraphDef([root], {}, 'root');
+    const privileged = vi.fn();
+    await toLangGraph(Promise.resolve(def), { toolHandlers: { safe: vi.fn(), privileged } }).invoke('hi');
+    const names = (ToolNode as any).mock.calls.flatMap(([tools]: any[]) => tools.map((t: any) => t.name));
+    expect(names).toEqual(['safe']);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
+  it('never gives the SDK a node tool whose name is only an inherited object property', async () => {
+    const { ToolNode } = await import('@langchain/langgraph/prebuilt');
+    const root = makeNode('root', 'instr', [], {
+      constructor: { name: 'constructor', type: 'function' as const, parameters: { type: 'object' } },
+    });
+    const def = makeGraphDef([root], {}, 'root');
+    await toLangGraph(Promise.resolve(def), { toolHandlers: {} }).invoke('hi');
+    const names = (ToolNode as any).mock.calls.flatMap(([tools]: any[]) => tools.map((t: any) => t.name));
     expect(names).not.toContain('constructor');
   });
 

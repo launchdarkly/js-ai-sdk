@@ -139,16 +139,14 @@ describe('inline judges (config().invoke)', () => {
     expect(histories[0]).not.toContain('extra');
   });
 
-  it('list a declared tool with no implementation as available', async () => {
+  it('leave a declared tool with no implementation out of the available list', async () => {
     serve({
       support: mainConfig({ tools: { lookup: tool('lookup'), escalate: tool('escalate') } }),
       judge: judgeConfig,
     });
     const { handler, histories } = makeHandler([]);
     await config({ key: 'support', handler, toolHandlers: { lookup: () => 'x' } }).invoke('q', context);
-    expect(histories[0]).toContain(
-      'Tools available: lookup, escalate\nNo tool calls were made while producing the response.',
-    );
+    expect(histories[0]).toContain('Tools available: lookup\nNo tool calls were made while producing the response.');
   });
 
   it('leave a native tool out, while its $ld:ai:tool_call still fires', async () => {
@@ -260,13 +258,13 @@ describe('graph judges', () => {
 });
 
 describe('exposedToolKeys', () => {
-  it('lists the config tools, without handoff or native tools', () => {
+  it('lists config tools with an own function handler, without handoff, native or unimplemented tools', () => {
     const native = new NativeTool(Symbol('s'), 'WebSearch');
     const keys = exposedToolKeys(
-      { tools: { lookup: {}, search: {}, __handoff_billing: {}, escalate: {} } },
-      { lookup: () => 1, search: native },
+      { tools: { lookup: {}, search: {}, __handoff_billing: {}, escalate: {}, constructor: {} } },
+      { lookup: () => 1, search: native, __handoff_billing: () => 'routed' },
     );
-    expect(keys).toEqual(['lookup', 'escalate']);
+    expect(keys).toEqual(['lookup']);
   });
 
   it('keeps a handoff tool callable while leaving it unrecorded', () => {
@@ -275,5 +273,14 @@ describe('exposedToolKeys', () => {
     expect((tools.__handoff_billing as () => string)()).toBe('routed');
     expect(recorder.calls).toEqual([]);
     expect(recorder.available).toEqual(['lookup']);
+  });
+
+  it('keeps and records a tool keyed __proto__', () => {
+    const recorder = new TrajectoryRecorder();
+    const tools = Object.fromEntries([['__proto__', () => 'proto result']]);
+    const wrapped = recorder.wrap(tools, ['__proto__']);
+    expect(Object.hasOwn(wrapped, '__proto__')).toBe(true);
+    expect((wrapped.__proto__ as unknown as () => string)()).toBe('proto result');
+    expect(recorder.calls.map((call) => call.key)).toEqual(['__proto__']);
   });
 });

@@ -433,6 +433,21 @@ describe('executeAndTrack', () => {
     });
     expect(Object.keys(handler.mock.calls[0][2])).toEqual(['safe']);
   });
+
+  it('passes a tool map with no inherited properties when the caller gives no tool handlers', async () => {
+    const handler = makeHandler('ok');
+    await executeAndTrack({
+      configKey: 'f',
+      config: {
+        ...execConfig,
+        tools: { constructor: { name: 'constructor', type: 'function', parameters: {} } },
+      } as any,
+      meta: execMeta,
+      userContext: execContext,
+      handler,
+    });
+    expect(handler.mock.calls[0][2].constructor).toBeUndefined();
+  });
 });
 
 // ─── executeAndStream ────────────────────────────────────────────────────────
@@ -485,6 +500,27 @@ describe('executeAndStream', () => {
       }),
     );
     expect('__ldValue' in seen[0]).toBe(expected);
+  });
+
+  it('streams the handler only the tools attached to the active config', async () => {
+    const handler = makeStreamingHandler(['Hi']);
+    const seen: Record<string, unknown>[] = [];
+    const inner = handler.stream;
+    handler.stream = (c: unknown, u: unknown, t: Record<string, unknown>, v: unknown, h: unknown) => {
+      seen.push(t);
+      return inner(c, u, t, v, h);
+    };
+    await collectExecStream(
+      executeAndStream({
+        configKey: 'f',
+        config: { ...execConfig, tools: { safe: { name: 'safe', type: 'function', parameters: {} } } } as any,
+        meta: execMeta,
+        userContext: execContext,
+        handler,
+        toolHandlers: { safe: vi.fn(), privileged: vi.fn() },
+      }),
+    );
+    expect(Object.keys(seen[0])).toEqual(['safe']);
   });
 
   it('copies modelKey and modelVersion from meta onto every streamed event payload', async () => {

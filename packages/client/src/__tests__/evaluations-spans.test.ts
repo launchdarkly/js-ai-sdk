@@ -294,9 +294,9 @@ describe('a plain function that calls a tool, with one judge, capture on', () =>
     }
   });
 
-  it('names no gen_ai operation and no evaluation on the row root', () => {
+  it('marks the row root as an invoke_workflow envelope that names no evaluation', () => {
     const root = only('launchdarkly.dataset_row');
-    expect(root.attributes['gen_ai.operation.name']).toBeUndefined();
+    expect(root.attributes['gen_ai.operation.name']).toBe('invoke_workflow');
     expect(root.name).not.toMatch(/evaluat/);
   });
 
@@ -384,9 +384,12 @@ describe('a plain function that calls a tool, with one judge, capture on', () =>
     expect(events[0].attributes).toEqual({
       'gen_ai.evaluation.name': 'accuracy',
       'gen_ai.evaluation.score.value': 0.9,
+      'launchdarkly.evaluation.score.min': 0,
+      'launchdarkly.evaluation.score.max': 1,
       'gen_ai.evaluation.explanation': 'Names the right capital.',
     });
     expect(evaluate.attributes['gen_ai.evaluation.score.value']).toBe(0.9);
+    expect(evaluate.attributes['launchdarkly.evaluation.score.max']).toBe(1);
     for (const key of Object.keys(evaluate.attributes)) {
       expect(key).not.toMatch(/score\.label|verdict|passed|success_?direction/i);
     }
@@ -449,6 +452,8 @@ describe('content capture follows the one gate', () => {
     expect(resultEvent(only('evaluate accuracy'))?.attributes).toEqual({
       'gen_ai.evaluation.name': 'accuracy',
       'gen_ai.evaluation.score.value': 0.9,
+      'launchdarkly.evaluation.score.min': 0,
+      'launchdarkly.evaluation.score.max': 1,
       'gen_ai.evaluation.explanation': 'Names the right capital.',
     });
     // A non-evaluation span written with the same resolved default.
@@ -462,10 +467,12 @@ describe('content capture follows the one gate', () => {
     await runWith({ handlers: [plain('OpenAI', callsTool), judgeHandler()] });
     expect(spans()).toHaveLength(5);
     for (const span of spans()) expect(contentOn(span), span.name).toEqual([]);
-    // Name and score stay.
+    // Name, score and range stay.
     expect(resultEvent(only('evaluate accuracy'))?.attributes).toEqual({
       'gen_ai.evaluation.name': 'accuracy',
       'gen_ai.evaluation.score.value': 0.9,
+      'launchdarkly.evaluation.score.min': 0,
+      'launchdarkly.evaluation.score.max': 1,
     });
     // The model, usage and tool name are not content.
     expect(only('chat gpt-4o').attributes['gen_ai.request.model']).toBe('gpt-4o');
@@ -580,6 +587,8 @@ describe('criterion spans', () => {
     expect(resultEvent(evaluate)?.attributes).toEqual({
       'gen_ai.evaluation.name': 'exact',
       'gen_ai.evaluation.score.value': 1,
+      'launchdarkly.evaluation.score.min': 0,
+      'launchdarkly.evaluation.score.max': 1,
     });
   });
 });
@@ -593,19 +602,18 @@ describe('a failed tool call', () => {
       },
       {},
     );
+    let received: unknown;
     const generation = plain(
       'OpenAI',
       async (_config, _input, tools) => {
-        try {
-          await (tools?.lookup_capital as (args: unknown) => Promise<string>)({ country: 'Atlantis' });
-        } catch {
-          // The handler recovers and answers anyway.
-        }
+        // The model gets the error as the tool result and answers anyway.
+        received = (tools?.lookup_capital as (args: unknown) => unknown)({ country: 'Atlantis' });
         return { output: 'I do not know.' };
       },
       true,
     );
     await runWith({ handlers: [generation], tools: [failing], criteria: [] });
+    expect(received).toBe('Error: Error: no such country');
     const tool = only('execute_tool lookup_capital');
     expect(tool.status.code).toBe(2);
     expect(tool.attributes['error.type']).toBe('tool_error');

@@ -161,15 +161,26 @@ export function countSdkSpans<T>(fn: (counter: SpanCounter) => T): T {
 /**
  * Adds `gen_ai.evaluation.result` to `span`, with the name, the score and, when given, the
  * explanation. With `mirrorAttributes`, the same values are also written as span attributes.
+ * `scoreRange` adds `launchdarkly.evaluation.score.min` and `.max`, so a reader can show the
+ * score as a fraction of its range rather than a bare number.
  *
  * Not part of the public API — shared by every path that records a judge's score.
  */
-export const recordEvaluationOnSpan = (span: Span, evaluation: JudgeEvaluation, mirrorAttributes: boolean): void => {
+export const recordEvaluationOnSpan = (
+  span: Span,
+  evaluation: JudgeEvaluation,
+  mirrorAttributes: boolean,
+  scoreRange?: readonly [min: number, max: number],
+): void => {
   if (!span.isRecording()) return;
   const attrs: Attributes = {
     'gen_ai.evaluation.name': evaluation.name,
     'gen_ai.evaluation.score.value': evaluation.score,
   };
+  if (scoreRange) {
+    attrs['launchdarkly.evaluation.score.min'] = scoreRange[0];
+    attrs['launchdarkly.evaluation.score.max'] = scoreRange[1];
+  }
   if (evaluation.explanation) attrs['gen_ai.evaluation.explanation'] = evaluation.explanation;
   span.addEvent('gen_ai.evaluation.result', attrs);
   // A classifier records one event per label. Span attributes hold a single name and score,

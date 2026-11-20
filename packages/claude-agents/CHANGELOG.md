@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-agents-1.0.0...@launchdarkly/ai-claude-agents-1.0.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **claude-agents:** apply Bedrock cross-region inference-profile prefix from model.region ([#215](https://github.com/launchdarkly/js-ai-sdk/issues/215)) ([ad2c5af](https://github.com/launchdarkly/js-ai-sdk/commit/ad2c5af2e474fa3bb7c3fab9de26bba6fdca02fe))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^1.0.0 to ^1.1.0
+
 ## [1.0.0](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-claude-agents-0.5.0...@launchdarkly/ai-claude-agents-1.0.0) (2026-10-30)
 
 

@@ -131,9 +131,15 @@ export const SPAN_FLUSH_BOUND = 500;
 /** Ends a span started by this module. */
 export const endSpan = (span: Span, endTime = spanTimestamp()): void => span.end(endTime);
 
-/** Opens the row's root. The caller ends it with {@link endSpan} after the row's criteria. */
+/**
+ * Opens the row's root. The caller ends it with {@link endSpan} after the row's criteria.
+ *
+ * `invoke_workflow` marks it as the run's envelope, so a viewer reads a failed row as a
+ * failed run even when every span under it succeeded.
+ */
 export function startRowSpan(runId: string, rowIndex: number): Span {
   const span = startSpan(ROW_SPAN_NAME, undefined);
+  span.setAttribute('gen_ai.operation.name', 'invoke_workflow');
   span.setAttributes(rowAttributes(runId, rowIndex));
   return span;
 }
@@ -380,7 +386,8 @@ export type CriterionOutcome = {
 export function finishCriterionSpan(span: Span, name: string, outcome: CriterionOutcome, capture: boolean): void {
   if (outcome.status === 'COMPLETE' && typeof outcome.score === 'number') {
     const explanation = capture && outcome.reason ? outcome.reason : undefined;
-    recordEvaluationOnSpan(span, { name, score: outcome.score, explanation }, true);
+    // Every criterion scores from 0 to 1, so the event carries that range.
+    recordEvaluationOnSpan(span, { name, score: outcome.score, explanation }, true, [0, 1]);
     span.setStatus({ code: SpanStatusCode.OK });
     return;
   }

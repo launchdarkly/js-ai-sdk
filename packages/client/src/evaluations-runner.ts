@@ -7,7 +7,7 @@
 
 import { createHash } from 'node:crypto';
 import type { Span } from '@opentelemetry/api';
-import type { DatasetRow, RunSummary } from './evaluations.js';
+import type { CriterionSummary, DatasetRow, EvalVerdict, RunSummary } from './evaluations.js';
 import {
   EvaluationsError,
   errorMessage,
@@ -29,7 +29,7 @@ import {
   withActiveSpan,
   withEvaluationRow,
 } from './evaluations-spans.js';
-import { createBodyTools, type EvalTool, handlerConfigTools } from './evaluations-tools.js';
+import { createBodyTools, type EvalTool, handlerConfigTools, returnToolErrors } from './evaluations-tools.js';
 import { noteAiInvocation } from './sdk-options.js';
 import { TrajectoryRecorder } from './trajectory.js';
 import type {
@@ -55,6 +55,19 @@ export const DEFAULT_CONCURRENCY = 10;
  */
 export const SUMMARY_POLL_DEFAULTS = { intervalSeconds: 2, timeoutSeconds: 180 };
 
+/**
+ * How long, in seconds, to wait for a run's verdict after its summary is
+ * terminal. Measured from the first run read. Mutable so tests can shorten it.
+ */
+export const VERDICT_POLL_DEFAULTS = { timeoutSeconds: 30 };
+
+/**
+ * The states besides `COMPLETE` that LaunchDarkly treats as terminal: a run in
+ * them never completes, so it never gets a verdict. `TEMPORARY_ERROR` is left
+ * out on purpose: it is a legacy state the server can still complete.
+ */
+export const UNJUDGED_RUN_STATES: ReadonlySet<string> = new Set(['CANCELLED', 'PERMANENT_ERROR']);
+
 const HANDLER_ERROR_CODE = 5001;
 
 /** Generation settings after validation, with the mode already normalized for handler selection. */
@@ -77,7 +90,13 @@ export type DatasetRef = { id?: string; key?: string };
 
 export type EvaluationRef = { id: string; key: string; version: number };
 
-export type EvaluationRunRef = { id: string; evaluationId: string; state: string };
+export type EvaluationRunRef = {
+  id: string;
+  evaluationId: string;
+  state: string;
+  verdict: EvalVerdict | null;
+  unrecognizedVerdict: string | null;
+};
 
 /** One generated row. Carries the trajectory forward for the evaluation phase. */
 export type RowResult = {
@@ -336,7 +355,85 @@ export async function fetchDatasetRows(
   return rows;
 }
 
-export async function createEvaluation(
+/**
+ * Server create-key rule for offline evaluations: `^[a-z0-9][a-z0-9._-]*$`,
+ * at most 128 characters. Validated before any management-API request so a
+ * bad key never becomes a path segment (including `..`) after other I/O.
+ */
+export const OFFLINE_EVALUATION_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+export const OFFLINE_EVALUATION_KEY_MAX_LENGTH = 128;
+
+/** Throw {@link EvaluationsError} unless `key` matches the server create rule. */
+export function validateOfflineEvaluationKey(key: string): void {
+  if (!OFFLINE_EVALUATION_KEY_PATTERN.test(key) || key.length > OFFLINE_EVALUATION_KEY_MAX_LENGTH) {
+    throw new EvaluationsError(
+      `key must match ${OFFLINE_EVALUATION_KEY_PATTERN.source} and be at most ${OFFLINE_EVALUATION_KEY_MAX_LENGTH} characters, got ${JSON.stringify(key)}`,
+    );
+  }
+}
+
+/**
+ * Mutable config fields shared by create (POST) and reconcile (PATCH) on
+ * `offline-evaluations`. Mode selects the handler only and is never sent.
+ *
+ * Pass `includeIdentity: true` on create so the body carries `key` + `name`
+ * (name defaults to the key). PATCH omits both: the path already names the
+ * evaluation, and sending `name: key` would reset a renamed evaluation.
+ */
+export function evaluationConfigBody(
+  key: string,
+  generation: ResolvedGeneration,
+  tools: readonly EvalTool[],
+  criteria: readonly Criterion[] = [],
+  options: { includeIdentity?: boolean } = {},
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    generationProvider: generation.provider,
+    generationModel: generation.model,
+    // Always send parameters/promptSnippets — including {} — so a PATCH snapshot
+    // can clear previously set values (omitting the field leaves the old value).
+    parameters: generation.parameters ?? {},
+    promptSnippets: generation.promptSnippets ?? {},
+  };
+  if (options.includeIdentity) {
+    body.key = key;
+    body.name = key;
+  }
+  if (generation.instructions !== undefined) {
+    body.messages = [{ role: 'system', content: generation.instructions }];
+  } else {
+    body.messages = generation.messages ?? [];
+  }
+  // Always send tools/criteria — including [] — so a PATCH snapshot can clear pins that
+  // ingest still expects results for when a prior version listed them.
+  body.tools = createBodyTools(tools);
+  body.criteria = criteria.map(criterionWire);
+  return body;
+}
+
+function evaluationRefFrom(raw: Record<string, unknown>, fallbackKey: string): EvaluationRef {
+  const id = requireString(raw, 'id', 'evaluation');
+  // The only source for evaluationVersion on every event, so it is required.
+  // Number.isInteger rejects bool (unlike Python's isinstance(True, int)).
+  if (!Number.isInteger(raw.version)) {
+    throw new EvaluationsError("LaunchDarkly evaluation response is missing integer field 'version'");
+  }
+  // Prefer a non-empty response `key`. Do not fall through to `name` / `label`:
+  // PATCH omits `name` so a UI rename can diverge from the stable key, and
+  // `evaluationKey` on events must stay that key. An explicit JSON `null` for
+  // `key` therefore uses the caller's key.
+  const responseKey = typeof raw.key === 'string' && raw.key ? raw.key : fallbackKey;
+  return { id, key: responseKey, version: raw.version as number };
+}
+
+/**
+ * Resolve a stable evaluation by key on `…/offline-evaluations`:
+ * GET → POST (create-only on miss) or always PATCH the full desired snapshot
+ * when the evaluation already exists. The server decides whether anything
+ * changed. No PUT. A POST 409 race re-GETs and continues as the update path.
+ * A PATCH 409 (optimistic lock) re-GETs and retries the PATCH once.
+ */
+export async function ensureEvaluation(
   api: LDApiClient,
   projectKey: string,
   key: string,
@@ -344,31 +441,70 @@ export async function createEvaluation(
   tools: readonly EvalTool[],
   criteria: readonly Criterion[] = [],
 ): Promise<EvaluationRef> {
-  // The mode selects the handler and validates the prompt only; it is not sent.
-  const body: Record<string, unknown> = {
-    name: key,
-    generationProvider: generation.provider,
-    generationModel: generation.model,
-  };
-  if (generation.parameters !== undefined) body.parameters = generation.parameters;
-  if (generation.instructions !== undefined) {
-    body.messages = [{ role: 'system', content: generation.instructions }];
-  } else {
-    body.messages = generation.messages ?? [];
-  }
-  if (generation.promptSnippets !== undefined) body.promptSnippets = generation.promptSnippets;
-  if (tools.length) body.tools = createBodyTools(tools);
-  // Pinned on the evaluation: ingest drops a result for a criterion not configured there.
-  if (criteria.length) body.criteria = criteria.map(criterionWire);
+  const createBody = evaluationConfigBody(key, generation, tools, criteria, { includeIdentity: true });
+  // Omit name on PATCH so a renamed evaluation keeps its display name.
+  const patchBody = evaluationConfigBody(key, generation, tools, criteria);
+  const collection = `projects/${segment(projectKey)}/offline-evaluations`;
+  const byKey = `${collection}/${segment(key)}`;
 
-  const raw = requireObject(await api.post(`projects/${segment(projectKey)}/evaluations`, body), 'evaluation');
-  const id = requireString(raw, 'id', 'evaluation');
-  // The only source for evaluationVersion on every event, so it is required.
-  if (!Number.isInteger(raw.version)) {
-    throw new EvaluationsError("LaunchDarkly evaluation response is missing integer field 'version'");
+  let missing = false;
+  try {
+    requireObject(await api.get(byKey), 'evaluation');
+  } catch (err) {
+    if (!(err instanceof LDApiError) || err.status !== 404) throw err;
+    missing = true;
   }
-  const responseKey = typeof raw.name === 'string' ? raw.name : typeof raw.label === 'string' ? raw.label : key;
-  return { id, key: responseKey, version: raw.version as number };
+
+  if (missing) {
+    try {
+      const created = requireObject(await api.post(collection, createBody), 'evaluation');
+      return evaluationRefFrom(created, key);
+    } catch (err) {
+      if (!(err instanceof LDApiError) || err.status !== 409) throw err;
+      // Lost the create race — another caller minted the key; continue as update.
+      try {
+        requireObject(await api.get(byKey), 'evaluation');
+      } catch (regetErr) {
+        if (regetErr instanceof LDApiError && regetErr.status === 404) {
+          throw new EvaluationsError(
+            `LaunchDarkly offline evaluation '${key}' reported a key conflict but could not be re-fetched`,
+            { cause: regetErr },
+          );
+        }
+        throw regetErr;
+      }
+    }
+  }
+
+  // The server applies only what changed, so replaying the same snapshot is a no-op;
+  // a changed snapshot overwrites by design. A 409 is not retried by the client; it
+  // is handled below.
+  try {
+    const patched = requireObject(await api.patch(byKey, patchBody, { idempotent: true }), 'evaluation');
+    return evaluationRefFrom(patched, key);
+  } catch (err) {
+    if (!(err instanceof LDApiError) || err.status !== 409) throw err;
+    try {
+      requireObject(await api.get(byKey), 'evaluation');
+    } catch (regetErr) {
+      throw new EvaluationsError(
+        `LaunchDarkly offline evaluation '${key}' reported a concurrent update but could not be re-fetched`,
+        { cause: regetErr },
+      );
+    }
+    try {
+      const patched = requireObject(await api.patch(byKey, patchBody, { idempotent: true }), 'evaluation');
+      return evaluationRefFrom(patched, key);
+    } catch (retryErr) {
+      if (retryErr instanceof LDApiError && retryErr.status === 409) {
+        throw new EvaluationsError(
+          `LaunchDarkly offline evaluation '${key}' could not be updated after a concurrent modification`,
+          { cause: retryErr },
+        );
+      }
+      throw retryErr;
+    }
+  }
 }
 
 export async function createEvaluationRun(
@@ -384,15 +520,34 @@ export async function createEvaluationRun(
     await api.post(`projects/${segment(projectKey)}/evaluations/${segment(evaluationId)}/runs`, body),
     'evaluation run',
   );
+  return runRef(raw);
+}
+
+/** Validate a run resource: `id`, `evaluationId` and `state` are required; `verdict` is optional. */
+function runRef(raw: Record<string, unknown>): EvaluationRunRef {
+  const verdict = parseVerdict(raw.verdict);
   return {
     id: requireString(raw, 'id', 'evaluation run'),
     evaluationId: requireString(raw, 'evaluationId', 'evaluation run'),
     state: requireString(raw, 'state', 'evaluation run'),
+    verdict,
+    unrecognizedVerdict:
+      verdict === null && raw.verdict !== undefined && raw.verdict !== null ? JSON.stringify(raw.verdict) : null,
   };
 }
 
 const runPath = (projectKey: string, evaluationId: string, runId: string) =>
   `projects/${segment(projectKey)}/evaluations/${segment(evaluationId)}/runs/${segment(runId)}`;
+
+/** Read a run, for its verdict. */
+export async function fetchEvaluationRun(
+  api: LDApiClient,
+  projectKey: string,
+  evaluationId: string,
+  runId: string,
+): Promise<EvaluationRunRef> {
+  return runRef(requireObject(await api.get(runPath(projectKey, evaluationId, runId)), 'evaluation run'));
+}
 
 /**
  * Upload an inline dataset's raw rows to its run, in batches, one at a time.
@@ -451,18 +606,60 @@ function count(counts: Record<string, unknown>, ...keys: string[]): number {
   return 0;
 }
 
-/** Parse row counts. The summary endpoint returns no run state, so terminality comes from the counts alone. */
+/**
+ * A known verdict, or `null` for an absent or unrecognised one. LaunchDarkly
+ * may add verdicts later; one this release does not know is treated as no
+ * verdict rather than guessed at as a pass or a fail.
+ */
+export function parseVerdict(value: unknown): EvalVerdict | null {
+  return value === 'pass' || value === 'fail' ? value : null;
+}
+
+function optionalNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function parseCriterionSummary(raw: Record<string, unknown>): CriterionSummary {
+  return {
+    criterionType: typeof raw.criterionType === 'string' ? raw.criterionType : '',
+    passRateThreshold: optionalNumber(raw.criterionPassRateThreshold),
+    passedRows: count(raw, 'passed'),
+    failedRows: count(raw, 'failed'),
+    errorRows: count(raw, 'error'),
+    passRate: optionalNumber(raw.passRate),
+    passRateVerdict: parseVerdict(raw.passRateVerdict),
+  };
+}
+
+/**
+ * Parse row counts and criterion summaries. The summary endpoint returns no
+ * run state, so terminality comes from the row counts alone.
+ */
 export function parseSummary(data: unknown): RunSummary {
   const raw = isPlainObject(data) ? data : {};
   const counts = isPlainObject(raw.statusCounts) ? raw.statusCounts : raw;
+  const criteria = Array.isArray(raw.criterionSummaries)
+    ? raw.criterionSummaries.filter(isPlainObject).map(parseCriterionSummary)
+    : [];
   return {
     totalRows: count(counts, 'total', 'totalRows', 'total_rows'),
     passedRows: count(counts, 'passed', 'passedRows', 'passed_rows'),
     failedRows: count(counts, 'failed', 'failedRows', 'failed_rows'),
     errorRows: count(counts, 'error', 'errorRows', 'error_rows'),
     pendingRows: count(counts, 'pending', 'pendingRows', 'pending_rows'),
+    criteria,
   };
 }
+
+/**
+ * Whether LaunchDarkly will rule on this run against a pass rate: true when
+ * the summary reports at least one criterion with a pass rate threshold. The
+ * thresholds come from the run's stored evaluation, not from the criteria this
+ * process passed in, and an empty list is how LaunchDarkly says it does not
+ * serve verdicts for this project.
+ */
+export const expectsVerdict = (summary: RunSummary): boolean =>
+  (summary.criteria ?? []).some((criterion) => criterion.passRateThreshold != null);
 
 export const accountedRows = (summary: RunSummary): number =>
   summary.passedRows + summary.failedRows + summary.errorRows;
@@ -562,7 +759,7 @@ export function generateRows(
     // One recorder per row: rows share the tool map, so a shared recorder
     // would splice their calls together.
     const trajectory = new TrajectoryRecorder();
-    const rowTools = trajectory.wrap(tools);
+    const rowTools = returnToolErrors(trajectory.wrap(tools));
     const span = evaluationRunId === undefined ? undefined : startRowSpan(evaluationRunId, row.rowIndex);
     const startedAt = new Date().toISOString();
     const started = performance.now();

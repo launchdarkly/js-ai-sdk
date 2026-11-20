@@ -203,16 +203,15 @@ describe('initEvaluations', () => {
 
 describe('criterion references', () => {
   it('a Judge defaults its thresholds', () => {
-    expect(new Judge('accuracy')).toMatchObject({ threshold: 0.5 });
-    expect(new Judge('accuracy').passRateThreshold).toBeUndefined();
+    expect(new Judge('accuracy')).toMatchObject({ threshold: 0.5, passRateThreshold: 0.95 });
   });
 
   it('a Scorer defaults its thresholds and success direction', () => {
     expect(new Scorer('exact', () => true)).toMatchObject({
       threshold: 1.0,
+      passRateThreshold: 0.95,
       successDirection: 'higher_is_better',
     });
-    expect(new Scorer('exact', () => true).passRateThreshold).toBeUndefined();
   });
 
   it('rejects a blank judge key and a blank scorer name', () => {
@@ -492,7 +491,7 @@ describe('run() argument validation', () => {
     it('accepts a prompt with neither field in both modes', async () => {
       const messages = routeHostedRun(new FakeApi());
       await makeModule(messages).run(base({ generation: completion({ messages: undefined }), pollIntervalSeconds: 0 }));
-      expect(messages.sequence).toContain('POST projects/proj/evaluations');
+      expect(messages.sequence).toContain('POST projects/proj/offline-evaluations');
       const agent = routeHostedRun(new FakeApi());
       await makeModule(agent).run(
         base({
@@ -501,7 +500,7 @@ describe('run() argument validation', () => {
           pollIntervalSeconds: 0,
         }),
       );
-      expect(agent.sequence).toContain('POST projects/proj/evaluations');
+      expect(agent.sequence).toContain('POST projects/proj/offline-evaluations');
     });
   });
 

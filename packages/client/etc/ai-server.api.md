@@ -199,6 +199,17 @@ export function createSkillSource(init: {
 export type Criterion = Judge | Scorer;
 
 // @public
+export type CriterionSummary = {
+    criterionType: string;
+    passRateThreshold?: number | null;
+    passedRows: number;
+    failedRows: number;
+    errorRows: number;
+    passRate?: number | null;
+    passRateVerdict?: EvalVerdict | null;
+};
+
+// @public
 export type DatasetRow = {
     rowIndex: number;
     input: string | null;
@@ -221,6 +232,7 @@ export type EvalRunResult = {
     url: string;
     runId: string;
     summary: RunSummary;
+    verdict?: EvalVerdict | null;
 };
 
 // @public
@@ -254,6 +266,9 @@ export class EvaluationsModule {
     readonly tools: ToolsClient;
     readonly uiBaseUri: string;
 }
+
+// @public
+export type EvalVerdict = 'pass' | 'fail';
 
 // @public @deprecated (undocumented)
 export type FDv2Mode = LaunchDarklySkillStoreMode;
@@ -503,7 +518,7 @@ export class Judge {
     });
     readonly groundTruthContext?: string;
     readonly key: string;
-    readonly passRateThreshold?: number;
+    readonly passRateThreshold: number;
     readonly threshold: number;
 }
 
@@ -858,6 +873,7 @@ export type RunSummary = {
     failedRows: number;
     errorRows: number;
     pendingRows: number;
+    criteria?: CriterionSummary[];
 };
 
 // @public
@@ -878,7 +894,7 @@ export class Scorer {
     // Warning: (ae-forgotten-export) The symbol "ScorerFn" needs to be exported by the entry point index.d.ts
     readonly fn: ScorerFn;
     readonly name: string;
-    readonly passRateThreshold?: number;
+    readonly passRateThreshold: number;
     // Warning: (ae-forgotten-export) The symbol "SuccessDirection" needs to be exported by the entry point index.d.ts
     readonly successDirection: SuccessDirection;
     readonly threshold: number;
