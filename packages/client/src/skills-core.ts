@@ -117,6 +117,9 @@ function state(): SkillsState {
     current = { store: null, emitter: null, warned: new Set() };
     g[SKILLS_STATE_KEY] = current;
   }
+  // An older copy of this package may have created the slot before `warned`
+  // existed; add it rather than throw on the first warning.
+  if (!(current.warned instanceof Set)) current.warned = new Set();
   return current;
 }
 
@@ -422,9 +425,16 @@ function describeTool(raw: unknown, index: number): string {
   return name === null ? `tools[${index}]` : `tools[${index}] ${name}`;
 }
 
-function deepFreeze<T>(value: T): T {
+/**
+ * Freezes `value` and everything it reaches. Throws on a cycle, which
+ * `structuredClone` keeps but JSON cannot carry, so the caller drops the tool.
+ */
+function deepFreeze<T>(value: T, ancestors: Set<object> = new Set()): T {
   if (typeof value === 'object' && value !== null) {
-    for (const child of Object.values(value)) deepFreeze(child);
+    if (ancestors.has(value)) throw new TypeError('cyclic tool definition');
+    ancestors.add(value);
+    for (const child of Object.values(value)) deepFreeze(child, ancestors);
+    ancestors.delete(value);
     Object.freeze(value);
   }
   return value;
@@ -467,7 +477,7 @@ function skillTools(key: string, version: number, raw: unknown): ReadonlyArray<T
     }
     let copy: Tool;
     try {
-      copy = structuredClone(entry as Tool);
+      copy = deepFreeze(structuredClone(entry as Tool));
     } catch {
       warnOnce(
         `tool:${key}:${version}:${index}`,
@@ -475,7 +485,7 @@ function skillTools(key: string, version: number, raw: unknown): ReadonlyArray<T
       );
       continue;
     }
-    tools.push(deepFreeze(copy));
+    tools.push(copy);
   }
   return Object.freeze(tools);
 }

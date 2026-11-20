@@ -3,17 +3,33 @@
  * offered, so every handler, native graph and tool allowlist reads one list.
  */
 
-import { isDeepStrictEqual } from 'node:util';
 import { skillRefsInternal } from './skills.js';
 import { getStore, loggableToolName, resolveFromStore, storeIsInitialized, warnOnce } from './skills-core.js';
 import type { AiConfigRep, SkillReference, SkillStore, Tool } from './types.js';
 
 const DEFINITION_FIELDS = ['type', 'name', 'description', 'parameters', 'customParameters'] as const;
 
+/**
+ * Deep equality over JSON-shaped data. Local rather than `node:util`'s
+ * `isDeepStrictEqual`, so the package root gains no Node builtin import.
+ */
+function plainEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every(
+    (key) =>
+      Object.hasOwn(b, key) && plainEqual((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]),
+  );
+}
+
 /** The five definition fields deeply equal, a missing field equal only to a missing one. */
 function sameDefinition(a: Tool, b: Tool): boolean {
   return DEFINITION_FIELDS.every(
-    (field) => Object.hasOwn(a, field) === Object.hasOwn(b, field) && isDeepStrictEqual(a[field], b[field]),
+    (field) => Object.hasOwn(a, field) === Object.hasOwn(b, field) && plainEqual(a[field], b[field]),
   );
 }
 

@@ -194,6 +194,36 @@ describe('verifyRawSkill reads tools', () => {
     expect((await allSkills())[0].tools).toEqual([tool('a')]);
   });
 
+  it('drops a tool whose parameters are cyclic, with a warning, and still returns the skill', async () => {
+    const cyclic = tool('loop');
+    (cyclic.parameters as Record<string, unknown>).self = cyclic.parameters;
+    _setStore(new InMemorySkillStore({ pdf: envelope('pdf', 3, [tool('a'), cyclic]) }));
+    const skill = await getSkill('pdf');
+    expect(skill?.tools.map((t) => t.name)).toEqual(['a']);
+    expect(warned()).toEqual([expect.stringMatching(/Tool tools\[1\] "loop" of skill 'pdf' version 3 was dropped/)]);
+  });
+
+  it('keeps a definition that reaches one object twice without a cycle', () => {
+    const shared = { type: 'string' };
+    const entry = { ...tool('dag'), parameters: { type: 'object', properties: { a: shared, b: shared } } };
+    const skill = verifyRawSkill(envelope('pdf', 3, [entry]));
+    expect(skill?.tools.map((t) => t.name)).toEqual(['dag']);
+    expect(warnings).not.toHaveBeenCalled();
+  });
+
+  it('warns through a state slot an older copy of the package created without the warned set', () => {
+    const key = Symbol.for('@launchdarkly/ai-server:skills');
+    const g = globalThis as Record<symbol, unknown>;
+    const original = g[key];
+    g[key] = { store: null, emitter: null };
+    try {
+      expect(() => verifyRawSkill(envelope('pdf', 3, 'not-a-list'))).not.toThrow();
+      expect(warned()).toEqual([expect.stringMatching(/tools field of skill 'pdf' version 3 is not an array/)]);
+    } finally {
+      g[key] = original;
+    }
+  });
+
   it('a changed tool still verifies, because contentHash covers the markdown only (known limit)', async () => {
     const raw = envelope('pdf', 3, [tool('a', 'original')]);
     _setStore(new InMemorySkillStore({ pdf: raw }));
@@ -283,6 +313,36 @@ describe('withSkillTools', () => {
     );
     expect(Object.keys(merged.tools ?? {})).toEqual(['shared', 'b']);
     expect(warnings).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['key order differs', { b: 1, a: [1, { c: 2 }] }, { a: [1, { c: 2 }], b: 1 }, true],
+    ['a nested value differs', { a: [1, { c: 2 }] }, { a: [1, { c: 3 }] }, false],
+    ['an array is not an object with the same keys', { a: ['x'] }, { a: { 0: 'x' } }, false],
+    ['an extra key', { a: 1 }, { a: 1, b: undefined }, false],
+  ])('treats two skills tools as duplicates by deep equality when %s', (_label, one, two, same) => {
+    const withParams = (parameters: Record<string, unknown>): Tool => ({ ...tool('shared'), parameters });
+    _setStore(
+      new InMemorySkillStore({
+        a: envelope('a', 1, [withParams(one)]),
+        b: envelope('b', 1, [withParams(two)]),
+      }),
+    );
+    withSkillTools(
+      baseConfig({
+        skills: [
+          { key: 'a', version: 1 },
+          { key: 'b', version: 1 },
+        ],
+      }),
+      'c',
+    );
+    expect(warnings).toHaveBeenCalledTimes(same ? 0 : 1);
+  });
+
+  it('imports no Node builtin, so the package root needs none for skill tools', async () => {
+    const source = await readFile(new URL('../skills-tools.ts', import.meta.url), 'utf-8');
+    expect(source).not.toMatch(/from 'node:/);
   });
 
   it('offers a skill tool identical to a variation tool once, with a warning', () => {
