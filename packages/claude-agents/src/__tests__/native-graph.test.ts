@@ -645,6 +645,24 @@ describe('toClaudeAgents', () => {
     );
   });
 
+  it('does not send a registered native tool that the node does not attach', async () => {
+    const root = makeNode('root', [makeEdge('root', 'leaf')]);
+    root.config.tools = { read: { name: 'read', type: 'function', parameters: {} } };
+    const def = makeGraphDef({ root });
+    const sent: unknown[] = [];
+    mockQuery.mockImplementation(async function* (queryArgs: { options?: { tools?: unknown } }) {
+      sent.push(queryArgs.options?.tools);
+      yield { type: 'result', subtype: 'success', result: 'ok', usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+
+    await toClaudeAgents(Promise.resolve(def), {
+      context: { kind: 'user', key: 'user-1' },
+      toolHandlers: { read: new NativeTool(Symbol('read'), 'Read'), bash: new NativeTool(Symbol('bash'), 'Bash') },
+    }).invoke('hello');
+
+    expect(sent).toEqual([['Read']]);
+  });
+
   // ── root === null guard ──────────────────────────────────────────────────────
 
   it('throws when def.root is null even when graph is enabled', async () => {

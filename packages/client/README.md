@@ -686,10 +686,12 @@ Import every name in this section from `@launchdarkly/ai-server` (or `@launchdar
 
 An evaluation from code runs a dataset through your own code and reports the results to LaunchDarkly. One `run()` call:
 
-1. creates a new evaluation and run in your project;
+1. reconciles a **stable evaluation** by `key` on `…/offline-evaluations`, then creates a new run;
 2. **generates**: calls your handler once per dataset row;
 3. **evaluates**: scores each generated output against your criteria, LaunchDarkly AI Judges and local scorer functions, if you pass any;
 4. waits for LaunchDarkly to account for every row, and returns the outcome.
+
+Reuse the same `key` across CI runs so trends and history stay attached to one evaluation. Keys must match `^[a-z0-9][a-z0-9._-]*$` and be at most 128 characters (checked before any network I/O). On first use the SDK GETs by key and POSTs create with `key` + `name` on a miss; every reuse PATCHes the full desired config snapshot in place — without rewriting `name`, so a renamed evaluation keeps its display name — and the server no-ops when nothing changed (never PUT). Each `run()` still starts a new run.
 
 Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row and on the run; the SDK reports scores and never computes a verdict itself.
 
@@ -703,7 +705,7 @@ import { initEvaluations } from '@launchdarkly/ai-server';
 const evals = initEvaluations({ projectKey: 'my-project' });
 
 const result = await evals.run({
-  key: `support-qa-${Date.now()}`, // every run creates a new evaluation, so keep keys unique
+  key: 'support-qa', // stable identity across CI; SDK reconciles via offline-evaluations
   dataset: 'support-golden', // the key of a dataset in LaunchDarkly
   handler: createOpenAIMessagesHandler(),
   generation: {
@@ -760,7 +762,7 @@ Pass `aiConfig` instead of a full `generation` to evaluate a variation you alrea
 
 ```ts
 await evals.run({
-  key: `support-qa-${Date.now()}`,
+  key: 'support-qa',
   dataset: 'support-golden',
   handler: createOpenAIMessagesHandler(),
   aiConfig: { key: 'support-agent', variation: 'candidate' },
@@ -776,7 +778,7 @@ Pass an array of rows as `dataset` instead of a dataset key. Each row has a non-
 
 ```ts
 await evals.run({
-  key: `support-qa-${Date.now()}`,
+  key: 'support-qa',
   dataset: [
     { input: 'How do I reset my password?', expectedOutput: 'Use the reset link.' },
     { input: 'Where is order {{order_id}}?', variables: { order_id: 'A-17' } },
@@ -820,7 +822,7 @@ import { createClaudeMessagesHandler } from '@launchdarkly/ai-claude-messages';
 import { Judge, Scorer } from '@launchdarkly/ai-server';
 
 await evals.run({
-  key: `support-qa-${Date.now()}`,
+  key: 'support-qa',
   dataset: 'support-golden',
   // The judge is served by Anthropic, so the pool has a handler for it too.
   handlers: [createOpenAIMessagesHandler(), createClaudeMessagesHandler()],
@@ -890,12 +892,14 @@ const support = shadowConfig({ key: 'support-agent', handler: [openaiHandler, an
 const { response } = await support.invoke(userInput, context);
 ```
 
-`shadowConfig()` takes the same arguments as `config()`, and its `invoke()` and `stream()` return exactly what `config()` would. After the served variation returns, or its stream reaches `done`, the SDK starts each sampled shadow in the background. Shadows never delay the served answer, and none run when the served variation fails. `shutdown()` stops tracking running shadows, but a promise can't be cancelled, so if you call `initClient()` again before a shadow's timeout, that shadow's events go to the new client. A shadow gets the same input, history and variables, but no tools and no judges, and it always runs as a plain invoke. Its answer is discarded, and nothing is added to history.
+`shadowConfig()` takes the same arguments as `config()`, and its `invoke()` and `stream()` return exactly what `config()` would. After the served variation returns, or its stream reaches `done`, the SDK starts each sampled shadow in the background. Shadows never delay the served answer, and none run when the served variation fails. `shutdown()` stops tracking running shadows, but a promise can't be cancelled, so if you call `initClient()` again before a shadow's timeout, that shadow's events go to the new client. A shadow gets the same input, history and variables, but no tools, and it always runs as a plain invoke. Its answer is discarded, and nothing is added to history.
 
 Sampling is sticky per context. A shadow is skipped when it has ended, when no handler you passed matches its provider, or when the context has no key. Each shadow sends the usual `$ld:ai:*` events for its own variation, with the served call's `runId`, `isShadow: true`, `primaryVariationKey`, `shadowRequestId`, `ownerKind` and `ownerId`. The served call's events do not change.
 
+When the shadow variation has judges, they score the shadow's answer once it succeeds, the same way `config()` scores the served one, with each judge's own sampling rate. The judge events carry the shadow's tracking data, so the scores land under the shadow variation with `isShadow: true`, next to the served variation's scores. The judges run inside the shadow, after it, so they never delay the served answer. `skipJudges` applies only to the served variation. No judge runs when the shadow fails or times out. Each judge runs on its own, so a judge that fails is logged without failing the shadow or dropping the other judges' scores. The judges run outside `shadowTimeoutMs`, and they are skipped if `shutdown()` has closed the client by the time they start.
+
 - `shadowTimeoutMs` (default 30000) is how long a shadow may run before it is tracked as an error with `error: 'timeout'`.
-- `onTask` runs shadows yourself, for example on a queue. The SDK then runs nothing, and calls it once per sampled shadow with a `ShadowTask`, which is plain data that survives `structuredClone`. Run the task with `runShadow(task, handlers)`, which never rejects and returns `{ usage, trackData, error? }`.
+- `onTask` runs shadows yourself, for example on a queue. The SDK then runs nothing, and calls it once per sampled shadow with a `ShadowTask`, which is plain data that survives `structuredClone`. Run the task with `runShadow(task, handlers)`, which never rejects and returns `{ usage, trackData, error?, judgeResults? }`. The worker needs an initialized client, which also evaluates the shadow's judges. Pass `handlers` for the judges' providers as well as the shadow's, or the judges are skipped.
 
 `shutdown()` drops shadows that are still running.
 
