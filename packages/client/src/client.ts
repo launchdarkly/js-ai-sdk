@@ -16,7 +16,11 @@ import type {
 } from './types.js';
 import { coversProviderName, normalizeMode, parseJSONWithPossibleFences, selectModeHandler } from './utils.js';
 
-function resolveOutputFormatResponse(rawResponse: unknown, outputFormat: Record<string, unknown> | undefined): unknown {
+/** @internal The response `config().invoke()` returns and grades, shared with shadow requests. */
+export function resolveOutputFormatResponse(
+  rawResponse: unknown,
+  outputFormat: Record<string, unknown> | undefined,
+): unknown {
   if (!outputFormat) return rawResponse ?? '';
   if (typeof rawResponse !== 'string') return rawResponse;
   const parsed = parseJSONWithPossibleFences(rawResponse);
