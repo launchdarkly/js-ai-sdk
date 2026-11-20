@@ -5,12 +5,12 @@
 // The driver waits on npm, builds the app, or checks the payload from a deployed Lambda.
 //
 // Usage:
-//   node canary.mjs wait   --ai-server=0.4.0 --ai-node=0.3.0 --openai-messages=0.3.0 --ai-otel=0.2.0
+//   node canary.mjs wait   --ai-server=1.1.0 --ai-node=1.0.1 --openai-messages=1.1.0 --ai-otel=1.0.0
 //   node canary.mjs build  <same version flags> [--package] [--stage=local]
 //   node canary.mjs assert --response=<path> <same version flags>
 //
 // Versions may also be supplied as
-// LD_AI_CANARY_VERSIONS='ai-server=0.4.0,ai-node=0.3.0,openai-messages=0.3.0,ai-otel=0.2.0'.
+// LD_AI_CANARY_VERSIONS='ai-server=1.1.0,ai-node=1.0.1,openai-messages=1.1.0,ai-otel=1.0.0'.
 
 import { spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -21,8 +21,8 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 export const appDir = join(here, '.canary', 'app');
 
-// Short name -> published package name. The core package is installed directly, because
-// ai-node depends on it with `*` and would otherwise resolve to any visible core version.
+// Short name -> published package name. The core package is installed directly, so the
+// app gets the exact core version under test, not whatever ai-node's `^1.1.0` range resolves to.
 const PACKAGES = {
   'ai-server': '@launchdarkly/ai-server',
   'ai-node': '@launchdarkly/ai-node',

@@ -691,11 +691,11 @@ An evaluation from code runs a dataset through your own code and reports the res
 3. **evaluates**: scores each generated output against your criteria, LaunchDarkly AI Judges and local scorer functions, if you pass any;
 4. waits for LaunchDarkly to account for every row, and returns the outcome.
 
-Reuse the same `key` across CI runs so trends and history stay attached to one evaluation. Keys must match `^[a-z0-9][a-z0-9._-]*$` and be at most 128 characters (checked before any network I/O). On first use the SDK GETs by key and POSTs create with `key` + `name` on a miss; every reuse PATCHes the full desired config snapshot in place — without rewriting `name`, so a renamed evaluation keeps its display name — and the server no-ops when nothing changed (never PUT). Each `run()` still starts a new run.
+Reuse the same `key` across CI runs so trends and history stay attached to one evaluation. Keys must match `^[a-z0-9][a-z0-9._-]*$` and be at most 128 characters (checked before any network I/O). On first use the SDK GETs by key and POSTs create with `key` + `name` on a miss; every reuse PATCHes the full desired config snapshot in place — without rewriting `name`, so a renamed evaluation keeps its display name — and the server no-ops when nothing changed (never PUT). The PATCH sends the same snapshot every time, so, in the release after 1.1.0, it is retried on a 429, a 5xx, a timeout or a connection failure. Each `run()` still starts a new run.
 
-Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row and on the run; the SDK reports scores and never computes a verdict itself.
+Results reach LaunchDarkly only as SDK events. LaunchDarkly rules on each row and on the run; the SDK reports scores and returns LaunchDarkly's verdict (see [Results and events](#results-and-events)).
 
-Each row is also exported as one trace on the tracer provider `initClient()` registered: a `launchdarkly.dataset_row` root with the generation, its tool calls and each criterion's `evaluate` span beneath it, all sharing the row's `gen_ai.conversation.id`. A provider handler traces its own call; for a plain function the runner writes the `chat` and `execute_tool` spans. By default the transcript is sent: prompts, the row input, model output, tool arguments and results, judge prompts and completions, and judge explanations are written on the spans, the evaluation spans included. Setting `captureContent: false` on a handler removes them for that handler's calls, on the evaluation spans too, and `configure({ options: { captureContent: false } })` removes them for every handler that does not say otherwise. A plain function has no handler flag, so its runner-written spans follow the `configure()` default. The result events never carry the transcript.
+Each row is also exported as one trace on the tracer provider `initClient()` registered: a `launchdarkly.dataset_row` root with the generation, its tool calls and each criterion's `evaluate` span beneath it, all sharing the row's `gen_ai.conversation.id`. The root's `gen_ai.operation.name` is `invoke_workflow`, so a failed row reads as a failed run even when every span under it succeeded. Each `evaluate` span's `gen_ai.evaluation.result` carries the score with `launchdarkly.evaluation.score.min` and `.max` (0 and 1). A provider handler traces its own call; for a plain function the runner writes the `chat` and `execute_tool` spans. By default the transcript is sent: prompts, the row input, model output, tool arguments and results, judge prompts and completions, and judge explanations are written on the spans, the evaluation spans included. Setting `captureContent: false` on a handler removes them for that handler's calls, on the evaluation spans too, and `configure({ options: { captureContent: false } })` removes them for every handler that does not say otherwise. A plain function has no handler flag, so its runner-written spans follow the `configure()` default. The result events never carry the transcript.
 
 ```ts
 import { createOpenAIMessagesHandler } from '@launchdarkly/ai-openai-messages';
@@ -754,7 +754,7 @@ const handler = createHandler(['OpenAI', 'messages'], async (_config, input) => 
 }));
 ```
 
-A handler is called once per row as `handler(config, input, toolHandlers, variables)` and is never retried, because a retry could repeat tool side effects. A handler that throws, or returns something other than an object, marks its row `ERROR`; the other rows still run. Rows run `concurrency` at a time (default 10).
+A handler is called once per row as `handler(config, input, toolHandlers, variables)` and is never retried, because a retry could repeat tool side effects. To ride out rate limits, raise `maxRetries` on a messages handler factory instead (for example `createOpenAIMessagesHandler({ maxRetries: 5 })`): it retries the model request inside the provider client. A handler that throws, or returns something other than an object, marks its row `ERROR`; the other rows still run. Rows run `concurrency` at a time (default 10).
 
 #### Starting from an AI Config
 
@@ -811,7 +811,7 @@ const lookupOrder = new EvalTool(
 await evals.run({ /* … */ tools: [searchDocs, lookupOrder] });
 ```
 
-The handler receives the same `{ key: implementation }` map either way. The array is checked before any request: a blank or uppercase key, a key listed twice (compared without case), a schema that is not a plain JSON object, or an implementation that is not a function each throw. A `NativeTool` works only as a library tool, because the provider supplies its schema.
+The handler receives the same `{ key: implementation }` map either way. A tool that throws does not fail the row: the model receives `Error: <Type>: <message>` as the tool's result and the row continues, and the call is recorded as an error for judges and on its `execute_tool` span. The array is checked before any request: a blank or uppercase key, a key listed twice (compared without case), a schema that is not a plain JSON object, or an implementation that is not a function each throw. A `NativeTool` works only as a library tool, because the provider supplies its schema.
 
 #### Scoring with judges and scorers
 

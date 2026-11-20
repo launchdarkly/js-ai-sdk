@@ -146,6 +146,7 @@ A `Skill` call shows up in traces as an `execute_tool Skill` span.
 - Uses the system prompt and conversation history defined in your LaunchDarkly flag config.
 - Template placeholders (`{{variable}}`) in the prompt are substituted using `variables` before the call.
 - If tools are defined in the flag config, the Claude Agent SDK handles all tool dispatch and the agentic loop automatically — no extra wiring needed.
+- For a Bedrock variation, `model.region` (for example `us`) is prepended to an `anthropic.*` model id, so Claude Code calls the cross-region inference profile `us.anthropic.…` (1.0.1 or later). Other names are sent as configured: an id that already has a prefix, an ARN, or an Anthropic-format id or alias such as `claude-sonnet-4-5` or `sonnet`, which Claude Code maps to a profile itself.
 - Emits an OTel span and LaunchDarkly telemetry for every call.
 
 ## Environment Variables

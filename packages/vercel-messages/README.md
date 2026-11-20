@@ -81,3 +81,4 @@ console.log(result.answers);
 - Uses native structured messages, JSON Schema output, tools, and streaming.
 - Maps text and image history into AI SDK model messages.
 - Emits LaunchDarkly-correlated OpenTelemetry spans. Content capture follows the `configure()` default, which is on; pass `captureContent: false` to turn it off for this handler.
+- `maxRetries` (1.1.0 or later) is passed to every `generateText` / `streamText` call, whichever `model` or `modelFactory` supplies the model. Omit it to keep the AI SDK's default of 2.
