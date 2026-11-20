@@ -169,6 +169,33 @@ describe('vercelEvaluate', () => {
     );
   });
 
+  it('merges a Bedrock model.region into the caller providerOptions', async () => {
+    serverMocks.inspectConfig.mockResolvedValue({
+      enabled: true,
+      config: {
+        model: { name: 'anthropic.claude-sonnet-4-5-20250929-v1:0', region: 'us' },
+        provider: { name: 'Bedrock' },
+      },
+      meta,
+    });
+    await vercelEvaluate('flag', 'state', context, {
+      questions,
+      providerOptions: { gateway: { order: ['bedrock'] }, bedrock: { reasoningConfig: { type: 'enabled' } } },
+    });
+    expect(aiMocks.experimental_evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'anthropic/claude-sonnet-4-5-20250929',
+        providerOptions: {
+          gateway: {
+            order: ['bedrock'],
+            inferenceRegion: { providers: { bedrock: { scope: 'zone', geoRegion: 'us' } } },
+          },
+          bedrock: { reasoningConfig: { type: 'enabled' } },
+        },
+      }),
+    );
+  });
+
   it('does not forward model.parameters to experimental_evaluate', async () => {
     // experimental_evaluate takes no generation settings, and the request settings it does take
     // (headers, maxRetries, providerOptions) are never read from a config: call-level headers

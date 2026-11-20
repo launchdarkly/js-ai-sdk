@@ -46,7 +46,10 @@ const GATEWAY_CREATORS: Record<string, string> = {
   zai: 'zai',
 };
 
-const providerKey = (value: string): string => value.toLowerCase().replaceAll(/[^a-z0-9]/g, '');
+export const providerKey = (value: string): string => value.toLowerCase().replaceAll(/[^a-z0-9]/g, '');
+
+/** Bedrock's model version suffix, such as `-v1:0`. No Gateway catalog id has one. */
+const BEDROCK_VERSION_SUFFIX = /-v\d+:\d+$/;
 
 /**
  * Every provider offered by LaunchDarkly AI Configs. A null value means the
@@ -109,10 +112,13 @@ function creatorFromModel(model: string): { creator: string; model: string } | u
  * Builds the AI Gateway `creator/model` id from a LaunchDarkly AI Config.
  * Explicit Gateway ids remain authoritative. Dotted creator prefixes used by
  * some LD model configs are converted once; dots inside model versions remain.
+ * A Bedrock id loses its inference profile prefix (`us.`, `global.`) and its
+ * version suffix, so `us.anthropic.claude-sonnet-4-5-20250929-v1:0` becomes
+ * `anthropic/claude-sonnet-4-5-20250929`.
  */
 export function gatewayModelId(config: AiConfigRep): string {
-  const model = config.model.name;
-  if (model.includes('/')) return model;
+  if (config.model.name.includes('/')) return config.model.name;
+  const model = config.model.name.replace(BEDROCK_VERSION_SUFFIX, '');
 
   const provider = config.provider?.name ?? '';
   const providerName = providerKey(provider);
