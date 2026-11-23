@@ -644,10 +644,11 @@ function buildToolHooks(nativeToolMap: Map<string, ToolHandlerFn>, parentContext
     const span = toolSpans.get(input.tool_use_id);
     if (!span) return;
     toolSpans.delete(input.tool_use_id);
-    if ('tool_response' in input) {
-      setToolCallContentAttributes(span, captureContent, { result: input.tool_response });
-    }
     if (error === undefined) {
+      // Only an OK span carries a result.
+      if ('tool_response' in input) {
+        setToolCallContentAttributes(span, captureContent, { result: input.tool_response });
+      }
       span.setStatus({ code: SpanStatusCode.OK });
       span.end();
     } else {

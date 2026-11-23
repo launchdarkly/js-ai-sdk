@@ -118,6 +118,7 @@ describe('vercel-messages tool spans against a real tracer and the real AI SDK',
       const [bad] = named('execute_tool badTool');
       expect(bad.status.code).toBe(SpanStatusCode.ERROR);
       expect(bad.attributes['error.type']).toBeUndefined();
+      expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
       expect(bad.events.map((e) => e.name)).toContain('exception');
       expect(named('execute_tool okTool')[0].attributes['error.type']).toBeUndefined();
     });
