@@ -225,6 +225,7 @@ function buildTools(
             toolSpan.end();
             return result;
           } catch (error) {
+            toolSpan.setAttribute('error.type', 'tool_error');
             failSpan(toolSpan, error);
             throw error;
           }

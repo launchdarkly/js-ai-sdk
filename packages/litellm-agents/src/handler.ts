@@ -240,6 +240,14 @@ type AgentEventSink = {
   on: (event: 'agent_tool_start' | 'agent_tool_end', listener: (...args: unknown[]) => void) => unknown;
 };
 
+/**
+ * The error each failed tool call threw, keyed by the SDK's tool-call object. The Agents SDK emits
+ * `agent_tool_end` with `String(error)` as the output before it rethrows, so without this the end
+ * listener would end a failed call's span OK with the error text as its result. `execute` receives
+ * the same object as `details.toolCall` that the listener receives.
+ */
+const toolCallErrors = new WeakMap<object, unknown>();
+
 function attachToolSpans(agent: AgentEventSink, parentContext: Context, captureContent: boolean) {
   const spans = new Map<string, Span>();
   const callId = (details: ToolCallDetails | undefined) =>
@@ -263,13 +271,29 @@ function attachToolSpans(agent: AgentEventSink, parentContext: Context, captureC
     const span = spans.get(id);
     if (!span) return;
     spans.delete(id);
+    if (details?.toolCall && toolCallErrors.has(details.toolCall)) {
+      span.setAttribute('error.type', 'tool_error');
+      failSpan(span, toolCallErrors.get(details.toolCall));
+      return;
+    }
     setToolCallContentAttributes(span, captureContent, { result });
     span.setStatus({ code: SpanStatusCode.OK });
     span.end();
   });
   return {
     close(error: unknown) {
-      for (const span of spans.values()) failSpan(span, error);
+      for (const span of spans.values()) {
+        span.setAttribute('error.type', 'tool_error');
+        failSpan(span, error);
+      }
+      spans.clear();
+    },
+    // Consumer abandonment is not a failure: open tool spans end UNSET, marked abandoned.
+    abandon() {
+      for (const span of spans.values()) {
+        span.setAttribute('launchdarkly.stream.abandoned', true);
+        span.end();
+      }
       spans.clear();
     },
   };
@@ -290,9 +314,14 @@ function buildTools(configTools: Record<string, Tool>, handlers: Record<string, 
         parameters: definition.parameters,
         // null, not undefined: the SDK default feeds a tool error back to the model, but it must propagate.
         errorFunction: null,
-        execute: async (args: unknown) => {
+        execute: async (args: unknown, _context: unknown, details?: ToolCallDetails) => {
           const handler = handlers[name] as unknown as (args: unknown) => unknown;
-          return handler(args);
+          try {
+            return await handler(args);
+          } catch (error) {
+            if (details?.toolCall) toolCallErrors.set(details.toolCall, error);
+            throw error;
+          }
         },
       } as unknown as Parameters<typeof tool>[0]),
     );
@@ -562,7 +591,7 @@ export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions
       } finally {
         if (!completed) {
           await run?.cancel?.();
-          toolSpans.close(new Error('stream abandoned before completion'));
+          toolSpans.abandon();
           span.setAttribute('launchdarkly.stream.abandoned', true);
           span.end();
         }

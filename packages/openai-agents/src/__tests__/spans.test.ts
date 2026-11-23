@@ -1,4 +1,4 @@
-import { context, trace } from '@opentelemetry/api';
+import { context, SpanStatusCode, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -395,5 +395,98 @@ describe('openai-agents span tree against the real Runner', () => {
       expect(child.attributes['context.contextKeys.user']).toBeUndefined();
       expect(child.events.find((event) => event.name === 'feature_flag')).toBeUndefined();
     }
+  });
+
+  describe('a failed tool call', () => {
+    const twoToolConfig = {
+      ...baseConfig,
+      tools: {
+        okTool: { ...toolConfig.tools.search, name: 'okTool' },
+        badTool: { ...toolConfig.tools.search, name: 'badTool' },
+      },
+    };
+    const functionCall = (callId: string, name: string) => ({
+      id: `fc_${callId}`,
+      type: 'function_call' as const,
+      callId,
+      name,
+      arguments: '{"q":"test"}',
+      status: 'completed' as const,
+    });
+    const toolTurn = (callId: string, name: string) => ({
+      usage: usage(),
+      output: [functionCall(callId, name)],
+      responseId: `resp_${callId}`,
+    });
+
+    // A tool failure aborts the run here (`errorFunction: null`), so the succeeding call is in the
+    // turn before it.
+    it('marks the failing execute_tool span tool_error and leaves the succeeding one clean', async () => {
+      responseQueue.push(toolTurn('call_ok', 'okTool'), toolTurn('call_bad', 'badTool'));
+
+      await expect(
+        createOpenAIAgentsHandler({ captureContent: true })(twoToolConfig as never, 'q', {
+          okTool: vi.fn().mockReturnValue('fine'),
+          badTool: vi.fn().mockRejectedValue(new Error('tool broke')),
+        }),
+      ).rejects.toThrow('tool broke');
+
+      const ok = named('execute_tool okTool')[0];
+      const bad = named('execute_tool badTool')[0];
+      expect(ok.status.code).toBe(SpanStatusCode.OK);
+      expect(ok.attributes['error.type']).toBeUndefined();
+      expect(ok.attributes['gen_ai.tool.call.result']).toBe('fine');
+      expect(bad.status.code).toBe(SpanStatusCode.ERROR);
+      expect(bad.attributes['error.type']).toBe('tool_error');
+      expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
+      expect(bad.events.map((e) => e.name)).toContain('exception');
+    });
+
+    // Abandonment is the consumer's choice, not a tool failure. The Runner enqueues stream events
+    // without waiting for the reader, so the tool starts while the first chunk is still unread.
+    it('ends a tool span open at abandonment UNSET and marked abandoned', async () => {
+      let toolStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        toolStarted = resolve;
+      });
+      let releaseTool!: () => void;
+      const released = new Promise<void>((resolve) => {
+        releaseTool = resolve;
+      });
+      streamQueue.push([
+        { type: 'output_text_delta', delta: 'Hi' },
+        {
+          type: 'response_done',
+          response: {
+            id: 'resp_stream',
+            usage: { requests: 1, inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+            output: [functionCall('call_slow', 'okTool')],
+          },
+        },
+      ]);
+
+      const gen = createOpenAIAgentsHandler({ captureContent: true }).stream?.(
+        twoToolConfig as never,
+        'q',
+        {
+          okTool: async () => {
+            toolStarted();
+            await released;
+            return 'late';
+          },
+        },
+        {},
+      ) as AsyncGenerator<unknown>;
+      for await (const _event of gen) {
+        await started;
+        break;
+      }
+      releaseTool();
+
+      const [tool] = named('execute_tool okTool');
+      expect(tool.status.code).toBe(SpanStatusCode.UNSET);
+      expect(tool.attributes['launchdarkly.stream.abandoned']).toBe(true);
+      expect(tool.attributes['error.type']).toBeUndefined();
+    });
   });
 });

@@ -1,4 +1,4 @@
-import { context, trace } from '@opentelemetry/api';
+import { context, SpanStatusCode, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -296,5 +296,67 @@ describe('openai-messages span tree against a real tracer', () => {
       expect(child.attributes['context.contextKeys.user']).toBeUndefined();
       expect(child.events.find((event) => event.name === 'feature_flag')).toBeUndefined();
     }
+  });
+
+  describe('a failed tool call', () => {
+    const twoToolConfig = {
+      ...baseConfig,
+      tools: {
+        okTool: { name: 'okTool', type: 'function' as const, parameters: {} },
+        badTool: { name: 'badTool', type: 'function' as const, parameters: {} },
+      },
+    };
+    const toolTurn = (callId: string, name: string) => ({
+      id: `resp_${callId}`,
+      model: 'gpt-4o',
+      output: [{ type: 'function_call', name, call_id: callId, arguments: `{"q":"${name}"}` }],
+      output_text: '',
+      usage: { input_tokens: 5, output_tokens: 2 },
+    });
+    const handlers = () => ({
+      okTool: vi.fn().mockReturnValue('fine'),
+      badTool: vi.fn().mockRejectedValue(new Error('tool broke')),
+    });
+
+    // A tool failure aborts the run here, so the succeeding call is in the turn before it.
+    const assertToolSpans = () => {
+      const ok = named('execute_tool okTool')[0];
+      const bad = named('execute_tool badTool')[0];
+      expect(ok.status.code).toBe(SpanStatusCode.OK);
+      expect(ok.attributes['error.type']).toBeUndefined();
+      expect(ok.attributes['gen_ai.tool.call.result']).toBe('fine');
+      expect(bad.status.code).toBe(SpanStatusCode.ERROR);
+      expect(bad.attributes['error.type']).toBe('tool_error');
+      expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
+      expect(bad.events.map((e) => e.name)).toContain('exception');
+    };
+
+    it('marks the failing execute_tool span tool_error and leaves the succeeding one clean', async () => {
+      mockResponsesCreate
+        .mockResolvedValueOnce(toolTurn('call_ok', 'okTool'))
+        .mockResolvedValueOnce(toolTurn('call_bad', 'badTool'));
+
+      await expect(
+        createOpenAIMessagesHandler({ captureContent: true })(twoToolConfig as never, 'q', handlers()),
+      ).rejects.toThrow('tool broke');
+
+      assertToolSpans();
+    });
+
+    it('does the same on the streaming path', async () => {
+      mockResponsesStream
+        .mockReturnValueOnce(makeStreamMock([], toolTurn('call_ok', 'okTool')))
+        .mockReturnValueOnce(makeStreamMock([], toolTurn('call_bad', 'badTool')));
+
+      const gen = createOpenAIMessagesHandler({ captureContent: true }).stream?.(
+        twoToolConfig as never,
+        'q',
+        handlers(),
+        {},
+      ) as AsyncGenerator<unknown>;
+      await expect(collectStream(gen)).rejects.toThrow('tool broke');
+
+      assertToolSpans();
+    });
   });
 });

@@ -425,6 +425,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
                     content: typeof result === 'string' ? result : JSON.stringify(result),
                   };
                 } catch (error) {
+                  toolSpan.setAttribute('error.type', 'tool_error');
                   failSpan(toolSpan, error);
                   throw error;
                 }
@@ -542,6 +543,7 @@ export function createLiteLLMMessagesHandlerInternal(options: LiteLLMMessagesOpt
                   content: typeof result === 'string' ? result : JSON.stringify(result),
                 };
               } catch (error) {
+                toolSpan.setAttribute('error.type', 'tool_error');
                 failSpan(toolSpan, error);
                 throw error;
               }

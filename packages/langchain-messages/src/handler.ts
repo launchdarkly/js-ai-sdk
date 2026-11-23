@@ -529,6 +529,7 @@ function createLangChainMessagesHandlerInternal(
                   toolSpan.end();
                   return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: toolResultString(result) });
                 } catch (err) {
+                  toolSpan.setAttribute('error.type', 'tool_error');
                   failSpan(toolSpan, err);
                   throw err;
                 }
@@ -734,6 +735,7 @@ function createLangChainMessagesHandlerInternal(
                 toolSpan.end();
                 return new ToolMessage({ tool_call_id: tc.id ?? tc.name, content: toolResultString(result) });
               } catch (err) {
+                toolSpan.setAttribute('error.type', 'tool_error');
                 failSpan(toolSpan, err);
                 throw err;
               }

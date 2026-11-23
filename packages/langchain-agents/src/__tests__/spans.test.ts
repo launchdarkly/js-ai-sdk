@@ -1,6 +1,6 @@
 import { AIMessage, HumanMessage } from '@langchain/core/messages';
 import { FakeChatModel } from '@langchain/core/utils/testing';
-import { context, trace } from '@opentelemetry/api';
+import { context, SpanStatusCode, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -305,5 +305,135 @@ describe('langchain-agents span tree against a real tracer', () => {
       expect(child.attributes['context.contextKeys.user']).toBeUndefined();
       expect(child.events.find((event) => event.name === 'feature_flag')).toBeUndefined();
     }
+  });
+
+  describe('a failed tool call', () => {
+    const p = { type: 'object', properties: {} };
+    const twoToolConfig = {
+      ...baseConfig,
+      tools: {
+        okTool: { name: 'okTool', type: 'function' as const, parameters: p },
+        badTool: { name: 'badTool', type: 'function' as const, parameters: p },
+      },
+    };
+
+    /** First turn calls both tools (with a little text, so the stream yields a chunk); the second answers. */
+    class BothToolsModel extends FakeChatModel {
+      calls = 0;
+
+      constructor() {
+        super({});
+      }
+
+      bindTools() {
+        return this;
+      }
+
+      async _generate(): Promise<{ generations: Array<{ text: string; message: AIMessage }> }> {
+        this.calls++;
+        const message =
+          this.calls === 1
+            ? new AIMessage({
+                content: 'calling tools',
+                usage_metadata: usage,
+                tool_calls: [
+                  { name: 'okTool', args: {}, id: 'call_ok' },
+                  { name: 'badTool', args: {}, id: 'call_bad' },
+                ],
+              })
+            : new AIMessage({ content: 'done', usage_metadata: usage });
+        return { generations: [{ text: String(message.content), message }] };
+      }
+    }
+
+    const handlers = () => ({
+      okTool: vi.fn().mockResolvedValue('fine'),
+      badTool: vi.fn().mockRejectedValue(new Error('tool broke')),
+    });
+
+    // The agent answers a thrown tool to the model as an error ToolMessage, so the run continues.
+    const assertToolSpans = (llm: BothToolsModel) => {
+      const [ok] = named('execute_tool okTool');
+      const [bad] = named('execute_tool badTool');
+      expect(ok.status.code).toBe(SpanStatusCode.OK);
+      expect(ok.attributes['error.type']).toBeUndefined();
+      // handleToolEnd receives the ToolMessage LangChain wrapped the result in, not the bare value.
+      expect(ok.attributes['gen_ai.tool.call.result']).toContain('fine');
+      expect(bad.status.code).toBe(SpanStatusCode.ERROR);
+      expect(bad.attributes['error.type']).toBe('tool_error');
+      expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
+      expect(bad.events.map((e) => e.name)).toContain('exception');
+      expect(llm.calls).toBe(2);
+      expect(root()?.status.code).toBe(SpanStatusCode.OK);
+    };
+
+    it('marks the failing execute_tool span tool_error, leaves the succeeding one clean, and keeps running', async () => {
+      const llm = new BothToolsModel();
+
+      const result = await createLangChainAgentsHandler(llm as never, { captureContent: true })(
+        twoToolConfig as never,
+        'q',
+        handlers(),
+      );
+
+      expect(result.output).toBe('done');
+      assertToolSpans(llm);
+    });
+
+    it('does the same on the streaming path', async () => {
+      const llm = new BothToolsModel();
+      const events: Array<{ type: string; output?: string }> = [];
+
+      const gen = createLangChainAgentsHandler(llm as never, { captureContent: true }).stream?.(
+        twoToolConfig as never,
+        'q',
+        handlers(),
+        {},
+      ) as AsyncGenerator<{ type: string; output?: string }>;
+      for await (const event of gen) events.push(event);
+
+      expect(events.at(-1)).toMatchObject({ type: 'done', output: 'done' });
+      assertToolSpans(llm);
+    });
+  });
+
+  it('ends an open tool span UNSET and marked abandoned when the consumer abandons the stream', async () => {
+    let toolStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      toolStarted = resolve;
+    });
+    let releaseTool!: (value: string) => void;
+    const search = vi.fn(() => {
+      toolStarted();
+      return new Promise<string>((resolve) => {
+        releaseTool = resolve;
+      });
+    });
+    const llm = new FakeToolModel(
+      new AIMessage({
+        content: 'searching',
+        usage_metadata: usage,
+        tool_calls: [{ name: 'search', args: { q: 'x' }, id: 'call_1' }],
+      }),
+    ) as never;
+
+    const gen = createLangChainAgentsHandler(llm, { captureContent: true }).stream?.(
+      toolConfig as never,
+      'q',
+      { search },
+      {},
+    ) as AsyncGenerator<unknown>;
+    for await (const _event of gen) {
+      await started; // the tool is running and its span is open
+      break;
+    }
+    releaseTool('late');
+
+    const [tool] = named('execute_tool search');
+    expect(tool).toBeDefined();
+    expect(tool.status.code).toBe(SpanStatusCode.UNSET);
+    expect(tool.attributes['launchdarkly.stream.abandoned']).toBe(true);
+    expect(tool.attributes['error.type']).toBeUndefined();
+    expect(tool.events.map((e) => e.name)).not.toContain('exception');
   });
 });

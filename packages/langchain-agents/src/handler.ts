@@ -251,13 +251,26 @@ export function buildSpanCallbacks(
           const span = toolSpans.get(runId);
           if (!span) return;
           toolSpans.delete(runId);
+          span.setAttribute('error.type', 'tool_error');
           failSpan(span, err);
         },
       },
     ],
     closeOpenSpans(error: unknown) {
       for (const span of modelSpans.values()) failSpan(span, error);
-      for (const span of toolSpans.values()) failSpan(span, error);
+      for (const span of toolSpans.values()) {
+        span.setAttribute('error.type', 'tool_error');
+        failSpan(span, error);
+      }
+      modelSpans.clear();
+      toolSpans.clear();
+    },
+    // Consumer abandonment is not a failure: every open span ends UNSET, marked abandoned.
+    abandonOpenSpans() {
+      for (const span of [...modelSpans.values(), ...toolSpans.values()]) {
+        span.setAttribute('launchdarkly.stream.abandoned', true);
+        span.end();
+      }
       modelSpans.clear();
       toolSpans.clear();
     },
@@ -561,7 +574,7 @@ export function createLangChainAgentsHandlerInternal(
         // the tree, including any chat span whose LangChain end-callback never fired. An abandoned
         // stream still spent whatever its completed turns cost, and nothing else will report it.
         if (!endedSpans.has(span)) {
-          spanCallbacks.closeOpenSpans(new Error('stream abandoned before completion'));
+          spanCallbacks.abandonOpenSpans();
           if (spanCallbacks.runUsage.reported) finishRootSpan(span, config, spanCallbacks.runUsage.total);
         }
         endSpanOnce(span, endedSpans, true);

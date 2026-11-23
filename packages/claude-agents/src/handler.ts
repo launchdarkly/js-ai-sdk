@@ -641,6 +641,7 @@ function buildToolHooks(nativeToolMap: Map<string, ToolHandlerFn>, parentContext
       span.setStatus({ code: SpanStatusCode.OK });
       span.end();
     } else {
+      span.setAttribute('error.type', 'tool_error');
       failSpan(span, error);
     }
   };
@@ -695,7 +696,18 @@ function buildToolHooks(nativeToolMap: Map<string, ToolHandlerFn>, parentContext
       ],
     },
     closeOpenSpans(error: unknown) {
-      for (const span of toolSpans.values()) failSpan(span, error);
+      for (const span of toolSpans.values()) {
+        span.setAttribute('error.type', 'tool_error');
+        failSpan(span, error);
+      }
+      toolSpans.clear();
+    },
+    // Consumer abandonment is not a failure: open tool spans end UNSET, marked abandoned.
+    abandonOpenSpans() {
+      for (const span of toolSpans.values()) {
+        span.setAttribute('launchdarkly.stream.abandoned', true);
+        span.end();
+      }
       toolSpans.clear();
     },
   };
@@ -1328,7 +1340,7 @@ export function createClaudeAgentsHandlerInternal(
           // the tree, including any tool span whose PostToolUse hook never fired — and the only
           // chance to report what the responses that did arrive cost.
           if (!endedSpans.has(span)) {
-            toolTelemetry?.closeOpenSpans(new Error('stream abandoned before completion'));
+            toolTelemetry?.abandonOpenSpans();
             if (!rootUsageWritten && inference.runUsage.reported) {
               finishRootSpan(span, config, inference.runUsage.total);
             }

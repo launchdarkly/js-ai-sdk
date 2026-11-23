@@ -422,6 +422,14 @@ class SpanningModelProvider {
 }
 
 /**
+ * The error each failed tool call threw, keyed by the SDK's tool-call object. The Agents SDK emits
+ * `agent_tool_end` with `String(error)` as the output before it rethrows, so without this the end
+ * listener would end a failed call's span OK with the error text as its result. `execute` receives
+ * the same object as `details.toolCall` that the listener receives.
+ */
+const toolCallErrors = new WeakMap<object, unknown>();
+
+/**
  * Attaches agent-level tool lifecycle listeners that emit one `execute_tool` child span per tool
  * call, keyed by the tool call id. Returns a cleanup that fails any spans still open on a crash.
  */
@@ -446,6 +454,11 @@ function attachToolSpanHooks(
     const span = toolSpans.get(callId(details));
     if (!span) return;
     toolSpans.delete(callId(details));
+    if (details?.toolCall && toolCallErrors.has(details.toolCall)) {
+      span.setAttribute('error.type', 'tool_error');
+      failSpan(span, toolCallErrors.get(details.toolCall));
+      return;
+    }
     setToolCallContentAttributes(span, captureContent, { result });
     span.setStatus({ code: SpanStatusCode.OK });
     span.end();
@@ -453,7 +466,18 @@ function attachToolSpanHooks(
 
   return {
     closeOpenSpans(error: unknown) {
-      for (const span of toolSpans.values()) failSpan(span, error);
+      for (const span of toolSpans.values()) {
+        span.setAttribute('error.type', 'tool_error');
+        failSpan(span, error);
+      }
+      toolSpans.clear();
+    },
+    // Consumer abandonment is not a failure: open tool spans end UNSET, marked abandoned.
+    abandonOpenSpans() {
+      for (const span of toolSpans.values()) {
+        span.setAttribute('launchdarkly.stream.abandoned', true);
+        span.end();
+      }
       toolSpans.clear();
     },
   };
@@ -471,10 +495,14 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
         parameters: toolConfig.parameters as any,
         // null, not undefined: the SDK default feeds a tool error back to the model, but it must propagate.
         errorFunction: null,
-        execute: async (args) => {
+        execute: async (args, _context, details) => {
           const handler = toolHandlers[name] as (...args: unknown[]) => unknown;
-          const result = await handler(args);
-          return toolResultString(result);
+          try {
+            return toolResultString(await handler(args));
+          } catch (error) {
+            if (details?.toolCall) toolCallErrors.set(details.toolCall, error);
+            throw error;
+          }
         },
       }),
     );
@@ -770,7 +798,7 @@ export function createOpenAIAgentsHandlerInternal({ captureContent }: ContentCap
         // the tree, including any tool span the SDK never reported an end for.
         if (!endedSpans.has(span)) {
           abortRun.abort();
-          toolTelemetry.closeOpenSpans(new Error('stream abandoned before completion'));
+          toolTelemetry.abandonOpenSpans();
         }
         endSpanOnce(span, endedSpans, true);
       }

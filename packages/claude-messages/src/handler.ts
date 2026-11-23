@@ -603,6 +603,7 @@ function createClaudeMessagesHandlerInternal({
               toolSpan.end();
               return { type: 'tool_result' as const, tool_use_id: toolUse.id, content: toolResultString(result) };
             } catch (err) {
+              toolSpan.setAttribute('error.type', 'tool_error');
               failSpan(toolSpan, err);
               throw err;
             }
@@ -782,6 +783,7 @@ function createClaudeMessagesHandlerInternal({
                   toolSpan.end();
                   return { type: 'tool_result' as const, tool_use_id: toolUse.id, content: toolResultString(result) };
                 } catch (err) {
+                  toolSpan.setAttribute('error.type', 'tool_error');
                   failSpan(toolSpan, err);
                   throw err;
                 }

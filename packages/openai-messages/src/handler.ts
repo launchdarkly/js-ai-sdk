@@ -625,6 +625,7 @@ function createOpenAIMessagesHandlerInternal({
                     output: toolResultString(result),
                   };
                 } catch (err) {
+                  toolSpan.setAttribute('error.type', 'tool_error');
                   failSpan(toolSpan, err);
                   throw err;
                 }
@@ -787,6 +788,7 @@ function createOpenAIMessagesHandlerInternal({
                 toolSpan.end();
                 return { type: 'function_call_output' as const, call_id: tc.call_id, output: toolResultString(result) };
               } catch (err) {
+                toolSpan.setAttribute('error.type', 'tool_error');
                 failSpan(toolSpan, err);
                 throw err;
               }
