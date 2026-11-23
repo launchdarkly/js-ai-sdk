@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.2](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-agents-1.0.1...@launchdarkly/ai-langchain-agents-1.0.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **langchain:** stop forwarding camelCase model.parameters keys ([#236](https://github.com/launchdarkly/js-ai-sdk/issues/236)) ([cfd061f](https://github.com/launchdarkly/js-ai-sdk/commit/cfd061f5faac171fac287b9294d5d039c9e7631e))
+* **langchain:** write aws.bedrock as the Bedrock provider name ([#219](https://github.com/launchdarkly/js-ai-sdk/issues/219)) ([d80b534](https://github.com/launchdarkly/js-ai-sdk/commit/d80b534983b906bf7b4d3c14aa7b3ad66c24de93))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^1.1.0 to ^1.2.0
+
 ## [1.0.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-langchain-agents-1.0.0...@launchdarkly/ai-langchain-agents-1.0.1) (2026-11-12)
 
 
