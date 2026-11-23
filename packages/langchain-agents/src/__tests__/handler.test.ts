@@ -384,7 +384,8 @@ describe('createLangChainAgentsHandler', () => {
 
   it.each([
     ['OpenAI', 'openai'],
-    ['Bedrock', 'bedrock'],
+    ['Bedrock', 'aws.bedrock'],
+    ['bedrock', 'aws.bedrock'],
     ['Azure', 'azure'],
     ['Anthropic', 'anthropic'],
     ['', 'openai'],
