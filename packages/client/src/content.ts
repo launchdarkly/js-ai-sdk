@@ -404,7 +404,8 @@ export function setToolDefinitionAttributes(
  * Records one tool call's arguments and result on its `execute_tool` span.
  *
  * Both are stringified rather than written as native attribute values: an argument bag is an object,
- * and OTel attributes hold only primitives and arrays of primitives.
+ * and OTel attributes hold only primitives and arrays of primitives. A `null` or `undefined` value
+ * writes no attribute; anything else is rendered by {@link toolResultString}.
  */
 export function setToolCallContentAttributes(
   span: Span,
@@ -412,11 +413,11 @@ export function setToolCallContentAttributes(
   io: { arguments?: unknown; result?: unknown },
 ): void {
   if (!capture) return;
-  if (io.arguments !== undefined) {
-    span.setAttribute('gen_ai.tool.call.arguments', stringifyToolValue(io.arguments));
+  if (io.arguments != null) {
+    span.setAttribute('gen_ai.tool.call.arguments', toolResultString(io.arguments));
   }
-  if (io.result !== undefined) {
-    span.setAttribute('gen_ai.tool.call.result', stringifyToolValue(io.result));
+  if (io.result != null) {
+    span.setAttribute('gen_ai.tool.call.result', toolResultString(io.result));
   }
 }
 
@@ -434,9 +435,4 @@ export function toolResultString(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-/** A string passes through unchanged; anything else becomes JSON. */
-function stringifyToolValue(value: unknown): string {
-  return typeof value === 'string' ? value : JSON.stringify(value ?? null);
 }

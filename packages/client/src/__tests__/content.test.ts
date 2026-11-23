@@ -251,15 +251,42 @@ describe('tool call I/O', () => {
     expect(attrs['gen_ai.tool.call.result']).toBe('plain text');
   });
 
-  it('distinguishes an absent result from a null one', () => {
+  it('writes no attribute for an absent or null value', () => {
     const absent = attributesOf((span) => setToolCallContentAttributes(span, true, { arguments: {} }));
     expect(absent['gen_ai.tool.call.result']).toBeUndefined();
 
     exporter.reset();
-    const explicitNull = attributesOf((span) => setToolCallContentAttributes(span, true, { result: null }));
-    // A tool that genuinely returned nothing is a fact worth recording; dropping it would read the
-    // same as a tool that never ran.
-    expect(explicitNull['gen_ai.tool.call.result']).toBe('null');
+    // Every SDK writes nothing for null, so the text `null` never appears on a span.
+    const explicitNull = attributesOf((span) =>
+      setToolCallContentAttributes(span, true, { arguments: null, result: null }),
+    );
+    expect(explicitNull['gen_ai.tool.call.arguments']).toBeUndefined();
+    expect(explicitNull['gen_ai.tool.call.result']).toBeUndefined();
+  });
+
+  it('writes compact raw-UTF-8 JSON with no HTML escaping', () => {
+    const attrs = attributesOf((span) =>
+      setToolCallContentAttributes(span, true, { arguments: { city: 'Zürich', q: 'a<b' }, result: { s: '<a>&' } }),
+    );
+
+    expect(attrs['gen_ai.tool.call.arguments']).toBe('{"city":"Zürich","q":"a<b"}');
+    expect(attrs['gen_ai.tool.call.result']).toBe('{"s":"<a>&"}');
+  });
+
+  it('passes a string through unchanged', () => {
+    const attrs = attributesOf((span) => setToolCallContentAttributes(span, true, { result: 'a<b' }));
+    expect(attrs['gen_ai.tool.call.result']).toBe('a<b');
+  });
+
+  it('falls back to String() for a value JSON cannot encode, without throwing', () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const attrs = attributesOf((span) =>
+      setToolCallContentAttributes(span, true, { arguments: { n: 1n }, result: cyclic }),
+    );
+
+    expect(attrs['gen_ai.tool.call.arguments']).toBe('[object Object]');
+    expect(attrs['gen_ai.tool.call.result']).toBe('[object Object]');
   });
 });
 
