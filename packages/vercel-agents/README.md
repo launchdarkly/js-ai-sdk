@@ -12,6 +12,8 @@ Default routing is AI Gateway: the adapter builds Vercel's `creator/model` id fr
 
 All LaunchDarkly providers are handled explicitly. Anthropic, OpenAI, Azure, Gemini, Cohere, DeepSeek, Meta, Mistral, Perplexity, and Vertex map directly. Bedrock, Cortex, Cursor, Databricks, and Fireworks AI infer the creator from a dotted id or known model family and fail locally if ambiguous. AI21 Labs and IBM Watson fail locally because Vercel's current catalog has no corresponding creator; inject a direct model for those providers.
 
+A full Bedrock id loses its inference-profile prefix and version suffix (`us.anthropic.claude-sonnet-4-5-20250929-v1:0` becomes `anthropic/claude-sonnet-4-5-20250929`). A Bedrock config's `model.region` becomes the Gateway's Bedrock-only [inference region](https://vercel.com/docs/ai-gateway/security-and-compliance/regional-inference), `providerOptions.gateway.inferenceRegion.providers.bedrock`: `us`, `eu`, `au` and `jp` pin that zone, and `global` (or no region) leaves the Gateway default. Any other region, such as `apac`, fails the run, because the Gateway cannot keep it in that region. The region is applied whenever the model is the Gateway, including an injected `gateway(...)` model, and is deep-merged with the `gateway` options that model already sets; a model from another provider gets no Gateway options.
+
 ## Usage
 
 ```ts

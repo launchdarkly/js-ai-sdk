@@ -19,6 +19,7 @@ import {
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { jsonSchema, type LanguageModel, type ModelMessage, stepCountIs, ToolLoopAgent, type ToolSet, tool } from 'ai';
 import type { VercelAgentsOptions } from './handler.js';
+import { gatewayRegionProviderOptions } from './inference-region.js';
 import { gatewayModelId } from './model-id.js';
 import { buildModelParameterOptions } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
@@ -162,11 +163,14 @@ export const toVercelAgents = (
               });
             }
 
+            const model = await resolveModel(node, options);
+            const providerOptions = gatewayRegionProviderOptions(node.config, model);
             agents.set(
               node.key,
               new ToolLoopAgent({
                 ...buildModelParameterOptions(node.config.model.parameters),
-                model: await resolveModel(node, options),
+                model,
+                ...(providerOptions ? { providerOptions } : {}),
                 ...(nodeInstructions(node, variables) ? { instructions: nodeInstructions(node, variables) } : {}),
                 ...(Object.keys(tools).length > 0 ? { tools } : {}),
                 stopWhen: stepCountIs(MAX_STEPS),
