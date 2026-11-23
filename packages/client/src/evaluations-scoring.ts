@@ -96,7 +96,7 @@ export async function resolveJudges(
   for (const judge of judges) {
     let served: { config: unknown; meta: unknown };
     try {
-      served = await extractVariation(judge.key, context);
+      served = await extractVariation(judge.key, context, { skillTools: false });
     } catch (err) {
       throw new EvaluationsError(
         `Failed to resolve LaunchDarkly judge '${judge.key}': ${errorMessage(err)}. If the judge does not exist ` +

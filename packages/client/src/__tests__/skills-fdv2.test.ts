@@ -576,6 +576,16 @@ describe('version translation', () => {
     expect(raw?.contentType).toBe('text/markdown');
   });
 
+  it('holds the envelope tools as delivered, without parsing them', () => {
+    const tools = [{ type: 'function', name: 'get-weather', parameters: { type: 'object' } }];
+    for (const delivered of [tools, 'not-an-array']) {
+      const wire = putSkill();
+      (wire.object as Record<string, unknown>).tools = delivered;
+      expect(seamObjectFromPut(wire)?.tools).toBe(delivered);
+    }
+    expect(seamObjectFromPut(putSkill())).not.toHaveProperty('tools');
+  });
+
   it('leaves an absent envelope field absent rather than defaulting it', () => {
     const wire = putSkill();
     delete (wire.object as Record<string, unknown>).name;

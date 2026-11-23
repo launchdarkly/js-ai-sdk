@@ -224,7 +224,7 @@ The AI configuration object fetched from a LaunchDarkly flag variation. Represen
 | `provider` | `{ name }` | yes | Identifies the AI provider (e.g. `"Anthropic"`, `"OpenAI"`). Used for handler routing. |
 | `instructions` | string | one of | System prompt, may contain `{{variable}}` template placeholders. LD context attributes are also available as `{{ldContext.key}}`, `{{ldContext.email}}`, etc. |
 | `messages` | `Array<{ role, content }>` | one of | Conversation history. Roles: `user`, `assistant`, `system`. Message content may use the same `{{variable}}` and `{{ldContext.xxx}}` placeholders. |
-| `tools` | `Record<string, Tool>` | no | Named tool definitions available to the model. |
+| `tools` | `Record<string, Tool>` | no | Named tool definitions available to the model. When the variation attaches skills and a skill store is configured, the client appends each skill's `tools` here when it resolves the config. |
 | `judgeConfiguration` | `{ judges: Array<{ key, samplingRate }> }` | no | Controls automatic evaluation judges. |
 | `evaluationMetricKey` | string | no | LaunchDarkly metric key for tracking evaluation scores. |
 | `outputFormat` | object | no | Optional JSON Schema the model output must conform to. Handlers enforce structured output via the provider's native API where supported, or via system-prompt injection as a fallback. Ignored in streaming mode. |
@@ -351,7 +351,7 @@ A node in a resolved agent graph: an evaluated agent config plus its outgoing ed
 | Field | Type | Description |
 |---|---|---|
 | `key` | string | The node's config key. |
-| `config` | `AiConfigRep` | Evaluated agent config for this node. |
+| `config` | `AiConfigRep` | Evaluated agent config for this node. Its `tools` include the tools of the skills the node's variation attaches, which is how native graph adapters offer them; `inspectConfig` returns only the variation's own tools. |
 | `meta` | `VariationMeta` | Variation metadata for this node. |
 | `edges` | `GraphEdge[]` | Outgoing edges from this node. |
 | `isTerminal()` | `() => boolean` | Returns `true` when the node has no outgoing edges. |
@@ -546,6 +546,8 @@ The handler is responsible for translating `AiConfigRep` fields into the prompt 
 > **`ldContext` is always present in `variables`.** The client automatically injects the caller's LD context as `ldContext` before invoking the handler, so `{{ldContext.key}}`, `{{ldContext.email}}`, and any other context attribute are available in every template without any handler-side changes. Handlers must not overwrite or strip `ldContext` from the variables they pass to `parseTemplate`.
 
 ### Tool Handling
+
+The client has already added the tools of the variation's skills to `config.tools` (after the variation's own, in `skills` order, skipping exact duplicates between skills; the variation's definition wins a key it shares with a skill, with a warning), so handlers treat that one map as the allowlist and need no skill-specific code.
 
 If `config.tools` is present, the handler must:
 

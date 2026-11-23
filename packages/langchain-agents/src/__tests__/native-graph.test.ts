@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { AIMessage, SystemMessage } from '@langchain/core/messages';
 import { SpanStatusCode } from '@opentelemetry/api';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -81,6 +82,8 @@ vi.mock('@opentelemetry/api', async (importOriginal) => {
     ...actual,
     trace: {
       ...actual.trace,
+      // initClient() registers a tracer provider; the spread above drops TraceAPI's prototype methods.
+      setGlobalTracerProvider: vi.fn(),
       getTracer: vi.fn().mockReturnValue({
         startActiveSpan: vi.fn().mockImplementation((_name: string, fn: Function) => fn(mockSpan)),
         startSpan: vi.fn().mockReturnValue(mockSpan),
@@ -108,6 +111,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   };
 });
 
+import { InMemorySkillStore, initClient, resolveGraph, setSkillStore, shutdown } from '@launchdarkly/ai-server';
 import { toLangGraph } from '../native-graph.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
@@ -784,5 +788,59 @@ describe('toLangGraph', () => {
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', expect.any(Number));
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.output_tokens', expect.any(Number));
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.total_tokens', expect.any(Number));
+  });
+
+  it("offers a node's skill tools after its own, and not to a node that does not attach the skill", async () => {
+    const own = { name: 'own', type: 'function', parameters: { type: 'object' } };
+    const weather = { name: 'get-weather', type: 'function', parameters: { type: 'object' } };
+    const body = 'Use the weather.';
+    setSkillStore(
+      new InMemorySkillStore({
+        weather: {
+          key: 'weather',
+          version: 1,
+          content: body,
+          contentHash: createHash('sha256').update(body).digest('hex'),
+          tools: [weather],
+        },
+      }),
+    );
+    const variations: Record<string, unknown> = {
+      'skill-graph': { root: 'root', edges: { root: [{ key: 'child' }] } },
+      root: {
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'x',
+        tools: { own },
+        skills: [{ key: 'weather', version: 1 }],
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1 },
+      },
+      child: {
+        model: { name: 'gpt-4o' },
+        provider: { name: 'OpenAI' },
+        instructions: 'x',
+        _ldMeta: { enabled: true, variationKey: 'v1', version: 1 },
+      },
+    };
+    await initClient({
+      variation: async (k: string) => variations[k],
+      track: () => {},
+      flush: async () => {},
+      close: async () => {},
+    } as any);
+    try {
+      const def = await resolveGraph('skill-graph', { context: { kind: 'user', key: 'u1' } });
+      await toLangGraph(Promise.resolve(def), { toolHandlers: { own: vi.fn(), 'get-weather': vi.fn() } }).invoke('hi');
+    } finally {
+      // Drops the client and the skill store, so later tests start clean.
+      await shutdown();
+    }
+
+    // A node's tools are bound to its model and served by its `<key>_tools` ToolNode.
+    expect(mockAddNode.mock.calls.map(([name]) => name)).toEqual(['root', 'root_tools', 'child']);
+    const toolsOf = (key: string) =>
+      (mockAddNode.mock.calls.find(([name]) => name === `${key}_tools`)?.[1]._tools ?? []).map((t: any) => t.name);
+    expect(toolsOf('root')).toEqual(['own', 'get-weather', 'transfer_to_child']);
+    expect(toolsOf('child')).toEqual([]);
   });
 });

@@ -955,7 +955,7 @@ describe('aiConfig source', () => {
     it('become the default criteria, with default thresholds', async () => {
       const api = routeAi(new FakeApi(), 'completion', judged);
       await makeModule(api).run(aiRun({ criteria: undefined }));
-      expect(lifecycle.resolve).toHaveBeenCalledWith('accuracy', expect.anything());
+      expect(lifecycle.resolve).toHaveBeenCalledWith('accuracy', expect.anything(), { skillTools: false });
       const body = api.calls.find((call) => call.path === EVALUATION_PATH)?.body as { criteria: unknown };
       expect(body.criteria).toEqual([
         {

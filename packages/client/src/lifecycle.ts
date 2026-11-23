@@ -11,6 +11,7 @@ import { flushAiSdkInfo, resetAiSdkInfo } from './sdk-info.js';
 import { resetSdkOptions } from './sdk-options.js';
 import { flushSdkUsage, reportUsage, resetSdkUsage } from './sdk-usage.js';
 import { runShutdownHooks } from './shutdown-hooks.js';
+import { withSkillTools } from './skills-tools.js';
 import type { AiConfigRep, InitBaseClientOptions, LDClientInterface, LDContext, VariationMeta } from './types.js';
 import { parseAiConfig } from './types.js';
 
@@ -670,13 +671,16 @@ export async function inspectConfigInternal(key: string, context: LDContext): Pr
   }
 }
 
+/** `skillTools: false` skips the skill-tool merge, for configs that are never offered tools (judges). */
+export type ParseVariationOptions = { skillTools?: boolean };
+
 export const extractVariation = async (
   key: string,
   userContext: LDContext,
-  { existingClientOnly = false }: { existingClientOnly?: boolean } = {},
+  { existingClientOnly = false, ...options }: ParseVariationOptions & { existingClientOnly?: boolean } = {},
 ): Promise<{ config: AiConfigRep; meta: VariationMeta; value: unknown }> => {
   const { value } = await fetchVariation(key, userContext, { existingClientOnly });
-  return parseVariation(key, value);
+  return parseVariation(key, value, options);
 };
 
 /** @internal The live client, or `undefined` when none is set. Never starts one. */
@@ -718,6 +722,7 @@ export async function fetchVariation(
 export function parseVariation(
   key: string,
   variation: unknown,
+  { skillTools = true }: ParseVariationOptions = {},
 ): { config: AiConfigRep; meta: VariationMeta; value: unknown } {
   // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
   if (!(variation as any)?._ldMeta?.enabled) {
@@ -729,7 +734,11 @@ export function parseVariation(
   }
 
   // `value` is the variation exactly as the SDK returned it, before parsing. It is written to the
-  // `feature_flag` span event as `feature_flag.result.value`.
-  // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
-  return { config: parsed.data, meta: (variation as any)._ldMeta as VariationMeta, value: variation };
+  // `feature_flag` span event as `feature_flag.result.value`, so it never carries skill tools.
+  return {
+    config: skillTools ? withSkillTools(parsed.data, key) : parsed.data,
+    // biome-ignore lint/suspicious/noExplicitAny: _ldMeta is LaunchDarkly private metadata not in public variation type
+    meta: (variation as any)._ldMeta as VariationMeta,
+    value: variation,
+  };
 }
