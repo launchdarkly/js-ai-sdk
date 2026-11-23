@@ -39,12 +39,12 @@ It checks the JSON answer. It then deletes the function and the log group.
 
 `canary.mjs` holds all of the logic. It takes one exact version for each package.
 You pass the versions as flags. You can also set
-`LD_AI_CANARY_VERSIONS='ai-server=0.4.0,ai-node=0.3.0,openai-messages=0.3.0,ai-otel=0.2.0'`.
+`LD_AI_CANARY_VERSIONS='ai-server=1.1.0,ai-node=1.0.1,openai-messages=1.1.0,ai-otel=1.0.0'`.
 The driver rejects a version that is not an exact semver.
 
 The list includes `@launchdarkly/ai-server`, the core package.
-`@launchdarkly/ai-node` depends on the core package with `*`.
-So npm picks any visible core version when the canary does not pin it.
+`@launchdarkly/ai-node` depends on the core package with a caret range (`^1.1.0` today).
+So npm picks the newest matching core version when the canary does not pin it.
 The canary installs the core version directly, and a core-only release also runs the canary.
 
 | Command | What it does |
@@ -61,7 +61,7 @@ This run needs no AWS credentials.
 
 ```bash
 cd integration-tests/lambda-commonjs
-node canary.mjs build --ai-server=0.3.0 --ai-node=0.2.0 --openai-messages=0.2.0 --ai-otel=0.1.1 --package --stage=local
+node canary.mjs build --ai-server=1.1.0 --ai-node=1.0.1 --openai-messages=1.1.0 --ai-otel=1.0.0 --package --stage=local
 unzip -l .canary/app/.serverless/ld-ai-canary.zip | grep '@launchdarkly'
 ```
 

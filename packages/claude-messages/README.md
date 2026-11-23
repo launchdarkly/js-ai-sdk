@@ -51,6 +51,7 @@ const result = await claudeMessages(
 - Template placeholders (`{{variable}}`) in the prompt are substituted using `variables` before the call.
 - If tools are defined in the flag config, executes them as the model requests and feeds results back until the model produces a final response.
 - Emits an OTel span and LaunchDarkly telemetry for every call.
+- `maxRetries` (1.1.0 or later) sets how many times the Anthropic client retries a rate limit, an overload, a timeout or a 5xx before the call fails. Omit it to keep the client's default of 2. `createClaudeMessagesHandler({ maxRetries: 5 })` and the convenience wrapper both take it.
 
 ## Choosing Between `claude-agents` and `claude-messages`
 

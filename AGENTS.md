@@ -98,11 +98,12 @@ Biome organises imports alphabetically within each group. Vitest's `vi.mock` cal
 
 PRs are squash-merged with the PR title as the commit message, and release-please builds each package's changelog from those messages.
 
-- **A change to an experimental feature uses that feature's scope.** `feat`, `fix` and `perf` commits with that scope are listed under **Experimental** (`changelog-sections` in `release-please-config.json`). No feature is experimental now. Any other scope, such as `client`, `skills` (Agent Skills) or `evaluations` (Evaluations from Code), lists the change as a core feature or fix.
+- **A change to an experimental feature uses that feature's scope.** `feat`, `fix` and `perf` commits with that scope are listed under **Experimental** (`changelog-sections` in `release-please-config.json`). Shadow requests (scope `shadow-requests`, exported from `@launchdarkly/ai-server/experimental`) is the one experimental feature now. Any other scope, such as `client`, `skills` (Agent Skills) or `evaluations` (Evaluations from Code), lists the change as a core feature or fix.
 - **Use exactly one scope.** `feat(beta,client):` matches no Experimental row, so it lands under Features.
 - **A PR that changes both core and experimental behaviour** should be split. If it can't be, add a `BEGIN_COMMIT_OVERRIDE` block to its description with one conventional-commit line per change. An override also corrects a merged PR's title, as long as the release PR hasn't merged yet.
-- **A breaking experimental change** uses `!` while the package is 0.x: `feat(beta)!:` bumps the minor version, which is what an experimental break is allowed. After 1.0, `!` would force a major release. Use `feat(beta):` without `!` instead, and say the change is breaking in the title.
+- **A breaking experimental change** ships in a minor release. Every package is 1.x, so `!` (or a `BREAKING CHANGE:` footer) forces a major release. Use `feat(shadow-requests):` without `!` instead, and say the change is breaking in the title. The API compatibility check skips experimental reports, so it does not ask for `!`.
 - **When a feature is promoted to core,** remove its rows from `changelog-sections`.
+- **Docs match the release before the release PR merges.** The root README, every package README and `agents.md` (or `AGENTS.md`), this file, the examples, install lines and maturity banners (such as "experimental" labels) must match the versions the release PR ships. Grep for the old version numbers and the labels the release changes, fix every hit, and paste the grep commands and their output into the release PR description. This repo is public, so a stale version or label reaches users.
 
 ## Public API Reports
 

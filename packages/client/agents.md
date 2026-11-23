@@ -49,7 +49,7 @@ No other `@launchdarkly/ai-*` package may define or duplicate these. They import
 | `src/trajectory.ts` | Tool-call trajectory capture and rendering — `TrajectoryRecorder` (one per online invocation in `tracking.ts`, one per evaluation row offline), `exposedToolKeys`, and `renderTrajectory`, the text a judge reads in `message_history`. `HANDOFF_TOOL_PREFIX` is defined here once and used by `tracking.ts` and `graph.ts` |
 | `src/safe-fs.ts` | Symlink-refusing filesystem primitives. Knows nothing about skills; owns the single interceptable rename and unlink call sites |
 | `src/index.ts` | Public barrel — the package root, and the only surface handler packages import from |
-| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. No feature is experimental now, so it exports no name |
+| `src/experimental.ts` | Experimental barrel — `@launchdarkly/ai-server/experimental`. Exports shadow requests, the one experimental feature now |
 
 The Agent Skills module dependencies run **one way only**:
 
@@ -342,13 +342,19 @@ export {
 
 Published as `@launchdarkly/ai-server/experimental` (a subpath in `package.json` `exports`, built
 alongside the root by `tsup.config.ts`). Names here may change in a minor release and are **absent
-from the package root**. No feature is experimental now. Agent Skills and Evaluations from Code
+from the package root**. Shadow requests is the one experimental feature now. Agent Skills and Evaluations from Code
 were promoted to core and are exported from the root only.
 `@launchdarkly/ai-node/experimental` re-exports this entry point. Generated from
 `src/experimental.ts` the same way as the block above.
 
 ```ts
-export {};
+export {
+  runShadow,
+  type ShadowConfigArgs,
+  type ShadowResult,
+  type ShadowTask,
+  shadowConfig,
+} from './shadow-requests.js';
 ```
 
 The stage rules, which every change here must keep:
@@ -368,7 +374,7 @@ The stage rules, which every change here must keep:
   commit both reports.
 - **Promotion to core** (done for Agent Skills and Evaluations from Code, before 1.0) moves the feature's names from
   `src/experimental.ts` to `src/index.ts` with the same spelling, and removes them from the
-  experimental entry point; this is a breaking change (`!` in the PR title). Also remove the
+  experimental entry point; this is a breaking change to the experimental entry point. Before 1.0 it took `!` in the PR title; at 1.x follow the root `AGENTS.md` rule for breaking experimental changes (no `!`). Also remove the
   feature's rows from `changelog-sections` in `release-please-config.json`, and update both API
   reports. A test asserts the skills and evaluations names are in the root report and not in the
   experimental one.

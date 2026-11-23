@@ -1,7 +1,5 @@
 # `@launchdarkly/ai-litellm-messages`
 
-**Experimental.** This package stays on 0.x until the Python and JavaScript LiteLLM integrations match.
-
 LiteLLM messages integration for `@launchdarkly/ai-server`. It uses the OpenAI
 chat-completions client while requiring a user-owned OpenAI-compatible LiteLLM
 proxy. Evaluated LaunchDarkly model names are passed through unchanged.
@@ -45,6 +43,17 @@ It reads the optional proxy credential from `LITELLM_API_KEY`; an unauthenticate
 proxy needs no key. Internally, unauthenticated proxies receive a non-secret
 placeholder rather than an unrelated provider credential. Explicit `baseURL`
 and `apiKey` options override the environment.
+
+`maxRetries` (1.1.0 or later) sets how many times the client the handler builds
+retries a rate limit, a timeout or a 5xx; omit it to keep the client's default of 2.
+It throws when combined with `client` or `clientFactory`, because the handler does
+not build that client; set the retry count on that client instead.
+
+For a Bedrock variation (a `bedrock/` model name, or a bare name with provider
+Bedrock), `model.region` (for example `us` or `global`) is prepended once to the
+Bedrock model id, so `anthropic.claude-…` is sent as the cross-region inference
+profile `us.anthropic.claude-…`. An id that already has a cross-region prefix, and
+an ARN, are sent unchanged. This needs 1.1.0 or later.
 
 Because this is a wildcard messages handler, do not register it together with
 another `['*', 'messages']` handler such as LangChain in the same registry.

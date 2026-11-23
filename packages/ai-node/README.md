@@ -116,7 +116,9 @@ module.exports = {
 Experimental features are not exported from the package root. Import them from
 `@launchdarkly/ai-node/experimental`, which re-exports `@launchdarkly/ai-server/experimental`, so
 you need no direct dependency on `@launchdarkly/ai-server`. Names there may change in a minor
-release. No feature is experimental now.
+release. Shadow requests is the one experimental feature now, for example
+`import { runShadow, shadowConfig } from '@launchdarkly/ai-node/experimental';`. It requires
+`@launchdarkly/ai-server` 1.1.0 or later.
 
 Agent Skills is no longer experimental: import it from the package root, for example
 `import { InMemorySkillStore, setSkillStore } from '@launchdarkly/ai-node';`. It requires

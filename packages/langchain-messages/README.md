@@ -74,6 +74,7 @@ const result = await langchainMessages(
 - Template placeholders (`{{variable}}`) in the prompt are substituted using `variables` before the call.
 - If tools are defined in the flag config, binds them to the model and executes them as requested, feeding results back until the model produces a final response.
 - Emits an OTel span and LaunchDarkly telemetry for every call.
+- `maxRetries` (1.1.0 or later) is set on the chat model the handler builds: `createLangChainMessagesHandler(undefined, { maxRetries: 5 })`, or the convenience wrapper's option. It throws when you also pass your own model as `llm`, because the handler does not build that model; set `maxRetries` on it instead.
 
 ## Environment Variables
 

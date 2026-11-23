@@ -98,7 +98,7 @@ Tier 0 — Core Client           (@launchdarkly/ai-server)
 
 ### Versioning
 
-From 1.0.0 every package in this SDK is released at the same version, so install them at matching versions. Each package depends on `@launchdarkly/ai-server` within the same major (`^1.0.0`), and a breaking change in any package is a new major for all of them. Names exported from `@launchdarkly/ai-server/experimental` are the exception: they may change in a minor release.
+Each package has its own version, and release-please releases a package when its own code changes. Its `node-workspace` plugin also releases every package that depends on a package being released and updates its range on it. So the packages are not all at the same version. They all share major version 1: each handler package and `@launchdarkly/ai-node` depend on `@launchdarkly/ai-server` within that major (`^1.1.0` today), and a breaking change is a new major for the package it changes. Names exported from `@launchdarkly/ai-server/experimental` are the exception: they may change in a minor release.
 
 
 <!-- experimental-features:start (generated; do not edit by hand) -->
