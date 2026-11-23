@@ -425,14 +425,24 @@ export function setToolCallContentAttributes(
  * Renders a tool handler's return value as the text sent back to the provider.
  *
  * A string passes through unchanged, `null`/`undefined` becomes `''`, and anything else becomes JSON.
- * A value JSON cannot encode (a cycle, a BigInt, a function) falls back to `String(value)`.
+ * A value JSON cannot encode (a cycle, a BigInt, a function) falls back to `String(value)`, and a
+ * value `String()` also rejects (a null-prototype object, an array holding a Symbol) falls back to
+ * `Object.prototype.toString`, so rendering never throws.
  */
 export function toolResultString(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value === null || value === undefined) return '';
+  let encoded: string | undefined;
   try {
-    return JSON.stringify(value) ?? String(value);
+    encoded = JSON.stringify(value);
   } catch {
+    encoded = undefined;
+  }
+  if (encoded !== undefined) return encoded;
+  try {
     return String(value);
+  } catch {
+    // Handlers render inside the tool's try block: a throw here would fail a tool call that succeeded.
+    return Object.prototype.toString.call(value);
   }
 }

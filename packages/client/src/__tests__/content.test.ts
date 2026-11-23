@@ -252,11 +252,12 @@ describe('tool call I/O', () => {
   });
 
   it('writes no attribute for an absent or null value', () => {
-    const absent = attributesOf((span) => setToolCallContentAttributes(span, true, { arguments: {} }));
+    const absent = attributesOf((span) => setToolCallContentAttributes(span, true, {}));
+    expect(absent['gen_ai.tool.call.arguments']).toBeUndefined();
     expect(absent['gen_ai.tool.call.result']).toBeUndefined();
 
     exporter.reset();
-    // Every SDK writes nothing for null, so the text `null` never appears on a span.
+    // A null value writes nothing, so it is never written as the text `null` on a span.
     const explicitNull = attributesOf((span) =>
       setToolCallContentAttributes(span, true, { arguments: null, result: null }),
     );
@@ -287,6 +288,20 @@ describe('tool call I/O', () => {
 
     expect(attrs['gen_ai.tool.call.arguments']).toBe('[object Object]');
     expect(attrs['gen_ai.tool.call.result']).toBe('[object Object]');
+  });
+
+  it('falls back to Object.prototype.toString when String() throws too', () => {
+    // No toString/valueOf on a null-prototype object, and join() rejects a Symbol element.
+    const bare = Object.create(null) as Record<string, unknown>;
+    bare.self = bare;
+    const withSymbol: unknown[] = [Symbol('x')];
+    withSymbol.push(withSymbol);
+    const attrs = attributesOf((span) =>
+      setToolCallContentAttributes(span, true, { arguments: bare, result: withSymbol }),
+    );
+
+    expect(attrs['gen_ai.tool.call.arguments']).toBe('[object Object]');
+    expect(attrs['gen_ai.tool.call.result']).toBe('[object Array]');
   });
 });
 
