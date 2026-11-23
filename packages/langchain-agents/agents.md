@@ -16,7 +16,7 @@ The `'*'` wildcard means this handler acts as a fallback for any `meta.mode === 
 
 > **Priority rule:** if the caller also registers an explicit provider handler (e.g. `['OpenAI', 'agent']`), that handler takes precedence over the wildcard for matching variations.
 
-The handler is model-agnostic — it accepts any `BaseChatModel`. The default is `ChatOpenAI`.
+The handler is model-agnostic and accepts any `BaseChatModel`. Without one, `resolveBaseModel` in `src/handler.ts` builds the default from `config.provider.name` (for example `ChatAnthropic` for `anthropic`, `ChatOpenAI` for an empty name). `toLangGraph` calls the same function for each node that has no `modelFactory`, so a provider added there reaches graphs too.
 
 ---
 
@@ -45,6 +45,7 @@ export const langchainAgents: (configKey: string, userInput: string, context: LD
 export function langchainGraph(key: string, options: Omit<GraphOptions, 'handlers'>, llm?: BaseChatModel): { invoke(input, context, variables?): Promise<ProviderGraphResponse> }
 
 // Native graph adapter — builds a LangGraph state machine from a resolved GraphDefinition
+// Each node's default model comes from resolveBaseModel(node.config), as in the handler.
 export function toLangGraph(def: Promise<GraphDefinition>, opts?: object): { invoke(input?, variables?): Promise<ProviderGraphResponse> }
 ```
 

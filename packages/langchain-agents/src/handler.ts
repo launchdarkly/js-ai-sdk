@@ -279,7 +279,14 @@ function modelConstructorArgs(
   };
 }
 
-async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSource): Promise<BaseChatModel> {
+/**
+ * The chat model for one config: the caller's `llm` if given, otherwise the default model for
+ * `config.provider.name`, with its mapped parameters and the error that names a missing optional
+ * package. `toLangGraph` builds each node's default model through this too, so a graph node gets
+ * the same model a single-agent call on that config would. Package-internal; not exported from the
+ * package index.
+ */
+export async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSource): Promise<BaseChatModel> {
   const invocation = configForModelCall(aiConfig);
   if (typeof llm === 'function') return llm(invocation);
   if (llm) return llm;
