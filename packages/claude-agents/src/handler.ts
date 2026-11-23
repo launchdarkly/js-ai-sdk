@@ -534,6 +534,16 @@ function recordNativeTools(span: Span, message: { type: string }, capture: boole
 }
 
 /**
+ * Labels a failed tool call's span `tool_error`. An `AbortError` (a `DOMException` or an `Error`) is
+ * left unlabelled: it is a cancellation, not a tool failure, though the span still ends ERROR.
+ */
+function markToolError(span: Span, error: unknown): void {
+  if ((error as { name?: unknown } | null | undefined)?.name !== 'AbortError') {
+    span.setAttribute('error.type', 'tool_error');
+  }
+}
+
+/**
  * `endedSpans` is passed only from the streaming path, where a `finally` may race this to the same
  * span; elsewhere there is exactly one end and the tracker is unnecessary.
  */
@@ -634,13 +644,15 @@ function buildToolHooks(nativeToolMap: Map<string, ToolHandlerFn>, parentContext
     const span = toolSpans.get(input.tool_use_id);
     if (!span) return;
     toolSpans.delete(input.tool_use_id);
-    if ('tool_response' in input) {
-      setToolCallContentAttributes(span, captureContent, { result: input.tool_response });
-    }
     if (error === undefined) {
+      // Only an OK span carries a result.
+      if ('tool_response' in input) {
+        setToolCallContentAttributes(span, captureContent, { result: input.tool_response });
+      }
       span.setStatus({ code: SpanStatusCode.OK });
       span.end();
     } else {
+      markToolError(span, error);
       failSpan(span, error);
     }
   };
@@ -695,7 +707,18 @@ function buildToolHooks(nativeToolMap: Map<string, ToolHandlerFn>, parentContext
       ],
     },
     closeOpenSpans(error: unknown) {
-      for (const span of toolSpans.values()) failSpan(span, error);
+      for (const span of toolSpans.values()) {
+        markToolError(span, error);
+        failSpan(span, error);
+      }
+      toolSpans.clear();
+    },
+    // Consumer abandonment is not a failure: open tool spans end UNSET, marked abandoned.
+    abandonOpenSpans() {
+      for (const span of toolSpans.values()) {
+        span.setAttribute('launchdarkly.stream.abandoned', true);
+        span.end();
+      }
       toolSpans.clear();
     },
   };
@@ -1328,7 +1351,7 @@ export function createClaudeAgentsHandlerInternal(
           // the tree, including any tool span whose PostToolUse hook never fired — and the only
           // chance to report what the responses that did arrive cost.
           if (!endedSpans.has(span)) {
-            toolTelemetry?.closeOpenSpans(new Error('stream abandoned before completion'));
+            toolTelemetry?.abandonOpenSpans();
             if (!rootUsageWritten && inference.runUsage.reported) {
               finishRootSpan(span, config, inference.runUsage.total);
             }

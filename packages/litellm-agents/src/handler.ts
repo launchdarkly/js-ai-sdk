@@ -240,11 +240,22 @@ type AgentEventSink = {
   on: (event: 'agent_tool_start' | 'agent_tool_end', listener: (...args: unknown[]) => void) => unknown;
 };
 
+/**
+ * The error each failed tool call threw, keyed by the SDK's tool-call object. The Agents SDK emits
+ * `agent_tool_end` with `String(error)` as the output before it rethrows, so without this the end
+ * listener would end a failed call's span OK with the error text as its result. `execute` receives
+ * the same object as `details.toolCall` that the listener receives.
+ */
+const toolCallErrors = new WeakMap<object, unknown>();
+
 function attachToolSpans(agent: AgentEventSink, parentContext: Context, captureContent: boolean) {
   const spans = new Map<string, Span>();
+  // Set by close/abandon: a tool event that arrives after the run is closed must not reopen it.
+  let closed = false;
   const callId = (details: ToolCallDetails | undefined) =>
     details?.toolCall?.callId ?? details?.toolCall?.id ?? details?.toolCall?.name ?? 'tool';
   agent.on('agent_tool_start', (...args: unknown[]) => {
+    if (closed) return;
     const sdkTool = args[1] as NamedTool;
     const details = args[2] as ToolCallDetails;
     const id = callId(details);
@@ -263,13 +274,32 @@ function attachToolSpans(agent: AgentEventSink, parentContext: Context, captureC
     const span = spans.get(id);
     if (!span) return;
     spans.delete(id);
+    if (details?.toolCall && toolCallErrors.has(details.toolCall)) {
+      const error = toolCallErrors.get(details.toolCall);
+      markToolError(span, error);
+      failSpan(span, error);
+      return;
+    }
     setToolCallContentAttributes(span, captureContent, { result });
     span.setStatus({ code: SpanStatusCode.OK });
     span.end();
   });
   return {
     close(error: unknown) {
-      for (const span of spans.values()) failSpan(span, error);
+      closed = true;
+      for (const span of spans.values()) {
+        markToolError(span, error);
+        failSpan(span, error);
+      }
+      spans.clear();
+    },
+    // Consumer abandonment is not a failure: open tool spans end UNSET, marked abandoned.
+    abandon() {
+      closed = true;
+      for (const span of spans.values()) {
+        span.setAttribute('launchdarkly.stream.abandoned', true);
+        span.end();
+      }
       spans.clear();
     },
   };
@@ -290,9 +320,14 @@ function buildTools(configTools: Record<string, Tool>, handlers: Record<string, 
         parameters: definition.parameters,
         // null, not undefined: the SDK default feeds a tool error back to the model, but it must propagate.
         errorFunction: null,
-        execute: async (args: unknown) => {
+        execute: async (args: unknown, _context: unknown, details?: ToolCallDetails) => {
           const handler = handlers[name] as unknown as (args: unknown) => unknown;
-          return handler(args);
+          try {
+            return await handler(args);
+          } catch (error) {
+            if (details?.toolCall) toolCallErrors.set(details.toolCall, error);
+            throw error;
+          }
         },
       } as unknown as Parameters<typeof tool>[0]),
     );
@@ -409,6 +444,28 @@ function usageOf(result: AgentRunUsage) {
     input_tokens: Number(result?.state?.usage?.inputTokens ?? 0),
     output_tokens: Number(result?.state?.usage?.outputTokens ?? 0),
   };
+}
+
+/**
+ * Labels a failed tool call's span `tool_error`. An `AbortError` (a `DOMException` or an `Error`) is
+ * left unlabelled: it is a cancellation, not a tool failure, though the span still ends ERROR.
+ */
+function markToolError(span: Span, error: unknown): void {
+  if (!isAbortError(error)) span.setAttribute('error.type', 'tool_error');
+}
+
+/**
+ * Whether `error`, or an error it wraps, is an `AbortError`. The Agents SDK rejects the run with a
+ * `ToolCallError` that carries the tool's own error on `.error`, so the failure-path closers see
+ * the wrapper, not the abort. Matched by name: test files mock the SDK module wholesale.
+ */
+function isAbortError(error: unknown): boolean {
+  let e = error as { name?: unknown; error?: unknown; cause?: unknown } | null | undefined;
+  for (let depth = 0; e && depth < 8; depth++) {
+    if (e.name === 'AbortError') return true;
+    e = (e.name === 'ToolCallError' ? e.error : e.cause) as typeof e;
+  }
+  return false;
 }
 
 function failSpan(span: Span, error: unknown): void {
@@ -561,10 +618,15 @@ export function createLiteLLMAgentsHandlerInternal(options: LiteLLMAgentsOptions
         throw error;
       } finally {
         if (!completed) {
-          await run?.cancel?.();
-          toolSpans.close(new Error('stream abandoned before completion'));
-          span.setAttribute('launchdarkly.stream.abandoned', true);
-          span.end();
+          // Abandon before awaiting the cancel: a tool that rejects while the run winds down is
+          // still part of the abandonment, not a tool failure.
+          toolSpans.abandon();
+          try {
+            await run?.cancel?.();
+          } finally {
+            span.setAttribute('launchdarkly.stream.abandoned', true);
+            span.end();
+          }
         }
       }
     },

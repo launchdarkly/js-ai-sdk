@@ -207,6 +207,28 @@ function startToolSpan(toolName: string, toolCallId: string, parentContext: Cont
 }
 
 /**
+ * Labels a failed tool call's span `tool_error`. An `AbortError` (a `DOMException` or an `Error`) is
+ * left unlabelled: it is a cancellation, not a tool failure, though the span still ends ERROR.
+ */
+function markToolError(span: Span, error: unknown): void {
+  if (!isAbortError(error)) span.setAttribute('error.type', 'tool_error');
+}
+
+/**
+ * Whether `error`, or an error it wraps, is an `AbortError`. The Agents SDK rejects the run with a
+ * `ToolCallError` that carries the tool's own error on `.error`, so the failure-path closers see
+ * the wrapper, not the abort. Matched by name: test files mock the SDK module wholesale.
+ */
+function isAbortError(error: unknown): boolean {
+  let e = error as { name?: unknown; error?: unknown; cause?: unknown } | null | undefined;
+  for (let depth = 0; e && depth < 8; depth++) {
+    if (e.name === 'AbortError') return true;
+    e = (e.name === 'ToolCallError' ? e.error : e.cause) as typeof e;
+  }
+  return false;
+}
+
+/**
  * `endedSpans` is passed from paths where a `finally` may race this to the same span; elsewhere
  * there is exactly one end and the tracker is unnecessary.
  */
@@ -422,6 +444,14 @@ class SpanningModelProvider {
 }
 
 /**
+ * The error each failed tool call threw, keyed by the SDK's tool-call object. The Agents SDK emits
+ * `agent_tool_end` with `String(error)` as the output before it rethrows, so without this the end
+ * listener would end a failed call's span OK with the error text as its result. `execute` receives
+ * the same object as `details.toolCall` that the listener receives.
+ */
+const toolCallErrors = new WeakMap<object, unknown>();
+
+/**
  * Attaches agent-level tool lifecycle listeners that emit one `execute_tool` child span per tool
  * call, keyed by the tool call id. Returns a cleanup that fails any spans still open on a crash.
  */
@@ -432,11 +462,14 @@ function attachToolSpanHooks(
   captureContent: boolean,
 ) {
   const toolSpans = new Map<string, Span>();
+  // Set by the closers: a tool event that arrives after the run is closed must not reopen it.
+  let closed = false;
   const callId = (details: { toolCall?: { callId?: string; id?: string; name?: string } }) =>
     details?.toolCall?.callId ?? details?.toolCall?.id ?? details?.toolCall?.name ?? 'tool';
 
   // biome-ignore lint/suspicious/noExplicitAny: Agents SDK tool hook argument types are not exported
   agent.on('agent_tool_start', (_context: unknown, tool: any, details: any) => {
+    if (closed) return;
     const span = startToolSpan(tool?.name ?? 'tool', callId(details), parentContext);
     setToolCallContentAttributes(span, captureContent, { arguments: toolArguments(details?.toolCall?.arguments) });
     toolSpans.set(callId(details), span);
@@ -446,6 +479,12 @@ function attachToolSpanHooks(
     const span = toolSpans.get(callId(details));
     if (!span) return;
     toolSpans.delete(callId(details));
+    if (details?.toolCall && toolCallErrors.has(details.toolCall)) {
+      const error = toolCallErrors.get(details.toolCall);
+      markToolError(span, error);
+      failSpan(span, error);
+      return;
+    }
     setToolCallContentAttributes(span, captureContent, { result });
     span.setStatus({ code: SpanStatusCode.OK });
     span.end();
@@ -453,7 +492,20 @@ function attachToolSpanHooks(
 
   return {
     closeOpenSpans(error: unknown) {
-      for (const span of toolSpans.values()) failSpan(span, error);
+      closed = true;
+      for (const span of toolSpans.values()) {
+        markToolError(span, error);
+        failSpan(span, error);
+      }
+      toolSpans.clear();
+    },
+    // Consumer abandonment is not a failure: open tool spans end UNSET, marked abandoned.
+    abandonOpenSpans() {
+      closed = true;
+      for (const span of toolSpans.values()) {
+        span.setAttribute('launchdarkly.stream.abandoned', true);
+        span.end();
+      }
       toolSpans.clear();
     },
   };
@@ -471,10 +523,14 @@ const buildAgentTools = (configTools: Record<string, Tool>, toolHandlers: Record
         parameters: toolConfig.parameters as any,
         // null, not undefined: the SDK default feeds a tool error back to the model, but it must propagate.
         errorFunction: null,
-        execute: async (args) => {
+        execute: async (args, _context, details) => {
           const handler = toolHandlers[name] as (...args: unknown[]) => unknown;
-          const result = await handler(args);
-          return toolResultString(result);
+          try {
+            return toolResultString(await handler(args));
+          } catch (error) {
+            if (details?.toolCall) toolCallErrors.set(details.toolCall, error);
+            throw error;
+          }
         },
       }),
     );
@@ -769,8 +825,9 @@ export function createOpenAIAgentsHandlerInternal({ captureContent }: ContentCap
         // A no-op on the success and failure paths; on abandonment it is the only chance to close
         // the tree, including any tool span the SDK never reported an end for.
         if (!endedSpans.has(span)) {
+          // Abandon first, so a tool the abort makes reject is part of the abandonment.
+          toolTelemetry.abandonOpenSpans();
           abortRun.abort();
-          toolTelemetry.closeOpenSpans(new Error('stream abandoned before completion'));
         }
         endSpanOnce(span, endedSpans, true);
       }

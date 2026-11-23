@@ -1,5 +1,5 @@
 import { AIMessage, AIMessageChunk } from '@langchain/core/messages';
-import { context, trace } from '@opentelemetry/api';
+import { context, SpanStatusCode, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -294,5 +294,83 @@ describe('langchain-messages span tree against a real tracer', () => {
       expect(child.attributes['context.contextKeys.user']).toBeUndefined();
       expect(child.events.find((event) => event.name === 'feature_flag')).toBeUndefined();
     }
+  });
+
+  describe('a failed tool call', () => {
+    const twoToolConfig = {
+      ...baseConfig,
+      tools: {
+        okTool: { name: 'okTool', type: 'function' as const, parameters: {} },
+        badTool: { name: 'badTool', type: 'function' as const, parameters: {} },
+      },
+    };
+    const toolTurn = (id: string, name: string) => ({
+      content: '',
+      tool_calls: [{ name, id, args: { q: name } }],
+      usage_metadata: usage,
+    });
+    const handlers = (failure: unknown = new Error('tool broke')) => ({
+      okTool: vi.fn().mockReturnValue('fine'),
+      badTool: vi.fn().mockRejectedValue(failure),
+    });
+
+    // A tool failure aborts the run here, so the succeeding call is in the turn before it.
+    const assertToolSpans = (aborted = false) => {
+      const ok = named('execute_tool okTool')[0];
+      const bad = named('execute_tool badTool')[0];
+      expect(ok.status.code).toBe(SpanStatusCode.OK);
+      expect(ok.attributes['error.type']).toBeUndefined();
+      expect(ok.attributes['gen_ai.tool.call.result']).toBe('fine');
+      expect(bad.status.code).toBe(SpanStatusCode.ERROR);
+      expect(bad.attributes['error.type']).toBe(aborted ? undefined : 'tool_error');
+      expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
+      expect(bad.events.map((e) => e.name)).toContain('exception');
+    };
+
+    it('marks the failing execute_tool span tool_error and leaves the succeeding one clean', async () => {
+      const llm = makeLLM([new AIMessage(toolTurn('tc_ok', 'okTool')), new AIMessage(toolTurn('tc_bad', 'badTool'))]);
+
+      await expect(
+        createLangChainMessagesHandler(llm, { captureContent: true })(twoToolConfig as never, 'q', handlers()),
+      ).rejects.toThrow('tool broke');
+
+      assertToolSpans();
+    });
+
+    it('ends an aborted tool call ERROR without tool_error', async () => {
+      const llm = makeLLM([new AIMessage(toolTurn('tc_ok', 'okTool')), new AIMessage(toolTurn('tc_bad', 'badTool'))]);
+
+      await expect(
+        createLangChainMessagesHandler(llm, { captureContent: true })(
+          twoToolConfig as never,
+          'q',
+          handlers(new DOMException('aborted', 'AbortError')),
+        ),
+      ).rejects.toThrow('aborted');
+
+      assertToolSpans(true);
+    });
+
+    it('does the same on the streaming path', async () => {
+      const turns = [toolTurn('tc_ok', 'okTool'), toolTurn('tc_bad', 'badTool')];
+      const llm = {
+        bindTools: () => llm,
+        invoke: vi.fn(),
+        stream: async () =>
+          (async function* () {
+            yield new AIMessageChunk(turns.shift() as never);
+          })(),
+      } as never;
+
+      const gen = createLangChainMessagesHandler(llm, { captureContent: true }).stream?.(
+        twoToolConfig as never,
+        'q',
+        handlers(),
+        {},
+      ) as AsyncGenerator<unknown>;
+      await expect(collectStream(gen)).rejects.toThrow('tool broke');
+
+      assertToolSpans();
+    });
   });
 });

@@ -1,4 +1,5 @@
 import { HumanMessage } from '@langchain/core/messages';
+import { tool } from '@langchain/core/tools';
 import { FakeChatModel } from '@langchain/core/utils/testing';
 import { context, trace } from '@opentelemetry/api';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
@@ -102,5 +103,36 @@ describe('buildSpanCallbacks against real LangChain', () => {
     expect(span).toBeDefined();
     expect(span.events.map((e) => e.name)).toContain('exception');
     expect(span.status.code).toBe(2); // SpanStatusCode.ERROR
+  });
+
+  it('fails an open tool span with tool_error when the run throws mid-flight', async () => {
+    let toolStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      toolStarted = resolve;
+    });
+    let releaseTool!: (value: string) => void;
+    const slow = tool(
+      () => {
+        toolStarted();
+        return new Promise<string>((resolve) => {
+          releaseTool = resolve;
+        });
+      },
+      { name: 'slowTool', description: '', schema: { type: 'object', properties: {} } as never },
+    );
+
+    const spanCallbacks = buildSpanCallbacks(aiConfig, context.active(), true);
+    const running = slow.invoke({}, { callbacks: spanCallbacks.callbacks });
+    await started; // handleToolStart has fired; the span is open
+    // What the handler's catch does when the agent run throws with this tool still running.
+    spanCallbacks.closeOpenSpans(new Error('agent boom'));
+    releaseTool('late');
+    await running;
+
+    const [span] = exporter.getFinishedSpans().filter((s) => s.name === 'execute_tool slowTool');
+    expect(span.status).toEqual({ code: 2, message: 'agent boom' }); // SpanStatusCode.ERROR
+    expect(span.attributes['error.type']).toBe('tool_error');
+    expect(span.attributes['gen_ai.tool.call.result']).toBeUndefined();
+    expect(span.events.map((e) => e.name)).toContain('exception');
   });
 });

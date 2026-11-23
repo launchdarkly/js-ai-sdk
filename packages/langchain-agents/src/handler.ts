@@ -115,6 +115,16 @@ function startToolSpan(toolName: string, toolCallId: string, parentContext: Cont
 }
 
 /**
+ * Labels a failed tool call's span `tool_error`. An `AbortError` (a `DOMException` or an `Error`) is
+ * left unlabelled: it is a cancellation, not a tool failure, though the span still ends ERROR.
+ */
+function markToolError(span: Span, error: unknown): void {
+  if ((error as { name?: unknown } | null | undefined)?.name !== 'AbortError') {
+    span.setAttribute('error.type', 'tool_error');
+  }
+}
+
+/**
  * `endedSpans` is passed only from the streaming path, where a `finally` may race this to the same
  * span; elsewhere there is exactly one end and the tracker is unnecessary.
  */
@@ -251,13 +261,26 @@ export function buildSpanCallbacks(
           const span = toolSpans.get(runId);
           if (!span) return;
           toolSpans.delete(runId);
+          markToolError(span, err);
           failSpan(span, err);
         },
       },
     ],
     closeOpenSpans(error: unknown) {
       for (const span of modelSpans.values()) failSpan(span, error);
-      for (const span of toolSpans.values()) failSpan(span, error);
+      for (const span of toolSpans.values()) {
+        markToolError(span, error);
+        failSpan(span, error);
+      }
+      modelSpans.clear();
+      toolSpans.clear();
+    },
+    // Consumer abandonment is not a failure: every open span ends UNSET, marked abandoned.
+    abandonOpenSpans() {
+      for (const span of [...modelSpans.values(), ...toolSpans.values()]) {
+        span.setAttribute('launchdarkly.stream.abandoned', true);
+        span.end();
+      }
       modelSpans.clear();
       toolSpans.clear();
     },
@@ -561,7 +584,7 @@ export function createLangChainAgentsHandlerInternal(
         // the tree, including any chat span whose LangChain end-callback never fired. An abandoned
         // stream still spent whatever its completed turns cost, and nothing else will report it.
         if (!endedSpans.has(span)) {
-          spanCallbacks.closeOpenSpans(new Error('stream abandoned before completion'));
+          spanCallbacks.abandonOpenSpans();
           if (spanCallbacks.runUsage.reported) finishRootSpan(span, config, spanCallbacks.runUsage.total);
         }
         endSpanOnce(span, endedSpans, true);

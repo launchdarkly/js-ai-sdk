@@ -1,5 +1,5 @@
 import { ConversationIdSpanProcessor, NATIVE_TOOL_KEY, NativeTool, withConversationId } from '@launchdarkly/ai-server';
-import { context, trace } from '@opentelemetry/api';
+import { context, SpanStatusCode, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -1027,5 +1027,123 @@ describe('claude-agents span tree against a real tracer', () => {
       expect(child.attributes['context.contextKeys.user']).toBeUndefined();
       expect(child.events.find((event) => event.name === 'feature_flag')).toBeUndefined();
     }
+  });
+
+  describe('a failed tool call', () => {
+    const twoToolConfig = {
+      ...baseConfig,
+      tools: {
+        okTool: { name: 'okTool', type: 'function' as const, parameters: {} },
+        badTool: { name: 'badTool', type: 'function' as const, parameters: {} },
+      },
+    };
+    const handlers = () => ({ okTool: vi.fn(), badTool: vi.fn() });
+    const hookInput = (toolUseId: string, toolName: string) => ({
+      tool_name: `mcp__tool-mcp__${toolName}`,
+      tool_use_id: toolUseId,
+      tool_input: { q: toolName },
+      session_id: 'sess-1',
+    });
+    const preToolUse = (hooks: any, toolUseId: string, toolName: string) =>
+      hooks.PreToolUse[0].hooks[0]({ hook_event_name: 'PreToolUse', ...hookInput(toolUseId, toolName) });
+
+    // Unlike the messages handlers, a failed tool does not end this run: the CLI answers the failure
+    // to the model and the loop goes on.
+    it('marks the failing execute_tool span tool_error and leaves the succeeding one clean', async () => {
+      mockQuery.mockImplementation(async function* ({ options }: any) {
+        yield assistantMessage(10, 2, 'req_1');
+        await preToolUse(options.hooks, 'tu_ok', 'okTool');
+        await options.hooks.PostToolUse[0].hooks[0]({
+          hook_event_name: 'PostToolUse',
+          ...hookInput('tu_ok', 'okTool'),
+          tool_response: 'fine',
+        });
+        await preToolUse(options.hooks, 'tu_bad', 'badTool');
+        await options.hooks.PostToolUseFailure[0].hooks[0]({
+          hook_event_name: 'PostToolUseFailure',
+          ...hookInput('tu_bad', 'badTool'),
+          error: 'tool broke',
+        });
+        yield assistantMessage(12, 3, 'req_2');
+        yield resultMessage('done');
+      });
+
+      const result = await createClaudeAgentsHandler({ captureContent: true })(twoToolConfig as never, 'q', handlers());
+
+      expect(result.output).toBe('done');
+      expect(named('chat')).toHaveLength(2);
+      expect(root()?.status.code).toBe(SpanStatusCode.OK);
+      const ok = named('execute_tool okTool')[0];
+      const bad = named('execute_tool badTool')[0];
+      expect(ok.status.code).toBe(SpanStatusCode.OK);
+      expect(ok.attributes['error.type']).toBeUndefined();
+      expect(ok.attributes['gen_ai.tool.call.result']).toBe('fine');
+      expect(bad.status.code).toBe(SpanStatusCode.ERROR);
+      expect(bad.attributes['error.type']).toBe('tool_error');
+      expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
+      expect(bad.events.map((e) => e.name)).toContain('exception');
+    });
+
+    it('marks a tool span still open when the run throws tool_error', async () => {
+      mockQuery.mockImplementation(async function* ({ options }: any) {
+        yield assistantMessage();
+        await preToolUse(options.hooks, 'tu_bad', 'badTool');
+        throw new Error('agent crashed');
+      });
+
+      await expect(
+        createClaudeAgentsHandler({ captureContent: true })(twoToolConfig as never, 'q', handlers()),
+      ).rejects.toThrow('agent crashed');
+
+      const [bad] = named('execute_tool badTool');
+      expect(bad.status.code).toBe(SpanStatusCode.ERROR);
+      expect(bad.attributes['error.type']).toBe('tool_error');
+      expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
+      expect(bad.events.map((e) => e.name)).toContain('exception');
+    });
+
+    it('ends a tool span open when the run aborts ERROR without tool_error', async () => {
+      mockQuery.mockImplementation(async function* ({ options }: any) {
+        yield assistantMessage();
+        await preToolUse(options.hooks, 'tu_bad', 'badTool');
+        throw new DOMException('aborted', 'AbortError');
+      });
+
+      await expect(
+        createClaudeAgentsHandler({ captureContent: true })(twoToolConfig as never, 'q', handlers()),
+      ).rejects.toThrow('aborted');
+
+      const [bad] = named('execute_tool badTool');
+      expect(bad.status.code).toBe(SpanStatusCode.ERROR);
+      expect(bad.attributes['error.type']).toBeUndefined();
+      expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
+      expect(bad.events.map((e) => e.name)).toContain('exception');
+    });
+
+    // Abandonment is the consumer's choice, not a tool failure.
+    it('ends a tool span open at abandonment UNSET and marked abandoned', async () => {
+      mockQuery.mockImplementation(async function* ({ options }: any) {
+        yield assistantMessage();
+        await preToolUse(options.hooks, 'tu_bad', 'badTool');
+        yield {
+          type: 'stream_event',
+          event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'H' } },
+        };
+        yield resultMessage('never read');
+      });
+
+      const gen = createClaudeAgentsHandler({ captureContent: true }).stream?.(
+        twoToolConfig as never,
+        'q',
+        handlers(),
+        {},
+      ) as AsyncGenerator<unknown>;
+      for await (const _event of gen) break;
+
+      const [tool] = named('execute_tool badTool');
+      expect(tool.status.code).toBe(SpanStatusCode.UNSET);
+      expect(tool.attributes['launchdarkly.stream.abandoned']).toBe(true);
+      expect(tool.attributes['error.type']).toBeUndefined();
+    });
   });
 });
