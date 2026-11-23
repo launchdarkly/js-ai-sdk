@@ -203,11 +203,18 @@ export async function traceHandlerCall<T>(
   });
 }
 
-/** The configured provider, lower-cased, with Bedrock as its semconv value `aws.bedrock`. */
+/** The configured provider, lower-cased, with Bedrock and Gemini as their semconv values `aws.bedrock` and `gcp.gemini`. */
 const providerName = (config: AiConfigRep): string => {
   const name = (config.provider as { name?: unknown } | undefined)?.name;
   const provider = typeof name === 'string' ? name.toLowerCase() : '';
-  return provider === 'bedrock' ? 'aws.bedrock' : provider;
+  switch (provider) {
+    case 'bedrock':
+      return 'aws.bedrock';
+    case 'gemini':
+      return 'gcp.gemini';
+    default:
+      return provider;
+  }
 };
 
 const modelName = (config: AiConfigRep): string => {

@@ -84,10 +84,17 @@ function returnedUsage(usage: Usage): Record<string, number> {
   };
 }
 
-/** The configured provider, lower-cased, with Bedrock as its semconv value `aws.bedrock`. */
+/** The configured provider, lower-cased, with Bedrock and Gemini as their semconv values `aws.bedrock` and `gcp.gemini`. */
 function servingProvider(config: AiConfigRep): string {
   const provider = (config.provider?.name || 'unknown').toLowerCase();
-  return provider === 'bedrock' ? 'aws.bedrock' : provider;
+  switch (provider) {
+    case 'bedrock':
+      return 'aws.bedrock';
+    case 'gemini':
+      return 'gcp.gemini';
+    default:
+      return provider;
+  }
 }
 
 async function resolveModel(config: AiConfigRep, options: VercelMessagesOptions): Promise<LanguageModel | string> {

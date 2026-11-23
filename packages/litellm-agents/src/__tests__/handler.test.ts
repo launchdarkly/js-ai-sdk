@@ -579,6 +579,7 @@ describe('createLiteLLMAgentsHandler', () => {
   it.each([
     ['Bedrock', 'aws.bedrock'],
     ['bedrock', 'aws.bedrock'],
+    ['Gemini', 'gcp.gemini'],
     ['Azure', 'azure'],
   ] as const)('writes gen_ai.provider.name for provider %s as %s', async (providerName, expected) => {
     mockRun.mockResolvedValue(result('ok'));

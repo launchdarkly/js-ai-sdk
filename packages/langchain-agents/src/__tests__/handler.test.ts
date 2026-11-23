@@ -393,7 +393,7 @@ describe('createLangChainAgentsHandler', () => {
     ['bedrock', 'aws.bedrock'],
     ['Azure', 'azure'],
     ['Anthropic', 'anthropic'],
-    ['Gemini', 'gemini'],
+    ['Gemini', 'gcp.gemini'],
     ['', 'openai'],
   ] as const)('sets gen_ai.provider.name from config %s', async (providerName, expected) => {
     mockCreateAgent.mockReturnValue(makeCallbackAgent({ output: 'ok', inputTokens: 1, outputTokens: 1 }));

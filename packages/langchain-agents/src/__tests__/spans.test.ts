@@ -273,9 +273,9 @@ describe('langchain-agents span tree against a real tracer', () => {
     await createLangChainAgentsHandler(llm)(config as never, 'q');
 
     const [chat] = named('chat');
-    expect(chat.attributes['gen_ai.provider.name']).toBe('gemini');
+    expect(chat.attributes['gen_ai.provider.name']).toBe('gcp.gemini');
     expect(chat.attributes['gen_ai.response.finish_reasons']).toEqual(['content_filter']);
-    expect(root()?.attributes['gen_ai.provider.name']).toBe('gemini');
+    expect(root()?.attributes['gen_ai.provider.name']).toBe('gcp.gemini');
   });
 
   it('omits the finish reason when the provider reports none', async () => {

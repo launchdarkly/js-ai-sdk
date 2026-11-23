@@ -580,7 +580,7 @@ describe('createLangChainMessagesHandler', () => {
     ['bedrock', 'aws.bedrock'],
     ['Azure', 'azure'],
     ['Anthropic', 'anthropic'],
-    ['Gemini', 'gemini'],
+    ['Gemini', 'gcp.gemini'],
     ['', 'openai'],
   ] as const)('sets gen_ai.provider.name from config %s', async (providerName, expected) => {
     const cfg = { ...baseConfig, provider: { name: providerName } };

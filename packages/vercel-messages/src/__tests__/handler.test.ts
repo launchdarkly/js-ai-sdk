@@ -623,6 +623,7 @@ describe('createVercelMessagesHandler', () => {
   it.each([
     ['Bedrock', 'aws.bedrock'],
     ['bedrock', 'aws.bedrock'],
+    ['Gemini', 'gcp.gemini'],
     ['Azure', 'azure'],
   ] as const)('writes provider %s as %s on both keys of the root and chat spans', async (providerName, expected) => {
     const cfg = {

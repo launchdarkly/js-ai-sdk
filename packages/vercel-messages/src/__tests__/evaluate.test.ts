@@ -101,6 +101,7 @@ describe('vercelEvaluate', () => {
   it.each([
     ['Bedrock', 'aws.bedrock'],
     ['bedrock', 'aws.bedrock'],
+    ['Gemini', 'gcp.gemini'],
     ['Azure', 'azure'],
   ] as const)('writes provider %s as %s on both keys of the evaluate span', async (providerName, expected) => {
     serverMocks.inspectConfig.mockResolvedValue({
