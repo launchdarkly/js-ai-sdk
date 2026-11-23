@@ -257,12 +257,30 @@ describe('tool call I/O', () => {
     expect(absent['gen_ai.tool.call.result']).toBeUndefined();
 
     exporter.reset();
-    // A null value writes nothing, so it is never written as the text `null` on a span.
+    // A value that encodes to nothing writes nothing, so the text `null` never appears on a span.
     const explicitNull = attributesOf((span) =>
       setToolCallContentAttributes(span, true, { arguments: null, result: null }),
     );
     expect(explicitNull['gen_ai.tool.call.arguments']).toBeUndefined();
     expect(explicitNull['gen_ai.tool.call.result']).toBeUndefined();
+  });
+
+  it('writes no attribute for an object whose toJSON() returns null', () => {
+    const attrs = attributesOf((span) =>
+      setToolCallContentAttributes(span, true, { arguments: { toJSON: () => null }, result: new Date(Number.NaN) }),
+    );
+    expect(attrs['gen_ai.tool.call.arguments']).toBeUndefined();
+    expect(attrs['gen_ai.tool.call.result']).toBeUndefined();
+    expect(toolResultString({ toJSON: () => null })).toBe('');
+  });
+
+  it('writes a non-finite number as its plain string, not as JSON null', () => {
+    const attrs = attributesOf((span) =>
+      setToolCallContentAttributes(span, true, { arguments: Number.NaN, result: Number.POSITIVE_INFINITY }),
+    );
+    expect(attrs['gen_ai.tool.call.arguments']).toBe('NaN');
+    expect(attrs['gen_ai.tool.call.result']).toBe('Infinity');
+    expect(toolResultString(Number.NEGATIVE_INFINITY)).toBe('-Infinity');
   });
 
   it('writes compact raw-UTF-8 JSON with no HTML escaping', () => {

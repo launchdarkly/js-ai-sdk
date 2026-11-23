@@ -404,8 +404,9 @@ export function setToolDefinitionAttributes(
  * Records one tool call's arguments and result on its `execute_tool` span.
  *
  * Both are stringified rather than written as native attribute values: an argument bag is an object,
- * and OTel attributes hold only primitives and arrays of primitives. A `null` or `undefined` value
- * writes no attribute; anything else is rendered by {@link toolResultString}.
+ * and OTel attributes hold only primitives and arrays of primitives. A value that encodes to nothing
+ * (`null`, `undefined`, or an object whose `toJSON()` returns `null`) writes no attribute; anything
+ * else is rendered as {@link toolResultString} renders it.
  */
 export function setToolCallContentAttributes(
   span: Span,
@@ -413,31 +414,40 @@ export function setToolCallContentAttributes(
   io: { arguments?: unknown; result?: unknown },
 ): void {
   if (!capture) return;
-  if (io.arguments != null) {
-    span.setAttribute('gen_ai.tool.call.arguments', toolResultString(io.arguments));
-  }
-  if (io.result != null) {
-    span.setAttribute('gen_ai.tool.call.result', toolResultString(io.result));
-  }
+  const args = encodeToolValue(io.arguments);
+  if (args !== undefined) span.setAttribute('gen_ai.tool.call.arguments', args);
+  const result = encodeToolValue(io.result);
+  if (result !== undefined) span.setAttribute('gen_ai.tool.call.result', result);
 }
 
 /**
  * Renders a tool handler's return value as the text sent back to the provider.
  *
- * A string passes through unchanged, `null`/`undefined` becomes `''`, and anything else becomes JSON.
- * A value JSON cannot encode (a cycle, a BigInt, a function) falls back to `String(value)`, and a
- * value `String()` also rejects (a null-prototype object, an array holding a Symbol) falls back to
- * `Object.prototype.toString`, so rendering never throws.
+ * A string passes through unchanged, and a value that encodes to nothing (`null`, `undefined`, or
+ * JSON `null` from `toJSON()`) becomes `''`. A non-finite number becomes `String(value)` (`NaN`,
+ * `Infinity`), and anything else becomes JSON. A value JSON cannot encode (a cycle, a BigInt, a
+ * function) falls back to `String(value)`, and a value `String()` also rejects (a null-prototype
+ * object, an array holding a Symbol) falls back to `Object.prototype.toString`, so rendering never
+ * throws.
  */
 export function toolResultString(value: unknown): string {
+  return encodeToolValue(value) ?? '';
+}
+
+/** The shared tool-value encoding; `undefined` means the value encodes to nothing. */
+function encodeToolValue(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
-  if (value === null || value === undefined) return '';
+  if (value === null || value === undefined) return undefined;
   let encoded: string | undefined;
-  try {
-    encoded = JSON.stringify(value);
-  } catch {
-    encoded = undefined;
+  // JSON.stringify writes a non-finite number as `null`, which would hide a real return value.
+  if (typeof value !== 'number' || Number.isFinite(value)) {
+    try {
+      encoded = JSON.stringify(value);
+    } catch {
+      encoded = undefined;
+    }
   }
+  if (encoded === 'null') return undefined;
   if (encoded !== undefined) return encoded;
   try {
     return String(value);
