@@ -14,6 +14,19 @@ yarn add @launchdarkly/ai-server @launchdarkly/ai-langchain-agents dotenv
 
 The default model is `ChatOpenAI`, so set `OPENAI_API_KEY` unless you pass a custom `BaseChatModel`.
 
+### Built-in models
+
+When you pass no model, the handler builds one from the lowercased `config.provider.name`:
+
+| `provider.name` | Model | Package | Credentials |
+|---|---|---|---|
+| `anthropic` | `ChatAnthropic` | `@langchain/anthropic` | `ANTHROPIC_API_KEY` |
+| `bedrock` | `ChatBedrockConverse`, with `model.region` prefixed onto the model id | `@langchain/aws` | the AWS credential chain |
+| `gemini` | `ChatGoogleGenerativeAI` (Gemini API) | `@langchain/google-genai` | `GOOGLE_API_KEY` |
+| anything else | `ChatOpenAI` | `@langchain/openai` | `OPENAI_API_KEY` |
+
+The Anthropic, Bedrock, and Gemini packages are optional peer dependencies, so install the one a config needs, for example `yarn add @langchain/google-genai` for a Gemini config. Only an allowlist of generation settings from `config.model.parameters` reaches the constructor. For Gemini that is `temperature`, `top_p`, `top_k`, `max_output_tokens` (or `max_tokens`), `stop_sequences` (or `stop`), and `thinking_config`.
+
 ## Usage
 
 ### With the default model (`ChatOpenAI`)
@@ -113,6 +126,7 @@ console.log(result.response);
 | Variable | Description |
 |---|---|
 | `OPENAI_API_KEY` | Required when using the default `ChatOpenAI` model |
+| `GOOGLE_API_KEY` | Required when the handler builds `ChatGoogleGenerativeAI` for a Gemini config |
 | `LD_SDK_KEY` | LaunchDarkly server-side SDK key |
 | `LD_SERVICE_NAME` | OTel `service.name` resource attribute (default: `nodejs-sdk`) |
 | `LD_ENVIRONMENT` | `deployment.environment` attribute attached to telemetry |

@@ -197,8 +197,8 @@ function modelConstructorArgs(
  * Resolves the LangChain chat model to use for a request.
  * A function in `llm` is called with the evaluated config. An instance is used as-is.
  * Otherwise, the provider and model name from the AI config are used to
- * instantiate the appropriate model via a dynamic import, so that neither
- * @langchain/openai, @langchain/anthropic, nor @langchain/aws is a hard
+ * instantiate the appropriate model via a dynamic import, so that none of
+ * @langchain/openai, @langchain/anthropic, @langchain/aws, and @langchain/google-genai is a hard
  * dependency. Only the model class's allowlisted model.parameters are passed; see
  * modelConstructorParameters. `maxRetries`, when set, is passed to whichever class is built.
  */
@@ -235,6 +235,18 @@ async function resolveBaseModel(
     }
     return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '', 'bedrock', maxRetries));
   }
+  if (providerName === 'gemini') {
+    // biome-ignore lint/suspicious/noExplicitAny: @langchain/google-genai loaded via dynamic import with no static types
+    let mod: any;
+    try {
+      mod = await import('@langchain/google-genai');
+    } catch {
+      throw new Error(
+        'Using Gemini models requires @langchain/google-genai. Install it with: npm install @langchain/google-genai',
+      );
+    }
+    return new mod.ChatGoogleGenerativeAI(modelConstructorArgs(invocation, 'gemini-2.5-flash', 'gemini', maxRetries));
+  }
   // biome-ignore lint/suspicious/noExplicitAny: @langchain/openai loaded via dynamic import with no static types
   let mod: any;
   try {
@@ -244,6 +256,14 @@ async function resolveBaseModel(
   }
   return new mod.ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o', 'openai', maxRetries));
 }
+
+/**
+ * Where `@langchain/google-genai` keeps the thought signature Gemini returns with each function
+ * call, keyed by tool call id, on `additional_kwargs`. It reads the map back from the assistant
+ * message on the next turn. Without it, Gemini 3 models get a placeholder signature and lose the
+ * reasoning behind the call.
+ */
+const GEMINI_THOUGHT_SIGNATURES_KEY = '__gemini_function_call_thought_signatures__';
 
 const buildTools = (
   configTools: Record<string, Tool>,
@@ -627,6 +647,9 @@ function createLangChainMessagesHandlerInternal(
           // the terminal chunk reports it, and dropping it would make the streaming span omit a
           // finish reason where the blocking path emits the real one.
           let finishReasons: string[] | undefined;
+          // The streaming path rebuilds the assistant message from its chunks, so the Gemini thought
+          // signatures each chunk carries are collected here and put back on that message.
+          const thoughtSignatures: Record<string, unknown> = {};
 
           try {
             const chunkStream = await toolModel.stream(conversationMessages);
@@ -649,6 +672,8 @@ function createLangChainMessagesHandlerInternal(
                 accumulatedToolCalls = chunk.tool_calls;
               }
               finishReasons = langChainFinishReasons(chunk) ?? finishReasons;
+              const signatures = chunk.additional_kwargs?.[GEMINI_THOUGHT_SIGNATURES_KEY];
+              if (signatures && typeof signatures === 'object') Object.assign(thoughtSignatures, signatures);
             }
           } catch (err) {
             // The tracker matters here: the outer `catch` also fails `openModelSpan`, which still
@@ -715,7 +740,13 @@ function createLangChainMessagesHandlerInternal(
           }
 
           fullOutput = (fullOutput as string) + accumulatedContent;
-          const assistantMsg = new AIMessage({ content: accumulatedContent, tool_calls: accumulatedToolCalls });
+          const assistantMsg = new AIMessage({
+            content: accumulatedContent,
+            tool_calls: accumulatedToolCalls,
+            ...(Object.keys(thoughtSignatures).length > 0
+              ? { additional_kwargs: { [GEMINI_THOUGHT_SIGNATURES_KEY]: thoughtSignatures } }
+              : {}),
+          });
           conversationMessages.push(assistantMsg);
 
           const toolResults = await Promise.all(

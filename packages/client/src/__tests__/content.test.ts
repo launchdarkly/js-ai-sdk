@@ -275,6 +275,21 @@ describe('langChainFinishReasons', () => {
     expect(langChainFinishReasons({ response_metadata: { stop_reason: 'tool_use' } })).toEqual(['tool_calls']);
   });
 
+  it('reads Gemini finishReason from an LLMResult generationInfo and a bare AIMessage', () => {
+    const result = { generations: [[{ generationInfo: { finishReason: 'MAX_TOKENS' }, message: {} }]] };
+    expect(langChainFinishReasons(result)).toEqual(['length']);
+    expect(langChainFinishReasons({ response_metadata: { finishReason: 'STOP' } })).toEqual(['stop']);
+  });
+
+  it.each([
+    'SAFETY',
+    'PROHIBITED_CONTENT',
+    'BLOCKLIST',
+    'SPII',
+  ])('maps the Gemini %s finish reason to content_filter', (reason) => {
+    expect(langChainFinishReasons({ response_metadata: { finishReason: reason } })).toEqual(['content_filter']);
+  });
+
   it('prefers generationInfo over response_metadata when a generation carries both', () => {
     const result = {
       generations: [

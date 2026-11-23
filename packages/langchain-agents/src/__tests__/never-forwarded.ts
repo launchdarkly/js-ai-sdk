@@ -3,7 +3,25 @@ import { createNeverForwarded } from '../../../client/src/__tests__/never-forwar
 export { NEVER_FORWARDED } from '../../../client/src/__tests__/never-forwarded-keys.js';
 
 // `reasoning` switches `ChatOpenAI` to the Responses API, which the LangChain handlers do not read.
-const PACKAGE_NEVER_FORWARDED_KEYS = ['reasoning'];
+// The rest are `ChatGoogleGenerativeAI` fields: safety configuration, JSON mode and response
+// schemas (the handler owns structured output), custom headers, cached content (server-side
+// state), and how the system prompt is sent.
+const PACKAGE_NEVER_FORWARDED_KEYS = [
+  'reasoning',
+  'safety_settings',
+  'safetySettings',
+  'json',
+  'response_mime_type',
+  'responseMimeType',
+  'response_schema',
+  'responseSchema',
+  'custom_headers',
+  'customHeaders',
+  'cached_content',
+  'cachedContent',
+  'convert_system_message_to_human_content',
+  'convertSystemMessageToHumanContent',
+];
 
 /**
  * This package's never-forward bag: the shared key list from

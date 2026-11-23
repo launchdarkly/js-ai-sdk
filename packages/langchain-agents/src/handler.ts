@@ -300,6 +300,19 @@ async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSourc
     // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
     return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '', 'bedrock') as any);
   }
+  if (provider === 'gemini') {
+    // biome-ignore lint/suspicious/noExplicitAny: @langchain/google-genai loaded via dynamic import with no static types
+    let mod: any;
+    try {
+      mod = await import('@langchain/google-genai');
+    } catch {
+      throw new Error(
+        'Using Gemini models requires @langchain/google-genai. Install it with: npm install @langchain/google-genai',
+      );
+    }
+    // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
+    return new mod.ChatGoogleGenerativeAI(modelConstructorArgs(invocation, 'gemini-2.5-flash', 'gemini') as any);
+  }
   // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
   return new ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o', 'openai') as any);
 }

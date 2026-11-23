@@ -225,6 +225,21 @@ describe('langchain-messages span tree against a real tracer', () => {
     expect(named('chat')[0].attributes['gen_ai.response.finish_reasons']).toEqual(['stop']);
   });
 
+  // @langchain/google-genai reports Gemini's own enum under `finishReason`, in camelCase.
+  it('names gemini as the serving provider and maps the Gemini finish reason on a Gemini config', async () => {
+    const llm = makeLLM([
+      new AIMessage({ content: 'Hello!', usage_metadata: usage, response_metadata: { finishReason: 'MAX_TOKENS' } }),
+    ]);
+    const config = { ...baseConfig, provider: { name: 'Gemini' }, model: { name: 'gemini-3.1-pro-preview' } };
+
+    await createLangChainMessagesHandler(llm)(config as never, 'q');
+
+    const [chat] = named('chat');
+    expect(chat.attributes['gen_ai.provider.name']).toBe('gemini');
+    expect(chat.attributes['gen_ai.response.finish_reasons']).toEqual(['length']);
+    expect(root()?.attributes['gen_ai.provider.name']).toBe('gemini');
+  });
+
   it('omits the finish reason when the provider reports none', async () => {
     await createLangChainMessagesHandler(makeLLM([textResponse()]))(baseConfig as never, 'q');
 

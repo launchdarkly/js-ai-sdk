@@ -1,5 +1,6 @@
 import type { ChatAnthropicInput } from '@langchain/anthropic';
 import type { ChatBedrockConverseInput } from '@langchain/aws';
+import type { GoogleGenerativeAIChatInput } from '@langchain/google-genai';
 import type { ChatOpenAIFields } from '@langchain/openai';
 import {
   type AiConfigRep,
@@ -104,12 +105,34 @@ export const CHAT_BEDROCK_CONVERSE_FORWARDED_KEYS = [
   'topP',
 ] as const satisfies ReadonlyArray<keyof ChatBedrockConverseInput>;
 
-export type LangChainModelClass = 'openai' | 'anthropic' | 'bedrock';
+/**
+ * `ChatGoogleGenerativeAI` constructor fields this package takes from `config.model.parameters`,
+ * after camelizing the bag and applying the renames in `modelConstructorParameters`.
+ *
+ * Never forwarded: `apiKey`, `apiVersion`, `baseUrl`, `customHeaders`, `model`, and:
+ * - `safetySettings`: safety configuration rather than a generation setting.
+ * - `json`: switches the response to JSON, which the handler owns through `outputFormat`.
+ * - `convertSystemMessageToHumanContent`: changes how the handler's system prompt is sent.
+ *
+ * `thinkingConfig` is the Gemini API's own `ThinkingConfig`, which `ChatGoogleGenerativeAI` sends
+ * as written in camelCase, so its sub-keys are camelized and narrowed (see `toGeminiThinkingConfig`).
+ */
+export const CHAT_GOOGLE_GENERATIVE_AI_FORWARDED_KEYS = [
+  'maxOutputTokens',
+  'stopSequences',
+  'temperature',
+  'thinkingConfig',
+  'topK',
+  'topP',
+] as const satisfies ReadonlyArray<keyof GoogleGenerativeAIChatInput>;
+
+export type LangChainModelClass = 'openai' | 'anthropic' | 'bedrock' | 'gemini';
 
 const FORWARDED_KEYS: Record<LangChainModelClass, ReadonlyArray<string>> = {
   openai: CHAT_OPENAI_FORWARDED_KEYS,
   anthropic: CHAT_ANTHROPIC_FORWARDED_KEYS,
   bedrock: CHAT_BEDROCK_CONVERSE_FORWARDED_KEYS,
+  gemini: CHAT_GOOGLE_GENERATIVE_AI_FORWARDED_KEYS,
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -162,6 +185,31 @@ function toAnthropicOutputConfig(effort: unknown, outputConfig: unknown): { effo
 }
 
 /**
+ * The Gemini API `ThinkingConfig` sub-keys, each under the snake_case name the LaunchDarkly UI
+ * writes and the camelCase name the API reads, with the type the API takes.
+ */
+const GEMINI_THINKING_CONFIG_KEYS: ReadonlyArray<[string, string, (value: unknown) => boolean]> = [
+  ['include_thoughts', 'includeThoughts', (value) => typeof value === 'boolean'],
+  ['thinking_budget', 'thinkingBudget', (value) => Number.isInteger(value)],
+  ['thinking_level', 'thinkingLevel', (value) => typeof value === 'string' && value !== ''],
+];
+
+/**
+ * `thinkingConfig` with its sub-keys in camelCase, keeping only the ones the Gemini API takes and
+ * only with a value of the right type, or `undefined` when it is not an object or nothing is left.
+ * When both spellings of a sub-key are set, the snake_case one wins, as it does at the top level.
+ */
+function toGeminiThinkingConfig(value: unknown): Record<string, unknown> | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const thinkingConfig: Record<string, unknown> = {};
+  for (const [snake, camel, isValid] of GEMINI_THINKING_CONFIG_KEYS) {
+    const chosen = isValid(value[snake]) ? value[snake] : value[camel];
+    if (isValid(chosen)) thinkingConfig[camel] = chosen;
+  }
+  return Object.keys(thinkingConfig).length > 0 ? thinkingConfig : undefined;
+}
+
+/**
  * Nested values each model class reads as objects. A value of the wrong shape is dropped rather
  * than passed on.
  */
@@ -169,6 +217,7 @@ const NESTED_SHAPE_CHECKS: Record<LangChainModelClass, Record<string, (value: un
   openai: { logitBias: isPlainObject },
   anthropic: {},
   bedrock: { performanceConfig: isPlainObject },
+  gemini: {},
 };
 
 /**
@@ -186,6 +235,9 @@ const NESTED_SHAPE_CHECKS: Record<LangChainModelClass, Record<string, (value: un
  * - `ChatAnthropic` has no `maxTokensToSample` or `stop` field. `max_tokens_to_sample` is another
  *   name for `max_tokens` and becomes `maxTokens`, and `stop` is another name for `stop_sequences`
  *   and becomes `stopSequences`. When both names are set, `max_tokens` and `stop_sequences` win.
+ * - `ChatGoogleGenerativeAI` names its output limit `maxOutputTokens` and has no `stop` field.
+ *   `max_tokens` becomes `maxOutputTokens` and `stop` becomes `stopSequences`. When both names are
+ *   set, `max_output_tokens` and `stop_sequences` win.
  */
 export function modelConstructorParameters(
   parameters: AiConfigRep['model']['parameters'] | unknown,
@@ -206,6 +258,10 @@ export function modelConstructorParameters(
     camelized.maxTokens ??= camelized.maxTokensToSample;
     camelized.stopSequences ??= camelized.stop;
   }
+  if (modelClass === 'gemini') {
+    camelized.maxOutputTokens ??= camelized.maxTokens;
+    camelized.stopSequences ??= camelized.stop;
+  }
   const picked = pickForwardedModelParameters(camelized, FORWARDED_KEYS[modelClass]);
   for (const [key, isWellFormed] of Object.entries(NESTED_SHAPE_CHECKS[modelClass])) {
     if (picked[key] !== undefined && !isWellFormed(picked[key])) delete picked[key];
@@ -214,6 +270,11 @@ export function modelConstructorParameters(
     const thinking = toAnthropicThinking(picked.thinking);
     if (thinking) picked.thinking = thinking;
     else delete picked.thinking;
+  }
+  if (modelClass === 'gemini' && picked.thinkingConfig !== undefined) {
+    const thinkingConfig = toGeminiThinkingConfig(picked.thinkingConfig);
+    if (thinkingConfig) picked.thinkingConfig = thinkingConfig;
+    else delete picked.thinkingConfig;
   }
   return picked;
 }

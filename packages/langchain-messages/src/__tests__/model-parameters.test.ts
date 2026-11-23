@@ -3,13 +3,23 @@ import { modelConstructorParameters } from '../model-parameters.js';
 import { expectNoNeverForwardedValue, NEVER_FORWARDED_PARAMETERS } from './never-forwarded.js';
 
 describe('modelConstructorParameters', () => {
-  it.each(['openai', 'anthropic', 'bedrock'] as const)('drops every never-forwarded key for %s', (modelClass) => {
+  it.each([
+    'openai',
+    'anthropic',
+    'bedrock',
+    'gemini',
+  ] as const)('drops every never-forwarded key for %s', (modelClass) => {
     const args = modelConstructorParameters({ ...NEVER_FORWARDED_PARAMETERS, temperature: 0.5 }, modelClass);
     expect(args).toEqual({ temperature: 0.5 });
     expectNoNeverForwardedValue(args);
   });
 
-  it.each(['openai', 'anthropic', 'bedrock'] as const)('drops unknown keys and model for %s', (modelClass) => {
+  it.each([
+    'openai',
+    'anthropic',
+    'bedrock',
+    'gemini',
+  ] as const)('drops unknown keys and model for %s', (modelClass) => {
     expect(
       modelConstructorParameters(
         { model: 'smuggled', model_name: 'smuggled', tools: ['x'], unknown_key: 1, callbacks: [] },
@@ -145,6 +155,58 @@ describe('modelConstructorParameters', () => {
     });
   });
 
+  it('forwards exactly the canonical ChatGoogleGenerativeAI keys, under their constructor names', () => {
+    expect(
+      modelConstructorParameters(
+        {
+          ...NEVER_FORWARDED_PARAMETERS,
+          max_output_tokens: 100,
+          stop_sequences: ['END'],
+          temperature: 0.2,
+          thinking_config: { thinking_budget: 1024, include_thoughts: true },
+          top_k: 40,
+          top_p: 0.9,
+          // Not ChatGoogleGenerativeAI constructor fields.
+          seed: 7,
+          frequency_penalty: 0.1,
+        },
+        'gemini',
+      ),
+    ).toEqual({
+      maxOutputTokens: 100,
+      stopSequences: ['END'],
+      temperature: 0.2,
+      // The Gemini API reads ThinkingConfig in camelCase.
+      thinkingConfig: { includeThoughts: true, thinkingBudget: 1024 },
+      topK: 40,
+      topP: 0.9,
+    });
+  });
+
+  it('maps ChatGoogleGenerativeAI max_tokens to maxOutputTokens and stop to stopSequences; the primary names win', () => {
+    expect(modelConstructorParameters({ max_tokens: 50, stop: ['A'] }, 'gemini')).toEqual({
+      maxOutputTokens: 50,
+      stopSequences: ['A'],
+    });
+    expect(
+      modelConstructorParameters(
+        { max_tokens: 50, max_output_tokens: 60, stop: ['A'], stop_sequences: ['B'] },
+        'gemini',
+      ),
+    ).toEqual({ maxOutputTokens: 60, stopSequences: ['B'] });
+  });
+
+  it.each([
+    [{ thinking_level: 'low' }, { thinkingLevel: 'low' }],
+    [{ thinkingBudget: 0 }, { thinkingBudget: 0 }],
+    [{ thinking_budget: 1, thinkingBudget: 2 }, { thinkingBudget: 1 }],
+    [{ thinking_budget: 1.5, include_thoughts: 'yes', thinking_level: 'high', extra: 1 }, { thinkingLevel: 'high' }],
+  ])('keeps only the ChatGoogleGenerativeAI thinkingConfig sub-keys the API takes: %j', (thinkingConfig, expected) => {
+    expect(modelConstructorParameters({ thinking_config: thinkingConfig }, 'gemini')).toEqual({
+      thinkingConfig: expected,
+    });
+  });
+
   it.each([
     ['anthropic', 'thinking', 'enabled'],
     ['anthropic', 'thinking', { budget_tokens: 1024 }],
@@ -156,6 +218,10 @@ describe('modelConstructorParameters', () => {
     ['anthropic', 'output_config', { format: { type: 'json_schema', schema: {} } }],
     ['openai', 'logit_bias', [1, 2]],
     ['bedrock', 'performance_config', 'optimized'],
+    ['gemini', 'thinking_config', 'high'],
+    ['gemini', 'thinking_config', [1024]],
+    ['gemini', 'thinking_config', {}],
+    ['gemini', 'thinking_config', { thinking_budget: '1024' }],
   ] as const)('drops a malformed nested value for %s: %s = %j', (modelClass, key, value) => {
     expect(modelConstructorParameters({ [key]: value, temperature: 0.1 }, modelClass)).toEqual({ temperature: 0.1 });
   });
