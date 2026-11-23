@@ -286,6 +286,8 @@ describe('langChainFinishReasons', () => {
     'PROHIBITED_CONTENT',
     'BLOCKLIST',
     'SPII',
+    'RECITATION',
+    'IMAGE_SAFETY',
   ])('maps the Gemini %s finish reason to content_filter', (reason) => {
     expect(langChainFinishReasons({ response_metadata: { finishReason: reason } })).toEqual(['content_filter']);
   });

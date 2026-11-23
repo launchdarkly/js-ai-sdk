@@ -181,9 +181,11 @@ const SEMCONV_FINISH_REASONS: Record<string, string> = {
   function_call: 'tool_calls',
   // Gemini `finishReason`. `STOP` and `MAX_TOKENS` already match the rows above once lower-cased.
   safety: 'content_filter',
-  prohibited_content: 'content_filter',
+  recitation: 'content_filter',
   blocklist: 'content_filter',
+  prohibited_content: 'content_filter',
   spii: 'content_filter',
+  image_safety: 'content_filter',
 };
 
 /**
