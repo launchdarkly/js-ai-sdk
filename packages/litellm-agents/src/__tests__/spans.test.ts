@@ -109,6 +109,27 @@ describe('litellm-agents span tree against the real Runner', () => {
       expect(bad.events.map((e) => e.name)).toContain('exception');
     });
 
+    it('ends an aborted tool call ERROR without tool_error', async () => {
+      completionQueue.push(toolTurn('call_ok', 'okTool'), toolTurn('call_bad', 'badTool'));
+
+      await expect(
+        createLiteLLMAgentsHandler({ captureContent: true, client: fakeClient as never })(twoToolConfig as never, 'q', {
+          okTool: vi.fn().mockReturnValue('fine'),
+          badTool: vi.fn().mockRejectedValue(new DOMException('aborted', 'AbortError')),
+        }),
+      ).rejects.toThrow('aborted');
+
+      const ok = named('execute_tool okTool')[0];
+      const bad = named('execute_tool badTool')[0];
+      expect(ok.status.code).toBe(SpanStatusCode.OK);
+      expect(ok.attributes['error.type']).toBeUndefined();
+      expect(ok.attributes['gen_ai.tool.call.result']).toBe('fine');
+      expect(bad.status.code).toBe(SpanStatusCode.ERROR);
+      expect(bad.attributes['error.type']).toBeUndefined();
+      expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
+      expect(bad.events.map((e) => e.name)).toContain('exception');
+    });
+
     // Abandonment is the consumer's choice, not a tool failure. The streamed run is faked, as in
     // `handler.test.ts`, because the stream handler only forwards `response.output_text.delta`
     // events, which the real chat-completions model never emits; the tool span still comes from

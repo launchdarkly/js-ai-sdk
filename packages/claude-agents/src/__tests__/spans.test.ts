@@ -1102,6 +1102,24 @@ describe('claude-agents span tree against a real tracer', () => {
       expect(bad.events.map((e) => e.name)).toContain('exception');
     });
 
+    it('ends a tool span open when the run aborts ERROR without tool_error', async () => {
+      mockQuery.mockImplementation(async function* ({ options }: any) {
+        yield assistantMessage();
+        await preToolUse(options.hooks, 'tu_bad', 'badTool');
+        throw new DOMException('aborted', 'AbortError');
+      });
+
+      await expect(
+        createClaudeAgentsHandler({ captureContent: true })(twoToolConfig as never, 'q', handlers()),
+      ).rejects.toThrow('aborted');
+
+      const [bad] = named('execute_tool badTool');
+      expect(bad.status.code).toBe(SpanStatusCode.ERROR);
+      expect(bad.attributes['error.type']).toBeUndefined();
+      expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
+      expect(bad.events.map((e) => e.name)).toContain('exception');
+    });
+
     // Abandonment is the consumer's choice, not a tool failure.
     it('ends a tool span open at abandonment UNSET and marked abandoned', async () => {
       mockQuery.mockImplementation(async function* ({ options }: any) {

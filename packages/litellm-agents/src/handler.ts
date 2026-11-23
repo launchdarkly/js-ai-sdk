@@ -272,8 +272,9 @@ function attachToolSpans(agent: AgentEventSink, parentContext: Context, captureC
     if (!span) return;
     spans.delete(id);
     if (details?.toolCall && toolCallErrors.has(details.toolCall)) {
-      span.setAttribute('error.type', 'tool_error');
-      failSpan(span, toolCallErrors.get(details.toolCall));
+      const error = toolCallErrors.get(details.toolCall);
+      markToolError(span, error);
+      failSpan(span, error);
       return;
     }
     setToolCallContentAttributes(span, captureContent, { result });
@@ -283,7 +284,7 @@ function attachToolSpans(agent: AgentEventSink, parentContext: Context, captureC
   return {
     close(error: unknown) {
       for (const span of spans.values()) {
-        span.setAttribute('error.type', 'tool_error');
+        markToolError(span, error);
         failSpan(span, error);
       }
       spans.clear();
@@ -438,6 +439,16 @@ function usageOf(result: AgentRunUsage) {
     input_tokens: Number(result?.state?.usage?.inputTokens ?? 0),
     output_tokens: Number(result?.state?.usage?.outputTokens ?? 0),
   };
+}
+
+/**
+ * Labels a failed tool call's span `tool_error`. An `AbortError` (a `DOMException` or an `Error`) is
+ * left unlabelled: it is a cancellation, not a tool failure, though the span still ends ERROR.
+ */
+function markToolError(span: Span, error: unknown): void {
+  if ((error as { name?: unknown } | null | undefined)?.name !== 'AbortError') {
+    span.setAttribute('error.type', 'tool_error');
+  }
 }
 
 function failSpan(span: Span, error: unknown): void {

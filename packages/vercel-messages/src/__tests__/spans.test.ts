@@ -64,9 +64,9 @@ function twoTurnModel() {
   } as never);
 }
 
-const handlers = () => ({
+const handlers = (failure: unknown = new Error('tool broke')) => ({
   okTool: vi.fn().mockResolvedValue('fine'),
-  badTool: vi.fn().mockRejectedValue(new Error('tool broke')),
+  badTool: vi.fn().mockRejectedValue(failure),
 });
 
 const named = (name: string) => exporter.getFinishedSpans().filter((s) => s.name === name);
@@ -105,6 +105,23 @@ describe('vercel-messages tool spans against a real tracer and the real AI SDK',
   afterEach(() => shutdown());
 
   describe('a failed tool call', () => {
+    it('ends an aborted tool call ERROR without tool_error', async () => {
+      const model = twoTurnModel();
+      const result = await createVercelMessagesHandler({ model, captureContent: true })(
+        config as never,
+        'q',
+        handlers(new DOMException('aborted', 'AbortError')),
+      );
+
+      // The AI SDK answers the abort to the model like any other tool error.
+      expect(result.output).toBe('done');
+      const [bad] = named('execute_tool badTool');
+      expect(bad.status.code).toBe(SpanStatusCode.ERROR);
+      expect(bad.attributes['error.type']).toBeUndefined();
+      expect(bad.events.map((e) => e.name)).toContain('exception');
+      expect(named('execute_tool okTool')[0].attributes['error.type']).toBeUndefined();
+    });
+
     it('marks the failing execute_tool span tool_error, leaves the succeeding one clean, and keeps running', async () => {
       const model = twoTurnModel();
       const result = await createVercelMessagesHandler({ model, captureContent: true })(

@@ -174,6 +174,16 @@ function spanMessages(messages: ModelMessage[]) {
   );
 }
 
+/**
+ * Labels a failed tool call's span `tool_error`. An `AbortError` (a `DOMException` or an `Error`) is
+ * left unlabelled: it is a cancellation, not a tool failure, though the span still ends ERROR.
+ */
+function markToolError(span: Span, error: unknown): void {
+  if ((error as { name?: unknown } | null | undefined)?.name !== 'AbortError') {
+    span.setAttribute('error.type', 'tool_error');
+  }
+}
+
 function failSpan(span: Span, error: unknown): void {
   const exception = error instanceof Error ? error : new Error(String(error));
   span.recordException(exception);
@@ -227,7 +237,7 @@ function buildTools(
               toolSpan.end();
               return result;
             } catch (error) {
-              toolSpan.setAttribute('error.type', 'tool_error');
+              markToolError(toolSpan, error);
               failSpan(toolSpan, error);
               throw error;
             }

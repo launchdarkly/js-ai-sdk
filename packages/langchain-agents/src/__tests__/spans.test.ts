@@ -346,13 +346,13 @@ describe('langchain-agents span tree against a real tracer', () => {
       }
     }
 
-    const handlers = () => ({
+    const handlers = (failure: unknown = new Error('tool broke')) => ({
       okTool: vi.fn().mockResolvedValue('fine'),
-      badTool: vi.fn().mockRejectedValue(new Error('tool broke')),
+      badTool: vi.fn().mockRejectedValue(failure),
     });
 
     // The agent answers a thrown tool to the model as an error ToolMessage, so the run continues.
-    const assertToolSpans = (llm: BothToolsModel) => {
+    const assertToolSpans = (llm: BothToolsModel, aborted = false) => {
       const [ok] = named('execute_tool okTool');
       const [bad] = named('execute_tool badTool');
       expect(ok.status.code).toBe(SpanStatusCode.OK);
@@ -360,7 +360,7 @@ describe('langchain-agents span tree against a real tracer', () => {
       // handleToolEnd receives the ToolMessage LangChain wrapped the result in, not the bare value.
       expect(ok.attributes['gen_ai.tool.call.result']).toContain('fine');
       expect(bad.status.code).toBe(SpanStatusCode.ERROR);
-      expect(bad.attributes['error.type']).toBe('tool_error');
+      expect(bad.attributes['error.type']).toBe(aborted ? undefined : 'tool_error');
       expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
       expect(bad.events.map((e) => e.name)).toContain('exception');
       expect(llm.calls).toBe(2);
@@ -378,6 +378,19 @@ describe('langchain-agents span tree against a real tracer', () => {
 
       expect(result.output).toBe('done');
       assertToolSpans(llm);
+    });
+
+    it('ends an aborted tool call ERROR without tool_error', async () => {
+      const llm = new BothToolsModel();
+
+      const result = await createLangChainAgentsHandler(llm as never, { captureContent: true })(
+        twoToolConfig as never,
+        'q',
+        handlers(new DOMException('aborted', 'AbortError')),
+      );
+
+      expect(result.output).toBe('done');
+      assertToolSpans(llm, true);
     });
 
     it('does the same on the streaming path', async () => {

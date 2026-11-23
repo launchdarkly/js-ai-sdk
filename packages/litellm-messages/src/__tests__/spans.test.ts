@@ -76,20 +76,20 @@ describe('litellm-messages spans against a real tracer', () => {
 
   describe('a failed tool call', () => {
     const twoToolConfig = { ...baseConfig, tools: { okTool: tool('okTool'), badTool: tool('badTool') } };
-    const handlers = () => ({
+    const handlers = (failure: unknown = new Error('tool broke')) => ({
       okTool: vi.fn().mockReturnValue('fine'),
-      badTool: vi.fn().mockRejectedValue(new Error('tool broke')),
+      badTool: vi.fn().mockRejectedValue(failure),
     });
 
     // A tool failure aborts the run here, so the succeeding call is in the turn before it.
-    const assertToolSpans = () => {
+    const assertToolSpans = (aborted = false) => {
       const ok = named('execute_tool okTool')[0];
       const bad = named('execute_tool badTool')[0];
       expect(ok.status.code).toBe(SpanStatusCode.OK);
       expect(ok.attributes['error.type']).toBeUndefined();
       expect(ok.attributes['gen_ai.tool.call.result']).toBe('fine');
       expect(bad.status.code).toBe(SpanStatusCode.ERROR);
-      expect(bad.attributes['error.type']).toBe('tool_error');
+      expect(bad.attributes['error.type']).toBe(aborted ? undefined : 'tool_error');
       expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
       expect(bad.events.map((e) => e.name)).toContain('exception');
     };
@@ -109,6 +109,23 @@ describe('litellm-messages spans against a real tracer', () => {
       ).rejects.toThrow('tool broke');
 
       assertToolSpans();
+    });
+
+    it('ends an aborted tool call ERROR without tool_error', async () => {
+      const create = vi
+        .fn()
+        .mockResolvedValueOnce(toolCompletion('call_ok', 'okTool'))
+        .mockResolvedValueOnce(toolCompletion('call_bad', 'badTool'));
+
+      await expect(
+        createLiteLLMMessagesHandler({ client: clientWith(create), captureContent: true })(
+          twoToolConfig as never,
+          'q',
+          handlers(new DOMException('aborted', 'AbortError')),
+        ),
+      ).rejects.toThrow('aborted');
+
+      assertToolSpans(true);
     });
 
     it('does the same on the streaming path', async () => {

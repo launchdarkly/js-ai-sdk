@@ -115,6 +115,16 @@ function startToolSpan(toolName: string, toolCallId: string, parentContext: Cont
 }
 
 /**
+ * Labels a failed tool call's span `tool_error`. An `AbortError` (a `DOMException` or an `Error`) is
+ * left unlabelled: it is a cancellation, not a tool failure, though the span still ends ERROR.
+ */
+function markToolError(span: Span, error: unknown): void {
+  if ((error as { name?: unknown } | null | undefined)?.name !== 'AbortError') {
+    span.setAttribute('error.type', 'tool_error');
+  }
+}
+
+/**
  * `endedSpans` is passed only from the streaming path, where a `finally` may race this to the same
  * span; elsewhere there is exactly one end and the tracker is unnecessary.
  */
@@ -251,7 +261,7 @@ export function buildSpanCallbacks(
           const span = toolSpans.get(runId);
           if (!span) return;
           toolSpans.delete(runId);
-          span.setAttribute('error.type', 'tool_error');
+          markToolError(span, err);
           failSpan(span, err);
         },
       },
@@ -259,7 +269,7 @@ export function buildSpanCallbacks(
     closeOpenSpans(error: unknown) {
       for (const span of modelSpans.values()) failSpan(span, error);
       for (const span of toolSpans.values()) {
-        span.setAttribute('error.type', 'tool_error');
+        markToolError(span, error);
         failSpan(span, error);
       }
       modelSpans.clear();

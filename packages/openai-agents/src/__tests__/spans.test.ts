@@ -442,6 +442,27 @@ describe('openai-agents span tree against the real Runner', () => {
       expect(bad.events.map((e) => e.name)).toContain('exception');
     });
 
+    it('ends an aborted tool call ERROR without tool_error', async () => {
+      responseQueue.push(toolTurn('call_ok', 'okTool'), toolTurn('call_bad', 'badTool'));
+
+      await expect(
+        createOpenAIAgentsHandler({ captureContent: true })(twoToolConfig as never, 'q', {
+          okTool: vi.fn().mockReturnValue('fine'),
+          badTool: vi.fn().mockRejectedValue(new DOMException('aborted', 'AbortError')),
+        }),
+      ).rejects.toThrow('aborted');
+
+      const ok = named('execute_tool okTool')[0];
+      const bad = named('execute_tool badTool')[0];
+      expect(ok.status.code).toBe(SpanStatusCode.OK);
+      expect(ok.attributes['error.type']).toBeUndefined();
+      expect(ok.attributes['gen_ai.tool.call.result']).toBe('fine');
+      expect(bad.status.code).toBe(SpanStatusCode.ERROR);
+      expect(bad.attributes['error.type']).toBeUndefined();
+      expect(bad.attributes['gen_ai.tool.call.result']).toBeUndefined();
+      expect(bad.events.map((e) => e.name)).toContain('exception');
+    });
+
     // Abandonment is the consumer's choice, not a tool failure. The Runner enqueues stream events
     // without waiting for the reader, so the tool starts while the first chunk is still unread.
     it('ends a tool span open at abandonment UNSET and marked abandoned', async () => {
