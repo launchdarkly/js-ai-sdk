@@ -155,6 +155,8 @@ export const runJudges = async ({
   trajectory,
   logJudgeErrors = false,
   existingClientOnly = false,
+  mapEventKey = (key) => key,
+  judgeCallTrackData,
 }: {
   config: AiConfigRep;
   userContext: LDContext;
@@ -175,6 +177,13 @@ export const runJudges = async ({
   logJudgeErrors?: boolean;
   /** Resolve judges on the live client only, and skip them when there is none, rather than start one. */
   existingClientOnly?: boolean;
+  /**
+   * Maps every key this call tracks: each judge's score and its model call's generation, duration
+   * and token events. Identity by default.
+   */
+  mapEventKey?: (key: string) => string;
+  /** Added to the track data of each judge's own model-call events, on top of the judge config's. */
+  judgeCallTrackData?: Record<string, unknown>;
 }): Promise<NonNullable<ProviderResponse['judgeResults']>> => {
   const judgeResults: NonNullable<ProviderResponse['judgeResults']> = {};
 
@@ -254,6 +263,8 @@ export const runJudges = async ({
             response_to_evaluate: llmResponse,
             ...(userInput ? { input: userInput } : {}),
           },
+          extraTrackData: judgeCallTrackData,
+          mapEventKey,
         });
         const judgeResponse =
           typeof rawJudgeResponse === 'string' ? rawJudgeResponse : JSON.stringify(rawJudgeResponse);
@@ -273,7 +284,7 @@ export const runJudges = async ({
               };
               recordEvaluation(entry.score, undefined, resultKey);
               getClient().track(
-                entry.eventKey,
+                mapEventKey(entry.eventKey),
                 userContext,
                 { ...baseTrackData, judgeConfigKey: resultKey },
                 entry.score,
@@ -298,7 +309,7 @@ export const runJudges = async ({
 
           if (judgeConfig.evaluationMetricKey && score !== undefined) {
             getClient().track(
-              judgeConfig.evaluationMetricKey,
+              mapEventKey(judgeConfig.evaluationMetricKey),
               userContext,
               { ...baseTrackData, judgeConfigKey: judge.key },
               score,
