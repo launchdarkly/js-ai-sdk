@@ -869,6 +869,14 @@
     "@launchdarkly/js-server-sdk-common" "2.24.1"
     crypto-js "^4.1.1"
 
+"@launchdarkly/js-server-sdk-common-edge@2.6.47":
+  version "2.6.47"
+  resolved "https://registry.yarnpkg.com/@launchdarkly/js-server-sdk-common-edge/-/js-server-sdk-common-edge-2.6.47.tgz#b27df51201dabb34ad772e257d9626749916da8c"
+  integrity sha512-8OyENKDxmyGKCHMSVA9L3qRB25G7/pHFFWkv2zMoovmXO9xAr9Mvi+pb49cXPEWkOOGEAoN9QuoGzeCMVT5xIg==
+  dependencies:
+    "@launchdarkly/js-server-sdk-common" "2.26.4"
+    crypto-js "^4.1.1"
+
 "@launchdarkly/js-server-sdk-common@2.19.1":
   version "2.19.1"
   resolved "https://registry.yarnpkg.com/@launchdarkly/js-server-sdk-common/-/js-server-sdk-common-2.19.1.tgz#d1d9d17c517d450bc597a4eac189e722ec9cb6e5"
@@ -885,7 +893,7 @@
     "@launchdarkly/js-sdk-common" "2.29.0"
     semver "7.5.4"
 
-"@launchdarkly/js-server-sdk-common@^2.26.2", "@launchdarkly/js-server-sdk-common@^2.26.4":
+"@launchdarkly/js-server-sdk-common@2.26.4", "@launchdarkly/js-server-sdk-common@^2.26.2", "@launchdarkly/js-server-sdk-common@^2.26.4":
   version "2.26.4"
   resolved "https://registry.yarnpkg.com/@launchdarkly/js-server-sdk-common/-/js-server-sdk-common-2.26.4.tgz#b4f77e26af95301a6fcae6573b2a44b029449cc7"
   integrity sha512-DF6G7xVeK7FNEY8+88YF/oQVPwBeQEjyU3tY/SuMdbvehBDsY5Mit8JXWtZUu41SyYX9EjaogTy93TJcynhM/w==
@@ -902,12 +910,12 @@
     https-proxy-agent "^7.0.6"
     launchdarkly-eventsource "2.2.0"
 
-"@launchdarkly/vercel-server-sdk@^1.3.67":
-  version "1.3.67"
-  resolved "https://registry.yarnpkg.com/@launchdarkly/vercel-server-sdk/-/vercel-server-sdk-1.3.67.tgz#caa14f4c647855983a289a146625dd9ff2d70c35"
-  integrity sha512-AZsozxiBT/GA2ywOVX3uZIvnJtegLCzZmDtpCgJjpOjFJ+8DkZRbX5Ys6nv3Jpzf5XffyJrWNN5Nj/oR6q4uQQ==
+"@launchdarkly/vercel-server-sdk@^1.3.74":
+  version "1.3.74"
+  resolved "https://registry.yarnpkg.com/@launchdarkly/vercel-server-sdk/-/vercel-server-sdk-1.3.74.tgz#794dcc88bf6c03982abac9c00820e8dfef42924d"
+  integrity sha512-QIlTDuQ5EsLjxhua8WugSt9vNS8335RP0tD7Q+OmmEp2ldsNYgItz+1gosXt1fmS9QPl3a/SWFtdDHcZKVlY1g==
   dependencies:
-    "@launchdarkly/js-server-sdk-common-edge" "2.6.40"
+    "@launchdarkly/js-server-sdk-common-edge" "2.6.47"
     "@vercel/edge-config" "^1.5.0"
 
 "@microsoft/api-extractor-model@7.33.16":
