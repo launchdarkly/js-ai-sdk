@@ -463,6 +463,75 @@ describe('openai-agents span tree against the real Runner', () => {
       expect(bad.events.map((e) => e.name)).toContain('exception');
     });
 
+    // Parallel calls: the SDK runs them with Promise.all, so one rejection fails the run while the
+    // other is still running, and only the handler's failure-path closer ends the open span. The
+    // run rejects with the SDK's ToolCallError, which wraps the tool's own error.
+    const parallelFailure = async (failure: unknown, run: (handlers: Record<string, unknown>) => Promise<unknown>) => {
+      let slowStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        slowStarted = resolve;
+      });
+      let releaseSlow!: (value: string) => void;
+      const outcome = run({
+        okTool: vi.fn(() => {
+          slowStarted();
+          return new Promise<string>((resolve) => {
+            releaseSlow = resolve;
+          });
+        }),
+        badTool: vi.fn(async () => {
+          await started;
+          throw failure;
+        }),
+      }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const error = await outcome;
+      releaseSlow('late');
+      const [slow] = named('execute_tool okTool');
+      const [bad] = named('execute_tool badTool');
+      return { error, slow, bad };
+    };
+
+    it('marks a sibling tool span still open when a parallel call fails tool_error', async () => {
+      responseQueue.push({
+        usage: usage(),
+        output: [functionCall('call_slow', 'okTool'), functionCall('call_bad', 'badTool')],
+        responseId: 'resp_parallel',
+      });
+
+      const { error, slow, bad } = await parallelFailure(new Error('tool broke'), (handlers) =>
+        createOpenAIAgentsHandler({ captureContent: true })(twoToolConfig as never, 'q', handlers as never),
+      );
+
+      expect(String(error)).toContain('tool broke');
+      expect(bad.attributes['error.type']).toBe('tool_error');
+      expect(slow.status.code).toBe(SpanStatusCode.ERROR);
+      expect(slow.attributes['error.type']).toBe('tool_error');
+      expect(slow.attributes['gen_ai.tool.call.result']).toBeUndefined();
+      expect(slow.events.map((e) => e.name)).toContain('exception');
+    });
+
+    it('leaves tool_error off a sibling span when a parallel call aborts', async () => {
+      responseQueue.push({
+        usage: usage(),
+        output: [functionCall('call_slow', 'okTool'), functionCall('call_bad', 'badTool')],
+        responseId: 'resp_parallel',
+      });
+
+      const { error, slow, bad } = await parallelFailure(new DOMException('aborted', 'AbortError'), (handlers) =>
+        createOpenAIAgentsHandler({ captureContent: true })(twoToolConfig as never, 'q', handlers as never),
+      );
+
+      expect((error as { name?: string }).name).toBe('ToolCallError');
+      expect(bad.status.code).toBe(SpanStatusCode.ERROR);
+      expect(bad.attributes['error.type']).toBeUndefined();
+      expect(slow.status.code).toBe(SpanStatusCode.ERROR);
+      expect(slow.attributes['error.type']).toBeUndefined();
+      expect(slow.attributes['gen_ai.tool.call.result']).toBeUndefined();
+    });
+
     // Abandonment is the consumer's choice, not a tool failure. The Runner enqueues stream events
     // without waiting for the reader, so the tool starts while the first chunk is still unread.
     it('ends a tool span open at abandonment UNSET and marked abandoned', async () => {

@@ -211,9 +211,21 @@ function startToolSpan(toolName: string, toolCallId: string, parentContext: Cont
  * left unlabelled: it is a cancellation, not a tool failure, though the span still ends ERROR.
  */
 function markToolError(span: Span, error: unknown): void {
-  if ((error as { name?: unknown } | null | undefined)?.name !== 'AbortError') {
-    span.setAttribute('error.type', 'tool_error');
+  if (!isAbortError(error)) span.setAttribute('error.type', 'tool_error');
+}
+
+/**
+ * Whether `error`, or an error it wraps, is an `AbortError`. The Agents SDK rejects the run with a
+ * `ToolCallError` that carries the tool's own error on `.error`, so the failure-path closers see
+ * the wrapper, not the abort. Matched by name: test files mock the SDK module wholesale.
+ */
+function isAbortError(error: unknown): boolean {
+  let e = error as { name?: unknown; error?: unknown; cause?: unknown } | null | undefined;
+  for (let depth = 0; e && depth < 8; depth++) {
+    if (e.name === 'AbortError') return true;
+    e = (e.name === 'ToolCallError' ? e.error : e.cause) as typeof e;
   }
+  return false;
 }
 
 /**
@@ -450,11 +462,14 @@ function attachToolSpanHooks(
   captureContent: boolean,
 ) {
   const toolSpans = new Map<string, Span>();
+  // Set by the closers: a tool event that arrives after the run is closed must not reopen it.
+  let closed = false;
   const callId = (details: { toolCall?: { callId?: string; id?: string; name?: string } }) =>
     details?.toolCall?.callId ?? details?.toolCall?.id ?? details?.toolCall?.name ?? 'tool';
 
   // biome-ignore lint/suspicious/noExplicitAny: Agents SDK tool hook argument types are not exported
   agent.on('agent_tool_start', (_context: unknown, tool: any, details: any) => {
+    if (closed) return;
     const span = startToolSpan(tool?.name ?? 'tool', callId(details), parentContext);
     setToolCallContentAttributes(span, captureContent, { arguments: toolArguments(details?.toolCall?.arguments) });
     toolSpans.set(callId(details), span);
@@ -477,6 +492,7 @@ function attachToolSpanHooks(
 
   return {
     closeOpenSpans(error: unknown) {
+      closed = true;
       for (const span of toolSpans.values()) {
         markToolError(span, error);
         failSpan(span, error);
@@ -485,6 +501,7 @@ function attachToolSpanHooks(
     },
     // Consumer abandonment is not a failure: open tool spans end UNSET, marked abandoned.
     abandonOpenSpans() {
+      closed = true;
       for (const span of toolSpans.values()) {
         span.setAttribute('launchdarkly.stream.abandoned', true);
         span.end();
@@ -808,8 +825,9 @@ export function createOpenAIAgentsHandlerInternal({ captureContent }: ContentCap
         // A no-op on the success and failure paths; on abandonment it is the only chance to close
         // the tree, including any tool span the SDK never reported an end for.
         if (!endedSpans.has(span)) {
-          abortRun.abort();
+          // Abandon first, so a tool the abort makes reject is part of the abandonment.
           toolTelemetry.abandonOpenSpans();
+          abortRun.abort();
         }
         endSpanOnce(span, endedSpans, true);
       }
