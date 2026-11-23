@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.2](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-vercel-agents-1.0.1...@launchdarkly/ai-vercel-agents-1.0.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* write aws.bedrock as the Bedrock provider name in the Vercel and LiteLLM handlers ([#233](https://github.com/launchdarkly/js-ai-sdk/issues/233)) ([ba433d2](https://github.com/launchdarkly/js-ai-sdk/commit/ba433d29a7bf52a1348219e04e157234207f113b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @launchdarkly/ai-server bumped from ^1.1.0 to ^1.2.0
+
 ## [1.0.1](https://github.com/launchdarkly/js-ai-sdk/compare/@launchdarkly/ai-vercel-agents-1.0.0...@launchdarkly/ai-vercel-agents-1.0.1) (2026-11-12)
 
 
