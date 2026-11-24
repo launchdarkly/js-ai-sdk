@@ -178,11 +178,12 @@ export const toLangGraph = (
   opts?: {
     toolHandlers?: Record<string, ToolHandlerFn | NativeTool>;
     /**
-     * Factory to create the chat model for a node. Defaults to the model that
-     * `createLangChainAgentsHandler()` builds for the node's config, picked by its `provider.name`
-     * (for example `ChatAnthropic` for `anthropic` and `ChatOpenAI` when the name is empty).
+     * Factory to create the chat model for a node. It may return the model or a promise of it.
+     * Defaults to the model that `createLangChainAgentsHandler()` builds for the node's config,
+     * picked by its `provider.name`: `ChatAnthropic` for `anthropic`, `ChatBedrockConverse` for
+     * `bedrock`, and `ChatOpenAI` for any other name, including an empty one.
      */
-    modelFactory?: (node: GraphNode) => BaseChatModel;
+    modelFactory?: (node: GraphNode) => BaseChatModel | Promise<BaseChatModel>;
     /** LaunchDarkly context used for tracking events. Required for LD telemetry. */
     context?: LDContext;
   },

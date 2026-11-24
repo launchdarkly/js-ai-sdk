@@ -417,7 +417,7 @@ const result = await toLangGraph(
 ).invoke('I was double charged');
 ```
 
-Without a `modelFactory`, each node gets the model that `createLangChainAgentsHandler()` would build for its config, picked by `provider.name` with the same parameter mapping: for example `ChatAnthropic` for `anthropic`, `ChatBedrockConverse` for `bedrock`, and `ChatOpenAI` for an empty name.
+Without a `modelFactory`, each node gets the model that `createLangChainAgentsHandler()` would build for its config, picked by `provider.name` with the same parameter mapping: `ChatAnthropic` for `anthropic`, `ChatBedrockConverse` for `bedrock`, and `ChatOpenAI` for any other name, including an empty one.
 
 ##### `toClaudeAgents` — Claude Agent SDK
 

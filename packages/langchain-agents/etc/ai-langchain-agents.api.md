@@ -45,7 +45,7 @@ export type LangChainModelSource = BaseChatModel | ((config: AiConfigRep) => Bas
 // @public
 export const toLangGraph: (defPromise: Promise<GraphDefinition>, opts?: {
     toolHandlers?: Record<string, ToolHandlerFn | NativeTool>;
-    modelFactory?: (node: GraphNode) => BaseChatModel;
+    modelFactory?: (node: GraphNode) => BaseChatModel | Promise<BaseChatModel>;
     context?: LDContext;
 }) => {
     invoke: (input?: string, variables?: Record<string, unknown>, history?: Message[]) => Promise<ProviderGraphResponse>;

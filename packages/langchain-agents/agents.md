@@ -16,7 +16,7 @@ The `'*'` wildcard means this handler acts as a fallback for any `meta.mode === 
 
 > **Priority rule:** if the caller also registers an explicit provider handler (e.g. `['OpenAI', 'agent']`), that handler takes precedence over the wildcard for matching variations.
 
-The handler is model-agnostic and accepts any `BaseChatModel`. Without one, `resolveBaseModel` in `src/handler.ts` builds the default from `config.provider.name` (for example `ChatAnthropic` for `anthropic`, `ChatOpenAI` for an empty name). `toLangGraph` calls the same function for each node that has no `modelFactory`, so a provider added there reaches graphs too.
+The handler is model-agnostic and accepts any `BaseChatModel`. Without one, `resolveBaseModel` in `src/handler.ts` builds the default from `config.provider.name` (`ChatAnthropic` for `anthropic`, `ChatBedrockConverse` for `bedrock`, and `ChatOpenAI` for any other name, including an empty one). `toLangGraph` calls the same function for each node that has no `modelFactory`, so a provider added there reaches graphs too.
 
 ---
 

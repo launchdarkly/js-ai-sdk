@@ -292,17 +292,27 @@ export async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainMod
   if (llm) return llm;
   const provider = (invocation.provider?.name ?? '').toLowerCase();
   if (provider === 'anthropic') {
-    const { ChatAnthropic } = await import('@langchain/anthropic');
+    let mod: typeof import('@langchain/anthropic');
+    try {
+      mod = await import('@langchain/anthropic');
+    } catch (cause) {
+      throw new Error(
+        'Using Anthropic models requires @langchain/anthropic. Install it with: npm install @langchain/anthropic',
+        { cause },
+      );
+    }
     // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
-    return new ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022', 'anthropic') as any);
+    return new mod.ChatAnthropic(modelConstructorArgs(invocation, 'claude-3-5-sonnet-20241022', 'anthropic') as any);
   }
   if (provider === 'bedrock') {
     // biome-ignore lint/suspicious/noExplicitAny: @langchain/aws loaded via dynamic import with no static types
     let mod: any;
     try {
       mod = await import('@langchain/aws');
-    } catch {
-      throw new Error('Using Bedrock models requires @langchain/aws. Install it with: npm install @langchain/aws');
+    } catch (cause) {
+      throw new Error('Using Bedrock models requires @langchain/aws. Install it with: npm install @langchain/aws', {
+        cause,
+      });
     }
     // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
     return new mod.ChatBedrockConverse(modelConstructorArgs(invocation, '', 'bedrock') as any);
