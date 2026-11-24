@@ -312,9 +312,10 @@ async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSourc
     let mod: any;
     try {
       mod = await import('@langchain/google-genai');
-    } catch {
+    } catch (cause) {
       throw new Error(
         'Using Gemini models requires @langchain/google-genai. Install it with: npm install @langchain/google-genai',
+        { cause },
       );
     }
     // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
@@ -439,7 +440,6 @@ export function createLangChainAgentsHandlerInternal(
         // TracerProvider without one would otherwise get a flat trace.
         const parentContext = trace.setSpan(context.active(), span);
 
-        const baseModel = await resolveBaseModel(config, llm);
         let systemPrompt = extractSystemPrompt(config, variables);
         if (config.outputFormat) {
           const schemaInstruction = `Respond with valid JSON matching this schema:\n${JSON.stringify(config.outputFormat)}`;
@@ -460,6 +460,8 @@ export function createLangChainAgentsHandlerInternal(
           toToolDefinitions(config.tools),
         );
         try {
+          // Inside the try so a missing provider package or key fails and ends the root span.
+          const baseModel = await resolveBaseModel(config, llm);
           const tools = config.tools ? buildAgentTools(config.tools, toolHandlers) : [];
           const agent = createAgent({ model: baseModel, tools, ...(systemPrompt ? { systemPrompt } : {}) });
           const result = await agent.invoke({ messages: initialMessages }, { callbacks: spanCallbacks.callbacks });
@@ -516,7 +518,6 @@ export function createLangChainAgentsHandlerInternal(
       // Monitoring along with the `feature_flag` event it carries.
       const endedSpans = new Set<Span>();
 
-      const baseModel = await resolveBaseModel(config, llm);
       const systemPrompt = extractSystemPrompt(config, variables);
       const initialMessages = buildInitialMessages(config, userInput, variables, history);
       if (captureContent) {
@@ -528,6 +529,7 @@ export function createLangChainAgentsHandlerInternal(
 
       const spanCallbacks = buildSpanCallbacks(config, parentContext, captureContent, toToolDefinitions(config.tools));
       try {
+        const baseModel = await resolveBaseModel(config, llm);
         const tools = config.tools ? buildAgentTools(config.tools, toolHandlers) : [];
         const agent = createAgent({ model: baseModel, tools, ...(systemPrompt ? { systemPrompt } : {}) });
 

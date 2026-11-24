@@ -247,9 +247,10 @@ async function resolveBaseModel(
     let mod: any;
     try {
       mod = await import('@langchain/google-genai');
-    } catch {
+    } catch (cause) {
       throw new Error(
         'Using Gemini models requires @langchain/google-genai. Install it with: npm install @langchain/google-genai',
+        { cause },
       );
     }
     return new mod.ChatGoogleGenerativeAI(modelConstructorArgs(invocation, 'gemini-2.5-flash', 'gemini', maxRetries));
@@ -680,7 +681,9 @@ function createLangChainMessagesHandlerInternal(
               }
               finishReasons = langChainFinishReasons(chunk) ?? finishReasons;
               const signatures = chunk.additional_kwargs?.[GEMINI_THOUGHT_SIGNATURES_KEY];
-              if (signatures && typeof signatures === 'object') Object.assign(thoughtSignatures, signatures);
+              if (signatures && typeof signatures === 'object' && !Array.isArray(signatures)) {
+                Object.assign(thoughtSignatures, signatures);
+              }
             }
           } catch (err) {
             // The tracker matters here: the outer `catch` also fails `openModelSpan`, which still

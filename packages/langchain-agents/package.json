@@ -64,7 +64,7 @@
   "peerDependencies": {
     "@langchain/anthropic": ">=1.0",
     "@langchain/aws": ">=1.0",
-    "@langchain/google-genai": ">=1.0"
+    "@langchain/google-genai": ">=2.1"
   },
   "peerDependenciesMeta": {
     "@langchain/anthropic": {
