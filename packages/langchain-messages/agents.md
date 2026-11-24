@@ -33,7 +33,7 @@ The handler is model-agnostic — it accepts any `BaseChatModel`. The default is
 
 ```ts
 // Factory — accepts a BaseChatModel or `(config) => model` so flag parameters can be applied
-// unchanged after evaluation. Defaults to ChatOpenAI / ChatAnthropic constructed from the config.
+// unchanged after evaluation. Defaults to ChatAnthropic, ChatBedrockConverse, ChatGoogleGenerativeAI, or ChatOpenAI, picked by config.provider.name.
 export function createLangChainMessagesHandler(llm?: LangChainModelSource): ProviderHandler
 
 // Convenience wrapper — identical to config({ ...options, key: configKey, handler: createLangChainMessagesHandler() }).invoke(userInput, context)
@@ -182,6 +182,7 @@ Span names and attributes are described in [Implementation Details → Telemetry
 |---|---|
 | `@langchain/core` | `BaseChatModel`, `HumanMessage`, `SystemMessage`, `AIMessage`, `ToolMessage`, `BaseMessage` |
 | `@langchain/openai` | `ChatOpenAI` (default model) |
+| `@langchain/anthropic`, `@langchain/aws`, `@langchain/google-genai` | Optional peers, loaded by dynamic import for `provider.name` `anthropic`, `bedrock`, and `gemini` |
 | `@launchdarkly/ai-server` | `AiConfigRep`, `Tool`, `ProviderHandler`, `model`, `parseTemplate` |
 | `@opentelemetry/api` | `SpanStatusCode`, `trace.getTracer().startActiveSpan()` for span creation |
 

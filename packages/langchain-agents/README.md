@@ -14,6 +14,19 @@ yarn add @launchdarkly/ai-server @launchdarkly/ai-langchain-agents dotenv
 
 The default model is `ChatOpenAI`, so set `OPENAI_API_KEY` unless you pass a custom `BaseChatModel`.
 
+### Built-in models
+
+When you pass no model, the handler builds one from the lowercased `config.provider.name`:
+
+| `provider.name` | Model | Package | Credentials |
+|---|---|---|---|
+| `anthropic` | `ChatAnthropic` | `@langchain/anthropic` | `ANTHROPIC_API_KEY` |
+| `bedrock` | `ChatBedrockConverse`, with `model.region` prefixed onto the model id | `@langchain/aws` | the AWS credential chain |
+| `gemini` | `ChatGoogleGenerativeAI` (Gemini API) | `@langchain/google-genai` | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
+| anything else | `ChatOpenAI` | `@langchain/openai` | `OPENAI_API_KEY` |
+
+The Anthropic, Bedrock, and Gemini packages are optional peer dependencies, so install the one a config needs, for example `yarn add @langchain/google-genai` for a Gemini config. Only an allowlist of generation settings from `config.model.parameters` reaches the constructor. For Gemini that is `temperature`, `top_p`, `top_k`, `max_output_tokens` (or `max_tokens`), `stop_sequences` (or `stop`), and the flat `thinking_budget` and `thinking_level` (`minimal`, `low`, `medium`, `high`, or `xhigh`; the level wins when both are set). A nested `thinking_config` and `include_thoughts` are not read, and `seed`, `frequency_penalty`, `presence_penalty`, and `media_resolution` are dropped because the TypeScript `ChatGoogleGenerativeAI` has no fields for them.
+
 ## Usage
 
 ### With the default model (`ChatOpenAI`)
@@ -113,6 +126,8 @@ console.log(result.response);
 | Variable | Description |
 |---|---|
 | `OPENAI_API_KEY` | Required when using the default `ChatOpenAI` model |
+| `GOOGLE_API_KEY` | The Gemini API key when the handler builds `ChatGoogleGenerativeAI` for a Gemini config. One of this or `GEMINI_API_KEY` is required |
+| `GEMINI_API_KEY` | Used for a Gemini config when `GOOGLE_API_KEY` is unset or empty |
 | `LD_SDK_KEY` | LaunchDarkly server-side SDK key |
 | `LD_SERVICE_NAME` | OTel `service.name` resource attribute (default: `nodejs-sdk`) |
 | `LD_ENVIRONMENT` | `deployment.environment` attribute attached to telemetry |

@@ -70,8 +70,13 @@ vi.mock('@langchain/aws', () => ({
   ChatBedrockConverse: vi.fn().mockImplementation(() => ({})),
 }));
 
+vi.mock('@langchain/google-genai', () => ({
+  ChatGoogleGenerativeAI: vi.fn().mockImplementation(() => ({})),
+}));
+
 import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatBedrockConverse } from '@langchain/aws';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatOpenAI } from '@langchain/openai';
 import { configure, NATIVE_TOOL_KEY, NativeTool, type ProviderHandler, shutdown } from '@launchdarkly/ai-server';
 import { createLangChainMessagesHandler } from '../handler.js';
@@ -575,6 +580,7 @@ describe('createLangChainMessagesHandler', () => {
     ['bedrock', 'aws.bedrock'],
     ['Azure', 'azure'],
     ['Anthropic', 'anthropic'],
+    ['Gemini', 'gcp.gemini'],
     ['', 'openai'],
   ] as const)('sets gen_ai.provider.name from config %s', async (providerName, expected) => {
     const cfg = { ...baseConfig, provider: { name: providerName } };
@@ -1205,6 +1211,67 @@ describe('createLangChainMessagesHandler', () => {
     expect(chunkTexts).toContain('Post-tool text');
   });
 
+  // @langchain/google-genai keeps Gemini's thought signatures on each chunk's additional_kwargs and
+  // reads them back from the assistant message, so the rebuilt message must carry them.
+  it('carries Gemini thought signatures from the streamed chunks onto the next turn', async () => {
+    const signaturesKey = '__gemini_function_call_thought_signatures__';
+    const firstTurnChunks = [
+      new AIMessage({
+        content: '',
+        tool_calls: [{ name: 'myTool', args: { q: 'ask' }, id: 'tc1' }],
+        additional_kwargs: { [signaturesKey]: { tc1: 'sig-1' } },
+      }),
+    ];
+    const secondTurnChunks = [new AIMessage({ content: 'done', additional_kwargs: { [signaturesKey]: {} } })];
+    const seen: any[][] = [];
+    const streamFn = vi.fn().mockImplementation((messages: any[]) => {
+      seen.push([...messages]);
+      const chunks = seen.length === 1 ? firstTurnChunks : secondTurnChunks;
+      return (async function* () {
+        for (const c of chunks) yield c;
+      })();
+    });
+    const llm = { invoke: vi.fn(), stream: streamFn, bindTools: vi.fn().mockReturnThis() };
+    const config = {
+      ...baseConfig,
+      tools: { myTool: { name: 'myTool', type: 'function' as const, parameters: {} } },
+    };
+
+    await collectStream(
+      createLangChainMessagesHandler(llm as any).stream?.(config as any, 'q', { myTool: vi.fn() }, {}),
+    );
+
+    const assistant = seen[1].find((m) => m._getType() === 'ai');
+    expect(assistant.tool_calls).toEqual([expect.objectContaining({ id: 'tc1', name: 'myTool' })]);
+    expect(assistant.additional_kwargs[signaturesKey]).toEqual({ tc1: 'sig-1' });
+  });
+
+  it('adds no thought signatures to the rebuilt message when no chunk carries one', async () => {
+    const seen: any[][] = [];
+    const streamFn = vi.fn().mockImplementation((messages: any[]) => {
+      seen.push([...messages]);
+      const chunks =
+        seen.length === 1
+          ? [new AIMessage({ content: '', tool_calls: [{ name: 'myTool', args: {}, id: 'tc1' }] })]
+          : [new AIMessage({ content: 'done' })];
+      return (async function* () {
+        for (const c of chunks) yield c;
+      })();
+    });
+    const llm = { invoke: vi.fn(), stream: streamFn, bindTools: vi.fn().mockReturnThis() };
+    const config = {
+      ...baseConfig,
+      tools: { myTool: { name: 'myTool', type: 'function' as const, parameters: {} } },
+    };
+
+    await collectStream(
+      createLangChainMessagesHandler(llm as any).stream?.(config as any, 'q', { myTool: vi.fn() }, {}),
+    );
+
+    const assistant = seen[1].find((m) => m._getType() === 'ai');
+    expect(assistant.additional_kwargs).toEqual({});
+  });
+
   it('streaming tool handler invoked with correct args', async () => {
     const myTool = vi.fn().mockReturnValue('result');
 
@@ -1501,10 +1568,17 @@ describe('model source', () => {
     model: { name: 'gpt-4o', parameters: { temperature: 0.2, max_tokens: 512 } },
   };
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   beforeEach(() => {
+    // The Gemini route needs a key in the environment; the class itself is mocked.
+    vi.stubEnv('GOOGLE_API_KEY', 'test-key');
     vi.mocked(ChatOpenAI).mockClear();
     vi.mocked(ChatAnthropic).mockClear();
     vi.mocked(ChatBedrockConverse).mockClear();
+    vi.mocked(ChatGoogleGenerativeAI).mockClear();
   });
 
   it('calls a factory with the evaluated config and uses the returned model', async () => {
@@ -1549,11 +1623,12 @@ describe('model source', () => {
     ['maxTokens', 'max_tokens', 5, 'OpenAI', 'gpt-4o'],
     ['topP', 'top_p', 0.5, 'OpenAI', 'gpt-4o'],
     ['topK', 'top_k', 5, 'Anthropic', 'claude-sonnet-4-5'],
+    ['maxOutputTokens', 'max_output_tokens', 5, 'Gemini', 'gemini-3.1-pro-preview'],
     ['frequencyPenalty', 'frequency_penalty', 0.5, 'OpenAI', 'gpt-4o'],
     ['presencePenalty', 'presence_penalty', 0.5, 'OpenAI', 'gpt-4o'],
     ['stopSequences', 'stop_sequences', ['END'], 'OpenAI', 'gpt-4o'],
   ] as const)('forwards %s only from its snake_case key %s', async (camel, snake, value, provider, name) => {
-    const ctor = provider === 'Anthropic' ? ChatAnthropic : ChatOpenAI;
+    const ctor = provider === 'Anthropic' ? ChatAnthropic : provider === 'Gemini' ? ChatGoogleGenerativeAI : ChatOpenAI;
     vi.mocked(ctor).mockImplementation(function MockChatModel() {
       return makeMockLLM('default') as any;
     } as any);
@@ -1573,6 +1648,7 @@ describe('model source', () => {
     ['OpenAI', 'gpt-4o', () => ChatOpenAI],
     ['Anthropic', 'claude-sonnet-4-5', () => ChatAnthropic],
     ['Bedrock', 'anthropic.claude-sonnet-4-5', () => ChatBedrockConverse],
+    ['Gemini', 'gemini-3.1-pro-preview', () => ChatGoogleGenerativeAI],
   ] as const)('never passes credentials or connection settings to the default %s constructor', async (provider, name, ctor) => {
     vi.mocked(ctor()).mockImplementation(function MockChatModel() {
       return makeMockLLM('default') as any;
@@ -1592,6 +1668,7 @@ describe('model source', () => {
     ['OpenAI', 'gpt-4o', () => ChatOpenAI],
     ['Anthropic', 'claude-sonnet-4-5', () => ChatAnthropic],
     ['Bedrock', 'anthropic.claude-sonnet-4-5', () => ChatBedrockConverse],
+    ['Gemini', 'gemini-3.1-pro-preview', () => ChatGoogleGenerativeAI],
   ] as const)('passes the same settings to the default %s constructor on invoke and stream', async (provider, name, ctor) => {
     vi.mocked(ctor()).mockClear();
     vi.mocked(ctor()).mockImplementation(function MockChatModel() {
@@ -1670,6 +1747,43 @@ describe('model source', () => {
       { outputConfig: { effort: 'low' }, model: 'claude-sonnet-4-5' },
       { outputConfig: { effort: 'low' }, model: 'claude-sonnet-4-5' },
     ]);
+  });
+
+  it.each([
+    'Gemini',
+    'gemini',
+    'GEMINI',
+  ])('routes provider %s to the default ChatGoogleGenerativeAI', async (provider) => {
+    vi.mocked(ChatGoogleGenerativeAI).mockImplementation(function MockChatGoogleGenerativeAI() {
+      return makeMockLLM('default-gemini') as any;
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: provider },
+      model: {
+        name: 'gemini-3.1-pro-preview',
+        region: 'us',
+        parameters: {
+          temperature: 0.4,
+          max_tokens: 256,
+          top_k: 20,
+          thinking_level: 'low',
+          safety_settings: [{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' }],
+          google_api_key: 'smuggled',
+        },
+      },
+    };
+    const result = await createLangChainMessagesHandler()(cfg as any, 'q');
+    expect(result.output).toBe('default-gemini');
+    expect(ChatGoogleGenerativeAI).toHaveBeenCalledWith({
+      temperature: 0.4,
+      maxOutputTokens: 256,
+      topK: 20,
+      thinkingConfig: { thinkingLevel: 'LOW' },
+      // model.region is a Bedrock prefix only.
+      model: 'gemini-3.1-pro-preview',
+    });
+    expect(ChatOpenAI).not.toHaveBeenCalled();
   });
 
   it('prepends model.region onto the Bedrock model id once', async () => {

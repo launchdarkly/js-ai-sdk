@@ -34,6 +34,7 @@ vi.mock('@langchain/core/tools', () => ({
 const MockChatOpenAI = vi.hoisted(() => vi.fn().mockImplementation(() => ({})));
 const MockChatAnthropic = vi.hoisted(() => vi.fn().mockImplementation(() => ({})));
 const MockChatBedrockConverse = vi.hoisted(() => vi.fn().mockImplementation(() => ({})));
+const MockChatGoogleGenerativeAI = vi.hoisted(() => vi.fn().mockImplementation(() => ({})));
 
 vi.mock('@langchain/openai', () => ({
   ChatOpenAI: MockChatOpenAI,
@@ -45,6 +46,10 @@ vi.mock('@langchain/anthropic', () => ({
 
 vi.mock('@langchain/aws', () => ({
   ChatBedrockConverse: MockChatBedrockConverse,
+}));
+
+vi.mock('@langchain/google-genai', () => ({
+  ChatGoogleGenerativeAI: MockChatGoogleGenerativeAI,
 }));
 
 vi.mock('@opentelemetry/api', async (importOriginal) => {
@@ -388,6 +393,7 @@ describe('createLangChainAgentsHandler', () => {
     ['bedrock', 'aws.bedrock'],
     ['Azure', 'azure'],
     ['Anthropic', 'anthropic'],
+    ['Gemini', 'gcp.gemini'],
     ['', 'openai'],
   ] as const)('sets gen_ai.provider.name from config %s', async (providerName, expected) => {
     mockCreateAgent.mockReturnValue(makeCallbackAgent({ output: 'ok', inputTokens: 1, outputTokens: 1 }));
@@ -1106,10 +1112,17 @@ describe('model source', () => {
     instructions: 'Be helpful.',
   };
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   beforeEach(() => {
+    // The Gemini route needs a key in the environment; the class itself is mocked.
+    vi.stubEnv('GOOGLE_API_KEY', 'test-key');
     MockChatOpenAI.mockClear();
     MockChatAnthropic.mockClear();
     MockChatBedrockConverse.mockClear();
+    MockChatGoogleGenerativeAI.mockClear();
     mockCreateAgent.mockReset();
     mockCreateAgent.mockReturnValue(makeMockAgent());
   });
@@ -1156,11 +1169,17 @@ describe('model source', () => {
     ['maxTokens', 'max_tokens', 5, 'OpenAI', 'gpt-4o'],
     ['topP', 'top_p', 0.5, 'OpenAI', 'gpt-4o'],
     ['topK', 'top_k', 5, 'Anthropic', 'claude-sonnet-4-5'],
+    ['maxOutputTokens', 'max_output_tokens', 5, 'Gemini', 'gemini-3.1-pro-preview'],
     ['frequencyPenalty', 'frequency_penalty', 0.5, 'OpenAI', 'gpt-4o'],
     ['presencePenalty', 'presence_penalty', 0.5, 'OpenAI', 'gpt-4o'],
     ['stopSequences', 'stop_sequences', ['END'], 'OpenAI', 'gpt-4o'],
   ] as const)('forwards %s only from its snake_case key %s', async (camel, snake, value, provider, name) => {
-    const ctor = provider === 'Anthropic' ? MockChatAnthropic : MockChatOpenAI;
+    const ctor =
+      provider === 'Anthropic'
+        ? MockChatAnthropic
+        : provider === 'Gemini'
+          ? MockChatGoogleGenerativeAI
+          : MockChatOpenAI;
     ctor.mockImplementation(function MockChatModel() {
       return {};
     });
@@ -1180,6 +1199,7 @@ describe('model source', () => {
     ['OpenAI', 'gpt-4o', MockChatOpenAI],
     ['Anthropic', 'claude-sonnet-4-5', MockChatAnthropic],
     ['Bedrock', 'anthropic.claude-sonnet-4-5', MockChatBedrockConverse],
+    ['Gemini', 'gemini-3.1-pro-preview', MockChatGoogleGenerativeAI],
   ] as const)('never passes credentials or connection settings to the default %s constructor', async (provider, name, ctor) => {
     ctor.mockClear();
     ctor.mockImplementation(function MockChatModel() {
@@ -1208,6 +1228,44 @@ describe('model source', () => {
     };
     await createLangChainAgentsHandler()(cfg as any, 'q');
     expect(MockChatAnthropic).toHaveBeenCalledWith({ temperature: 0.1, model: 'claude-sonnet-4-5' });
+    expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: constructed }));
+  });
+
+  it.each([
+    'Gemini',
+    'gemini',
+    'GEMINI',
+  ])('routes provider %s to the default ChatGoogleGenerativeAI', async (provider) => {
+    const constructed = { tag: 'default-gemini' };
+    MockChatGoogleGenerativeAI.mockImplementation(function MockChatGoogleGenerativeAI() {
+      return constructed;
+    });
+    const cfg = {
+      ...parameterized,
+      provider: { name: provider },
+      model: {
+        name: 'gemini-3.1-pro-preview',
+        region: 'us',
+        parameters: {
+          temperature: 0.4,
+          max_tokens: 256,
+          top_k: 20,
+          thinking_level: 'low',
+          safety_settings: [{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' }],
+          google_api_key: 'smuggled',
+        },
+      },
+    };
+    await createLangChainAgentsHandler()(cfg as any, 'q');
+    expect(MockChatGoogleGenerativeAI).toHaveBeenCalledWith({
+      temperature: 0.4,
+      maxOutputTokens: 256,
+      topK: 20,
+      thinkingConfig: { thinkingLevel: 'LOW' },
+      // model.region is a Bedrock prefix only.
+      model: 'gemini-3.1-pro-preview',
+    });
+    expect(MockChatOpenAI).not.toHaveBeenCalled();
     expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: constructed }));
   });
 

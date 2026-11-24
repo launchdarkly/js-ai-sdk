@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // `maxRetries` reaches the chat model the handler builds, and only when set.
 // The real LangChain classes are constructed, so the assertions read each model's own retry count.
@@ -14,7 +14,7 @@ async function recording<T extends new (...args: any[]) => object>(
   required: Record<string, unknown>,
 ): Promise<T> {
   const { AIMessage, AIMessageChunk } = await import('@langchain/core/messages');
-  // A mixin over three unrelated LangChain classes, so the base is typed loosely.
+  // A mixin over four unrelated LangChain classes, so the base is typed loosely.
   return class extends (Real as any) {
     constructor(args: Record<string, unknown>) {
       super({ ...required, ...args });
@@ -55,6 +55,16 @@ vi.mock('@langchain/aws', async (importOriginal) => {
   };
 });
 
+vi.mock('@langchain/google-genai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@langchain/google-genai')>();
+  return {
+    ...actual,
+    ChatGoogleGenerativeAI: await recording(actual.ChatGoogleGenerativeAI, 'ChatGoogleGenerativeAI', {
+      apiKey: 'test-key',
+    }),
+  };
+});
+
 vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
@@ -65,6 +75,7 @@ vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
 
 import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatBedrockConverse } from '@langchain/aws';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatOpenAI } from '@langchain/openai';
 import { configInternal } from '@launchdarkly/ai-server';
 import { createLangChainMessagesHandler, langchainMessages } from '../handler.js';
@@ -76,7 +87,13 @@ const configFor = (provider: string, name: string, parameters?: Record<string, u
 });
 
 describe('createLangChainMessagesHandler — maxRetries', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   beforeEach(() => {
+    // The Gemini route needs a key in the environment; the class itself is mocked.
+    vi.stubEnv('GOOGLE_API_KEY', 'test-key');
     built.length = 0;
     vi.mocked(configInternal).mockClear();
   });
@@ -85,6 +102,7 @@ describe('createLangChainMessagesHandler — maxRetries', () => {
     ['OpenAI', 'gpt-4o', 'ChatOpenAI'],
     ['Anthropic', 'claude-sonnet-4-5', 'ChatAnthropic'],
     ['Bedrock', 'anthropic.claude-sonnet-4-5', 'ChatBedrockConverse'],
+    ['Gemini', 'gemini-3.1-pro-preview', 'ChatGoogleGenerativeAI'],
   ])('passes the value to the %s model the handler builds', async (provider, name, cls) => {
     await createLangChainMessagesHandler(undefined, { maxRetries: 7 })(configFor(provider, name) as never, 'q', {}, {});
     expect(built).toHaveLength(1);
@@ -96,6 +114,7 @@ describe('createLangChainMessagesHandler — maxRetries', () => {
     ['OpenAI', 'gpt-4o', ChatOpenAI],
     ['Anthropic', 'claude-sonnet-4-5', ChatAnthropic],
     ['Bedrock', 'anthropic.claude-sonnet-4-5', ChatBedrockConverse],
+    ['Gemini', 'gemini-3.1-pro-preview', ChatGoogleGenerativeAI],
   ] as const)('keeps the vendor default for %s when omitted', async (provider, name, Cls) => {
     await createLangChainMessagesHandler()(configFor(provider, name) as never, 'q', {}, {});
     expect(built[0].args).not.toHaveProperty('maxRetries');

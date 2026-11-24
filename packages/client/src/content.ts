@@ -154,10 +154,10 @@ function setOpenLLMetryMessages(span: Span, prefix: string, messages: SpanMessag
 /**
  * Every provider spelling this SDK actually serves, mapped onto semconv's finish-reason vocabulary.
  *
- * The vocabulary is `stop`, `length`, `content_filter`, `tool_calls` and `error`. Anthropic and
- * OpenAI are the only two vendors behind these six handlers, so they are the only two rows here —
- * a spelling from a vendor nothing in this SDK talks to is a guess, and the passthrough below is
- * already the right answer for one.
+ * The vocabulary is `stop`, `length`, `content_filter`, `tool_calls` and `error`. Anthropic,
+ * OpenAI and Gemini (through the LangChain handlers) are the vendors behind these handlers, so
+ * they are the only rows here. A spelling from a vendor nothing in this SDK talks to is a guess,
+ * and the passthrough below is already the right answer for one.
  *
  * Keys are compared lower-cased. Not for any vendor's sake: it costs one `toLowerCase()` and means
  * a provider that shouts its enum is mapped rather than passed through as a stray value.
@@ -179,6 +179,13 @@ const SEMCONV_FINISH_REASONS: Record<string, string> = {
   tool_calls: 'tool_calls',
   content_filter: 'content_filter',
   function_call: 'tool_calls',
+  // Gemini `finishReason`. `STOP` and `MAX_TOKENS` already match the rows above once lower-cased.
+  safety: 'content_filter',
+  recitation: 'content_filter',
+  blocklist: 'content_filter',
+  prohibited_content: 'content_filter',
+  spii: 'content_filter',
+  image_safety: 'content_filter',
 };
 
 /**
@@ -209,8 +216,9 @@ export function toSemconvFinishReason(raw: string | null | undefined): string | 
  * `AIMessage` that `invoke()` returned.
  *
  * LangChain does not normalise the field, so it is read from every place providers put it:
- * `generationInfo.finish_reason` (OpenAI) and `response_metadata.finish_reason` or
- * `.stop_reason` (Anthropic), then mapped onto the semconv vocabulary by
+ * `generationInfo.finish_reason` (OpenAI), `response_metadata.finish_reason` or
+ * `.stop_reason` (Anthropic), and `generationInfo.finishReason` or `response_metadata.finishReason`
+ * (Gemini, through `@langchain/google-genai`), then mapped onto the semconv vocabulary by
  * `toSemconvFinishReason` — LangChain is the one place where the same handler can serve either
  * vendor, so it is where an untranslated passthrough is least defensible.
  *
@@ -238,7 +246,8 @@ function finishReasonOf(candidate: unknown): string | undefined {
   const info = (record.generationInfo ?? {}) as Record<string, unknown>;
   const message = (record.message ?? record) as Record<string, unknown>;
   const metadata = (message.response_metadata ?? {}) as Record<string, unknown>;
-  const reason = info.finish_reason ?? metadata.finish_reason ?? metadata.stop_reason;
+  const reason =
+    info.finish_reason ?? info.finishReason ?? metadata.finish_reason ?? metadata.stop_reason ?? metadata.finishReason;
   return typeof reason === 'string' && reason ? reason : undefined;
 }
 

@@ -32,6 +32,8 @@ export const SHARED_NEVER_FORWARDED_KEYS = [
   'bedrockApiKey',
   'bedrock_api_secret',
   'bedrockApiSecret',
+  'google_api_key',
+  'googleApiKey',
   'credentials',
   'auth_token',
   'authToken',

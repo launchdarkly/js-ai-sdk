@@ -41,8 +41,8 @@ const OPTIONAL_DEPS: Record<string, string[]> = {
     '@opentelemetry/sdk-trace-base',
     '@opentelemetry/sdk-trace-node',
   ],
-  'langchain-agents': ['@langchain/anthropic', '@langchain/aws'],
-  'langchain-messages': ['@langchain/anthropic', '@langchain/aws', '@langchain/openai'],
+  'langchain-agents': ['@langchain/anthropic', '@langchain/aws', '@langchain/google-genai'],
+  'langchain-messages': ['@langchain/anthropic', '@langchain/aws', '@langchain/google-genai', '@langchain/openai'],
 };
 
 const RESOLVED_SYMBOLS = {

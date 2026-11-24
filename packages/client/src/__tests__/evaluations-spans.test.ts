@@ -744,6 +744,7 @@ describe('setConfigModelIdentity', () => {
     ['OpenAI', 'openai'],
     ['Bedrock', 'aws.bedrock'],
     ['bedrock', 'aws.bedrock'],
+    ['Gemini', 'gcp.gemini'],
     ['', ''],
   ] as const)('writes provider %s as %s', (providerName, expected) => {
     const attrs: Record<string, unknown> = {};
