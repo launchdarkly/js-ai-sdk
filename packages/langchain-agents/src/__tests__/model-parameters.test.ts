@@ -163,12 +163,16 @@ describe('modelConstructorParameters', () => {
           max_output_tokens: 100,
           stop_sequences: ['END'],
           temperature: 0.2,
-          thinking_config: { thinking_budget: 1024, include_thoughts: true },
+          thinking_budget: 1024,
           top_k: 40,
           top_p: 0.9,
-          // Not ChatGoogleGenerativeAI constructor fields.
+          // On the cross-SDK Gemini list but not supported in TypeScript: no such constructor fields.
           seed: 7,
           frequency_penalty: 0.1,
+          presence_penalty: 0.2,
+          media_resolution: 'MEDIA_RESOLUTION_LOW',
+          // Never forwarded, flat or nested.
+          include_thoughts: true,
         },
         'gemini',
       ),
@@ -176,8 +180,8 @@ describe('modelConstructorParameters', () => {
       maxOutputTokens: 100,
       stopSequences: ['END'],
       temperature: 0.2,
-      // The Gemini API reads ThinkingConfig in camelCase.
-      thinkingConfig: { includeThoughts: true, thinkingBudget: 1024 },
+      // Built from the flat thinking keys, in the Gemini API's camelCase.
+      thinkingConfig: { thinkingBudget: 1024 },
       topK: 40,
       topP: 0.9,
     });
@@ -197,14 +201,32 @@ describe('modelConstructorParameters', () => {
   });
 
   it.each([
-    [{ thinking_level: 'low' }, { thinkingLevel: 'low' }],
-    [{ thinkingBudget: 0 }, { thinkingBudget: 0 }],
-    [{ thinking_budget: 1, thinkingBudget: 2 }, { thinkingBudget: 1 }],
-    [{ thinking_budget: 1.5, include_thoughts: 'yes', thinking_level: 'high', extra: 1 }, { thinkingLevel: 'high' }],
-  ])('keeps only the ChatGoogleGenerativeAI thinkingConfig sub-keys the API takes: %j', (thinkingConfig, expected) => {
-    expect(modelConstructorParameters({ thinking_config: thinkingConfig }, 'gemini')).toEqual({
-      thinkingConfig: expected,
-    });
+    [{ thinking_level: 'low' }, { thinkingLevel: 'LOW' }],
+    [{ thinking_level: 'Minimal' }, { thinkingLevel: 'MINIMAL' }],
+    [{ thinking_level: 'XHIGH' }, { thinkingLevel: 'XHIGH' }],
+    [{ thinking_budget: -1 }, { thinkingBudget: -1 }],
+    [{ thinking_budget: 0 }, { thinkingBudget: 0 }],
+    // The level wins when both are set, since the Gemini API rejects a request with both.
+    [{ thinking_budget: 512, thinking_level: 'high' }, { thinkingLevel: 'HIGH' }],
+    // A level that is not one the API takes is dropped, so the budget is kept.
+    [{ thinking_budget: 512, thinking_level: 'turbo' }, { thinkingBudget: 512 }],
+  ])('builds the ChatGoogleGenerativeAI thinkingConfig from the flat thinking keys: %j', (parameters, expected) => {
+    expect(modelConstructorParameters(parameters, 'gemini')).toEqual({ thinkingConfig: expected });
+  });
+
+  it.each([
+    [{ thinking_budget: 1.5 }],
+    [{ thinking_budget: '1024' }],
+    [{ thinking_level: '' }],
+    [{ thinking_level: 3 }],
+    // camelCase spellings are not input keys.
+    [{ thinkingBudget: 0, thinkingLevel: 'low' }],
+    // A nested thinking_config is never read, in either spelling.
+    [{ thinking_config: { thinking_budget: 64, include_thoughts: true } }],
+    [{ thinking_config: { thinkingLevel: 'low' } }],
+    [{ include_thoughts: true }],
+  ])('sends no ChatGoogleGenerativeAI thinkingConfig for %j', (parameters) => {
+    expect(modelConstructorParameters({ ...parameters, temperature: 0.1 }, 'gemini')).toEqual({ temperature: 0.1 });
   });
 
   it.each([
@@ -218,10 +240,6 @@ describe('modelConstructorParameters', () => {
     ['anthropic', 'output_config', { format: { type: 'json_schema', schema: {} } }],
     ['openai', 'logit_bias', [1, 2]],
     ['bedrock', 'performance_config', 'optimized'],
-    ['gemini', 'thinking_config', 'high'],
-    ['gemini', 'thinking_config', [1024]],
-    ['gemini', 'thinking_config', {}],
-    ['gemini', 'thinking_config', { thinking_budget: '1024' }],
   ] as const)('drops a malformed nested value for %s: %s = %j', (modelClass, key, value) => {
     expect(modelConstructorParameters({ [key]: value, temperature: 0.1 }, modelClass)).toEqual({ temperature: 0.1 });
   });

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // `maxRetries` reaches the chat model the handler builds, and only when set.
 // The real LangChain classes are constructed, so the assertions read each model's own retry count.
@@ -87,7 +87,13 @@ const configFor = (provider: string, name: string, parameters?: Record<string, u
 });
 
 describe('createLangChainMessagesHandler — maxRetries', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   beforeEach(() => {
+    // The Gemini route needs a key in the environment; the class itself is mocked.
+    vi.stubEnv('GOOGLE_API_KEY', 'test-key');
     built.length = 0;
     vi.mocked(configInternal).mockClear();
   });

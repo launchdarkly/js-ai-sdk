@@ -1112,7 +1112,13 @@ describe('model source', () => {
     instructions: 'Be helpful.',
   };
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   beforeEach(() => {
+    // The Gemini route needs a key in the environment; the class itself is mocked.
+    vi.stubEnv('GOOGLE_API_KEY', 'test-key');
     MockChatOpenAI.mockClear();
     MockChatAnthropic.mockClear();
     MockChatBedrockConverse.mockClear();
@@ -1244,7 +1250,7 @@ describe('model source', () => {
           temperature: 0.4,
           max_tokens: 256,
           top_k: 20,
-          thinking_config: { thinking_level: 'low' },
+          thinking_level: 'low',
           safety_settings: [{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' }],
           google_api_key: 'smuggled',
         },
@@ -1255,7 +1261,7 @@ describe('model source', () => {
       temperature: 0.4,
       maxOutputTokens: 256,
       topK: 20,
-      thinkingConfig: { thinkingLevel: 'low' },
+      thinkingConfig: { thinkingLevel: 'LOW' },
       // model.region is a Bedrock prefix only.
       model: 'gemini-3.1-pro-preview',
     });

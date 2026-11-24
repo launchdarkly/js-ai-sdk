@@ -114,8 +114,14 @@ export const CHAT_BEDROCK_CONVERSE_FORWARDED_KEYS = [
  * - `json`: switches the response to JSON, which the handler owns through `outputFormat`.
  * - `convertSystemMessageToHumanContent`: changes how the handler's system prompt is sent.
  *
- * `thinkingConfig` is the Gemini API's own `ThinkingConfig`, which `ChatGoogleGenerativeAI` sends
- * as written in camelCase, so its sub-keys are camelized and narrowed (see `toGeminiThinkingConfig`).
+ * `seed`, `frequency_penalty`, `presence_penalty` and `media_resolution` are on the cross-SDK
+ * Gemini list but not supported in TypeScript: the TypeScript `ChatGoogleGenerativeAI` has no such
+ * fields.
+ *
+ * `thinkingConfig` is built from the flat `thinking_budget` and `thinking_level` keys (see
+ * `toGeminiThinkingConfig`). A nested `thinking_config` in `model.parameters` is never read, and
+ * `include_thoughts` is never forwarded, because it puts the model's thought summaries in the reply
+ * content the handler returns.
  */
 export const CHAT_GOOGLE_GENERATIVE_AI_FORWARDED_KEYS = [
   'maxOutputTokens',
@@ -184,29 +190,21 @@ function toAnthropicOutputConfig(effort: unknown, outputConfig: unknown): { effo
   return typeof chosen === 'string' ? { effort: chosen } : undefined;
 }
 
-/**
- * The Gemini API `ThinkingConfig` sub-keys, each under the snake_case name the LaunchDarkly UI
- * writes and the camelCase name the API reads, with the type the API takes.
- */
-const GEMINI_THINKING_CONFIG_KEYS: ReadonlyArray<[string, string, (value: unknown) => boolean]> = [
-  ['include_thoughts', 'includeThoughts', (value) => typeof value === 'boolean'],
-  ['thinking_budget', 'thinkingBudget', (value) => Number.isInteger(value)],
-  ['thinking_level', 'thinkingLevel', (value) => typeof value === 'string' && value !== ''],
-];
+/** The `thinking_level` values the Gemini API takes, compared ignoring case. */
+const GEMINI_THINKING_LEVELS: ReadonlyArray<string> = ['minimal', 'low', 'medium', 'high', 'xhigh'];
 
 /**
- * `thinkingConfig` with its sub-keys in camelCase, keeping only the ones the Gemini API takes and
- * only with a value of the right type, or `undefined` when it is not an object or nothing is left.
- * When both spellings of a sub-key are set, the snake_case one wins, as it does at the top level.
+ * The Gemini `thinkingConfig` built from the flat `thinking_budget` and `thinking_level` keys, or
+ * `undefined` when neither is usable. A `thinking_level` outside `GEMINI_THINKING_LEVELS` is
+ * dropped, and a `thinking_budget` that is not a whole number is dropped (`-1` is dynamic thinking
+ * and `0` turns it off). When both are kept, the level wins and the budget is dropped, because the
+ * Gemini API rejects a request that sets both. The level is sent in upper case, the API's spelling.
  */
-function toGeminiThinkingConfig(value: unknown): Record<string, unknown> | undefined {
-  if (!isPlainObject(value)) return undefined;
-  const thinkingConfig: Record<string, unknown> = {};
-  for (const [snake, camel, isValid] of GEMINI_THINKING_CONFIG_KEYS) {
-    const chosen = isValid(value[snake]) ? value[snake] : value[camel];
-    if (isValid(chosen)) thinkingConfig[camel] = chosen;
+function toGeminiThinkingConfig(budget: unknown, level: unknown): Record<string, unknown> | undefined {
+  if (typeof level === 'string' && GEMINI_THINKING_LEVELS.includes(level.toLowerCase())) {
+    return { thinkingLevel: level.toUpperCase() };
   }
-  return Object.keys(thinkingConfig).length > 0 ? thinkingConfig : undefined;
+  return Number.isInteger(budget) ? { thinkingBudget: budget } : undefined;
 }
 
 /**
@@ -237,7 +235,8 @@ const NESTED_SHAPE_CHECKS: Record<LangChainModelClass, Record<string, (value: un
  *   and becomes `stopSequences`. When both names are set, `max_tokens` and `stop_sequences` win.
  * - `ChatGoogleGenerativeAI` names its output limit `maxOutputTokens` and has no `stop` field.
  *   `max_tokens` becomes `maxOutputTokens` and `stop` becomes `stopSequences`. When both names are
- *   set, `max_output_tokens` and `stop_sequences` win.
+ *   set, `max_output_tokens` and `stop_sequences` win. Its `thinkingConfig` is built from the flat
+ *   `thinking_budget` and `thinking_level` keys, and a nested `thinking_config` is dropped.
  */
 export function modelConstructorParameters(
   parameters: AiConfigRep['model']['parameters'] | unknown,
@@ -261,6 +260,9 @@ export function modelConstructorParameters(
   if (modelClass === 'gemini') {
     camelized.maxOutputTokens ??= camelized.maxTokens;
     camelized.stopSequences ??= camelized.stop;
+    const thinkingConfig = toGeminiThinkingConfig(camelized.thinkingBudget, camelized.thinkingLevel);
+    if (thinkingConfig) camelized.thinkingConfig = thinkingConfig;
+    else delete camelized.thinkingConfig;
   }
   const picked = pickForwardedModelParameters(camelized, FORWARDED_KEYS[modelClass]);
   for (const [key, isWellFormed] of Object.entries(NESTED_SHAPE_CHECKS[modelClass])) {
@@ -270,11 +272,6 @@ export function modelConstructorParameters(
     const thinking = toAnthropicThinking(picked.thinking);
     if (thinking) picked.thinking = thinking;
     else delete picked.thinking;
-  }
-  if (modelClass === 'gemini' && picked.thinkingConfig !== undefined) {
-    const thinkingConfig = toGeminiThinkingConfig(picked.thinkingConfig);
-    if (thinkingConfig) picked.thinkingConfig = thinkingConfig;
-    else delete picked.thinkingConfig;
   }
   return picked;
 }

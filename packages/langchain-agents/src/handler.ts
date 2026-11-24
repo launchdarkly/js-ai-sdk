@@ -37,6 +37,7 @@ import {
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { createAgent } from 'langchain';
+import { adaptGeminiModel, geminiApiKey } from './gemini.js';
 import { toLangChainMessages } from './messages.js';
 import { type LangChainModelClass, modelConstructorParameters } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
@@ -318,8 +319,9 @@ async function resolveBaseModel(aiConfig: AiConfigRep, llm?: LangChainModelSourc
         { cause },
       );
     }
-    // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
-    return new mod.ChatGoogleGenerativeAI(modelConstructorArgs(invocation, 'gemini-2.5-flash', 'gemini') as any);
+    const apiKey = geminiApiKey();
+    const fields = { ...modelConstructorArgs(invocation, 'gemini-2.5-flash', 'gemini'), ...(apiKey ? { apiKey } : {}) };
+    return adaptGeminiModel(new mod.ChatGoogleGenerativeAI(fields));
   }
   // biome-ignore lint/suspicious/noExplicitAny: constructor fields are narrowed per model class in modelConstructorParameters
   return new ChatOpenAI(modelConstructorArgs(invocation, 'gpt-4o', 'openai') as any);

@@ -38,6 +38,7 @@ import {
   validateMaxRetries,
 } from '@launchdarkly/ai-server';
 import { type Context, context, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
+import { adaptGeminiModel, geminiApiKey } from './gemini.js';
 import { type LangChainModelClass, modelConstructorParameters } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
@@ -253,7 +254,12 @@ async function resolveBaseModel(
         { cause },
       );
     }
-    return new mod.ChatGoogleGenerativeAI(modelConstructorArgs(invocation, 'gemini-2.5-flash', 'gemini', maxRetries));
+    const apiKey = geminiApiKey();
+    const fields = {
+      ...modelConstructorArgs(invocation, 'gemini-2.5-flash', 'gemini', maxRetries),
+      ...(apiKey ? { apiKey } : {}),
+    };
+    return adaptGeminiModel(new mod.ChatGoogleGenerativeAI(fields));
   }
   // biome-ignore lint/suspicious/noExplicitAny: @langchain/openai loaded via dynamic import with no static types
   let mod: any;
