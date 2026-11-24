@@ -93,6 +93,8 @@ const result = await toLangGraph(
 console.log(result.response);
 ```
 
+Without a `modelFactory`, each node's model is built from that node's own config, exactly as `createLangChainAgentsHandler()` builds one for a single-agent call. The model class follows the node's `provider.name`: `ChatAnthropic` for `anthropic`, `ChatBedrockConverse` for `bedrock` (with `model.region` prefixed onto the model id), and `ChatOpenAI` for any other name, including an empty one. A graph can mix providers across nodes. Install the optional package a node needs, such as `@langchain/anthropic` or `@langchain/aws`; a missing one fails the run with an error that names it.
+
 ## How It Works
 
 - Uses the system prompt and conversation history defined in your LaunchDarkly flag config.

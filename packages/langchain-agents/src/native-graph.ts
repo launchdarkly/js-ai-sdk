@@ -3,7 +3,6 @@ import { AIMessage, type BaseMessage, HumanMessage, SystemMessage, ToolMessage }
 import { tool } from '@langchain/core/tools';
 import { Annotation, addMessages, Command, END, START, StateGraph } from '@langchain/langgraph';
 import { ToolNode, toolsCondition } from '@langchain/langgraph/prebuilt';
-import { ChatOpenAI } from '@langchain/openai';
 import {
   composeHistory,
   type GraphDefinition,
@@ -24,8 +23,8 @@ import {
 } from '@launchdarkly/ai-server';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { z } from 'zod';
+import { resolveBaseModel } from './handler.js';
 import { toLangChainMessages } from './messages.js';
-import { modelConstructorParameters } from './model-parameters.js';
 import { LD_AI_PACKAGE_NAME, LD_AI_PACKAGE_VERSION } from './version.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -178,8 +177,13 @@ export const toLangGraph = (
   defPromise: Promise<GraphDefinition>,
   opts?: {
     toolHandlers?: Record<string, ToolHandlerFn | NativeTool>;
-    /** Factory to create the chat model for a node. Defaults to `ChatOpenAI`. */
-    modelFactory?: (node: GraphNode) => BaseChatModel;
+    /**
+     * Factory to create the chat model for a node. It may return the model or a promise of it.
+     * Defaults to the model that `createLangChainAgentsHandler()` builds for the node's config,
+     * picked by its `provider.name`: `ChatAnthropic` for `anthropic`, `ChatBedrockConverse` for
+     * `bedrock`, and `ChatOpenAI` for any other name, including an empty one.
+     */
+    modelFactory?: (node: GraphNode) => BaseChatModel | Promise<BaseChatModel>;
     /** LaunchDarkly context used for tracking events. Required for LD telemetry. */
     context?: LDContext;
   },
@@ -202,13 +206,10 @@ export const toLangGraph = (
     }
 
     const toolHandlers = opts?.toolHandlers ?? {};
-    const modelFactory =
-      opts?.modelFactory ??
-      ((node) =>
-        new ChatOpenAI({
-          ...modelConstructorParameters(node.config.model.parameters, 'openai'),
-          model: node.config.model.name,
-        }));
+    // The same per-provider factory as the single-agent handler, so a node gets the model
+    // class, parameter mapping and missing-package error that a `config()` call would.
+    const modelFactory: (node: GraphNode) => BaseChatModel | Promise<BaseChatModel> =
+      opts?.modelFactory ?? ((node) => resolveBaseModel(node.config));
     const ldContext = opts?.context;
 
     return trace.getTracer('@launchdarkly/ai-langchain-agents').startActiveSpan('launchdarkly.graph', async (span) => {
@@ -231,7 +232,7 @@ export const toLangGraph = (
           const isTerminal = node.isTerminal();
           const isMultiChild = outgoing.length > 1;
 
-          const chatModel = modelFactory(node);
+          const chatModel = await modelFactory(node);
           const regularTools = buildNodeTools(node, toolHandlers);
 
           // The node's last model call sets `first` (its first hand-off call id);

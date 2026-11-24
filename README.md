@@ -417,6 +417,8 @@ const result = await toLangGraph(
 ).invoke('I was double charged');
 ```
 
+Without a `modelFactory`, each node gets the model that `createLangChainAgentsHandler()` would build for its config, picked by `provider.name` with the same parameter mapping: `ChatAnthropic` for `anthropic`, `ChatBedrockConverse` for `bedrock`, and `ChatOpenAI` for any other name, including an empty one.
+
 ##### `toClaudeAgents` — Claude Agent SDK
 
 Uses `reverseTraverse` (leaves → root) to wrap each child node as an MCP tool whose implementation runs `query()` in-process. The root node then runs a single top-level `query()` with its children accessible as sub-agent tools. Fully in-process; no cloud-registered agents required.

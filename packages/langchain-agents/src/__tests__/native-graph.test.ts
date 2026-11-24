@@ -30,6 +30,26 @@ const MockChatOpenAI = vi.hoisted(() =>
   }),
 );
 
+// The default factory builds these by `provider.name`; each records its constructor args.
+const MockChatAnthropic = vi.hoisted(() =>
+  vi.fn().mockImplementation(function MockChatAnthropic(this: {
+    invoke: ReturnType<typeof vi.fn>;
+    bindTools: ReturnType<typeof vi.fn>;
+  }) {
+    this.invoke = vi.fn();
+    this.bindTools = vi.fn().mockReturnThis();
+  }),
+);
+const MockChatBedrockConverse = vi.hoisted(() =>
+  vi.fn().mockImplementation(function MockChatBedrockConverse(this: {
+    invoke: ReturnType<typeof vi.fn>;
+    bindTools: ReturnType<typeof vi.fn>;
+  }) {
+    this.invoke = vi.fn();
+    this.bindTools = vi.fn().mockReturnThis();
+  }),
+);
+
 // ─── Module mocks ─────────────────────────────────────────────────────────────
 
 vi.mock('@langchain/langgraph', () => ({
@@ -69,6 +89,14 @@ vi.mock('@langchain/langgraph/prebuilt', () => ({
 
 vi.mock('@langchain/openai', () => ({
   ChatOpenAI: MockChatOpenAI,
+}));
+
+vi.mock('@langchain/anthropic', () => ({
+  ChatAnthropic: MockChatAnthropic,
+}));
+
+vi.mock('@langchain/aws', () => ({
+  ChatBedrockConverse: MockChatBedrockConverse,
 }));
 
 vi.mock('@langchain/core/tools', () => ({
@@ -784,5 +812,112 @@ describe('toLangGraph', () => {
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', expect.any(Number));
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.output_tokens', expect.any(Number));
     expect(mockSpan.setAttribute).toHaveBeenCalledWith('gen_ai.usage.total_tokens', expect.any(Number));
+  });
+});
+
+// ─── Default model per node provider ─────────────────────────────────────────
+
+describe('toLangGraph default model', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCompile.mockReturnValue({ invoke: mockCompiledInvoke });
+    mockCompiledInvoke.mockResolvedValue(defaultMockResult());
+  });
+
+  function nodeFor(key: string, provider: string | undefined, model: Record<string, unknown>, outgoing: string[] = []) {
+    const node = makeNode(key, '', outgoing);
+    node.config.provider = provider === undefined ? undefined : { name: provider };
+    node.config.model = model;
+    return node;
+  }
+
+  it('builds ChatAnthropic for an Anthropic node, with its parameters mapped and a key off its allowlist dropped', async () => {
+    const root = nodeFor('root', 'Anthropic', {
+      name: 'claude-sonnet-4-5',
+      parameters: { temperature: 0.2, max_tokens: 512, top_k: 5, seed: 7 },
+    });
+    await toLangGraph(Promise.resolve(makeGraphDef([root], {}, 'root'))).invoke('hi');
+    expect(MockChatAnthropic).toHaveBeenCalledWith({
+      temperature: 0.2,
+      maxTokens: 512,
+      topK: 5,
+      model: 'claude-sonnet-4-5',
+    });
+    expect(MockChatOpenAI).not.toHaveBeenCalled();
+    expect(MockChatBedrockConverse).not.toHaveBeenCalled();
+  });
+
+  it('builds ChatBedrockConverse for a Bedrock node, with model.region prefixed onto the model id and a key off its allowlist dropped', async () => {
+    const root = nodeFor('root', 'Bedrock', {
+      name: 'anthropic.claude-sonnet-4-5',
+      region: 'us',
+      parameters: { temperature: 0.2, top_k: 5 },
+    });
+    await toLangGraph(Promise.resolve(makeGraphDef([root], {}, 'root'))).invoke('hi');
+    expect(MockChatBedrockConverse).toHaveBeenCalledWith({
+      temperature: 0.2,
+      model: 'us.anthropic.claude-sonnet-4-5',
+    });
+    expect(MockChatOpenAI).not.toHaveBeenCalled();
+    expect(MockChatAnthropic).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['OpenAI', 'OpenAI'],
+    ['an unrecognised', 'Azure'],
+    ['an empty', ''],
+    ['a missing', undefined],
+  ])('keeps ChatOpenAI for a node with %s provider name, dropping a key off its allowlist', async (_label, provider) => {
+    const root = nodeFor('root', provider, { name: 'gpt-4o', parameters: { temperature: 0.2, top_k: 5 } });
+    await toLangGraph(Promise.resolve(makeGraphDef([root], {}, 'root'))).invoke('hi');
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, model: 'gpt-4o' });
+    expect(MockChatAnthropic).not.toHaveBeenCalled();
+    expect(MockChatBedrockConverse).not.toHaveBeenCalled();
+  });
+
+  it('builds each node from its own provider in a mixed-provider graph', async () => {
+    const root = nodeFor('root', 'Anthropic', { name: 'claude-sonnet-4-5' }, ['leaf']);
+    const leaf = nodeFor('leaf', 'OpenAI', { name: 'gpt-4o' });
+    const def = makeGraphDef([root, leaf], { root: [makeEdge('root', 'leaf')] }, 'root');
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+    expect(MockChatAnthropic).toHaveBeenCalledTimes(1);
+    expect(MockChatAnthropic).toHaveBeenCalledWith({ model: 'claude-sonnet-4-5' });
+    expect(MockChatOpenAI).toHaveBeenCalledTimes(1);
+    expect(MockChatOpenAI).toHaveBeenCalledWith({ model: 'gpt-4o' });
+  });
+
+  it('binds the hand-off tools to a default ChatAnthropic node model and runs it', async () => {
+    const root = nodeFor('root', 'Anthropic', { name: 'claude-sonnet-4-5' }, ['leaf']);
+    const leaf = nodeFor('leaf', 'Anthropic', { name: 'claude-sonnet-4-5' });
+    const def = makeGraphDef([root, leaf], { root: [makeEdge('root', 'leaf')] }, 'root');
+    await toLangGraph(Promise.resolve(def)).invoke('hi');
+
+    const model = MockChatAnthropic.mock.instances[0] as unknown as {
+      invoke: ReturnType<typeof vi.fn>;
+      bindTools: ReturnType<typeof vi.fn>;
+    };
+    model.invoke.mockResolvedValue(
+      new AIMessage({ content: 'ok', usage_metadata: { input_tokens: 3, output_tokens: 4, total_tokens: 7 } }),
+    );
+    const rootNodeFn = mockAddNode.mock.calls.find((c) => c[0] === 'root')?.[1];
+    const update = await rootNodeFn({ messages: [] });
+
+    expect(model.bindTools).toHaveBeenCalledWith([expect.objectContaining({ name: 'transfer_to_leaf' })]);
+    expect(model.invoke).toHaveBeenCalledTimes(1);
+    expect(update.messages[0].content).toBe('ok');
+  });
+
+  it('uses a caller-supplied modelFactory instead of building a default model', async () => {
+    const custom = { invoke: vi.fn(), bindTools: vi.fn().mockReturnThis() };
+    const modelFactory = vi.fn().mockReturnValue(custom);
+    const root = nodeFor('root', 'Anthropic', { name: 'claude-sonnet-4-5' }, ['leaf']);
+    const leaf = nodeFor('leaf', 'Bedrock', { name: 'anthropic.claude-sonnet-4-5' });
+    const def = makeGraphDef([root, leaf], { root: [makeEdge('root', 'leaf')] }, 'root');
+    await toLangGraph(Promise.resolve(def), { modelFactory }).invoke('hi');
+    expect(modelFactory).toHaveBeenCalledWith(root);
+    expect(modelFactory).toHaveBeenCalledWith(leaf);
+    expect(MockChatOpenAI).not.toHaveBeenCalled();
+    expect(MockChatAnthropic).not.toHaveBeenCalled();
+    expect(MockChatBedrockConverse).not.toHaveBeenCalled();
   });
 });
