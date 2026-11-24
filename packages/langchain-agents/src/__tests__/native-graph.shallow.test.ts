@@ -25,6 +25,31 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Infrastructure mocks (not the code under test) ──────────────────────────
 
+// The default model classes, for the mixed-provider test. Each one records its constructor
+// arguments and returns the scripted model queued for its class. The other tests pass a
+// modelFactory, so they never build one.
+const providerModels = vi.hoisted(() => {
+  const queued: Record<string, unknown[]> = { anthropic: [], bedrock: [], openai: [] };
+  const built: Array<{ cls: string; args: Record<string, unknown> }> = [];
+  const make = (cls: string) =>
+    // biome-ignore lint/complexity/useArrowFunction: the handler builds the model with `new`, so this must be constructible
+    vi.fn().mockImplementation(function (args: Record<string, unknown>) {
+      built.push({ cls, args });
+      return queued[cls].shift();
+    });
+  return {
+    queued,
+    built,
+    ChatAnthropic: make('anthropic'),
+    ChatBedrockConverse: make('bedrock'),
+    ChatOpenAI: make('openai'),
+  };
+});
+
+vi.mock('@langchain/anthropic', () => ({ ChatAnthropic: providerModels.ChatAnthropic }));
+vi.mock('@langchain/aws', () => ({ ChatBedrockConverse: providerModels.ChatBedrockConverse }));
+vi.mock('@langchain/openai', () => ({ ChatOpenAI: providerModels.ChatOpenAI }));
+
 vi.mock('@launchdarkly/ai-server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@launchdarkly/ai-server')>();
   return {
@@ -382,5 +407,71 @@ describe('toNeutralHistory', () => {
       ['human', '[Tool result] t: three'],
     ]);
     for (const m of out) expect((m as AIMessage).tool_calls ?? []).toHaveLength(0);
+  });
+});
+
+// ─── Per-node provider routing through a real StateGraph ─────────────────────
+
+describe('toLangGraph — a graph that mixes providers, through a real StateGraph', () => {
+  beforeEach(() => {
+    providerModels.built.length = 0;
+    for (const queue of Object.values(providerModels.queued)) queue.length = 0;
+  });
+
+  it('builds one model of each class, one per node, and hands off end to end', async () => {
+    const scripted = (...replies: AIMessage[]) => {
+      const invoke = vi.fn();
+      for (const reply of replies) invoke.mockResolvedValueOnce(reply);
+      const model = { invoke, bindTools: vi.fn() } as any;
+      model.bindTools.mockReturnValue(model);
+      return model;
+    };
+    const router = scripted(toolCallMsg([['transfer_to_analyst', 'call_1']], 'Routing.'));
+    const analyst = scripted(new AIMessage('the analyst answered'));
+    const writer = scripted();
+    providerModels.queued.anthropic.push(router);
+    providerModels.queued.bedrock.push(analyst);
+    providerModels.queued.openai.push(writer);
+
+    const node = (key: string, provider: string, model: string, edges: string[]) =>
+      ({
+        key,
+        config: { model: { name: model }, provider: { name: provider }, instructions: `you are ${key}` },
+        meta: { variationKey: 'v1', version: 1 },
+        isTerminal: () => edges.length === 0,
+        edges: edges.map((target) => ({ key: `${key}-${target}`, sourceKey: key, targetKey: target })),
+      }) as any;
+    const nodes = [
+      node('router', 'Anthropic', 'claude-sonnet-4-5', ['analyst', 'writer']),
+      node('analyst', 'Bedrock', 'anthropic.claude-sonnet-4-5', []),
+      node('writer', 'OpenAI', 'gpt-4o', []),
+    ];
+    const def = {
+      key: 'test-graph',
+      enabled: true,
+      root: nodes[0],
+      edgesFrom: (key: string) => nodes.find((n) => n.key === key)?.edges ?? [],
+      traverse: async (fn: (n: any) => Promise<void>) => {
+        for (const n of nodes) await fn(n);
+      },
+    } as any;
+
+    const result = await toLangGraph(Promise.resolve(def), { context: { kind: 'user', key: 'u' } }).invoke('question');
+
+    expect(result.response).toBe('the analyst answered');
+    expect(providerModels.built.map(({ cls, args }) => [cls, args.model])).toEqual([
+      ['anthropic', 'claude-sonnet-4-5'],
+      ['bedrock', 'anthropic.claude-sonnet-4-5'],
+      ['openai', 'gpt-4o'],
+    ]);
+    // The second provider gets the router's turn through the history rewrite, as plain text.
+    expect(sent(analyst)).toEqual([
+      ['system', 'you are analyst'],
+      ['human', 'question'],
+      ['ai', 'Routing.\n[Tool call] transfer_to_analyst {}'],
+      ['human', '[Tool result] transfer_to_analyst: Handed off to analyst.'],
+    ]);
+    expectNeutral(analyst);
+    expect(writer.invoke).not.toHaveBeenCalled();
   });
 });

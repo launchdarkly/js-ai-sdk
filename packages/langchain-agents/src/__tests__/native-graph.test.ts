@@ -831,10 +831,10 @@ describe('toLangGraph default model', () => {
     return node;
   }
 
-  it('builds ChatAnthropic for an Anthropic node, with its parameters mapped', async () => {
+  it('builds ChatAnthropic for an Anthropic node, with its parameters mapped and a key off its allowlist dropped', async () => {
     const root = nodeFor('root', 'Anthropic', {
       name: 'claude-sonnet-4-5',
-      parameters: { temperature: 0.2, max_tokens: 512, top_k: 5 },
+      parameters: { temperature: 0.2, max_tokens: 512, top_k: 5, seed: 7 },
     });
     await toLangGraph(Promise.resolve(makeGraphDef([root], {}, 'root'))).invoke('hi');
     expect(MockChatAnthropic).toHaveBeenCalledWith({
@@ -847,11 +847,11 @@ describe('toLangGraph default model', () => {
     expect(MockChatBedrockConverse).not.toHaveBeenCalled();
   });
 
-  it('builds ChatBedrockConverse for a Bedrock node, with model.region prefixed onto the model id', async () => {
+  it('builds ChatBedrockConverse for a Bedrock node, with model.region prefixed onto the model id and a key off its allowlist dropped', async () => {
     const root = nodeFor('root', 'Bedrock', {
       name: 'anthropic.claude-sonnet-4-5',
       region: 'us',
-      parameters: { temperature: 0.2 },
+      parameters: { temperature: 0.2, top_k: 5 },
     });
     await toLangGraph(Promise.resolve(makeGraphDef([root], {}, 'root'))).invoke('hi');
     expect(MockChatBedrockConverse).toHaveBeenCalledWith({
@@ -864,10 +864,11 @@ describe('toLangGraph default model', () => {
 
   it.each([
     ['OpenAI', 'OpenAI'],
+    ['an unrecognised', 'Azure'],
     ['an empty', ''],
     ['a missing', undefined],
-  ])('keeps ChatOpenAI for a node with %s provider name', async (_label, provider) => {
-    const root = nodeFor('root', provider, { name: 'gpt-4o', parameters: { temperature: 0.2 } });
+  ])('keeps ChatOpenAI for a node with %s provider name, dropping a key off its allowlist', async (_label, provider) => {
+    const root = nodeFor('root', provider, { name: 'gpt-4o', parameters: { temperature: 0.2, top_k: 5 } });
     await toLangGraph(Promise.resolve(makeGraphDef([root], {}, 'root'))).invoke('hi');
     expect(MockChatOpenAI).toHaveBeenCalledWith({ temperature: 0.2, model: 'gpt-4o' });
     expect(MockChatAnthropic).not.toHaveBeenCalled();
